@@ -126,25 +126,27 @@ Document how to authenticate for testing:
 - Test user credentials (email/password or API key)
 - Auth method: `cookie` (use `-c cookies.txt`), `bearer` (use `Authorization: Bearer <token>`), or `none`
 
-Example:
+Use the exact endpoints, credentials, and auth method you discovered in Step 1. Format:
+
 ```markdown
 ### Auth
-- Sign up: `POST /api/auth/sign-up` with `{"email":"test@ci.local","password":"TestPass1!"}`
-- Sign in: `POST /api/auth/sign-in` with `{"email":"test@ci.local","password":"TestPass1!"}`
-- Method: cookie (use `-c cookies.txt` / `credentials: 'include'`)
+- Sign up: `<METHOD> <endpoint>` with `<JSON body>`
+- Sign in: `<METHOD> <endpoint>` with `<JSON body>`
+- Method: cookie | bearer | none
 ```
 
 If the app has no auth: write `### Auth` with `- Method: none`
 
 ### Known service ports
 
+List the actual ports you found in Step 1 (from `package.json` scripts, framework config, or `.env` files). Do NOT guess ports — read the config.
+
 ```markdown
 ### Known service ports
 
 | Service | URL | Notes |
 |---------|-----|-------|
-| API | http://localhost:3000 | Health at GET /health |
-| Web | http://localhost:5173 | Vite dev server |
+| <name> | <URL you discovered> | <health endpoint if known> |
 ```
 
 ## Step 5: Verify secrets
