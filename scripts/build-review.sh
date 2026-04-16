@@ -1,0 +1,431 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# build-review.sh — Merge findings from all agents and build review artifacts.
+#
+# Runs AFTER the parallel agents (core + sweep + functional + spec) have completed.
+# Checks which agents produced output, collects screenshots, deduplicates findings,
+# determines verdict, and builds review-result.json + review body + inline comments.
+#
+# Required env vars:
+#   GH_TOKEN            — GitHub token for API calls (review identity)
+#   GITHUB_REPO_TOKEN   — GitHub token with contents:write (for screenshot upload)
+#   GITHUB_REPOSITORY   — owner/repo
+#   GITHUB_RUN_ID       — Actions run ID (for logs link)
+#   PR_NUMBER           — pull request number
+#
+# Expected files (from agents):
+#   /tmp/core-findings.json       — core reviewer findings (optional)
+#   /tmp/sweep-findings.json      — sweep reviewer findings (optional)
+#   /tmp/spec-findings.json       — spec-compliance findings (optional)
+#   /tmp/functional-findings.json — functional tester findings (optional)
+#   /tmp/functional-meta.json     — functional tester metadata (optional)
+#   /tmp/core-meta.json           — core reviewer metadata (optional)
+#
+# Output files:
+#   review-result.json            — full review result
+#   /tmp/review-body.md           — PR review body markdown
+#   /tmp/review-comments.json     — inline comments array
+#   findings.draft.json           — all findings for artifact upload
+
+echo "::group::Merge findings + build review"
+
+# Guard: check which agents produced output
+CORE_HAS_OUTPUT=false; SWEEP_HAS_OUTPUT=false; SPEC_HAS_OUTPUT=false; FUNCTIONAL_HAS_OUTPUT=false
+[ -f /tmp/core-findings.json ] && CORE_HAS_OUTPUT=true
+[ -f /tmp/sweep-findings.json ] && SWEEP_HAS_OUTPUT=true
+[ -f /tmp/spec-findings.json ] && SPEC_HAS_OUTPUT=true
+[ -f /tmp/functional-findings.json ] && FUNCTIONAL_HAS_OUTPUT=true
+
+if [ "$CORE_HAS_OUTPUT" = "false" ] && [ "$SWEEP_HAS_OUTPUT" = "false" ]; then
+  echo "::error::Both code reviewers failed to produce output — cannot generate a verdict."
+  echo "::error::Check rate limits and OAuth token."
+  exit 1
+fi
+
+if [ "$CORE_HAS_OUTPUT" = "false" ]; then
+  echo "::warning::Core reviewer (Opus) failed — proceeding with sweep-only findings. Correctness/spec review may be incomplete."
+fi
+if [ "$SWEEP_HAS_OUTPUT" = "false" ]; then
+  echo "::warning::Sweep reviewer (Sonnet) failed — proceeding with core-only findings. Consistency/performance review may be incomplete."
+fi
+if [ "$FUNCTIONAL_HAS_OUTPUT" = "false" ]; then
+  echo "::warning::Functional tester failed — no functional validation results."
+fi
+
+# Load functional test metadata (strategy, screenshots, overall verdict)
+FUNCTIONAL_META='{}'
+[ -f /tmp/functional-meta.json ] && FUNCTIONAL_META=$(cat /tmp/functional-meta.json)
+FUNCTIONAL_STRATEGY=$(echo "$FUNCTIONAL_META" | jq -r '.strategy // "skip"')
+FUNCTIONAL_OVERALL=$(echo "$FUNCTIONAL_META" | jq -r '.overall // "N/A"')
+echo "Functional tester: strategy=$FUNCTIONAL_STRATEGY, overall=$FUNCTIONAL_OVERALL"
+
+# ── Screenshot collection and upload ──
+# Playwright MCP saves screenshots to its CWD when the agent passes a
+# plain filename (e.g. "01-name.png") — that resolves to the repo root
+# in our setup. --output-dir doesn't override agent-chosen paths.
+# So we scan: agent's likely cwd (.), /tmp/screenshots (if agent used
+# an absolute path), and a few historical alternate paths.
+SCREENSHOT_URLS='{}'
+mkdir -p /tmp/all-screenshots
+# maxdepth 2: catches files at repo root (./*.png) plus one level of
+# subdir nesting (./screenshots/*.png), without scanning node_modules.
+for src_dir in . /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp screenshots .playwright-mcp/screenshots; do
+  if [ -d "$src_dir" ]; then
+    find "$src_dir" -maxdepth 2 -name '*.png' -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
+  fi
+done
+# Final fallback: scan /tmp recursively for any PNG produced in the last hour.
+if ! ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
+  echo "No screenshots in expected paths — scanning /tmp recursively for recent PNGs..."
+  find /tmp -name '*.png' -mmin -60 -not -path '/tmp/all-screenshots/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
+fi
+SCREENSHOT_DIR=""
+if ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
+  SCREENSHOT_DIR="/tmp/all-screenshots"
+  echo "Found $(ls /tmp/all-screenshots/*.png | wc -l) screenshot(s):"
+  ls -la /tmp/all-screenshots/*.png
+else
+  echo "No screenshots found in any path. Searched: ., /tmp/screenshots, /tmp/playwright-mcp-output, .playwright-mcp, screenshots, .playwright-mcp/screenshots, plus recursive /tmp scan"
+  echo "All recent PNGs anywhere on disk (debug):"
+  find / -name '*.png' -mmin -60 2>/dev/null | grep -v node_modules | head -20 || true
+fi
+
+if [ -n "$SCREENSHOT_DIR" ]; then
+  echo "Uploading screenshots to review-assets branch..."
+  mkdir -p screenshots
+  cp "$SCREENSHOT_DIR"/*.png screenshots/ 2>/dev/null || true
+
+  # Upload via Git Trees API to review-assets branch.
+  # Single orphan commit (no parent) with base_tree from previous commit
+  # to preserve old PR screenshots. Always exactly 1 commit — no history.
+  BASE_TREE=""
+  BASE_SHA=""
+  if GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/refs/heads/review-assets" >/dev/null 2>&1; then
+    BASE_SHA=$(GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/refs/heads/review-assets" --jq '.object.sha')
+    BASE_TREE=$(GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/commits/$BASE_SHA" --jq '.tree.sha')
+  fi
+
+  TREE_ENTRIES="[]"
+  UPLOAD_COUNT=0
+  for img in "$SCREENSHOT_DIR"/*.png; do
+    BASENAME=$(basename "$img")
+    B64=$(base64 -w0 < "$img" 2>/dev/null || base64 < "$img")
+    UPLOAD_PATH="pr-${PR_NUMBER}/${BASENAME}"
+    BLOB_SHA=$(GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/blobs" \
+      --method POST -f content="$B64" -f encoding="base64" --jq '.sha' 2>/dev/null) || true
+    if [ -n "$BLOB_SHA" ]; then
+      TREE_ENTRIES=$(echo "$TREE_ENTRIES" | jq --arg p "$UPLOAD_PATH" --arg s "$BLOB_SHA" \
+        '. + [{"path": $p, "mode": "100644", "type": "blob", "sha": $s}]')
+      URL="https://github.com/$GITHUB_REPOSITORY/raw/review-assets/$UPLOAD_PATH"
+      SCREENSHOT_URLS=$(echo "$SCREENSHOT_URLS" | jq --arg k "$BASENAME" --arg v "$URL" '. + {($k): $v}')
+      echo "  $BASENAME -> $URL"
+      UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+    fi
+  done
+
+  if [ "$UPLOAD_COUNT" -gt 0 ]; then
+    echo "$TREE_ENTRIES" > /tmp/tree-entries.json
+    # Use base_tree to preserve existing pr-NNN/ dirs from other PRs
+    if [ -n "$BASE_TREE" ]; then
+      TREE=$(GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/trees" --method POST \
+        --input <(jq -n --arg bt "$BASE_TREE" --slurpfile t /tmp/tree-entries.json '{"base_tree":$bt,"tree":$t[0]}') \
+        --jq '.sha' 2>/dev/null) || true
+    else
+      TREE=$(GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/trees" --method POST \
+        --input <(jq -n --slurpfile t /tmp/tree-entries.json '{"tree":$t[0]}') \
+        --jq '.sha' 2>/dev/null) || true
+    fi
+    # Orphan commit (no parent) — always 1 commit, force-replaced
+    COMMIT=$(GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/commits" --method POST \
+      -f "message=Review screenshots (auto-replaced)" -f "tree=$TREE" --jq '.sha' 2>/dev/null) || true
+    if [ -n "$COMMIT" ]; then
+      if [ -n "$BASE_SHA" ]; then
+        GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/refs/heads/review-assets" \
+          --method PATCH -f sha="$COMMIT" -F force=true >/dev/null 2>&1
+      else
+        GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+          --method POST -f ref="refs/heads/review-assets" -f sha="$COMMIT" >/dev/null 2>&1
+      fi
+      echo "Uploaded $UPLOAD_COUNT screenshots (1 orphan commit, old URLs preserved)"
+    fi
+  fi
+fi
+
+# ── Merge findings from all sources (core + sweep + spec + functional) ──
+# Write safe defaults, then overwrite with actual findings if available.
+# Using files + --slurpfile avoids bash variable expansion issues with
+# large JSON payloads that can break --argjson on some runners.
+echo '[]' > /tmp/merged-core.json
+echo '[]' > /tmp/merged-sweep.json
+echo '[]' > /tmp/merged-spec.json
+echo '[]' > /tmp/merged-functional.json
+[ "$CORE_HAS_OUTPUT" = "true" ] && cp /tmp/core-findings.json /tmp/merged-core.json
+[ "$SWEEP_HAS_OUTPUT" = "true" ] && cp /tmp/sweep-findings.json /tmp/merged-sweep.json
+[ "$SPEC_HAS_OUTPUT" = "true" ] && cp /tmp/spec-findings.json /tmp/merged-spec.json
+[ "$FUNCTIONAL_HAS_OUTPUT" = "true" ] && cp /tmp/functional-findings.json /tmp/merged-functional.json
+CORE_META='{}'
+[ -f /tmp/core-meta.json ] && CORE_META=$(cat /tmp/core-meta.json)
+
+CORE_COUNT=$(jq 'length' /tmp/merged-core.json)
+SWEEP_COUNT=$(jq 'length' /tmp/merged-sweep.json)
+SPEC_COUNT=$(jq 'length' /tmp/merged-spec.json)
+FUNCTIONAL_COUNT=$(jq 'length' /tmp/merged-functional.json)
+echo "Core: $CORE_COUNT, Sweep: $SWEEP_COUNT, Spec: $SPEC_COUNT, Functional: $FUNCTIONAL_COUNT findings"
+
+# ── Deduplication ──
+# Pass 1 (line-based): collapse findings at the same path+line_start.
+# Pass 2 (content-based): collapse findings with the same normalized
+#   title in the same file, even when reported on different lines.
+# In both passes, highest severity wins (critical > major > minor > note).
+cat > /tmp/dedup.jq <<'JQEOF'
+def sev_rank:
+  if .severity == "critical" then 0
+  elif .severity == "major" then 1
+  elif .severity == "minor" then 2
+  else 3 end;
+def norm_title: (.title // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "");
+def pick_best:
+  sort_by(sev_rank) |
+  (.[0]) as $best |
+  ([.[] | select(.screenshot != null)] | .[0] // null) as $shot_donor |
+  if $best.screenshot == null and $shot_donor != null
+  then $best + {screenshot: $shot_donor.screenshot}
+  else $best end;
+
+($c[0] + $s[0] + $p[0] + $f[0])
+| group_by(.path + ":" + (.line_start | tostring))
+| map(pick_best)
+| group_by(.path + "|" + norm_title)
+| map(pick_best)
+JQEOF
+ALL_FINDINGS=$(jq -n \
+  --slurpfile c /tmp/merged-core.json \
+  --slurpfile s /tmp/merged-sweep.json \
+  --slurpfile p /tmp/merged-spec.json \
+  --slurpfile f /tmp/merged-functional.json \
+  -f /tmp/dedup.jq)
+DEDUPED_COUNT=$(echo "$ALL_FINDINGS" | jq 'length')
+TOTAL=$((CORE_COUNT + SWEEP_COUNT + SPEC_COUNT + FUNCTIONAL_COUNT))
+if [ "$DEDUPED_COUNT" -lt "$TOTAL" ]; then
+  echo "Within-run dedup (path+line then path+normalized-title, highest severity wins): $TOTAL -> $DEDUPED_COUNT (removed $((TOTAL - DEDUPED_COUNT)))"
+fi
+
+# ── Determine verdict ──
+HAS_BLOCKING=$(echo "$ALL_FINDINGS" | jq '[.[] | select(.severity == "critical" or .severity == "major")] | length > 0')
+HAS_ANY=$(echo "$ALL_FINDINGS" | jq 'length > 0')
+HUMAN_REVIEW=$(echo "$CORE_META" | jq -r '.requires_human_review // false')
+
+if [ "$HAS_BLOCKING" = "true" ]; then
+  VERDICT="REQUEST_CHANGES"
+elif [ "$HUMAN_REVIEW" = "true" ]; then
+  VERDICT="COMMENT"
+elif [ "$CORE_HAS_OUTPUT" = "false" ]; then
+  # Core reviewer (bugs/spec) failed — can't confidently approve without it
+  VERDICT="COMMENT"
+  echo "::warning::Core reviewer failed — downgrading from APPROVE to COMMENT (cannot verify correctness)"
+elif [ "$HAS_ANY" = "true" ]; then
+  VERDICT="COMMENT"
+else
+  VERDICT="APPROVE"
+fi
+
+echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, functional=$FUNCTIONAL_OVERALL)"
+
+# ── Build review-result.json ──
+SPEC_COMPLIANCE=$(echo "$CORE_META" | jq -r '.spec_compliance // ""')
+FUNCTIONAL_SUMMARY_TEXT=$(echo "$FUNCTIONAL_META" | jq -r '.summary // ""')
+if [ "$(echo "$ALL_FINDINGS" | jq 'length')" -eq 0 ]; then
+  SUMMARY="${SPEC_COMPLIANCE:-No issues found. Code reviewed for correctness, spec compliance, security, consistency, and performance.}"
+else
+  SUMMARY=$(echo "$ALL_FINDINGS" | jq -r '[.[] | "\(.severity): \(.title)"] | join("; ")' | head -c 200)
+fi
+
+jq -n \
+  --arg pr "$PR_NUMBER" \
+  --arg verdict "$VERDICT" \
+  --arg summary "$SUMMARY" \
+  --arg spec_compliance "$SPEC_COMPLIANCE" \
+  --argjson findings "$ALL_FINDINGS" \
+  --argjson meta "$CORE_META" \
+  --argjson functional_meta "$FUNCTIONAL_META" \
+  '{
+    pr_number: ($pr | tonumber),
+    verdict: $verdict,
+    summary: $summary,
+    spec_compliance: $spec_compliance,
+    spec_sources: ($meta.spec_sources // {linked_issue: null, prd_path: null, convention_rules: []}),
+    findings: $findings,
+    requires_human_review: ($meta.requires_human_review // false),
+    requires_human_review_reason: ($meta.requires_human_review_reason // null),
+    uncertain_observations: (($meta.uncertain_observations // []) + ($functional_meta.uncertain_observations // [])),
+    prompt_injection_detected: ($meta.prompt_injection_detected // false),
+    reviewer_self_modification: ($meta.reviewer_self_modification // false),
+    build_unavailable: ($meta.build_unavailable // false),
+    functional_validation: {
+      strategy: ($functional_meta.strategy // "skip"),
+      overall: ($functional_meta.overall // "N/A"),
+      areas_tested: ($functional_meta.areas_tested // []),
+      screenshot_count: (($functional_meta.screenshots // []) | length)
+    }
+  }' > review-result.json
+
+# ── Build /tmp/review-body.md ──
+ISSUE=$(jq -r '.spec_sources.linked_issue // "none found"' review-result.json)
+{
+  echo "## Claude PR Review — $VERDICT"
+  echo ""
+  echo "### Spec sources"
+  echo ""
+  echo "- Linked issue: $([ "$ISSUE" != "null" ] && [ "$ISSUE" != "none found" ] && echo "#$ISSUE" || echo "none found")"
+  RULES=$(jq -r '.spec_sources.convention_rules // [] | map("`\(.)`") | join(", ")' review-result.json)
+  echo "- Convention rules: ${RULES:-none identified}"
+  echo ""
+  # Spec compliance summary
+  if [ -n "$SPEC_COMPLIANCE" ] && [ "$SPEC_COMPLIANCE" != "null" ]; then
+    echo "$SPEC_COMPLIANCE"
+    echo ""
+  elif [ "$VERDICT" = "APPROVE" ]; then
+    echo "No issues found. Code reviewed for correctness, spec compliance, security, consistency, test quality, and performance."
+    echo ""
+  fi
+  # Conditional banners
+  if [ "$(jq -r '.requires_human_review' review-result.json)" = "true" ]; then
+    echo "> :stop_sign: **Human review required.** $(jq -r '.requires_human_review_reason // ""' review-result.json)"
+    echo ""
+  fi
+  if [ "$(jq -r '.build_unavailable' review-result.json)" = "true" ]; then
+    echo "> :gear: **Build verification was unavailable.**"
+    echo ""
+  fi
+  if [ "$CORE_HAS_OUTPUT" = "false" ]; then
+    echo "> :warning: **Core reviewer (Opus) failed** — correctness and spec compliance review may be incomplete."
+    echo ""
+  fi
+  if [ "$SWEEP_HAS_OUTPUT" = "false" ]; then
+    echo "> :warning: **Sweep reviewer (Sonnet) failed** — consistency and performance review may be incomplete."
+    echo ""
+  fi
+} > /tmp/review-body.md
+
+# ── Append functional validation section ──
+TEST_PLAN_EXISTS="false"
+[ -f test-plan.md ] && TEST_PLAN_EXISTS="true"
+
+FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // []) | length')
+FUNCTIONAL_OK="${FUNCTIONAL_OK:-1}"
+if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
+  EMOJI="✅"; [ "$FUNCTIONAL_OVERALL" = "FAIL" ] && EMOJI="❌"; [ "$FUNCTIONAL_OVERALL" = "WARN" ] && EMOJI="⚠️"
+  {
+    echo ""
+    echo "<details>"
+    echo "<summary>$EMOJI <b>Functional Validation — $FUNCTIONAL_OVERALL</b> ($FUNCTIONAL_SCREENSHOT_COUNT screenshots)</summary>"
+    echo ""
+    if [ -n "$FUNCTIONAL_SUMMARY_TEXT" ] && [ "$FUNCTIONAL_SUMMARY_TEXT" != "null" ]; then
+      echo "#### Summary"
+      echo ""
+      echo "$FUNCTIONAL_SUMMARY_TEXT"
+      echo ""
+    fi
+    # Findings
+    if [ -f /tmp/functional-findings.json ] && [ "$(jq 'length' /tmp/functional-findings.json)" -gt 0 ]; then
+      echo "#### Issues found"
+      echo ""
+      jq -r '.[] |
+        "- **[\(.severity | ascii_upcase)]** \(.title)\n" +
+        "  <br/>_Evidence:_ " + (.evidence | gsub("\n"; " ") | .[:240]) + (if (.evidence | length) > 240 then "..." else "" end)
+      ' /tmp/functional-findings.json
+      echo ""
+    fi
+    # Screenshot gallery
+    if [ "$FUNCTIONAL_SCREENSHOT_COUNT" -gt 0 ]; then
+      echo "#### Screenshots"
+      echo ""
+      echo "$FUNCTIONAL_META" | jq -r --argjson urls "$SCREENSHOT_URLS" \
+        --arg repo "$GITHUB_REPOSITORY" --arg run "${GITHUB_RUN_ID:-}" '
+        .screenshots[] |
+        .file as $file |
+        ($file | split("/") | last) as $basename |
+        ($urls[$basename] // null) as $url |
+        if $url then
+          "<details><summary>\(.description)</summary>\n\n![\(.description)](\($url))\n\n</details>\n"
+        else
+          "- **\(.description)** — *see [build artifacts](https://github.com/\($repo)/actions/runs/\($run))*\n"
+        end
+      '
+    fi
+    echo "</details>"
+  } >> /tmp/review-body.md
+elif [ "${FUNCTIONAL_OK:-1}" -eq 0 ] && [ "$TEST_PLAN_EXISTS" = "true" ]; then
+  # Functional tester crashed but may have partial evidence
+  FUNCTIONAL_ERROR=""
+  [ -f /tmp/functional-output.txt ] && FUNCTIONAL_ERROR=$(tail -20 /tmp/functional-output.txt | head -c 500)
+  CRASH_SHOT_COUNT=$(echo "$SCREENSHOT_URLS" | jq 'length')
+  CRASH_FINDING_COUNT=0
+  [ -f /tmp/functional-findings.json ] && CRASH_FINDING_COUNT=$(jq 'length' /tmp/functional-findings.json)
+  {
+    echo ""
+    echo "<details>"
+    echo "<summary>❌ Functional Validation — CRASHED ($CRASH_SHOT_COUNT screenshots, $CRASH_FINDING_COUNT partial findings)</summary>"
+    echo ""
+    echo "The functional tester agent did not complete (likely hit its turn budget). Partial evidence below."
+    if [ "$CRASH_FINDING_COUNT" -gt 0 ]; then
+      echo ""
+      echo "**Partial findings:**"
+      jq -r '.[] | "- **\(.title)**: \(.evidence[:200])"' /tmp/functional-findings.json
+    fi
+    if [ "$CRASH_SHOT_COUNT" -gt 0 ]; then
+      echo ""
+      echo "**Screenshots captured before crash:**"
+      echo ""
+      echo "$SCREENSHOT_URLS" | jq -r 'to_entries[] | "**\(.key)**\n\n![\(.key)](\(.value))\n"'
+    fi
+    if [ -n "$FUNCTIONAL_ERROR" ]; then
+      echo ""
+      echo "**Crash log (tail):**"
+      echo ""
+      echo '```'
+      echo "$FUNCTIONAL_ERROR"
+      echo '```'
+    fi
+    echo "</details>"
+  } >> /tmp/review-body.md
+fi
+
+# Append run logs link
+if [ -n "${GITHUB_RUN_ID:-}" ]; then
+  echo "" >> /tmp/review-body.md
+  echo "[Run logs](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)" >> /tmp/review-body.md
+fi
+
+# ── Build /tmp/review-comments.json — inline comments ──
+# Include reasoning and support multi-line comments.
+# For test findings with screenshots, embed the image in the comment.
+# Cap multi-line ranges at 10 lines.
+echo "$ALL_FINDINGS" > /tmp/all-findings.json
+echo "$SCREENSHOT_URLS" > /tmp/screenshot-urls.json
+jq --slurpfile urls /tmp/screenshot-urls.json '[.[] |
+  ($urls[0] // {}) as $url_map |
+  (.screenshot // null) as $shot |
+  (if $shot then ($shot | split("/") | last) else null end) as $basename |
+  (if $basename then ($url_map[$basename] // null) else null end) as $shot_url |
+  (((.line_end // .line_start // 0) - (.line_start // 0)) <= 10 and .line_start != .line_end) as $use_range |
+  {
+    path: .path,
+    line: (.line_end // .line_start // 1),
+    side: "RIGHT",
+    body: (
+      "**[\((.type // "finding") | ascii_upcase)]** \(.title // "Untitled")\n\n\(.reasoning // "")\n\n_Expected:_ \(.expected // "")"
+      + (if .prd_quote then "\n\n_PRD:_ \(.prd_quote)" else "" end)
+      + (if $shot_url then "\n\n![screenshot](\($shot_url))" else "" end)
+      | if length > 65000 then .[:64997] + "..." else . end
+    )
+  } + (if $use_range then {start_line: .line_start, start_side: "RIGHT"} else {} end)
+]' /tmp/all-findings.json > /tmp/review-comments.json
+
+# Also write findings.draft.json for artifact upload
+cp /tmp/all-findings.json findings.draft.json
+
+echo "review-result.json: $VERDICT, $(echo "$ALL_FINDINGS" | jq 'length') findings"
+echo "review-comments.json: $(jq 'length' /tmp/review-comments.json) inline comments"
+echo "::endgroup::"

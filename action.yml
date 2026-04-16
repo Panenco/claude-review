@@ -1,0 +1,16 @@
+name: 'Install Claude Review Pipeline'
+description: 'Copies review skills, scripts, and prompt templates into the workspace for the reusable workflow'
+runs:
+  using: composite
+  steps:
+    - name: Install pipeline files
+      shell: bash
+      run: |
+        PIPELINE_DIR="${{ github.action_path }}"
+        mkdir -p .claude/skills .review-scripts
+        cp "$PIPELINE_DIR"/skills/review-*.md .claude/skills/
+        cp "$PIPELINE_DIR"/scripts/*.sh .review-scripts/ 2>/dev/null || true
+        cp "$PIPELINE_DIR"/scripts/functional-prompt.template.txt .review-scripts/ 2>/dev/null || true
+        chmod +x .review-scripts/*.sh 2>/dev/null || true
+        echo "Installed $(ls .claude/skills/review-*.md | wc -l) skills"
+        ls .review-scripts/*.sh 2>/dev/null && echo "Installed $(ls .review-scripts/*.sh | wc -l) scripts" || echo "No scripts to install"
