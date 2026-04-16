@@ -1,5 +1,5 @@
 name: 'Install Claude Review Pipeline'
-description: 'Copies review skills, scripts, and prompt templates into the workspace for the reusable workflow'
+description: 'Copies review scripts into the workspace and exports CLAUDE_REVIEW_PIPELINE_DIR so the reusable workflow can read skills directly from the action directory'
 runs:
   using: composite
   steps:
@@ -7,10 +7,23 @@ runs:
       shell: bash
       run: |
         PIPELINE_DIR="${{ github.action_path }}"
-        mkdir -p .claude/skills .review-scripts
-        cp "$PIPELINE_DIR"/skills/review-*.md .claude/skills/
+
+        # Export the action's directory so the reusable workflow can read
+        # skill files directly from it. We do NOT copy skills into the repo
+        # workspace: anthropics/claude-code-action restores `.claude/` from
+        # origin/main for "untrusted" PR heads, which would wipe any skills
+        # we placed under `.claude/skills/`. The action directory sits under
+        # /home/runner/work/_actions/... — outside the workspace — so it
+        # survives the restore for the whole job.
+        echo "CLAUDE_REVIEW_PIPELINE_DIR=$PIPELINE_DIR" >> "$GITHUB_ENV"
+
+        # Scripts still go into the workspace because they are invoked by
+        # path (`.review-scripts/foo.sh`) from the reusable workflow, and
+        # `.review-scripts/` is not on claude-code-action's restore list.
+        mkdir -p .review-scripts
         cp "$PIPELINE_DIR"/scripts/*.sh .review-scripts/ 2>/dev/null || true
         cp "$PIPELINE_DIR"/scripts/functional-prompt.template.txt .review-scripts/ 2>/dev/null || true
         chmod +x .review-scripts/*.sh 2>/dev/null || true
-        echo "Installed $(ls .claude/skills/review-*.md | wc -l) skills"
+        echo "Pipeline dir: $PIPELINE_DIR"
+        echo "Skills available: $(ls "$PIPELINE_DIR"/skills/review-*.md 2>/dev/null | wc -l)"
         ls .review-scripts/*.sh 2>/dev/null && echo "Installed $(ls .review-scripts/*.sh | wc -l) scripts" || echo "No scripts to install"

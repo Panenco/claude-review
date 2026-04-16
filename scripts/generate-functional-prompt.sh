@@ -69,17 +69,20 @@ for candidate in .review-pipeline/scripts/functional-prompt.template.txt .review
   fi
 done
 
+PIPELINE_DIR_VAL="${CLAUDE_REVIEW_PIPELINE_DIR:-}"
+
 if [ -n "$FUNC_TEMPLATE" ] && [ -f "$FUNC_TEMPLATE" ]; then
   TEMPLATE_CONTENT=$(cat "$FUNC_TEMPLATE")
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{WEB_URL\}\}/$WEB_URL_VAL}"
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{AUTH_INSTRUCTIONS\}\}/$AUTH_INSTRUCTIONS}"
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{ENV_HINT\}\}/$ENV_HINT}"
+  TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{PIPELINE_DIR\}\}/$PIPELINE_DIR_VAL}"
   echo "$TEMPLATE_CONTENT" > /tmp/functional-prompt.txt
   printf '\n%s\n' "$ENV_HINT" >> /tmp/functional-prompt.txt
 else
   echo "::warning::No functional-prompt template found -- using minimal fallback"
   cat > /tmp/functional-prompt.txt <<FALLBACK_EOF
-You are a QA engineer validating PR functionality end-to-end. Read .claude/skills/review-functional-tester.md for the full spec. Test through the user's flow whenever possible: Playwright MCP for UI, browser_evaluate (fetch with cookies) for API checks from within the browser context, curl via Bash only when nothing else works.
+You are a QA engineer validating PR functionality end-to-end. Read ${PIPELINE_DIR_VAL}/skills/review-functional-tester.md for the full spec. Test through the user's flow whenever possible: Playwright MCP for UI, browser_evaluate (fetch with cookies) for API checks from within the browser context, curl via Bash only when nothing else works.
 
 TURN 1 -- do ALL of these in parallel (one message, multiple tool calls):
   a) ToolSearch query: select:mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_evaluate

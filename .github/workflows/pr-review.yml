@@ -357,7 +357,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
           prompt: |
-            Read .claude/skills/review-context-builder.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. When done, context.md AND test-plan.md must exist at the repo root. Write both BEFORE running out of turns — partial output beats no output.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-context-builder.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. When done, context.md AND test-plan.md must exist at the repo root. Write both BEFORE running out of turns — partial output beats no output.
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
@@ -482,20 +482,25 @@ jobs:
           # Pre-load skill files into the prompt instead of asking the agent to
           # Read them. Reviewer agents have only Read+Write tools (no Bash/Glob)
           # and have shown they sometimes fail to resolve relative paths under
-          # the hidden `.claude/` directory at runtime — when that happens they
-          # skip the skill entirely and produce free-form markdown to stdout
-          # instead of writing the JSON files build-review.sh expects.
-          # Inlining the skill content removes that failure mode. Use $VAR
-          # expansion (not $(cat ...)) so backticks in the skill aren't
-          # re-interpreted by the shell.
+          # the hidden `.claude/` directory at runtime. We also can't rely on
+          # `.claude/skills/` existing at this point: anthropics/claude-code-action
+          # restores `.claude/` from origin/main for "untrusted" PR heads, so any
+          # files the composite action placed there have already been wiped.
+          # Instead we read from CLAUDE_REVIEW_PIPELINE_DIR (exported by the
+          # install action), which points at the action's own directory under
+          # /home/runner/work/_actions/... — outside the workspace and not
+          # touched by claude-code-action's restore. Use $VAR expansion (not
+          # $(cat ...)) so backticks in the skill aren't re-interpreted by the
+          # shell.
+          SKILLS_DIR="${CLAUDE_REVIEW_PIPELINE_DIR:-}/skills"
           for skill in review-core review-sweep; do
-            if [ ! -f ".claude/skills/${skill}.md" ]; then
-              echo "::error::.claude/skills/${skill}.md not found — composite action install failed"
+            if [ ! -f "$SKILLS_DIR/${skill}.md" ]; then
+              echo "::error::${skill}.md not found at $SKILLS_DIR — composite action install failed (CLAUDE_REVIEW_PIPELINE_DIR=${CLAUDE_REVIEW_PIPELINE_DIR:-unset})"
               exit 1
             fi
           done
-          CORE_SKILL=$(cat .claude/skills/review-core.md)
-          SWEEP_SKILL=$(cat .claude/skills/review-sweep.md)
+          CORE_SKILL=$(cat "$SKILLS_DIR/review-core.md")
+          SWEEP_SKILL=$(cat "$SKILLS_DIR/review-sweep.md")
 
           # bugbot.md is optional, project-specific. Inline it when present so
           # the agent doesn't depend on Read tool resolution either.
@@ -541,11 +546,11 @@ jobs:
           # Only runs when a PRD was detected — otherwise no spec to compare against.
           PID_SPEC=""
           if [ -s /tmp/prd-content.md ]; then
-            if [ ! -f .claude/skills/review-spec-compliance.md ]; then
-              echo "::error::.claude/skills/review-spec-compliance.md not found — composite action install failed"
+            if [ ! -f "$SKILLS_DIR/review-spec-compliance.md" ]; then
+              echo "::error::review-spec-compliance.md not found at $SKILLS_DIR — composite action install failed"
               exit 1
             fi
-            SPEC_SKILL=$(cat .claude/skills/review-spec-compliance.md)
+            SPEC_SKILL=$(cat "$SKILLS_DIR/review-spec-compliance.md")
             echo "Running spec-compliance reviewer (PRD detected)..."
             ~/.local/bin/claude -p "You are the spec-compliance reviewer for PR #$PR_NUMBER. context.md at the repo root has project context. The PRD content is in /tmp/prd-content.md — Read it if context.md doesn't include a PRD section. Follow the skill below exactly, including writing the JSON output file it specifies.
 
