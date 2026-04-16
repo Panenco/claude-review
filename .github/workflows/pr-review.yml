@@ -7,6 +7,16 @@ on:
         description: 'PR number (auto-detected from PR event if omitted)'
         required: false
         type: string
+      model_high:
+        description: 'Model for deep-reasoning tasks (core reviewer)'
+        required: false
+        type: string
+        default: 'claude-opus-4-7'
+      model_standard:
+        description: 'Model for standard tasks (context builder, sweep, functional tester)'
+        required: false
+        type: string
+        default: 'claude-sonnet-4-6'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -349,7 +359,7 @@ jobs:
           prompt: |
             Read .claude/skills/review-context-builder.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. When done, context.md AND test-plan.md must exist at the repo root. Write both BEFORE running out of turns — partial output beats no output.
           claude_args: |
-            --model claude-sonnet-4-6
+            --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
             --setting-sources user
             --allowedTools Bash,Read,Glob,Grep,Write
@@ -474,7 +484,7 @@ jobs:
 
           # Core reviewer: bugs, spec-mismatches, security (Opus)
           ~/.local/bin/claude -p "If bugbot.md exists at the repo root, read it for review standards. Then read .claude/skills/review-core.md and follow it exactly. PR #$PR_NUMBER. context.md is at the repo root." \
-            --model claude-opus-4-6 \
+            --model ${{ inputs.model_high }} \
             --permission-mode dontAsk \
             --setting-sources user \
             --allowedTools Read,Write \
@@ -484,7 +494,7 @@ jobs:
 
           # Sweep reviewer: consistency, test quality, performance (Sonnet)
           ~/.local/bin/claude -p "If bugbot.md exists at the repo root, read it for review standards. Then read .claude/skills/review-sweep.md and follow it exactly. PR #$PR_NUMBER. context.md is at the repo root." \
-            --model claude-sonnet-4-6 \
+            --model ${{ inputs.model_standard }} \
             --permission-mode dontAsk \
             --setting-sources user \
             --allowedTools Read,Write \
@@ -498,7 +508,7 @@ jobs:
           if [ -s /tmp/prd-content.md ]; then
             echo "Running spec-compliance reviewer (PRD detected)..."
             ~/.local/bin/claude -p "Read .claude/skills/review-spec-compliance.md and follow it exactly. PR #$PR_NUMBER. context.md is at the repo root. The PRD content is in /tmp/prd-content.md — read it if context.md doesn't include a PRD section." \
-              --model claude-sonnet-4-6 \
+              --model ${{ inputs.model_standard }} \
               --permission-mode dontAsk \
               --allowedTools Read,Write \
               --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
@@ -522,7 +532,7 @@ jobs:
               mkdir -p /tmp/screenshots
 
               ~/.local/bin/claude -p "$(cat /tmp/functional-prompt.txt)" \
-                --model claude-sonnet-4-6 \
+                --model ${{ inputs.model_standard }} \
                 --mcp-config /tmp/mcp-playwright.json \
                 --permission-mode dontAsk \
                 --allowedTools "Bash,Read,Write,ToolSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_close,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_type,mcp__playwright__browser_hover,mcp__playwright__browser_resize,mcp__playwright__browser_tabs,mcp__playwright__browser_navigate_back,mcp__playwright__browser_evaluate" \
