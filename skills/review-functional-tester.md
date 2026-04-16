@@ -38,7 +38,7 @@ Rule of thumb: **if a spec says the user does something, test it as the user wou
 **Severity for missing UI depends on PR scope.** Read the PR title in `context.md`:
 
 - If the title explicitly enumerates deliverables that exclude the missing piece (e.g. "CRUD endpoints + list page" makes Create/Edit/Cancel UI out-of-scope; "API-only", "backend", "list view" similarly scope away UI), file at severity `note` with type `spec-mismatch`. Still report it — maintainers want to plan the follow-up — but don't block the merge on work the author explicitly didn't include.
-- If the title is broad ("appointment management", "user dashboard", names the whole feature without scoping words), file at severity `major`. A feature the user can't drive from the UI is genuinely incomplete.
+- If the title is broad ("order management", "user dashboard", names the whole feature without scoping words), file at severity `major`. A feature the user can't drive from the UI is genuinely incomplete.
 - If unclear, default to `minor`.
 
 Do the same judgement on the overall `overall` verdict: don't mark FAIL solely because of `note`-level out-of-scope missing UI. FAIL requires a `critical` or `major` finding on the actual in-scope deliverables.
@@ -84,7 +84,7 @@ For each scenario in `test-plan.md`:
 
 1. **Navigate** to the relevant URL via `browser_navigate`
 2. **Assert DOM** via `browser_snapshot` — fast, programmatic. Check that required elements, text, columns, buttons exist.
-3. **Screenshot** via `browser_take_screenshot` — pass `filename` as an **absolute path** under `/tmp/screenshots/` (e.g. `/tmp/screenshots/01-appointments-list.png`). The workflow scans `/tmp/screenshots/` to upload these inline into the PR review. Plain filenames end up in the agent's CWD where they may be missed.
+3. **Screenshot** via `browser_take_screenshot` — pass `filename` as an **absolute path** under `/tmp/screenshots/` (e.g. `/tmp/screenshots/01-list-page.png`). The workflow scans `/tmp/screenshots/` to upload these inline into the PR review. Plain filenames end up in the agent's CWD where they may be missed.
 4. **Check console** via `browser_console_messages` — any errors during load/interaction?
 5. **Interact** if the scenario requires: `browser_click`, `browser_fill_form`, `browser_select_option`, `browser_press_key`. After interaction, re-snapshot and re-screenshot.
 6. **Verify result** against the acceptance criterion. Compare what you see to what the spec says.
@@ -106,12 +106,12 @@ For non-UI scenarios (API-only), use `browser_evaluate` with `fetch` first, fall
 
 This is your highest-value check. Compare **every observable detail** against the spec (PRD, acceptance criteria, issue body) in context.md:
 
-1. **Exact validation messages** — if the spec says "Patient must be at least 18 years old" and the API returns "Patient must be 18 or older", that's a spec-mismatch. Screenshot the error response.
-2. **Default values** — if the PRD defines default durations by category (e.g. consultation=20min), verify the actual default matches. Create without specifying the field, then check what was stored.
+1. **Exact validation messages** — if the spec says one thing but the API returns a differently worded message, that's a spec-mismatch. Screenshot the error response.
+2. **Default values** — if the PRD defines defaults for specific fields, verify the actual default matches. Create a record without specifying the field, then check what was stored.
 3. **Field constraints** — if the PRD says duration range is 15-480 minutes, test boundary: 14 (should fail), 15 (should pass), 480 (should pass), 481 (should fail). Screenshot each.
 4. **Status transitions** — if the PRD says "cancelled is terminal", verify you can't update a cancelled record. Screenshot the error.
-5. **UI labels vs spec** — if the spec says "Consultation" but the UI shows "Appointment", screenshot the mismatch.
-6. **Enum values** — if the PRD lists specific types (standard, follow_up, pre_op, post_op, laser, intravitreal_injection), verify the API accepts exactly those and rejects others.
+5. **UI labels vs spec** — if the spec uses one term but the UI shows another, screenshot the mismatch.
+6. **Enum values** — if the PRD lists specific allowed values, verify the API accepts exactly those and rejects others.
 7. **Sort order / display format** — if the spec says "chronological order", verify the list is sorted correctly.
 
 **For every mismatch found, take a TARGETED screenshot** showing the exact problem. The screenshot is embedded directly in the inline code comment — the developer must instantly see what's wrong.
@@ -148,9 +148,9 @@ Always write both files, even on partial completion.
 ```json
 {
   "strategy": "functional|quick|skip",
-  "areas_tested": ["appointments-list", "appointments-create", "auth"],
+  "areas_tested": ["list-page", "create-form", "auth"],
   "screenshots": [
-    {"file": "/tmp/screenshots/01-list.png", "description": "Appointments list with one row", "area": "appointments"}
+    {"file": "/tmp/screenshots/01-list.png", "description": "List page with data", "area": "list"}
   ],
   "overall": "PASS|FAIL|WARN",
   "summary": "One paragraph: what was tested, what worked, what didn't, against which acceptance criteria",
@@ -212,7 +212,7 @@ File a11y findings with type `a11y-violation`. Example:
   "title": "Form inputs missing associated labels (WCAG 2.1 AA)",
   "severity": "major",
   "type": "a11y-violation",
-  "path": "apps/web/src/features/appointments/components/appointment-form.tsx",
+  "path": "src/components/example-form.tsx",
   "line_start": 1,
   "evidence": "axe: label (critical impact) — 3 nodes affected: #first-name, #last-name, #email",
   "reasoning": "WCAG 1.3.1 / 4.1.2: form controls must have accessible names for screen reader users",

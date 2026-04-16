@@ -126,8 +126,8 @@ jq --slurpfile replied /tmp/already-replied-parents.json --rawfile mf /tmp/last-
 echo "Fix-reply candidates: own=$(jq 'length' /tmp/fix-candidates-own.json) other=$(jq 'length' /tmp/fix-candidates-other.json)"
 
 # Snapshot the repo's actual capabilities so reviewers verify conventions
-# against reality. A rule like "use Input from @qec/ui" is meaningless when
-# @qec/ui doesn't export Input — this file prevents false-positive findings.
+# against reality. A rule like "use X from @org/shared-ui" is meaningless when
+# that package doesn't export X — this file prevents false-positive findings.
 python3 -c "
 import json, os, glob
 
@@ -407,7 +407,7 @@ for file_info in pr.get('files', []):
                     break
 
             # Also check module-level test files
-            # e.g. test/appointments/appointments.spec.ts
+            # e.g. test/users/users.spec.ts
             if not found and rel_dir:
                 module = rel_dir.split('/')[0]
                 for pat in test_patterns:
@@ -476,7 +476,7 @@ for src in /tmp/issue.json /tmp/pr.json; do
   BODY=$(jq -r '.body // ""' "$src")
   # Match explicit paths like docs/prds/foo.md or just foo-prd.md references
   MATCHES=$(echo "$BODY" | grep -oE 'docs/prds/[a-z0-9_-]+\.md' || true)
-  # Also match PRD names without path prefix (e.g. "appointments-consultations-surgeries-prd")
+  # Also match PRD names without path prefix (e.g. "feature-name-prd")
   NAMES=$(echo "$BODY" | grep -oiE '[a-z0-9-]+-prd' || true)
   for name in $NAMES; do
     MATCH=$(ls docs/prds/*"${name}"* 2>/dev/null | head -1)
@@ -584,7 +584,7 @@ Check `.github/review-config.md` for build preparation commands. Run them, then 
 - GitHub Projects v2 card fields (if available)
 - Review config: stack-specific focus areas from `.github/review-config.md` (if exists)
 - Convention rules: which files apply and their full content
-- **Repo capabilities** — paste the full content of `/tmp/repo-capabilities.md`. Reviewers MUST consult this before flagging a convention breach that references a library or component (e.g. `Input from @qec/ui`, `useTranslations from next-intl`). If the artifact isn't in the snapshot, the finding is a false positive — drop it.
+- **Repo capabilities** — paste the full content of `/tmp/repo-capabilities.md`. Reviewers MUST consult this before flagging a convention breach that references a library or component. If the artifact isn't in the snapshot, the finding is a false positive — drop it.
 - **Test coverage** — paste the full content of `/tmp/test-coverage.md`. Lists which changed source files have corresponding test files and which don't. Reviewers should flag UNTESTED files that contain non-trivial logic (handlers, hooks, utils) as `missing-test` findings.
 - Full content of each changed file
 - Build results: typecheck PASSED/FAILED + output, lint PASSED/FAILED + output

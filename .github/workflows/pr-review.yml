@@ -305,7 +305,7 @@ jobs:
               BASENAME=$(basename "$prd" .md | sed 's/-prd$//')
               for word in $(echo "$BASENAME" | tr '-' '\n'); do
                 [ ${#word} -lt 4 ] && continue
-                # Strip trailing 's' for basic stem matching (appointments → appointment)
+                # Strip trailing 's' for basic stem matching (e.g. "users" → "user")
                 STEM=$(echo "$word" | sed 's/s$//')
                 if echo "$PR_TITLE" | grep -qi "$STEM" 2>/dev/null; then
                   PRD_FILES="$prd"

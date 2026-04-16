@@ -70,7 +70,7 @@ Before finalizing ANY finding, verify all five:
 2. **Refutation test** — Could the author dismiss this in one sentence? If yes → too weak → drop it.
 3. **Senior-engineer test** — Would an experienced engineer agree this is objectively wrong — not just "could be different"?
 4. **Exact reference** — For spec-mismatch, quote the exact rule/criterion. For bugs, show the failure path. "Generally bad practice" is not evidence.
-5. **Artifact exists** — If the finding says "use X from @qec/ui" or "import Y from next-intl", look in the `# Repo capabilities snapshot` section of context.md and confirm the artifact is actually exported/installed. If it isn't, drop the finding — "use X" isn't actionable when X doesn't exist. Similarly, if there's an entry in `# User replies on prior findings` rebutting the same issue as a false positive, do not re-flag unless you have new counter-evidence.
+5. **Artifact exists** — If the finding references a specific library, component, or export (e.g. "use X from shared-ui", "import Y from some-lib"), look in the `# Repo capabilities snapshot` section of context.md and confirm the artifact is actually exported/installed. If it isn't, drop the finding — "use X" isn't actionable when X doesn't exist. Similarly, if there's an entry in `# User replies on prior findings` rebutting the same issue as a false positive, do not re-flag unless you have new counter-evidence.
 
 **A clean `[]` is a confident, valuable review.** False positives waste more team time than a missed minor issue. When in doubt, drop the finding — or move it to `uncertain_observations[]` in core-meta.json.
 

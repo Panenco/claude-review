@@ -60,7 +60,7 @@ Additionally per type:
 
 If you can't provide this evidence, drop the finding. **A clean `[]` is a confident, valuable review.**
 
-**Verify the referenced artifact exists.** If a consistency finding says "use X from @qec/ui" or "import Y from next-intl", check the `# Repo capabilities snapshot` section of context.md. If the artifact isn't listed as installed/exported, DROP the finding — suggesting a replacement that doesn't exist is worse than flagging nothing. Also check `# User replies on prior findings`: if a maintainer already rebutted the same issue as a false positive, don't re-flag.
+**Verify the referenced artifact exists.** If a consistency finding references a specific library, component, or export, check the `# Repo capabilities snapshot` section of context.md. If the artifact isn't listed as installed/exported, DROP the finding — suggesting a replacement that doesn't exist is worse than flagging nothing. Also check `# User replies on prior findings`: if a maintainer already rebutted the same issue as a false positive, don't re-flag.
 
 ## Output: Write ONE file
 

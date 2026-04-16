@@ -29,9 +29,9 @@ Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, 
 Extract every **concrete, testable claim** from the PRD and check if the diff contradicts it:
 
 ### 1. Enum values / type names
-The PRD lists specific values (e.g. appointment types: `standard`, `follow_up`, `pre_op`, `post_op`, `laser`, `intravitreal_injection`). If the code uses a DIFFERENT value (abbreviation, typo, extra value not in the list), flag it.
+The PRD lists specific values (e.g. status types, category names, role names). If the code uses a DIFFERENT value (abbreviation, typo, extra value not in the list), flag it.
 
-- Compare the EXACT strings. `ivt_injection` != `intravitreal_injection` even if "IVT" appears in the description.
+- Compare the EXACT strings. Abbreviations or shorthand that differ from the PRD-defined value are a mismatch.
 - The PRD's enum table is authoritative. The description text is context, not the value.
 
 ### 2. Status transitions / lifecycle rules
@@ -41,7 +41,7 @@ The PRD defines which state transitions are valid (e.g. "closed is read-only", "
 - Check guard clauses: does the code actually enforce what the PRD says?
 
 ### 3. Validation rules / field constraints
-The PRD may specify required fields, ranges, or business rules (e.g. "patient must be 18+", "duration in minutes"). If the code's validation differs, flag it.
+The PRD may specify required fields, ranges, or business rules (e.g. "minimum age requirement", "value must be within range"). If the code's validation differs, flag it.
 
 ### 4. Field names / API contract
 If the PRD names a field one way and the code names it differently, flag it. Even if the code name is "better" — the spec is the contract.

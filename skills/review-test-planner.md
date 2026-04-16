@@ -111,24 +111,24 @@ Be specific about the HTTP request:
 
 Example:
 ```markdown
-### 1. Create a new patient
+### 1. Create a new record
 - **Type**: api
 - **Priority**: critical
 - **Precondition**: Auth token (login first)
 - **Steps**:
-  1. POST /api/patients with body {"firstName": "Test", "lastName": "Patient", "email": "test@example.com"}
+  1. POST /api/<resource> with body {"field1": "value1", "field2": "value2"}
   2. Save the returned `id` for subsequent scenarios
-- **Expected**: 201, response has `id`, `firstName`, `lastName`, `email`, `createdAt`
-- **Why**: Acceptance criterion: "API should support creating patient records"
+- **Expected**: 201, response has `id` and submitted fields plus `createdAt`
+- **Why**: Acceptance criterion: "API should support creating <resource> records"
 
-### 2. Reject invalid patient data
+### 2. Reject invalid data
 - **Type**: api
 - **Priority**: important
 - **Precondition**: Auth token
 - **Steps**:
-  1. POST /api/patients with empty body {}
+  1. POST /api/<resource> with empty body {}
 - **Expected**: 400, response has validation error messages for required fields
-- **Why**: DTO validation should enforce required fields (convention: ValidationPipe with whitelist + forbidNonWhitelisted)
+- **Why**: Request validation should enforce required fields
 ```
 
 ### For `browser` scenarios (frontend)
@@ -142,19 +142,19 @@ Be specific about navigation and interaction:
 
 Example:
 ```markdown
-### 3. Patient list page shows created patient
+### 3. List page shows created record
 - **Type**: browser
 - **Priority**: critical
-- **Precondition**: Patient created (scenario 1)
+- **Precondition**: Record created (scenario 1)
 - **Steps**:
-  1. Navigate to /patients
-  2. Screenshot: `01-patients-list.png`
-  3. Verify table contains "Test Patient" row
-  4. Click the patient row to open detail view
-  5. Screenshot: `02-patient-detail.png`
+  1. Navigate to /<resource-list-page>
+  2. Screenshot: `01-list.png`
+  3. Verify table contains the created record
+  4. Click the row to open detail view
+  5. Screenshot: `02-detail.png`
   6. Verify detail shows all fields from creation
-- **Expected**: Patient list renders with data, detail view shows correct info, no console errors
-- **Why**: Acceptance criterion: "user can view the list of patients and see patient details"
+- **Expected**: List renders with data, detail view shows correct info, no console errors
+- **Why**: Acceptance criterion: "user can view the list and see details"
 ```
 
 ### For `quick` strategy

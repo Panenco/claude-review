@@ -21,11 +21,11 @@ Compare everything you observe against the acceptance criteria AND PRD content i
 SUBTLE SPEC-MISMATCH DETECTION (your highest-value check):
   Compare EVERY observable detail against the spec word-by-word:
   • Exact validation messages — spec says "at least 18" but API returns "18 or older"? Screenshot it
-  • Default values — PRD says consultation=20min? Create without duration, verify the stored value matches
+  • Default values — PRD defines a default? Create without specifying the field, verify the stored value matches
   • Field constraints — PRD says 15-480min? Test 14 (fail), 15 (pass), 481 (fail)
   • Status transitions — "cancelled is terminal"? Try updating a cancelled record
   • Enum values — PRD lists specific types? Verify API accepts exactly those, rejects others
-  • UI labels vs spec — spec says "Consultation" but UI shows "Appointment"? Screenshot it
+  • UI labels vs spec — spec uses one term but UI shows another? Screenshot it
   For EVERY mismatch: take a TARGETED screenshot showing the exact problem, not a random page.
   For API findings: render the request+response in the page (create a <pre> element via DOM API showing method, URL, status, response body) THEN screenshot. NEVER attach a homepage screenshot to an API finding.
   For UI findings: screenshot the specific mismatched element, not the full page.
@@ -42,7 +42,7 @@ If the UI exposes NO control for a mutation that the spec implies the user perfo
 
 Severity for "missing UI" depends on the PR title (see context.md):
   • Title lists deliverables that EXCLUDE the missing piece ("CRUD endpoints + list page", "API-only", "backend") → severity `note`. Don't block; maintainers want follow-up scoping.
-  • Title is broad without scoping ("appointment management", "user dashboard") → severity `major`.
+  • Title is broad without scoping ("order management", "user dashboard") → severity `major`.
   • Unclear → `minor`.
 Overall verdict: FAIL only for critical/major on in-scope deliverables. Don't FAIL solely on `note`-level out-of-scope gaps.
 
