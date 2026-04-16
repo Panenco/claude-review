@@ -224,11 +224,10 @@ Authentication for functional testing:
 
 ## Example Configs
 
-See the `examples/` directory for complete `review-config.md` files for common stacks:
+The configuration examples above cover common stacks. For more examples, see this repo's issue tracker or the qec-app reference implementation:
 
-- NestJS + Prisma monorepo
-- Next.js single app
-- Express API
+- NestJS + Prisma monorepo — see [qec-app's review-config.md](https://github.com/Panenco/qec-app/blob/main/.github/review-config.md)
+- Other stacks — contributions welcome
 - Python FastAPI
 
 ---

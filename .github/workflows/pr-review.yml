@@ -17,19 +17,9 @@ on:
       CLAUDE_REVIEW_APP_SLUG:
         required: false
 
-concurrency:
-  group: claude-review-${{ github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
-
 jobs:
   review:
     name: In-Depth Review
-    # Skip: fork PRs (no secrets), draft PRs, and PRs labelled 'skip-review'.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository &&
-       !contains(github.event.pull_request.labels.*.name, 'skip-review'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -91,7 +81,7 @@ jobs:
           # workflow into checking out fork-controlled code with OAuth +
           # pull-requests:write in the environment.
           if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
-            echo "::error::PR #$PR_NUMBER head is in $HEAD_REPO, not $GITHUB_REPOSITORY. Fork PRs are out of scope for the POC."
+            echo "::error::PR #$PR_NUMBER head is in $HEAD_REPO, not $GITHUB_REPOSITORY. Fork PRs are not supported — the PR head must be in the same repository."
             exit 1
           fi
 
@@ -174,11 +164,21 @@ jobs:
         if: steps.pkg.outputs.manager == 'pnpm'
         uses: pnpm/action-setup@b307475762933b98ed359c036b0e51f26b63b74b # v5.0.0
 
+      - name: Detect Node version file
+        id: node_version
+        if: steps.code_check.outputs.needs_build == 'true' && steps.pkg.outputs.manager != 'none'
+        shell: bash
+        run: |
+          if [ -f .node-version ]; then echo "file=.node-version" >> "$GITHUB_OUTPUT"
+          elif [ -f .nvmrc ]; then echo "file=.nvmrc" >> "$GITHUB_OUTPUT"
+          else echo "file=" >> "$GITHUB_OUTPUT"; fi
+
       - name: Set up Node
         if: steps.code_check.outputs.needs_build == 'true' && steps.pkg.outputs.manager != 'none'
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version-file: '.node-version'
+          node-version-file: ${{ steps.node_version.outputs.file || '' }}
+          node-version: ${{ steps.node_version.outputs.file == '' && 'lts/*' || '' }}
           cache: ${{ steps.pkg.outputs.manager }}
 
       # Soft-fail: degraded review is better than no review.
@@ -462,6 +462,10 @@ jobs:
           set -uo pipefail
           echo "::group::Pre-start dev environment"
 
+          CONFIG=".github/review-config.md"
+          HAS_CONFIG=false
+          [ -f "$CONFIG" ] && HAS_CONFIG=true
+
           # Helper: extract bash code blocks from a section of review-config.md
           extract_section_code() {
             local section="$1" file="$2"
@@ -484,12 +488,8 @@ jobs:
             ' "$file"
           }
 
-          CONFIG=".github/review-config.md"
-          HAS_CONFIG=false
-          [ -f "$CONFIG" ] && HAS_CONFIG=true
-
           # ── Phase 1: Setup (Docker, .env, ORM, etc.) ──
-          if [ "$HAS_CONFIG" = "true" ]; then
+          if [ "$HAS_CONFIG" = "true" ] && [ -f "$CONFIG" ]; then
             # Execute code blocks from ## Functional validation section
             SETUP_CODE=$(extract_section_code "Functional validation" "$CONFIG")
             if [ -n "$SETUP_CODE" ]; then
@@ -499,16 +499,42 @@ jobs:
               echo "No setup code blocks in review-config.md"
             fi
           else
-            echo "::notice::No review-config.md — using auto-discovery for dev env"
+            echo "No review-config.md -- using auto-discovery for dev env"
             # Auto-discovery fallbacks
             if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ]; then
               echo "Auto: starting Docker services..."
               docker compose up -d 2>&1 || echo "::warning::docker compose failed"
-              sleep 10  # generic wait for DB readiness
+              # Wait for database containers to be ready
+              for i in $(seq 1 15); do
+                if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1 || \
+                   docker compose exec -T db pg_isready -U postgres > /dev/null 2>&1 || \
+                   docker compose exec -T database pg_isready -U postgres > /dev/null 2>&1 || \
+                   docker compose exec -T mysql mysqladmin ping -h localhost > /dev/null 2>&1 || \
+                   docker compose exec -T db mysqladmin ping -h localhost > /dev/null 2>&1; then
+                  echo "Database ready."
+                  break
+                fi
+                [ $i -eq 15 ] && echo "::warning::DB not ready after 30s"
+                sleep 2
+              done
             fi
-            if [ ! -f .env ] && [ -f .env.example ]; then
-              cp .env.example .env
-              echo "Auto: created .env from .env.example"
+            if [ ! -f .env ]; then
+              for example_env in .env.example .env.sample .env.template .env.dev; do
+                if [ -f "$example_env" ]; then
+                  cp "$example_env" .env
+                  echo "Auto: created .env from $example_env"
+                  break
+                fi
+              done
+            fi
+            # Copy .env to common app directories that may need it
+            if [ -f .env ]; then
+              for app_dir in apps/api apps/server apps/backend src/api src/server; do
+                if [ -d "$app_dir" ] && [ ! -f "$app_dir/.env" ]; then
+                  cp .env "$app_dir/.env"
+                  echo "Auto: copied .env to $app_dir/"
+                fi
+              done
             fi
             # Auto-discover Prisma schemas
             for schema in $(find . -name 'schema.prisma' -path '*/prisma/*' -not -path '*/node_modules/*' 2>/dev/null); do
@@ -520,9 +546,18 @@ jobs:
           fi
 
           # ── Phase 2: Start dev server ──
-          echo "Starting dev servers..."
-          ${PKG_MANAGER:-npm} run dev > /tmp/dev-server.log 2>&1 &
-          echo "dev_pid=$!" >> "$GITHUB_OUTPUT"
+          # review-config.md setup code may have already started servers;
+          # auto-discovery always needs to start them.
+          if [ "$HAS_CONFIG" != "true" ] || ! curl -sf http://localhost:3000 > /dev/null 2>&1; then
+            echo "Starting dev servers..."
+            case "${PKG_MANAGER:-npm}" in
+              pnpm) pnpm run dev > /tmp/dev-server.log 2>&1 & ;;
+              yarn) yarn dev > /tmp/dev-server.log 2>&1 & ;;
+              npm)  npm run dev > /tmp/dev-server.log 2>&1 & ;;
+              *)    echo "::warning::Unknown package manager -- cannot start dev server" ;;
+            esac
+            echo "dev_pid=$!" >> "$GITHUB_OUTPUT"
+          fi
 
           # ── Phase 3: Health checks ──
           API_READY=false
@@ -632,9 +667,11 @@ jobs:
           AUTH_READY: ${{ steps.dev_env.outputs.auth_ready || 'false' }}
         run: |
           set -euo pipefail
+          HAS_CONFIG=false
+          [ -f .github/review-config.md ] && HAS_CONFIG=true
 
           if [ ! -f context.md ]; then
-            echo "::error::context.md not found — context builder failed"
+            echo "::error::context.md not found -- context builder failed"
             exit 1
           fi
 
@@ -696,6 +733,15 @@ jobs:
           else
             ENV_HINT+="Auth is NOT pre-configured. Check review-config.md (in context.md) for sign-in endpoint and credentials. If none available, test public endpoints only. "
           fi
+          # Add dynamic info about what was set up
+          COMPOSE_FILE=""
+          for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+            [ -f "$cf" ] && COMPOSE_FILE="$cf" && break
+          done
+          [ -n "$COMPOSE_FILE" ] && ENV_HINT+="Docker services are running via docker compose. "
+          [ -f .env ] && ENV_HINT+=".env exists. "
+          PRISMA_FOUND=$(find . -maxdepth 5 -path '*/prisma/schema.prisma' -not -path '*/node_modules/*' 2>/dev/null | head -1)
+          [ -n "$PRISMA_FOUND" ] && ENV_HINT+="Prisma is generated and migrated. "
           ENV_HINT+="Skip setup steps that are already done."
 
           # Build AUTH_INSTRUCTIONS for the functional prompt template.
@@ -712,11 +758,15 @@ jobs:
             fi
           fi
 
-          # Generate functional prompt from template
-          FUNC_TEMPLATE=".github/scripts/functional-prompt.template.txt"
-          if [ ! -f "$FUNC_TEMPLATE" ]; then
-            echo "::warning::No functional-prompt.template.txt found"
-          fi
+          # Locate functional prompt template (review pipeline copy, then repo-local)
+          FUNC_TEMPLATE=""
+          for candidate in .review-pipeline/scripts/functional-prompt.template.txt .github/scripts/functional-prompt.template.txt; do
+            if [ -f "$candidate" ]; then
+              FUNC_TEMPLATE="$candidate"
+              break
+            fi
+          done
+          [ -z "$FUNC_TEMPLATE" ] && echo "::warning::No functional-prompt template found -- will use minimal fallback"
 
           # Functional tester: single AI agent with Playwright MCP + Bash.
           # Tests through the UI first (Playwright), uses browser_evaluate fetch
@@ -727,16 +777,37 @@ jobs:
             if [ "$STRATEGY" != "skip" ]; then
               echo "Running functional tester (Playwright + Bash) — strategy: ${STRATEGY:-unknown}..."
               mkdir -p /tmp/screenshots
-              # Generate prompt from template by replacing placeholders
-              if [ -f "$FUNC_TEMPLATE" ]; then
-                sed -e "s|{{WEB_URL}}|${WEB_URL_VAL}|g" \
-                    -e "s|{{AUTH_INSTRUCTIONS}}|${AUTH_INSTRUCTIONS}|g" \
-                    "$FUNC_TEMPLATE" > /tmp/functional-prompt.txt
-                # ENV_HINT may contain special chars, append separately
+              # Generate prompt from template by replacing placeholders.
+              # Use bash string replacement instead of sed to handle special chars
+              # in AUTH_INSTRUCTIONS and ENV_HINT safely.
+              if [ -n "$FUNC_TEMPLATE" ] && [ -f "$FUNC_TEMPLATE" ]; then
+                TEMPLATE_CONTENT=$(cat "$FUNC_TEMPLATE")
+                TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{WEB_URL\}\}/$WEB_URL_VAL}"
+                TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{AUTH_INSTRUCTIONS\}\}/$AUTH_INSTRUCTIONS}"
+                TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{ENV_HINT\}\}/$ENV_HINT}"
+                echo "$TEMPLATE_CONTENT" > /tmp/functional-prompt.txt
                 printf '\n%s\n' "$ENV_HINT" >> /tmp/functional-prompt.txt
               else
-                # Fallback: just use ENV_HINT as the prompt
-                echo "Read .claude/skills/review-functional-tester.md and follow it. $ENV_HINT" > /tmp/functional-prompt.txt
+                # Fallback: minimal functional prompt
+                cat > /tmp/functional-prompt.txt <<FALLBACK_EOF
+          You are a QA engineer validating PR functionality end-to-end. Read .claude/skills/review-functional-tester.md for the full spec. Test through the user's flow whenever possible: Playwright MCP for UI, browser_evaluate (fetch with cookies) for API checks from within the browser context, curl via Bash only when nothing else works.
+
+          TURN 1 -- do ALL of these in parallel (one message, multiple tool calls):
+            a) ToolSearch query: select:mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_evaluate
+            b) Read test-plan.md (repo root)
+            c) Read context.md (repo root) -- contains the acceptance criteria
+
+          TURN 2 -- $AUTH_INSTRUCTIONS
+
+          TURNS 3+ -- execute each scenario from the test plan.
+          Web URL: $WEB_URL_VAL
+
+          LAST 2 TURNS -- write output:
+            - /tmp/functional-findings.json
+            - /tmp/functional-meta.json
+
+          $ENV_HINT
+          FALLBACK_EOF
               fi
 
               ~/.local/bin/claude -p "$(cat /tmp/functional-prompt.txt)" \
