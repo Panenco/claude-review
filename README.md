@@ -159,7 +159,7 @@ Describe (in prose) what the project needs at runtime: database flavour + creden
 
 ### `.github/claude-review/dev-start.sh` (recommended)
 
-First-class contract for bringing up the dev environment. The pipeline runs this script in a subshell, then probes URLs from `### Known service ports` and the auth block. Non-zero exit is tolerated: the review falls through to degraded mode (core + sweep still run).
+First-class contract for bringing up the dev environment. The pipeline runs this script in a subshell, then probes URLs from `### Known service ports` and the auth block. **Non-zero exit fails the Pre-start step and stops the whole review** — don't commit a `dev-start.sh` you haven't run successfully from a clean checkout. Repos that genuinely have nothing to start should not create the file at all (its absence is the signal for degraded mode).
 
 ```bash
 #!/usr/bin/env bash
@@ -201,7 +201,7 @@ Rules:
 - Readiness loops must explicitly test the flag after the loop and `exit 1` on timeout. Silent-success loops are flagged by the reviewer.
 - Paths in `cp`/`source`/`cat` are scanned at job start; the Validate step warns if any don't exist.
 
-If the project has nothing to start (pure-docs, lib-only), skip this file. The pipeline warns once and runs core + sweep without functional testing.
+If the project has nothing to start (pure-docs, lib-only), do **not** create this file. Its absence is the signal for degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step.
 
 #### `### Auth`
 
@@ -244,10 +244,13 @@ Authentication for functional testing:
 
 | Missing file | Impact | Behavior |
 |---|---|---|
-| `review-config.md` | Reduced | No build prep, no conventions, no functional testing. Core + sweep still work. |
-| `bugbot.md` | Minor | Reviewers use generic methodology only. |
+| `.github/claude-review/dev-start.sh` | Expected for degraded mode | Functional tester skipped. Core + sweep reviewers still run. |
+| `review-config.md` | Reduced | No build prep doc, no convention-rule routing, no Known-service-ports URLs to probe, no auth setup. |
+| `bugbot.md` | Minor | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
 | `CLAUDE.md` | Minor | No architecture context. Reviewers rely on diff + issue. |
-| Both config files | Significant | Code-only review (core + sweep) with auto-detected capabilities. Still catches bugs, spec issues, security. |
+| All config files | Significant | Code-only review (core + sweep) on raw diff + build output. Still catches bugs, spec issues, security. |
+
+Note: a *present but broken* `dev-start.sh` is **not** a soft-degrade case — the pipeline fails the Pre-start step and stops. Remove the file to enter degraded mode explicitly.
 
 ---
 

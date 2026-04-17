@@ -147,8 +147,11 @@ set -uo pipefail
 # dev-start.sh — Bring up the dev environment for the Claude Code review
 # pipeline's functional tester. The pipeline runs this script (in a
 # subshell) and then probes URLs from review-config.md's Known service
-# ports table. Exit non-zero to signal "dev env unavailable" — the
-# pipeline downgrades to a warning and still runs core+sweep reviewers.
+# ports table. Exit non-zero fails the Pre-start step hard — the whole
+# review stops. Only commit a dev-start.sh you've verified locally.
+# Repos with nothing to bring up (docs-only, lib-only) should not have
+# this file at all; its absence is the signal for degraded-mode
+# (core + sweep only, no functional tester).
 
 # <Step 1 — e.g. Postgres>
 docker compose up -d postgres
@@ -197,11 +200,13 @@ echo "API ready at http://localhost:<port>/<health-path>"
 
 Rules:
 - **Readiness loops must fail fast.** No bare `for ... && break; sleep ...; done` that silently falls through — always follow with `if [ "$READY" != "true" ]; then echo ::error:: ...; exit 1; fi`.
-- **No `set -e`** at the top. The pipeline wraps the script in a subshell that tolerates non-zero exits; `set -e` adds surprise failures in things like `curl || true` idioms without giving you anything back.
-- **One place, not two.** If you put commands here, delete the equivalent fenced bash blocks from `review-config.md`'s `## Functional validation` section (that section becomes prose-only — see Step 4 above).
-- **Test it locally** before committing: run `bash .github/claude-review/dev-start.sh` and confirm the services actually come up on the ports you list in `### Known service ports`.
+- **Failure is hard, not soft.** If `dev-start.sh` is present and exits non-zero, the pipeline fails the Pre-start step and the whole review stops. That is intentional — if you wrote a bring-up and it doesn't work, functional findings would be misleading. To run in degraded mode (core + sweep only), delete the file entirely.
+- **No `set -e`** at the top. The subshell already propagates your explicit `exit N`; `set -e` adds surprise failures in idioms like `curl || true` or `grep` pipes that return 1 on no-match, without giving you anything back.
+- **One place, not two.** If you put commands here, keep `review-config.md`'s `## Functional validation` section as prose only (see Step 4). The script is the source of truth for *how* to bring things up; the markdown is the source of truth for *what* the tester should expect.
+- **Generated code matters.** If your tests import from a generated SDK / GraphQL client / `openapi-generator` output that isn't checked in, run the generator here *before* starting the dev server — otherwise `tsc --watch` / `nest start` floods the log with TS2307 noise (or, worse, the compile never settles). valcori's `dev-start.sh` runs `pnpm run generate-sdk` before `start:dev` for exactly this reason.
+- **Test it locally.** Run `bash .github/claude-review/dev-start.sh` from a clean checkout before committing and confirm the services bind on the ports you list in `### Known service ports`. If it doesn't boot locally, it won't boot in CI — this is where circular imports, missing codegen, and misconfigured `DATABASE_URL` surface.
 
-If the project has no services to start (pure-docs repo, lib-only package), skip this step entirely. The pipeline warns once and falls back to degraded mode (core + sweep reviewers run; no functional tester).
+If the project has no services to start (pure-docs repo, lib-only package), do **not** create this file. Its absence triggers degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step — either commit a real one or don't commit one at all.
 
 ### Auth
 
@@ -268,7 +273,8 @@ Do **not** promote to `## Auth` / `## Known service ports` — the validator's `
 
 Before committing, re-read your own `.github/review-config.md` and `.github/claude-review/dev-start.sh` and confirm:
 
-- [ ] `dev-start.sh` exists, is executable (`chmod +x`), and brings the env up when you run it locally.
+- [ ] `dev-start.sh` exists, is executable (`chmod +x`), AND has been run locally from a clean checkout (fresh `pnpm install`, empty `./build`, no lingering dev-server processes on the target ports). The script must exit 0 and the service must actually respond on the health URL you listed in `### Known service ports`. If it doesn't boot locally, it won't boot in CI and v1's fail-hard contract will block every PR until fixed.
+- [ ] If your repo generates code from an openapi spec / Prisma / Drizzle / GraphQL schema / etc. at dev-time, `dev-start.sh` runs that generator **before** the dev server. Missing codegen = TS errors = compile noise (and sometimes blocks boot outright — see valcori's historical `src/sdk` case).
 - [ ] `review-config.md`'s `## Functional validation` section is **prose only** — no fenced `bash` blocks. Commands live in `dev-start.sh`.
 - [ ] Every path appearing in a `cp`, `source`, or `cat` command (in either file) exists at the stated path. Run `ls <path>` to prove it.
 - [ ] Every readiness wait loop in `dev-start.sh` either exits non-zero on timeout OR logs a `::warning::`/`::error::`. No bare `for ... && break; sleep ...; done` patterns.
