@@ -136,15 +136,30 @@ fi
 # ── Phase 2: Start dev server ──
 # review-config.md setup code may have already started servers;
 # auto-discovery always needs to start them.
+#
+# Skip the auto-start entirely when the root package.json has no `dev`
+# script. Projects with per-app dev scripts (e.g. `pnpm --filter api
+# start:dev`) configure their own startup inside review-config.md's
+# Functional validation section, and a missing root `dev` otherwise
+# produces noisy `ERR_PNPM_NO_SCRIPT` output that buries the real error.
+HAS_ROOT_DEV_SCRIPT=false
+if [ -f package.json ] && node -e "process.exit(require('./package.json').scripts?.dev?0:1)" 2>/dev/null; then
+  HAS_ROOT_DEV_SCRIPT=true
+fi
+
 if [ "$HAS_CONFIG" != "true" ] || ! curl -sf http://localhost:3000 > /dev/null 2>&1; then
-  echo "Starting dev servers..."
-  case "${PKG_MANAGER:-npm}" in
-    pnpm) pnpm run dev > /tmp/dev-server.log 2>&1 & ;;
-    yarn) yarn dev > /tmp/dev-server.log 2>&1 & ;;
-    npm)  npm run dev > /tmp/dev-server.log 2>&1 & ;;
-    *)    echo "::warning::Unknown package manager -- cannot start dev server" ;;
-  esac
-  echo "dev_pid=$!" >> "$GITHUB_OUTPUT"
+  if [ "$HAS_ROOT_DEV_SCRIPT" != "true" ]; then
+    echo "Skipping dev-server auto-start: no root \`dev\` script in package.json (config-provided startup, if any, already ran)."
+  else
+    echo "Starting dev servers..."
+    case "${PKG_MANAGER:-npm}" in
+      pnpm) pnpm run dev > /tmp/dev-server.log 2>&1 & ;;
+      yarn) yarn dev > /tmp/dev-server.log 2>&1 & ;;
+      npm)  npm run dev > /tmp/dev-server.log 2>&1 & ;;
+      *)    echo "::warning::Unknown package manager -- cannot start dev server" ;;
+    esac
+    echo "dev_pid=$!" >> "$GITHUB_OUTPUT"
+  fi
 fi
 
 # ── Phase 3: Health checks ──

@@ -246,12 +246,23 @@ Before committing, re-read your own `.github/review-config.md` and confirm:
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
 
-## Step 6: Verify secrets
+## Step 6: Verify secrets and App install
 
-Three secrets + one app install decision:
+Three secrets + one app install decision. **The install and the secrets are independent — miss either and the workflow breaks in a different way.** Walk through all four:
 
-1. `CLAUDE_CODE_OAUTH_TOKEN` (required) — generate with `claude setup-token` and add as a repo or org secret.
-2. `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (optional, recommended for orgs): install the `panenco-claude-reviewer` GitHub App on this repo (or org-wide), then add all three secrets. Without them, the workflow falls back to posting as `github-actions[bot]`; with them, it posts as `panenco-claude-reviewer[bot]` and can dismiss stale reviews on new pushes. Installing the App alone is not enough — the three secrets must be set too.
+1. `CLAUDE_CODE_OAUTH_TOKEN` (required) — generate with `claude setup-token` and add as a repo or org secret. Without it the workflow fails at the first step with `::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured.`
+
+2. `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (optional, recommended for orgs) — set all three as org secrets with "All repositories" visibility so new repos inherit them automatically via `secrets: inherit`. Without them the workflow still runs but posts as `github-actions[bot]`.
+
+3. **Install the `panenco-claude-reviewer` GitHub App on the target repo (or org-wide, matching #2)**. This is separate from the secrets and both are required. Symptoms when each is missing:
+
+   | Missing | Failure mode |
+   |---|---|
+   | Secrets only | "Create GitHub App token" step is **skipped** → `github-actions[bot]` posts the review. |
+   | Secrets set, App not installed on repo | "Create GitHub App token" step **fails** with `RequestError [HttpError]: Not Found` / `Failed to create token for "<repo>": Not Found`. Downstream steps skip or abort. Fix: go to `github.com/organizations/<org>/settings/installations` → `panenco-claude-reviewer` → Configure → add the repo (or switch to "All repositories"). |
+   | Both set correctly | "Create GitHub App token" = `success`, "Resolve review identity" logs `Review identity: panenco-claude-reviewer[bot]`. |
+
+   Verify after the first PR run by opening the job log and grepping for `Review identity:` — it should print the App slug, not `github-actions`.
 
 ## Step 7: Test
 
