@@ -108,7 +108,10 @@ jobs:
       - name: Install review pipeline
         uses: panenco/claude-review@v1
 
-      # Validate review-config.md sections (warn on missing recommended sections).
+      # Validate review-config.md sections (warn on missing recommended sections)
+      # and sanity-check that file paths it references actually exist in the repo.
+      # Catching these at validate-time produces a clean, actionable error
+      # instead of letting the functional tester discover the mismatch mid-run.
       - name: Validate review config
         shell: bash
         run: |
@@ -124,6 +127,37 @@ jobs:
           grep -q '^### Auth' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::warning::review-config.md missing '### Auth' — functional testing will be unauthenticated"
           grep -q '^### Known service ports' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::warning::review-config.md missing '### Known service ports' — health check will probe common ports"
           echo "review-config.md: $SECTIONS/6 recommended sections present"
+
+          # Lint referenced file paths: scan for `cp SOURCE DEST` / `source FILE`
+          # / `cat FILE` commands in inline code OR fenced code blocks, and warn
+          # when SOURCE doesn't exist. Catches the "review-config says
+          # `cp .env.example .env` but the file lives at apps/api/.env.example"
+          # class of bug without needing to parse shell.
+          REFERENCED_PATHS=$(grep -oE '(cp|source|cat) +[A-Za-z0-9._/-]+' .github/review-config.md 2>/dev/null | \
+            awk '{print $2}' | \
+            sort -u || true)
+          MISSING_PATHS=""
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            # Skip destinations and locally-generated files:
+            # - Dotfiles that a sample cp typically CREATES (.env, .env.dev,
+            #   .env.prd, .env.local) — but keep .env.example/.env.sample,
+            #   which are sources that SHOULD exist.
+            # - Lock/log files that are build artefacts.
+            # - Variable placeholders written into example snippets.
+            case "$p" in
+              .env|.env.dev|.env.prd|.env.local|.env.production|.env.development|.env.test) continue ;;
+              *.lock|*.log) continue ;;
+              \$*|*\$*) continue ;;
+            esac
+            if [ ! -e "$p" ]; then
+              MISSING_PATHS="$MISSING_PATHS\n  - $p"
+            fi
+          done <<< "$REFERENCED_PATHS"
+          if [ -n "$MISSING_PATHS" ]; then
+            printf "::warning::review-config.md references files that don't exist in the repo. The functional tester will hit these as errors mid-run:%b\n" "$MISSING_PATHS"
+            echo "::warning::Fix the paths in review-config.md or add the missing files."
+          fi
 
       # Skip dependency install for pure documentation PRs.
       - name: Detect code changes
@@ -575,7 +609,11 @@ jobs:
           # for authenticated API calls, falls back to curl only when needed.
           PID_FUNCTIONAL=""
           if [ "$NEEDS_BUILD" = "true" ] && [ "$WEB_READY" = "true" ] && [ -f test-plan.md ]; then
-            STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md | sed -E 's/.*Strategy:[[:space:]]*//' | tr -d '[:space:]')
+            # `|| true` guards against test-plan.md missing a '## Strategy:' line.
+            # Without it, grep's non-zero exit would abort the whole analyze step
+            # under `set -euo pipefail`. Treat missing strategy as "unknown" and
+            # let the block below decide (it defaults to running the tester).
+            STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md 2>/dev/null | sed -E 's/.*Strategy:[[:space:]]*//' | tr -d '[:space:]' || true)
             if [ "$STRATEGY" != "skip" ]; then
               echo "Running functional tester (Playwright + Bash) — strategy: ${STRATEGY:-unknown}..."
               mkdir -p /tmp/screenshots

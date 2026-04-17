@@ -6,7 +6,32 @@ runs:
     - name: Install pipeline files
       shell: bash
       run: |
+        set -euo pipefail
         PIPELINE_DIR="${{ github.action_path }}"
+
+        # Verify the action download is complete — catch a broken release here
+        # instead of letting the failure surface 3 minutes later in the analyze
+        # step with a cryptic "skill not found" message.
+        EXPECTED_SKILLS="review-core review-sweep review-context-builder review-functional-tester review-spec-compliance review-test-planner"
+        MISSING=""
+        for s in $EXPECTED_SKILLS; do
+          if [ ! -f "$PIPELINE_DIR/skills/${s}.md" ]; then
+            MISSING="$MISSING ${s}.md"
+          fi
+        done
+        if [ -n "$MISSING" ]; then
+          echo "::error::panenco/claude-review install is incomplete — missing skills:$MISSING"
+          echo "::error::Action download path: $PIPELINE_DIR"
+          echo "::error::This indicates a broken release. Pin to a known-good SHA or open an issue on panenco/claude-review."
+          ls -la "$PIPELINE_DIR/skills/" 2>&1 || true
+          exit 1
+        fi
+        for s in build-review.sh verdict-gate.sh post-review.sh setup-dev-env.sh generate-functional-prompt.sh; do
+          if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
+            echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
+            exit 1
+          fi
+        done
 
         # Export the action's directory so the reusable workflow can read
         # skill files directly from it. We do NOT copy skills into the repo
@@ -21,9 +46,9 @@ runs:
         # path (`.review-scripts/foo.sh`) from the reusable workflow, and
         # `.review-scripts/` is not on claude-code-action's restore list.
         mkdir -p .review-scripts
-        cp "$PIPELINE_DIR"/scripts/*.sh .review-scripts/ 2>/dev/null || true
-        cp "$PIPELINE_DIR"/scripts/functional-prompt.template.txt .review-scripts/ 2>/dev/null || true
-        chmod +x .review-scripts/*.sh 2>/dev/null || true
+        cp "$PIPELINE_DIR"/scripts/*.sh .review-scripts/
+        cp "$PIPELINE_DIR"/scripts/functional-prompt.template.txt .review-scripts/
+        chmod +x .review-scripts/*.sh
         echo "Pipeline dir: $PIPELINE_DIR"
-        echo "Skills available: $(ls "$PIPELINE_DIR"/skills/review-*.md 2>/dev/null | wc -l)"
-        ls .review-scripts/*.sh 2>/dev/null && echo "Installed $(ls .review-scripts/*.sh | wc -l) scripts" || echo "No scripts to install"
+        echo "Skills available: $(ls "$PIPELINE_DIR"/skills/review-*.md | wc -l) at $PIPELINE_DIR/skills"
+        echo "Scripts installed: $(ls .review-scripts/*.sh | wc -l) at .review-scripts/"

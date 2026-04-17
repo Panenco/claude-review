@@ -6,7 +6,7 @@ Reusable, multi-stage PR review pipeline powered by Claude Code. Runs automated 
 
 ### 1. Add the caller workflow
 
-Create `.github/workflows/claude-review.yml` in your repo:
+Create `.github/workflows/claude-review.yml` in your repo. **Pin to a full commit SHA** — `secrets: inherit` hands every repo/org secret (including `CLAUDE_CODE_OAUTH_TOKEN`) to this workflow, so a mutable tag is a supply-chain risk. Bump the SHA deliberately when you want a new version.
 
 ```yaml
 name: Claude PR Review
@@ -21,11 +21,15 @@ on:
         type: string
 jobs:
   review:
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    # Pin to an immutable SHA. Look up the current v1 SHA at
+    # https://github.com/Panenco/claude-review/commits/v1 and substitute below.
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@<40-char-sha>  # v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
 ```
+
+If you prefer `@v1` over a SHA (accepting the risk), know that **both the reusable workflow file and the composite action download resolve against the tag at different moments of the job**. Moving `v1` while a run is starting can cause a version mismatch between the two — prefer SHA pinning for deterministic behavior.
 
 ### 2. Set secrets
 
