@@ -595,6 +595,23 @@ jobs:
           # this block points at its own trigger line.
           set -x
 
+          # Safety net: if anything between the reviewer launches and `wait`
+          # fails under `set -e`, the shell would exit before waiting, the
+          # runner would SIGTERM the backgrounded `claude` processes, and
+          # core/sweep output files would be empty — which is exactly how this
+          # step silently failed in the past. Trap EXIT reaps any still-running
+          # reviewer PIDs so we preserve their output even on abort.
+          PID_CORE=""; PID_SWEEP=""; PID_SPEC=""; PID_FUNCTIONAL=""
+          reap_on_exit() {
+            local rc=$?
+            set +x
+            for pid in "$PID_CORE" "$PID_SWEEP" "$PID_SPEC" "$PID_FUNCTIONAL"; do
+              [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && wait "$pid" 2>/dev/null || true
+            done
+            exit "$rc"
+          }
+          trap reap_on_exit EXIT
+
           # Core reviewer: bugs, spec-mismatches, security (Opus)
           ~/.local/bin/claude -p "You are the core reviewer for PR #$PR_NUMBER. context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly, including writing the JSON output files it specifies.${BUGBOT_BLOCK}
 
@@ -649,14 +666,21 @@ jobs:
             echo "Spec-compliance reviewer skipped — no PRD detected"
           fi
 
-          # Generate functional prompt from template
-          .review-scripts/generate-functional-prompt.sh
+          # Generate functional prompt from template.
+          # Never let helper-script failure kill the whole step — the core and
+          # sweep reviewers have already been launched (PID_CORE / PID_SWEEP) and
+          # errexit here would trip before `wait`, orphaning them and producing
+          # an "analyzer crashed" outcome with two zero-byte output files.
+          # Functional testing is best-effort: if the prompt can't be built we
+          # warn and skip the tester, then still wait on core/sweep.
+          .review-scripts/generate-functional-prompt.sh \
+            || echo "::warning::generate-functional-prompt.sh failed — functional tester will be skipped (core + sweep continue)"
 
           # Functional tester: single AI agent with Playwright MCP + Bash.
           # Tests through the UI first (Playwright), uses browser_evaluate fetch
           # for authenticated API calls, falls back to curl only when needed.
           PID_FUNCTIONAL=""
-          if [ "$NEEDS_BUILD" = "true" ] && [ "$WEB_READY" = "true" ] && [ -f test-plan.md ]; then
+          if [ "$NEEDS_BUILD" = "true" ] && [ "$WEB_READY" = "true" ] && [ -f test-plan.md ] && [ -s /tmp/functional-prompt.txt ]; then
             # `|| true` guards against test-plan.md missing a '## Strategy:' line.
             # Without it, grep's non-zero exit would abort the whole analyze step
             # under `set -euo pipefail`. Treat missing strategy as "unknown" and

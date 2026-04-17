@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# `-x` makes every command visible in the job log. The caller runs us from a
+# step that already has `set -x` on, but that trace stops at the script
+# boundary — if we die silently under `set -e`, the reviewer processes we were
+# launched alongside get orphan-killed and the whole review looks like
+# "analyzer crashed" with no evidence. Tracing here points future debugging
+# at the exact failing line.
+set -Eeuxo pipefail
 
 # generate-functional-prompt.sh — Build the functional tester prompt from the template.
 #
@@ -43,7 +49,10 @@ for cf in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
 done
 [ -n "$COMPOSE_FILE" ] && ENV_HINT+="Docker services are running via docker compose. "
 [ -f .env ] && ENV_HINT+=".env exists. "
-PRISMA_FOUND=$(find . -maxdepth 5 -path '*/prisma/schema.prisma' -not -path '*/node_modules/*' 2>/dev/null | head -1)
+# `head -1` closes the pipe as soon as it reads a match, which gives `find`
+# SIGPIPE → under `pipefail` the whole command substitution exits 141 and
+# errexit aborts the script. `|| true` keeps the detection best-effort.
+PRISMA_FOUND=$(find . -maxdepth 5 -path '*/prisma/schema.prisma' -not -path '*/node_modules/*' 2>/dev/null | head -1 || true)
 [ -n "$PRISMA_FOUND" ] && ENV_HINT+="Prisma is generated and migrated. "
 ENV_HINT+="Skip setup steps that are already done."
 
@@ -89,7 +98,9 @@ if [ -n "$FUNC_TEMPLATE" ] && [ -f "$FUNC_TEMPLATE" ]; then
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{AUTH_INSTRUCTIONS\}\}/$AUTH_INSTRUCTIONS}"
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{ENV_HINT\}\}/$ENV_HINT}"
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{PIPELINE_DIR\}\}/$PIPELINE_DIR_VAL}"
-  echo "$TEMPLATE_CONTENT" > /tmp/functional-prompt.txt
+  # `printf '%s\n'` over `echo` — if the template ever starts with `-n`/`-e`,
+  # echo would swallow it as a flag and silently drop the first line.
+  printf '%s\n' "$TEMPLATE_CONTENT" > /tmp/functional-prompt.txt
   printf '\n%s\n' "$ENV_HINT" >> /tmp/functional-prompt.txt
 else
   echo "::warning::No functional-prompt template found -- using minimal fallback"
