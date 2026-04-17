@@ -421,7 +421,7 @@ jobs:
             --setting-sources user
             --allowedTools Bash,Read,Glob,Grep,Write
             --disallowedTools Edit,WebFetch,WebSearch
-            --max-turns 30
+            --max-turns 60
           show_full_output: 'true'
 
       # Post Turn-4 "Fixed in this revision" replies from the context-builder.
@@ -482,8 +482,27 @@ jobs:
           done < <(jq -c '.[]' "$REPLIES_FILE")
           echo "Turn-4 replies: posted=$POSTED, dropped=$DROPPED, total=$TOTAL"
 
+      # Fail-fast gate: if the context builder didn't leave a context.md on
+      # disk (usually because it hit --max-turns), skip the expensive dev-env
+      # bring-up. The analyzer step below would abort the job anyway — this
+      # saves ~2 minutes of Docker pull + pnpm install + dev-start.sh that
+      # can never be consumed. We keep `continue-on-error: true` on the
+      # builder itself because a partial context.md written just before the
+      # turn limit is still better than no context.
+      - name: Check context.md exists
+        id: check_context
+        shell: bash
+        run: |
+          if [ -f context.md ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "context.md present ($(wc -l < context.md) lines) — continuing to analyzer"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::error::context.md was not written by the context builder. Check the 'Review: build context' step log — max-turns is the most common cause. Skipping dev-env setup; the analyzer step will abort the job."
+          fi
+
       - name: Setup Playwright MCP for test runner
-        if: steps.code_check.outputs.needs_build == 'true'
+        if: steps.code_check.outputs.needs_build == 'true' && steps.check_context.outputs.exists == 'true'
         shell: bash
         run: |
           # Force --output-dir so screenshots land in a known location.
@@ -504,7 +523,7 @@ jobs:
 
       # Pre-start dev environment for functional testing.
       - name: Pre-start dev environment for test runner
-        if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true'
+        if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true' && steps.check_context.outputs.exists == 'true'
         id: dev_env
         shell: bash
         env:
@@ -722,7 +741,10 @@ jobs:
         env:
           ANALYZER_OUTCOME: ${{ steps.claude_run.outcome }}
           POSTER_OUTCOME: ${{ steps.review_poster.outcome }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Post the "Claude Review — incomplete" crash notification as the
+          # same bot identity as the successful reviews. Falls back to
+          # GITHUB_TOKEN (github-actions[bot]) when no App is configured.
+          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         run: .review-scripts/verdict-gate.sh
 
