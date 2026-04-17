@@ -15,8 +15,8 @@ Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, 
 
 ## Turn 1: Read inputs
 
-1. Read `bugbot.md` at the repo root — project-specific review philosophy and patterns to watch for.
-2. Read `context.md` at the repo root — full diff, file contents, issue, conventions, build output.
+1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
+2. Read `context.md` at the repo root — full diff, file contents, issue, conventions, build output. This is the only file you need to Read.
 
 ## Your scope — finding types
 

@@ -34,7 +34,10 @@ on:
         type: string
 jobs:
   review:
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    # Pin to an immutable commit SHA. With `secrets: inherit`, a mutable @v1
+    # tag is a supply-chain risk. Look up the current v1 SHA at
+    # https://github.com/Panenco/claude-review/commits/v1 and substitute below.
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@<40-char-sha>  # v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit

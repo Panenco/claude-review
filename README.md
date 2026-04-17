@@ -136,50 +136,56 @@ Map changed paths to convention/rule files:
 
 #### `## Stack-specific review focus`
 
-Free-text guidance for reviewers:
+Free-text guidance for reviewers. Write rules in terms of **your** stack — the pipeline is framework-agnostic. Example framing:
 
 ```markdown
 ## Stack-specific review focus
 
-**API (NestJS + Prisma)**
-- Controllers must be thin — business logic in Handler services.
-- Tests must use real database, not mock the ORM.
+**API (<your framework>)**
+- <Architectural rule reviewers must enforce — e.g., "controllers thin, logic in services".>
+- <Test expectation — e.g., "tests use real DB, never mock the ORM".>
 
-**Web (Next.js)**
-- Data fetching via TanStack Query only. Query keys centralized.
+**Web (<your framework>)**
+- <Data-fetching rule — e.g., "data via <library>; query keys centralized".>
 ```
 
 #### `## Functional validation`
 
-Setup instructions for the dev environment. Use fenced bash code blocks — the workflow extracts and executes them:
+Setup instructions for the dev environment. The workflow extracts **bash code blocks** from this section and `eval`s them in sequence, then starts a dev server via your package manager. Reference files by the path they actually live at in your repo (e.g., `apps/api/.env.example`, not `.env.example`, if that's where your example lives). The "Validate review config" step warns at job-start when paths mentioned here don't exist.
+
+Generic template — adapt to your stack:
 
 ```markdown
 ## Functional validation
 
-### Step 1: Start database
+### Step 1: Start database (if needed)
 
 \`\`\`bash
+# Use whatever your project uses to start services. Common examples:
 docker compose up -d
-for i in $(seq 1 15); do docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1 && break; sleep 2; done
+# Then wait for readiness:
+for i in $(seq 1 15); do docker compose exec -T <service> pg_isready -U <user> > /dev/null 2>&1 && break; sleep 2; done
 \`\`\`
 
 ### Step 2: Environment
 
 \`\`\`bash
-cp .env.example .env
+# Adjust the source path to where YOUR .env.example actually lives
+cp <path/to/>.env.example .env
 \`\`\`
 
-### Step 3: Migrations
+### Step 3: Migrations / ORM setup (if any)
 
 \`\`\`bash
-cd apps/api && npx prisma generate && npx prisma migrate deploy && cd ../..
+# e.g. Prisma: cd <api-dir> && npx prisma generate && npx prisma migrate deploy
+# e.g. Drizzle: cd <api-dir> && npx drizzle-kit push
+# e.g. TypeORM: cd <api-dir> && npx typeorm migration:run
+# e.g. Django:  python manage.py migrate
 \`\`\`
 
 ### Step 4: Dev servers
 
-\`\`\`bash
-pnpm run dev &
-\`\`\`
+The workflow auto-starts `<pkg-manager> run dev` if no server is already listening after this section runs, so only add a `dev` command here if your project needs something non-standard.
 ```
 
 #### `### Auth`
@@ -189,9 +195,21 @@ Authentication for functional testing:
 ```markdown
 ### Auth
 
-- Sign up: `POST /api/auth/sign-up/email` with `{"name":"Test","email":"test@ci.local","password":"Password1!"}`
-- Sign in: `POST /api/auth/sign-in/email` with `{"email":"test@ci.local","password":"Password1!"}`
-- Method: cookie (use `-c cookies.txt` / `credentials: 'include'`)
+- Sign up: `POST <endpoint>` with `<JSON body>`
+- Sign in: `POST <endpoint>` with `<JSON body>`
+- Method: cookie | bearer | header | none
+```
+
+**Phrasing matters for auto-extraction.** The functional tester scans for sign-in lines starting with `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, or `Login:` to pre-build an authentication snippet. If yours is phrased differently, it still works — the agent reads this whole section from `context.md` and follows it — but the pre-built snippet won't be generated.
+
+**Header-based auth (e.g., custom `x-auth` token) — document the capture step:**
+
+```markdown
+### Auth
+
+- Sign in: `POST /api/auth/login` with `{"email":"<email>","password":"<password>"}`
+- On success the token is returned in the `x-auth` response header. Subsequent requests must include `x-auth: <token>`.
+- Method: header
 ```
 
 #### `### Known service ports`
@@ -228,11 +246,9 @@ Authentication for functional testing:
 
 ## Example Configs
 
-The configuration examples above cover common stacks. For more examples, see this repo's issue tracker or the qec-app reference implementation:
+The `bugbot.md` and `review-config.md` examples above cover the common shapes. Adapt them to your stack rather than copying verbatim. The pipeline is framework-agnostic; the reviewer reads the files verbatim, so what you write is what it enforces.
 
-- NestJS + Prisma monorepo — see [qec-app's review-config.md](https://github.com/Panenco/qec-app/blob/main/.github/review-config.md)
-- Other stacks — contributions welcome
-- Python FastAPI
+If you have a polished config for a stack not covered here (e.g. Python/FastAPI, Rails, Go) and would like to share it as a reference, open a PR on this repo.
 
 ---
 
