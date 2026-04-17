@@ -124,52 +124,84 @@ Write 3-5 bullet points per area about what reviewers should watch for. Be speci
 
 ### Functional validation
 
-This section tells the pipeline how to start the dev environment for end-to-end testing. Use fenced bash code blocks — the pipeline extracts and executes them.
+**Prose only — no executable bash.** This section is read by the reviewer agents from `context.md` to understand what the functional tester should exercise. The *executable* side of dev-env bring-up lives in `.github/claude-review/dev-start.sh` (see Step 4.5). Describe, in prose, what the project needs at runtime:
 
-Structure as numbered steps:
+- Database: which flavour (Postgres / MySQL / SQLite / none), whether it's dockerised, the default DB name, credentials for tests.
+- Environment: where `.env` (or equivalent) actually lives (monorepo apps often have per-app `.env.example` files — `ls` to confirm), what vars matter.
+- Migrations / codegen: Prisma / Drizzle / TypeORM / Django / etc., and whether they auto-run on boot or need an explicit step.
+- Dev server: which processes start, which ports they bind. Reference the numbers, not the commands — commands live in `dev-start.sh`.
+- Test data: what fixtures or seeders exist, which test users the seeders create, whether the functional tester should call a signup endpoint instead.
 
-**Step 1: Database** — If the project uses a database:
-- Docker compose: `docker compose up -d` + wait for readiness **with an explicit timeout error**. Never use a silent `for ... && break; sleep ...; done` pattern — the reviewer flags it as a bug. Use this shape:
-  ```bash
-  docker compose up -d
-  READY=false
-  for i in $(seq 1 15); do
-    if docker compose exec -T <service> pg_isready -U <user> > /dev/null 2>&1; then
-      READY=true; break
-    fi
-    sleep 2
-  done
-  if [ "$READY" != "true" ]; then
-    echo "::error::Database never became ready in 30s"; exit 1
+The reviewer needs the prose; the pipeline needs the script. Do not duplicate the commands in both places — the script is the source of truth.
+
+## Step 4.5: Create .github/claude-review/dev-start.sh
+
+This is the **first-class contract** the pipeline uses to bring up the dev environment. One file, one responsibility: install deps, start services, block until they respond. No heuristics, no stack guessing — just the commands this repo actually needs.
+
+Create `.github/claude-review/dev-start.sh` and `chmod +x` it:
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+
+# dev-start.sh — Bring up the dev environment for the Claude Code review
+# pipeline's functional tester. The pipeline runs this script (in a
+# subshell) and then probes URLs from review-config.md's Known service
+# ports table. Exit non-zero to signal "dev env unavailable" — the
+# pipeline downgrades to a warning and still runs core+sweep reviewers.
+
+# <Step 1 — e.g. Postgres>
+docker compose up -d postgres
+READY=false
+for i in $(seq 1 30); do
+  if docker compose exec -T postgres pg_isready -U <user> -d <db> > /dev/null 2>&1; then
+    READY=true; break
   fi
-  ```
-- If no Docker: check for a cloud DB URL in `.env.example`, or note that functional testing requires a running DB
-- If no DB at all: skip this step
+  sleep 2
+done
+if [ "$READY" != "true" ]; then
+  echo "::error::Postgres never became ready in 60s"
+  docker compose logs postgres | tail -50
+  exit 1
+fi
 
-**Step 2: Environment** — `.env` setup:
-- **First, `ls` the repo to find where `.env.example` actually lives.** Monorepos frequently have it under `apps/<name>/.env.example` rather than repo-root. Document the real path.
-- If `.env.example` exists at the repo root: `cp .env.example .env`
-- If it lives elsewhere (e.g. `apps/api/.env.example`): `cp apps/api/.env.example .env`
-- Do NOT write `cp .env.example .env` without checking — that is exactly the class of finding the review catches.
-- Document what env vars are needed and what they should contain
+# <Step 2 — install deps>
+pnpm install --frozen-lockfile
 
-**Step 3: Migrations / codegen** — ORM setup:
-- Prisma: `npx prisma generate && npx prisma migrate deploy`
-- Drizzle: `npx drizzle-kit push`
-- TypeORM: `npx typeorm migration:run`
-- Django: `python manage.py migrate`
+# <Step 3 — migrations / codegen>
+# Prisma:  pnpm exec prisma generate && pnpm exec prisma migrate deploy
+# Drizzle: pnpm exec drizzle-kit push
+# TypeORM: pnpm exec typeorm migration:run
+# Django:  python manage.py migrate
 
-**Step 4: Dev server** — How to start:
-- `pnpm run dev`, `npm run dev`, `python manage.py runserver`, etc.
-- Document which ports each service runs on
+# <Step 4 — start services>
+pnpm run dev > /tmp/dev.log 2>&1 &
+DEV_PID=$!
 
-**Step 5: Test data provisioning** — IMPORTANT: The functional tester needs data to test against.
-- If a seed script exists: document it (`npx prisma db seed`, `python manage.py loaddata fixtures.json`)
-- If no seed exists, provide SQL or API calls to create minimal test data. Think about what the functional tester needs:
-  - A user account to authenticate with
-  - At least one record per entity that the diff touches
-- If using psql directly: `docker compose exec -T postgres psql -U postgres -d <dbname> -c "INSERT INTO ..."`
-- The functional tester can also create data via API calls if endpoints exist
+# <Step 5 — block until API is listening>
+API_READY=false
+for i in $(seq 1 60); do
+  if curl -fsS http://localhost:<port>/<health-path> > /dev/null 2>&1; then
+    API_READY=true; break
+  fi
+  sleep 2
+done
+if [ "$API_READY" != "true" ]; then
+  echo "::error::API never became ready at http://localhost:<port>/<health-path> within 120s"
+  tail -n 200 /tmp/dev.log || true
+  kill "$DEV_PID" 2>/dev/null || true
+  exit 1
+fi
+echo "API ready at http://localhost:<port>/<health-path>"
+```
+
+Rules:
+- **Readiness loops must fail fast.** No bare `for ... && break; sleep ...; done` that silently falls through — always follow with `if [ "$READY" != "true" ]; then echo ::error:: ...; exit 1; fi`.
+- **No `set -e`** at the top. The pipeline wraps the script in a subshell that tolerates non-zero exits; `set -e` adds surprise failures in things like `curl || true` idioms without giving you anything back.
+- **One place, not two.** If you put commands here, delete the equivalent fenced bash blocks from `review-config.md`'s `## Functional validation` section (that section becomes prose-only — see Step 4 above).
+- **Test it locally** before committing: run `bash .github/claude-review/dev-start.sh` and confirm the services actually come up on the ports you list in `### Known service ports`.
+
+If the project has no services to start (pure-docs repo, lib-only package), skip this step entirely. The pipeline warns once and falls back to degraded mode (core + sweep reviewers run; no functional tester).
 
 ### Auth
 
@@ -234,11 +266,13 @@ Do **not** promote to `## Auth` / `## Known service ports` — the validator's `
 
 ## Step 5: Verify self-check
 
-Before committing, re-read your own `.github/review-config.md` and confirm:
+Before committing, re-read your own `.github/review-config.md` and `.github/claude-review/dev-start.sh` and confirm:
 
-- [ ] Every path appearing in a `cp`, `source`, or `cat` command exists at the stated path. Run `ls <path>` to prove it.
-- [ ] Every readiness wait loop either exits non-zero on timeout OR logs a `::warning::`/`::error::`. No bare `for ... && break; sleep ...; done` patterns.
-- [ ] `### Auth` and `### Known service ports` sit at the top level of the file, not nested inside `## Functional validation`.
+- [ ] `dev-start.sh` exists, is executable (`chmod +x`), and brings the env up when you run it locally.
+- [ ] `review-config.md`'s `## Functional validation` section is **prose only** — no fenced `bash` blocks. Commands live in `dev-start.sh`.
+- [ ] Every path appearing in a `cp`, `source`, or `cat` command (in either file) exists at the stated path. Run `ls <path>` to prove it.
+- [ ] Every readiness wait loop in `dev-start.sh` either exits non-zero on timeout OR logs a `::warning::`/`::error::`. No bare `for ... && break; sleep ...; done` patterns.
+- [ ] `### Auth` and `### Known service ports` sit at the top level of `review-config.md`, not nested inside `## Functional validation`.
 - [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
 - [ ] The caller workflow tracks `@v1` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v1 + secrets: inherit` as accepted. Both are needed — the @v1 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.

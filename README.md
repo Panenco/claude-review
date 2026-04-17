@@ -151,51 +151,57 @@ Free-text guidance for reviewers. Write rules in terms of **your** stack — the
 
 #### `## Functional validation`
 
-Setup instructions for the dev environment. The workflow extracts **bash code blocks** from this section and `eval`s them in sequence, then starts a dev server via your package manager. Reference files by the path they actually live at in your repo (e.g., `apps/api/.env.example`, not `.env.example`, if that's where your example lives). The "Validate review config" step warns at job-start when paths mentioned here don't exist.
+**Prose only — no executable bash.** This section is read by the reviewer agents from `context.md` and describes what the functional tester should exercise. The *executable* side of dev-env bring-up lives in `.github/claude-review/dev-start.sh` (see below).
 
-Generic template — adapt to your stack:
+Describe (in prose) what the project needs at runtime: database flavour + credentials, where `.env` lives, migrations/codegen, dev-server ports, seed data / test users. Do not duplicate the commands — the script is the source of truth.
 
-```markdown
-## Functional validation
+> Legacy: older configs embed bash blocks in this section. The pipeline still supports that path with a `::warning::` prompting migration to `dev-start.sh`.
 
-### Step 1: Start database (if needed)
+### `.github/claude-review/dev-start.sh` (recommended)
 
-\`\`\`bash
-# Use whatever your project uses to start services. Common examples:
-docker compose up -d
-# Then wait for readiness with an EXPLICIT timeout error — a bare
-# `for ... && break; sleep ...; done` silently succeeds on timeout and
-# will be flagged by the reviewer as wrong-impl.
+First-class contract for bringing up the dev environment. The pipeline runs this script in a subshell, then probes URLs from `### Known service ports` and the auth block. Non-zero exit is tolerated: the review falls through to degraded mode (core + sweep still run).
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Bring up database (if any) — ALWAYS fail fast on timeout.
+docker compose up -d postgres
 READY=false
-for i in $(seq 1 15); do
-  if docker compose exec -T <service> pg_isready -U <user> > /dev/null 2>&1; then
+for i in $(seq 1 30); do
+  if docker compose exec -T postgres pg_isready -U <user> -d <db> > /dev/null 2>&1; then
     READY=true; break
   fi
   sleep 2
 done
-[ "$READY" = "true" ] || { echo "::error::Service never became ready in 30s"; exit 1; }
-\`\`\`
+[ "$READY" = "true" ] || { echo "::error::Postgres never became ready in 60s"; exit 1; }
 
-### Step 2: Environment
+# Install, codegen, migrate.
+pnpm install --frozen-lockfile
+# e.g. pnpm exec prisma generate && pnpm exec prisma migrate deploy
 
-\`\`\`bash
-# Adjust the source path to where YOUR .env.example actually lives
-cp <path/to/>.env.example .env
-\`\`\`
+# Start services.
+pnpm run dev > /tmp/dev.log 2>&1 &
+DEV_PID=$!
 
-### Step 3: Migrations / ORM setup (if any)
-
-\`\`\`bash
-# e.g. Prisma: cd <api-dir> && npx prisma generate && npx prisma migrate deploy
-# e.g. Drizzle: cd <api-dir> && npx drizzle-kit push
-# e.g. TypeORM: cd <api-dir> && npx typeorm migration:run
-# e.g. Django:  python manage.py migrate
-\`\`\`
-
-### Step 4: Dev servers
-
-The workflow auto-starts `<pkg-manager> run dev` if no server is already listening after this section runs, so only add a `dev` command here if your project needs something non-standard.
+# Block until healthy.
+API_READY=false
+for i in $(seq 1 60); do
+  if curl -fsS http://localhost:<port>/<health-path> > /dev/null 2>&1; then
+    API_READY=true; break
+  fi
+  sleep 2
+done
+[ "$API_READY" = "true" ] || { echo "::error::API never became ready"; tail -n 200 /tmp/dev.log; exit 1; }
 ```
+
+Rules:
+- `chmod +x` after creating it.
+- No `set -e` — the subshell wrapper already tolerates exit N, and `set -e` surprises you in idioms like `curl || true`.
+- Readiness loops must explicitly test the flag after the loop and `exit 1` on timeout. Silent-success loops are flagged by the reviewer.
+- Paths in `cp`/`source`/`cat` are scanned at job start; the Validate step warns if any don't exist.
+
+If the project has nothing to start (pure-docs, lib-only), skip this file. The pipeline warns once and runs core + sweep without functional testing.
 
 #### `### Auth`
 

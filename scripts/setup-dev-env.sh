@@ -1,37 +1,48 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# setup-dev-env.sh — Pre-start dev environment for functional testing.
+# setup-dev-env.sh — Pre-start the consumer repo's dev environment for the
+# Claude Code functional tester.
 #
-# Reads setup from .github/review-config.md if present, falls back to auto-discovery.
+# Contract (first-class):
+#   .github/claude-review/dev-start.sh — an executable script in the
+#   consumer repo that installs deps, starts services, and blocks until
+#   they respond. If the script exits non-zero, we downgrade to a warning
+#   so the review still runs without functional testing.
+#
+# After bring-up, we probe URLs from review-config.md's `### Known service
+# ports` table (for functional-tester context) and run any auth setup from
+# `### Auth`. Neither of those needs shell in review-config.md anymore —
+# all executable setup lives in dev-start.sh.
+#
+# If no dev-start.sh exists:
+#   - With review-config.md present, fall back to extracting bash blocks
+#     from `## Functional validation` (legacy contract, warned as
+#     deprecated — consumers should migrate to dev-start.sh).
+#   - Without either, emit a single warning and skip. No more stack
+#     heuristics (Prisma autodetect, docker-compose probing, port
+#     guessing, root `pnpm run dev` fallback) — those were the main
+#     source of project-specific bleed-through.
 #
 # Required env vars:
-#   PKG_MANAGER     — detected package manager (pnpm|yarn|npm|none)
 #   GITHUB_OUTPUT   — path to GitHub Actions output file
 #
 # Outputs (written to $GITHUB_OUTPUT):
 #   api_ready   — true/false
-#   api_url     — URL of the running API
+#   api_url     — URL of the running API (possibly adjusted via health-path fallback)
 #   web_ready   — true/false
 #   web_url     — URL of the running web app
 #   auth_ready  — true/false
-#   dev_pid     — PID of the dev server process (if started)
 
-echo "::group::Pre-start dev environment"
-
+DEV_SCRIPT=".github/claude-review/dev-start.sh"
 CONFIG=".github/review-config.md"
 HAS_CONFIG=false
 [ -f "$CONFIG" ] && HAS_CONFIG=true
 
-# Helper: extract bash code blocks from a section of review-config.md.
-#
-# The section boundary respects heading level. If `sec` matches a `##`
-# heading, extraction continues through any `###` subsections and stops at
-# the next `##`. If it matches a `###` heading, extraction stops at the
-# next `###` or `##`. This was previously broken — the old logic reset
-# `in_sec` on every `##` OR `###`, which caused `### Step 1` subsections
-# under `## Functional validation` to silently terminate extraction and
-# skip every bash block in the section.
+# Extract bash blocks from a section of review-config.md, heading-level-aware.
+# ## matches a level-2 section and includes its ### subsections; ### stops at
+# the next ### or ##. Used for the legacy Functional validation path and for
+# the Auth section (still supported in review-config.md).
 extract_section_code() {
   local section="$1" file="$2"
   awk -v sec="$section" '
@@ -47,10 +58,9 @@ extract_section_code() {
   ' "$file"
 }
 
-# Helper: extract service URLs from Known service ports table.
-# Returns only the FIRST matching row's URL: multiple matches (e.g. "API" vs
-# "API docs") would otherwise produce multi-line output, which when written to
-# $GITHUB_OUTPUT below breaks the file-command format ("Invalid format '<url>'").
+# First-match URL extraction from Known service ports table. Multi-match
+# would produce multi-line output, which breaks $GITHUB_OUTPUT
+# ("Invalid format '<url>'"). Exit awk after the first row matches.
 extract_port_url() {
   local service="$1" file="$2"
   awk -v svc="$service" '
@@ -61,184 +71,72 @@ extract_port_url() {
   ' "$file"
 }
 
-# ── Phase 1: Setup (Docker, .env, ORM, etc.) ──
-if [ "$HAS_CONFIG" = "true" ] && [ -f "$CONFIG" ]; then
-  # Execute code blocks from ## Functional validation section
+echo "::group::Pre-start dev environment"
+
+# ── Phase 1: Bring up the environment ──
+if [ -f "$DEV_SCRIPT" ]; then
+  echo "Running $DEV_SCRIPT (first-class dev-start contract)..."
+  # Subshell isolation: the script's readiness loops typically end with
+  # `exit 1` on timeout, and under `set -e` that would kill this step
+  # instead of letting the review fall through to degraded mode.
+  ( bash "$DEV_SCRIPT" ) || echo "::warning::$DEV_SCRIPT exited non-zero — functional testing may be skipped"
+elif [ "$HAS_CONFIG" = "true" ]; then
+  # Legacy contract: bash blocks embedded in review-config.md's
+  # ## Functional validation section. Keep this path for repos that
+  # haven't migrated yet. Flag as deprecated.
   SETUP_CODE=$(extract_section_code "Functional validation" "$CONFIG")
   if [ -n "$SETUP_CODE" ]; then
-    echo "Running setup from review-config.md..."
-    # Run the eval'd setup in a subshell. Configs routinely end readiness
-    # loops with `exit 1` when a service never responds, and because `eval`
-    # runs in the current shell that would terminate setup-dev-env.sh
-    # outright and fail the whole step. Isolating it in `( ... )` means
-    # such a failure only aborts the config's own setup — the rest of the
-    # pipeline (core + sweep reviewers) can still run, and the health
-    # probes below will re-attempt discovery.
+    echo "::warning::Legacy: running bash blocks from $CONFIG's '## Functional validation'. Migrate to $DEV_SCRIPT (see claude-review README → 'dev-start.sh contract')."
     ( eval "$SETUP_CODE" ) || echo "::warning::Some review-config.md setup commands failed"
   else
-    echo "No setup code blocks in review-config.md"
+    echo "::warning::No $DEV_SCRIPT and no bash blocks in $CONFIG's '## Functional validation' — skipping dev-env bring-up. Functional tester will run in degraded mode."
   fi
 else
-  echo "No review-config.md -- using auto-discovery for dev env"
-  # Auto-discovery fallbacks
-  if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ]; then
-    echo "Auto: starting Docker services..."
-    docker compose up -d 2>&1 || echo "::warning::docker compose failed"
-    # Wait for database containers to be ready. The loop emits a distinct
-    # "DB_READY" / "DB_TIMEOUT" marker so downstream steps know whether to
-    # continue; we still return success (so functional testing can attempt
-    # auto-discovery), but the marker + warning makes the timeout visible
-    # instead of silently succeeding.
-    DB_READY=false
-    for i in $(seq 1 15); do
-      if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1 || \
-         docker compose exec -T db pg_isready -U postgres > /dev/null 2>&1 || \
-         docker compose exec -T database pg_isready -U postgres > /dev/null 2>&1 || \
-         docker compose exec -T mysql mysqladmin ping -h localhost > /dev/null 2>&1 || \
-         docker compose exec -T db mysqladmin ping -h localhost > /dev/null 2>&1; then
-        DB_READY=true
-        echo "Database ready (attempt $i)."
-        break
-      fi
-      sleep 2
-    done
-    if [ "$DB_READY" = "false" ]; then
-      echo "::warning::Database never became ready in 30s — downstream migrations/seeds may fail."
-    fi
-  fi
-  if [ ! -f .env ]; then
-    for example_env in .env.example .env.sample .env.template .env.dev; do
-      if [ -f "$example_env" ]; then
-        cp "$example_env" .env
-        echo "Auto: created .env from $example_env"
-        break
-      fi
-    done
-  fi
-  # Copy .env to common app directories that may need it
-  if [ -f .env ]; then
-    for app_dir in apps/api apps/server apps/backend src/api src/server; do
-      if [ -d "$app_dir" ] && [ ! -f "$app_dir/.env" ]; then
-        cp .env "$app_dir/.env"
-        echo "Auto: copied .env to $app_dir/"
-      fi
-    done
-  fi
-  # Auto-discover Prisma schemas
-  for schema in $(find . -name 'schema.prisma' -path '*/prisma/*' -not -path '*/node_modules/*' 2>/dev/null); do
-    SCHEMA_DIR=$(dirname "$(dirname "$schema")")
-    echo "Auto: found Prisma schema at $schema"
-    set -a; [ -f .env ] && source .env; set +a
-    (cd "$SCHEMA_DIR" && npx prisma generate 2>&1 && npx prisma migrate deploy 2>&1) || echo "::warning::Prisma setup failed for $schema"
-  done
+  echo "::warning::No $DEV_SCRIPT and no $CONFIG — skipping dev-env bring-up. Functional tester will run in degraded mode."
 fi
 
-# ── Phase 2: Start dev server ──
-# review-config.md setup code may have already started servers;
-# auto-discovery always needs to start them.
-#
-# Skip the auto-start entirely when the root package.json has no `dev`
-# script. Projects with per-app dev scripts (e.g. `pnpm --filter api
-# start:dev`) configure their own startup inside review-config.md's
-# Functional validation section, and a missing root `dev` otherwise
-# produces noisy `ERR_PNPM_NO_SCRIPT` output that buries the real error.
-HAS_ROOT_DEV_SCRIPT=false
-if [ -f package.json ] && node -e "process.exit(require('./package.json').scripts?.dev?0:1)" 2>/dev/null; then
-  HAS_ROOT_DEV_SCRIPT=true
-fi
-
-if [ "$HAS_CONFIG" != "true" ] || ! curl -sf http://localhost:3000 > /dev/null 2>&1; then
-  if [ "$HAS_ROOT_DEV_SCRIPT" != "true" ]; then
-    echo "Skipping dev-server auto-start: no root \`dev\` script in package.json (config-provided startup, if any, already ran)."
-  else
-    echo "Starting dev servers..."
-    case "${PKG_MANAGER:-npm}" in
-      pnpm) pnpm run dev > /tmp/dev-server.log 2>&1 & ;;
-      yarn) yarn dev > /tmp/dev-server.log 2>&1 & ;;
-      npm)  npm run dev > /tmp/dev-server.log 2>&1 & ;;
-      *)    echo "::warning::Unknown package manager -- cannot start dev server" ;;
-    esac
-    echo "dev_pid=$!" >> "$GITHUB_OUTPUT"
-  fi
-fi
-
-# ── Phase 3: Health checks ──
+# ── Phase 2: Probe URLs from review-config.md ──
+# Regardless of how bring-up happened, URLs live in the Known service ports
+# table so the functional tester + reviewer can consume them consistently.
 API_READY=false
 API_URL=""
 WEB_READY=false
 WEB_URL=""
 
 if [ "$HAS_CONFIG" = "true" ]; then
-  # Read URLs from Known service ports table
   API_URL=$(extract_port_url "API" "$CONFIG")
   WEB_URL=$(extract_port_url "Web" "$CONFIG")
 fi
 
-# Probe API URL (from config or auto-discover).
-#
-# Configs often list the API base as e.g. `http://localhost:4000` even when the
-# framework mounts routes under a prefix (`/api`, `/health`, etc.), so a plain
-# probe against the base URL 404s and the whole step times out. Try the given
-# URL first, then fall back to common health paths on the same origin before
-# giving up.
+# Probe API. Configs often list a base URL (http://localhost:4000) even
+# though the framework mounts routes under a prefix — a plain base probe
+# 404s and the whole step times out. Try the given URL first, then common
+# health paths on the same origin before giving up.
 if [ -n "$API_URL" ]; then
   API_ORIGIN=$(printf '%s' "$API_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
-  for i in $(seq 1 30); do
+  for i in $(seq 1 15); do
     if curl -sf "$API_URL" > /dev/null 2>&1; then
       API_READY=true; break
     fi
-    for suffix in /api /api/health /api/ping /health /healthz; do
+    for suffix in /api /api/health /api/ping /health /healthz /ping; do
       if curl -sf "${API_ORIGIN}${suffix}" > /dev/null 2>&1; then
         API_URL="${API_ORIGIN}${suffix}"
         API_READY=true
-        echo "Auto: API responded at $API_URL (configured base did not)"
+        echo "API responded at $API_URL (configured base did not)"
         break 2
       fi
     done
     sleep 2
   done
-else
-  # Auto-probe common API ports
-  for port in 3001 4000 8080 8000; do
-    for path in /api /health /; do
-      if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
-        API_URL="http://localhost:$port$path"
-        API_READY=true
-        echo "Auto-discovered API at $API_URL"
-        break 2
-      fi
-    done
-  done
-  if [ "$API_READY" = "false" ]; then
-    # Wait and retry
-    sleep 15
-    for port in 3001 4000 8080 8000; do
-      for path in /api /health /; do
-        if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
-          API_URL="http://localhost:$port$path"
-          API_READY=true
-          echo "Auto-discovered API at $API_URL (after wait)"
-          break 2
-        fi
-      done
-    done
-  fi
 fi
 
-# Probe Web URL (from config or auto-discover)
+# Probe Web
 if [ -n "$WEB_URL" ]; then
   for i in $(seq 1 15); do
-    curl -sf "$WEB_URL" > /dev/null 2>&1 && WEB_READY=true && break
-    sleep 2
-  done
-else
-  for port in 3000 5173 4200 8080; do
-    if curl -sf "http://localhost:$port" > /dev/null 2>&1; then
-      WEB_URL="http://localhost:$port"
-      WEB_READY=true
-      echo "Auto-discovered Web at $WEB_URL"
-      break
+    if curl -sf "$WEB_URL" > /dev/null 2>&1; then
+      WEB_READY=true; break
     fi
+    sleep 2
   done
 fi
 
@@ -247,14 +145,12 @@ echo "api_url=$API_URL" >> "$GITHUB_OUTPUT"
 echo "web_ready=$WEB_READY" >> "$GITHUB_OUTPUT"
 echo "web_url=$WEB_URL" >> "$GITHUB_OUTPUT"
 
-# ── Phase 4: Auth (from review-config.md) ──
+# ── Phase 3: Auth setup from review-config.md ──
 AUTH_READY=false
 if [ "$HAS_CONFIG" = "true" ] && [ "$API_READY" = "true" ]; then
   AUTH_CODE=$(extract_section_code "Auth" "$CONFIG")
   if [ -n "$AUTH_CODE" ]; then
     echo "Running auth setup from review-config.md..."
-    # Same subshell-isolation pattern as the Functional validation eval:
-    # an `exit N` or unbound var in the config must not kill the step.
     ( eval "$AUTH_CODE" ) && AUTH_READY=true || echo "::warning::Auth setup from config failed"
   fi
 fi
@@ -264,7 +160,6 @@ if [ "$API_READY" = "true" ]; then
   echo "API ready at $API_URL"
 else
   echo "::warning::API not ready"
-  tail -30 /tmp/dev-server.log 2>/dev/null || true
 fi
 echo "Dev env: API=$API_READY ($API_URL), Web=$WEB_READY ($WEB_URL), Auth=$AUTH_READY"
 echo "::endgroup::"

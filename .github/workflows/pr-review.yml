@@ -115,25 +115,44 @@ jobs:
       - name: Validate review config
         shell: bash
         run: |
-          if [ ! -f .github/review-config.md ]; then
-            echo "::warning::No .github/review-config.md found — review will use auto-discovery only. Add one for better results."
+          DEV_SCRIPT=".github/claude-review/dev-start.sh"
+          CONFIG=".github/review-config.md"
+
+          # dev-start.sh is the first-class contract for bringing up the
+          # dev env. review-config.md is the second-class (docs + prose)
+          # contract for describing the project. Either alone works; both
+          # is ideal.
+          if [ -f "$DEV_SCRIPT" ]; then
+            echo "$DEV_SCRIPT found — first-class dev-start contract in use"
+            if [ ! -x "$DEV_SCRIPT" ]; then
+              echo "::notice::$DEV_SCRIPT is not executable — the pipeline runs it via \`bash\`, so this is not fatal, but \`chmod +x\` is conventional"
+            fi
+          else
+            echo "::notice::No $DEV_SCRIPT — see claude-review README → 'dev-start.sh contract' for the recommended setup. Falling back to legacy bash-in-review-config.md extraction if present."
+          fi
+
+          if [ ! -f "$CONFIG" ]; then
+            echo "::warning::No $CONFIG found — reviewers will rely on diff + issue only. Add one for better results."
             exit 0
           fi
+
           SECTIONS=0
-          grep -q '^## Build preparation' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::notice::review-config.md missing '## Build preparation' section"
-          grep -q '^## Convention files' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::notice::review-config.md missing '## Convention files' section"
-          grep -q '^## Stack-specific review focus' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::notice::review-config.md missing '## Stack-specific review focus' section"
-          grep -q '^## Functional validation' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::warning::review-config.md missing '## Functional validation' — functional testing will be limited"
-          grep -q '^### Auth' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::warning::review-config.md missing '### Auth' — functional testing will be unauthenticated"
-          grep -q '^### Known service ports' .github/review-config.md && SECTIONS=$((SECTIONS+1)) || echo "::warning::review-config.md missing '### Known service ports' — health check will probe common ports"
-          echo "review-config.md: $SECTIONS/6 recommended sections present"
+          grep -q '^## Build preparation' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Build preparation' section"
+          grep -q '^## Convention files' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Convention files' section"
+          grep -q '^## Stack-specific review focus' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Stack-specific review focus' section"
+          grep -q '^## Functional validation' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Functional validation' — prose describing what to exercise"
+          grep -q '^### Auth' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::warning::$CONFIG missing '### Auth' — functional testing will be unauthenticated"
+          grep -q '^### Known service ports' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::warning::$CONFIG missing '### Known service ports' — the pipeline won't know which URL to probe"
+          echo "$CONFIG: $SECTIONS/6 recommended sections present"
 
           # Lint referenced file paths: scan for `cp SOURCE DEST` / `source FILE`
-          # / `cat FILE` commands in inline code OR fenced code blocks, and warn
-          # when SOURCE doesn't exist. Catches the "review-config says
-          # `cp .env.example .env` but the file lives at apps/api/.env.example"
-          # class of bug without needing to parse shell.
-          REFERENCED_PATHS=$(grep -oE '(cp|source|cat) +[A-Za-z0-9._/-]+' .github/review-config.md 2>/dev/null | \
+          # / `cat FILE` commands in both review-config.md and dev-start.sh.
+          # Catches the "points at a file that doesn't exist" class of bug
+          # without needing to parse shell.
+          SCAN_FILES=""
+          [ -f "$CONFIG" ] && SCAN_FILES="$CONFIG"
+          [ -f "$DEV_SCRIPT" ] && SCAN_FILES="$SCAN_FILES $DEV_SCRIPT"
+          REFERENCED_PATHS=$(grep -hoE '(cp|source|cat) +[A-Za-z0-9._/-]+' $SCAN_FILES 2>/dev/null | \
             awk '{print $2}' | \
             sort -u || true)
           MISSING_PATHS=""
@@ -155,8 +174,8 @@ jobs:
             fi
           done <<< "$REFERENCED_PATHS"
           if [ -n "$MISSING_PATHS" ]; then
-            printf "::warning::review-config.md references files that don't exist in the repo. The functional tester will hit these as errors mid-run:%b\n" "$MISSING_PATHS"
-            echo "::warning::Fix the paths in review-config.md or add the missing files."
+            printf "::warning::Scanned files reference paths that don't exist in the repo. The functional tester/dev-start script will hit these as errors mid-run:%b\n" "$MISSING_PATHS"
+            echo "::warning::Fix the paths in $SCAN_FILES or add the missing files."
           fi
 
       # Skip dependency install for pure documentation PRs.
