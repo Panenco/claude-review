@@ -392,8 +392,12 @@ jobs:
             echo "PRD content: $(wc -l < /tmp/prd-content.md) lines"
           else
             echo "No PRD detected for: $PR_TITLE"
-            echo "" > /tmp/prd-files.txt
-            echo "" > /tmp/prd-content.md
+            # Truncate with `: >` rather than `echo "" >` — the latter writes
+            # a newline (1 byte), which the downstream `[ -s prd-content.md ]`
+            # guard on the spec-compliance launch treats as non-empty content
+            # and fires the spec reviewer against an empty PRD.
+            : > /tmp/prd-files.txt
+            : > /tmp/prd-content.md
           fi
 
       - name: 'Review: build context'
@@ -566,6 +570,11 @@ jobs:
 
           echo "::group::Launch parallel reviewers + test runner"
           echo "Starting Core (Opus) + Sweep (Sonnet) + Test Runner (Sonnet) in parallel"
+          # Trace each shell statement so if the launch block aborts under
+          # `set -e` the failing line is visible in the log. Paired with the
+          # `|| true` guards on wait calls, this means any future crash in
+          # this block points at its own trigger line.
+          set -x
 
           # Core reviewer: bugs, spec-mismatches, security (Opus)
           ~/.local/bin/claude -p "You are the core reviewer for PR #$PR_NUMBER. context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly, including writing the JSON output files it specifies.${BUGBOT_BLOCK}
@@ -612,6 +621,7 @@ jobs:
             $SPEC_SKILL" \
               --model ${{ inputs.model_standard }} \
               --permission-mode dontAsk \
+              --setting-sources user \
               --allowedTools Read,Write \
               --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
               --max-turns 8 > /tmp/spec-output.txt 2>&1 &
@@ -727,5 +737,11 @@ jobs:
             context.md
             test-plan.md
             screenshots/
+            /tmp/core-output.txt
+            /tmp/sweep-output.txt
+            /tmp/spec-output.txt
+            /tmp/functional-output.txt
+            /tmp/functional-prompt.txt
+            /tmp/prd-content.md
           if-no-files-found: ignore
           retention-days: 7
