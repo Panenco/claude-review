@@ -789,5 +789,13 @@ jobs:
             /tmp/functional-output.txt
             /tmp/functional-prompt.txt
             /tmp/prd-content.md
+            /tmp/core-findings.json
+            /tmp/sweep-findings.json
+            /tmp/spec-findings.json
+            /tmp/functional-findings.json
+            /tmp/core-meta.json
+            /tmp/functional-meta.json
+            /tmp/*-findings.invalid.json
+            /tmp/*-meta.invalid.json
           if-no-files-found: ignore
           retention-days: 7
