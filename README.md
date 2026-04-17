@@ -6,7 +6,7 @@ Reusable, multi-stage PR review pipeline powered by Claude Code. Runs automated 
 
 ### 1. Add the caller workflow
 
-Create `.github/workflows/claude-review.yml` in your repo. **Pin to a full commit SHA** — `secrets: inherit` hands every repo/org secret (including `CLAUDE_CODE_OAUTH_TOKEN`) to this workflow, so a mutable tag is a supply-chain risk. Bump the SHA deliberately when you want a new version.
+Create `.github/workflows/claude-review.yml` in your repo. Track the `@v1` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v1 + secrets: inherit` on every PR.
 
 ```yaml
 name: Claude PR Review
@@ -21,15 +21,15 @@ on:
         type: string
 jobs:
   review:
-    # Pin to an immutable SHA. Look up the current v1 SHA at
-    # https://github.com/Panenco/claude-review/commits/v1 and substitute below.
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@<40-char-sha>  # v1
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
 ```
 
-If you prefer `@v1` over a SHA (accepting the risk), know that **both the reusable workflow file and the composite action download resolve against the tag at different moments of the job**. Moving `v1` while a run is starting can cause a version mismatch between the two — prefer SHA pinning for deterministic behavior.
+Why `@v1` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If *your* repo has different trust needs, substitute a 40-char SHA for `@v1`.
+
+**Tag-resolution caveat.** The reusable workflow file and the composite action resolve `@v1` at different moments of the job. Moving `v1` while a run is starting can cause a mismatch between the two — push the `v1` tag at idle times, not while runs are in flight.
 
 ### 2. Set secrets
 
