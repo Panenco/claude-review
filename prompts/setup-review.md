@@ -2,6 +2,16 @@
 
 You are setting up the Panenco Claude PR review pipeline in this repository. Follow these steps in order.
 
+## Principles (read once, apply throughout)
+
+Your output must pass the pipeline's own review on the first commit — **no findings, verdict `APPROVE`**. To achieve that:
+
+1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. The validator step flags missing paths; don't let it.
+2. **Prefer fail-fast patterns over silent timeouts.** Every readiness wait loop must explicitly log and warn (or exit) when it times out, not just `break` out. "Silently succeeds on timeout" is the #1 bug the reviewer catches in review-configs.
+3. **Use a flat `##` structure in review-config.md where the pipeline extractor walks.** `### Step N` subsections *within* `## Functional validation` are fine (extractor recurses), but `### Auth` and `### Known service ports` must be **peer to** `## Functional validation`, not nested under it. (If you see them under it in existing examples, assume those examples are wrong.)
+4. **Pin the reusable workflow to a commit SHA**, not `@v1`. `secrets: inherit` makes a mutable tag a supply-chain risk.
+5. **Match the exact phrasing the auto-extractor expects** for sign-in lines and auth methods (listed in Step 4 → `### Auth`).
+
 ## Step 1: Understand the repo
 
 Before writing any config, gather context about this project:
@@ -96,12 +106,28 @@ This section tells the pipeline how to start the dev environment for end-to-end 
 Structure as numbered steps:
 
 **Step 1: Database** — If the project uses a database:
-- Docker compose: `docker compose up -d` + wait for readiness
+- Docker compose: `docker compose up -d` + wait for readiness **with an explicit timeout error**. Never use a silent `for ... && break; sleep ...; done` pattern — the reviewer flags it as a bug. Use this shape:
+  ```bash
+  docker compose up -d
+  READY=false
+  for i in $(seq 1 15); do
+    if docker compose exec -T <service> pg_isready -U <user> > /dev/null 2>&1; then
+      READY=true; break
+    fi
+    sleep 2
+  done
+  if [ "$READY" != "true" ]; then
+    echo "::error::Database never became ready in 30s"; exit 1
+  fi
+  ```
 - If no Docker: check for a cloud DB URL in `.env.example`, or note that functional testing requires a running DB
 - If no DB at all: skip this step
 
 **Step 2: Environment** — `.env` setup:
-- If `.env.example` exists: `cp .env.example .env`
+- **First, `ls` the repo to find where `.env.example` actually lives.** Monorepos frequently have it under `apps/<name>/.env.example` rather than repo-root. Document the real path.
+- If `.env.example` exists at the repo root: `cp .env.example .env`
+- If it lives elsewhere (e.g. `apps/api/.env.example`): `cp apps/api/.env.example .env`
+- Do NOT write `cp .env.example .env` without checking — that is exactly the class of finding the review catches.
 - Document what env vars are needed and what they should contain
 
 **Step 3: Migrations / codegen** — ORM setup:
@@ -163,19 +189,53 @@ List the actual ports you found in Step 1 (from `package.json` scripts, framewor
 | <name> | <URL you discovered> | <health endpoint if known> |
 ```
 
-## Step 5: Verify secrets
+**Section placement matters.** `### Auth` and `### Known service ports` must sit **at the root of the file** (as peers of `## Functional validation`), not **inside** `## Functional validation`. The dev-env extractor uses heading level to find each section:
 
-Check if `CLAUDE_CODE_OAUTH_TOKEN` is configured as a repo or org secret. If not, instruct the user to run:
+Correct file outline:
+
 ```
-claude setup-token
+## Build preparation
+## Convention files
+## Stack-specific review focus
+## Functional validation
+  ### Step 1: Database
+  ### Step 2: Environment
+  ### Step 3: Migrations
+  ### Step 4: Dev server
+  ### Step 5: Test data
+### Auth                     <-- PEER of ## Functional validation
+### Known service ports      <-- PEER of ## Functional validation
 ```
-and add the output as a repo secret named `CLAUDE_CODE_OAUTH_TOKEN`.
 
-## Step 6: Test
+If you nest `### Auth` under `## Functional validation`, the Auth extractor picks up code it shouldn't, and the Functional-validation extractor may pick up Auth code too. The reviewer flags this as `wrong-impl` on first run.
 
-Push the changes on a branch, open a PR, and verify the workflow triggers. Check:
+## Step 5: Verify self-check
+
+Before committing, re-read your own `.github/review-config.md` and confirm:
+
+- [ ] Every path appearing in a `cp`, `source`, or `cat` command exists at the stated path. Run `ls <path>` to prove it.
+- [ ] Every readiness wait loop either exits non-zero on timeout OR logs a `::warning::`/`::error::`. No bare `for ... && break; sleep ...; done` patterns.
+- [ ] `### Auth` and `### Known service ports` sit at the top level of the file, not nested inside `## Functional validation`.
+- [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
+- [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
+- [ ] The caller workflow pins `uses:` to a commit SHA (not `@v1`).
+
+If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
+
+## Step 6: Verify secrets
+
+Three secrets + one app install decision:
+
+1. `CLAUDE_CODE_OAUTH_TOKEN` (required) — generate with `claude setup-token` and add as a repo or org secret.
+2. `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (optional, recommended for orgs): install the `panenco-claude-reviewer` GitHub App on this repo (or org-wide), then add all three secrets. Without them, the workflow falls back to posting as `github-actions[bot]`; with them, it posts as `panenco-claude-reviewer[bot]` and can dismiss stale reviews on new pushes. Installing the App alone is not enough — the three secrets must be set too.
+
+## Step 7: Test
+
+Push the changes on a branch, open a PR, and verify the workflow triggers. Expected outcome:
+
 - "Install review pipeline" step succeeds (composite action)
-- "Validate review config" shows your sections detected
-- Context builder produces `context.md`
-- Dev env setup starts your services
-- At least one reviewer produces findings or approves
+- "Validate review config" shows all six sections detected and no "references files that don't exist" warnings
+- Context builder produces `context.md` and `test-plan.md`
+- Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
+- All three reviewers (core, sweep, functional) produce output
+- **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.

@@ -163,8 +163,17 @@ Generic template — adapt to your stack:
 \`\`\`bash
 # Use whatever your project uses to start services. Common examples:
 docker compose up -d
-# Then wait for readiness:
-for i in $(seq 1 15); do docker compose exec -T <service> pg_isready -U <user> > /dev/null 2>&1 && break; sleep 2; done
+# Then wait for readiness with an EXPLICIT timeout error — a bare
+# `for ... && break; sleep ...; done` silently succeeds on timeout and
+# will be flagged by the reviewer as wrong-impl.
+READY=false
+for i in $(seq 1 15); do
+  if docker compose exec -T <service> pg_isready -U <user> > /dev/null 2>&1; then
+    READY=true; break
+  fi
+  sleep 2
+done
+[ "$READY" = "true" ] || { echo "::error::Service never became ready in 30s"; exit 1; }
 \`\`\`
 
 ### Step 2: Environment

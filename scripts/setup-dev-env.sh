@@ -23,14 +23,27 @@ CONFIG=".github/review-config.md"
 HAS_CONFIG=false
 [ -f "$CONFIG" ] && HAS_CONFIG=true
 
-# Helper: extract bash code blocks from a section of review-config.md
+# Helper: extract bash code blocks from a section of review-config.md.
+#
+# The section boundary respects heading level. If `sec` matches a `##`
+# heading, extraction continues through any `###` subsections and stops at
+# the next `##`. If it matches a `###` heading, extraction stops at the
+# next `###` or `##`. This was previously broken — the old logic reset
+# `in_sec` on every `##` OR `###`, which caused `### Step 1` subsections
+# under `## Functional validation` to silently terminate extraction and
+# skip every bash block in the section.
 extract_section_code() {
   local section="$1" file="$2"
   awk -v sec="$section" '
-    /^## / || /^### / { in_sec = ($0 ~ sec) }
+    /^(##|###) / {
+      lvl = ($0 ~ /^### /) ? 3 : 2
+      if (in_sec && lvl <= sec_level) in_sec = 0
+      if (!in_sec && $0 ~ sec)        { in_sec = 1; sec_level = lvl }
+      next
+    }
     in_sec && /^```bash$/ { in_block=1; next }
-    in_sec && /^```$/ { in_block=0; next }
-    in_block { print }
+    in_sec && /^```$/     { in_block=0; next }
+    in_block              { print }
   ' "$file"
 }
 
@@ -61,19 +74,27 @@ else
   if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ] || [ -f compose.yml ] || [ -f compose.yaml ]; then
     echo "Auto: starting Docker services..."
     docker compose up -d 2>&1 || echo "::warning::docker compose failed"
-    # Wait for database containers to be ready
+    # Wait for database containers to be ready. The loop emits a distinct
+    # "DB_READY" / "DB_TIMEOUT" marker so downstream steps know whether to
+    # continue; we still return success (so functional testing can attempt
+    # auto-discovery), but the marker + warning makes the timeout visible
+    # instead of silently succeeding.
+    DB_READY=false
     for i in $(seq 1 15); do
       if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1 || \
          docker compose exec -T db pg_isready -U postgres > /dev/null 2>&1 || \
          docker compose exec -T database pg_isready -U postgres > /dev/null 2>&1 || \
          docker compose exec -T mysql mysqladmin ping -h localhost > /dev/null 2>&1 || \
          docker compose exec -T db mysqladmin ping -h localhost > /dev/null 2>&1; then
-        echo "Database ready."
+        DB_READY=true
+        echo "Database ready (attempt $i)."
         break
       fi
-      [ $i -eq 15 ] && echo "::warning::DB not ready after 30s"
       sleep 2
     done
+    if [ "$DB_READY" = "false" ]; then
+      echo "::warning::Database never became ready in 30s — downstream migrations/seeds may fail."
+    fi
   fi
   if [ ! -f .env ]; then
     for example_env in .env.example .env.sample .env.template .env.dev; do
