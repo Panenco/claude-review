@@ -48,15 +48,27 @@ PRISMA_FOUND=$(find . -maxdepth 5 -path '*/prisma/schema.prisma' -not -path '*/n
 ENV_HINT+="Skip setup steps that are already done."
 
 # ── Build AUTH_INSTRUCTIONS ──
-AUTH_INSTRUCTIONS="No auth configured. Test only public endpoints. Note auth gaps in uncertain_observations."
+# Default when auth extraction fails or is absent: tell the agent to consult
+# review-config.md (which is embedded in context.md) instead of silently
+# treating the app as unauthenticated. That's better than "test only public
+# endpoints" because most functional tests need auth.
+AUTH_INSTRUCTIONS="Auth was not auto-extracted. Read the '### Auth' section of review-config.md (included in context.md) and follow the documented method (cookie/bearer/header/custom). If the app has no auth, test public endpoints only and note auth status in uncertain_observations."
 if [ -f .github/review-config.md ] && grep -q '^### Auth' .github/review-config.md; then
-  # Extract sign-in URL and credentials from review-config.md
-  SIGNIN_LINE=$(grep -i 'sign.in' .github/review-config.md | grep -oE 'POST [^ ]+' | head -1 | sed 's/^POST //' | sed 's/`//g')
-  SIGNIN_BODY=$(grep -i 'sign.in' .github/review-config.md | grep -oE '\{[^}]+\}' | head -1)
+  # Extract sign-in URL and credentials from review-config.md.
+  # Match "Sign in", "Sign-in", "Signin", "Log in", "Log-in", "Login" — these
+  # are the common user-visible phrasings. `|| true` guards against grep
+  # returning non-zero when no line matches, which would abort the whole
+  # analyze step under `set -euo pipefail`.
+  AUTH_LINES=$(grep -iE 'sign.?in|log.?in' .github/review-config.md || true)
+  SIGNIN_LINE=$(printf '%s\n' "$AUTH_LINES" | grep -oE 'POST [^ ]+' | head -1 | sed 's/^POST //' | sed 's/`//g' || true)
+  SIGNIN_BODY=$(printf '%s\n' "$AUTH_LINES" | grep -oE '\{[^}]+\}' | head -1 || true)
   if [ -n "$SIGNIN_LINE" ] && [ -n "$SIGNIN_BODY" ]; then
-    # Build the browser_evaluate auth code
+    # Build the browser_evaluate auth code. This assumes cookie-based auth
+    # (credentials:'include'). Bearer- and header-based auth need the agent
+    # to capture the response token and re-send it, which the agent does
+    # from review-config.md directly — we don't try to templatize it here.
     FULL_SIGNIN_URL="${API_URL_VAL%/api*}${SIGNIN_LINE}"
-    AUTH_INSTRUCTIONS="browser_evaluate with: async () => { const r = await fetch('${FULL_SIGNIN_URL}', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(${SIGNIN_BODY}), credentials:'include'}); return r.status; }"
+    AUTH_INSTRUCTIONS="browser_evaluate with: async () => { const r = await fetch('${FULL_SIGNIN_URL}', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(${SIGNIN_BODY}), credentials:'include'}); return r.status; } — if review-config.md documents a non-cookie method (bearer/header/x-auth), ignore this snippet and follow the documented method instead."
   fi
 fi
 

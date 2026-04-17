@@ -124,7 +124,7 @@ Structure as numbered steps:
 Document how to authenticate for testing:
 - Sign-in endpoint (method, URL, body)
 - Test user credentials (email/password or API key)
-- Auth method: `cookie` (use `-c cookies.txt`), `bearer` (use `Authorization: Bearer <token>`), or `none`
+- Auth method: `cookie` (use `-c cookies.txt`), `bearer` (use `Authorization: Bearer <token>`), `header` (custom header like `x-auth`), or `none`
 
 Use the exact endpoints, credentials, and auth method you discovered in Step 1. Format:
 
@@ -132,7 +132,18 @@ Use the exact endpoints, credentials, and auth method you discovered in Step 1. 
 ### Auth
 - Sign up: `<METHOD> <endpoint>` with `<JSON body>`
 - Sign in: `<METHOD> <endpoint>` with `<JSON body>`
-- Method: cookie | bearer | none
+- Method: cookie | bearer | header | none
+```
+
+**Important — exact phrasing matters for the functional tester's auth auto-detection.** Start the sign-in line with one of `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, or `Login:`. The functional tester scans for these prefixes and for a `POST <endpoint>` + `{JSON body}` to pre-build a browser auth snippet. If your app uses a different phrasing, the snippet just won't be pre-built — the agent will fall back to reading this section directly from `context.md`, which is fine but less efficient.
+
+For `header` or non-cookie auth (e.g., token in `x-auth` response header), document exactly how to capture and resend the token. Example:
+
+```markdown
+### Auth
+- Sign in: `POST /api/auth/login` with `{"email":"<email>","password":"<password>"}`
+- On success the token is returned in the `x-auth` response header. Subsequent requests must include `x-auth: <token>`.
+- Method: header
 ```
 
 If the app has no auth: write `### Auth` with `- Method: none`
