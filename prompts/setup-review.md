@@ -8,7 +8,7 @@ Your output must pass the pipeline's own review on the first commit — **no fin
 
 1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. The validator step flags missing paths; don't let it.
 2. **Prefer fail-fast patterns over silent timeouts.** Every readiness wait loop must explicitly log and warn (or exit) when it times out, not just `break` out. "Silently succeeds on timeout" is the #1 bug the reviewer catches in review-configs.
-3. **Use a flat `##` structure in review-config.md where the pipeline extractor walks.** `### Step N` subsections *within* `## Functional validation` are fine (extractor recurses), but `### Auth` and `### Known service ports` must be **peer to** `## Functional validation`, not nested under it. (If you see them under it in existing examples, assume those examples are wrong.)
+3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the "Validate review config" step greps for `^### Auth` and `^### Known service ports` to count detected sections, and getting the level wrong emits warnings and confuses readers. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
 4. **Pin the reusable workflow to a commit SHA**, not `@v1`. `secrets: inherit` makes a mutable tag a supply-chain risk.
 5. **Match the exact phrasing the auto-extractor expects** for sign-in lines and auth methods (listed in Step 4 → `### Auth`).
 
@@ -189,9 +189,9 @@ List the actual ports you found in Step 1 (from `package.json` scripts, framewor
 | <name> | <URL you discovered> | <health endpoint if known> |
 ```
 
-**Section placement matters.** `### Auth` and `### Known service ports` must sit **at the root of the file** (as peers of `## Functional validation`), not **inside** `## Functional validation`. The dev-env extractor uses heading level to find each section:
+**Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. The "Validate review config" step greps for `^### Auth` and `^### Known service ports` literally.
 
-Correct file outline:
+Correct file outline — note heading levels:
 
 ```
 ## Build preparation
@@ -203,11 +203,11 @@ Correct file outline:
   ### Step 3: Migrations
   ### Step 4: Dev server
   ### Step 5: Test data
-### Auth                     <-- PEER of ## Functional validation
-### Known service ports      <-- PEER of ## Functional validation
+### Auth                     ← level 3, placed at file root after ## Functional validation
+### Known service ports      ← level 3, placed at file root after ## Functional validation
 ```
 
-If you nest `### Auth` under `## Functional validation`, the Auth extractor picks up code it shouldn't, and the Functional-validation extractor may pick up Auth code too. The reviewer flags this as `wrong-impl` on first run.
+Do **not** promote to `## Auth` / `## Known service ports` — the validator's `^### ` grep misses them and emits warnings. Do **not** nest them under `## Functional validation` either — when they live inside, the Functional-validation extractor picks up Auth code it shouldn't. Keep them exactly as **level-3 headings at the file's top level, immediately after the last `### Step N`**.
 
 ## Step 5: Verify self-check
 
