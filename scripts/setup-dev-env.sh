@@ -76,10 +76,18 @@ echo "::group::Pre-start dev environment"
 # ── Phase 1: Bring up the environment ──
 if [ -f "$DEV_SCRIPT" ]; then
   echo "Running $DEV_SCRIPT (first-class dev-start contract)..."
-  # Subshell isolation: the script's readiness loops typically end with
-  # `exit 1` on timeout, and under `set -e` that would kill this step
-  # instead of letting the review fall through to degraded mode.
-  ( bash "$DEV_SCRIPT" ) || echo "::warning::$DEV_SCRIPT exited non-zero — functional testing may be skipped"
+  # Subshell isolation: the script is expected to block until services
+  # respond and exit 0. Exit non-zero is treated as a real failure —
+  # not a warning — because the consumer wrote a bring-up script and
+  # it failed, which means the functional tester has nothing to hit
+  # and review findings about functional behaviour would be misleading.
+  # This is a change from earlier v1 behaviour, which always downgraded
+  # to `::warning::`; that was masking real bugs (e.g. valcori's
+  # MikroORM entity circular import) and the user asked for fail-hard.
+  if ! ( bash "$DEV_SCRIPT" ); then
+    echo "::error::$DEV_SCRIPT exited non-zero — dev environment did not come up. See step log above for the script's own error output."
+    exit 1
+  fi
 elif [ "$HAS_CONFIG" = "true" ]; then
   # Legacy contract: bash blocks embedded in review-config.md's
   # ## Functional validation section. Keep this path for repos that
