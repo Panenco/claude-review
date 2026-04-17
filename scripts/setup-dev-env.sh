@@ -47,13 +47,16 @@ extract_section_code() {
   ' "$file"
 }
 
-# Helper: extract service URLs from Known service ports table
+# Helper: extract service URLs from Known service ports table.
+# Returns only the FIRST matching row's URL: multiple matches (e.g. "API" vs
+# "API docs") would otherwise produce multi-line output, which when written to
+# $GITHUB_OUTPUT below breaks the file-command format ("Invalid format '<url>'").
 extract_port_url() {
   local service="$1" file="$2"
   awk -v svc="$service" '
     /^\| / && tolower($0) ~ tolower(svc) {
       match($0, /https?:\/\/[^ |]+/)
-      if (RSTART > 0) print substr($0, RSTART, RLENGTH)
+      if (RSTART > 0) { print substr($0, RSTART, RLENGTH); exit }
     }
   ' "$file"
 }
@@ -64,7 +67,14 @@ if [ "$HAS_CONFIG" = "true" ] && [ -f "$CONFIG" ]; then
   SETUP_CODE=$(extract_section_code "Functional validation" "$CONFIG")
   if [ -n "$SETUP_CODE" ]; then
     echo "Running setup from review-config.md..."
-    eval "$SETUP_CODE" || echo "::warning::Some review-config.md setup commands failed"
+    # Run the eval'd setup in a subshell. Configs routinely end readiness
+    # loops with `exit 1` when a service never responds, and because `eval`
+    # runs in the current shell that would terminate setup-dev-env.sh
+    # outright and fail the whole step. Isolating it in `( ... )` means
+    # such a failure only aborts the config's own setup — the rest of the
+    # pipeline (core + sweep reviewers) can still run, and the health
+    # probes below will re-attempt discovery.
+    ( eval "$SETUP_CODE" ) || echo "::warning::Some review-config.md setup commands failed"
   else
     echo "No setup code blocks in review-config.md"
   fi
@@ -149,10 +159,27 @@ if [ "$HAS_CONFIG" = "true" ]; then
   WEB_URL=$(extract_port_url "Web" "$CONFIG")
 fi
 
-# Probe API URL (from config or auto-discover)
+# Probe API URL (from config or auto-discover).
+#
+# Configs often list the API base as e.g. `http://localhost:4000` even when the
+# framework mounts routes under a prefix (`/api`, `/health`, etc.), so a plain
+# probe against the base URL 404s and the whole step times out. Try the given
+# URL first, then fall back to common health paths on the same origin before
+# giving up.
 if [ -n "$API_URL" ]; then
+  API_ORIGIN=$(printf '%s' "$API_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
   for i in $(seq 1 30); do
-    curl -sf "$API_URL" > /dev/null 2>&1 && API_READY=true && break
+    if curl -sf "$API_URL" > /dev/null 2>&1; then
+      API_READY=true; break
+    fi
+    for suffix in /api /api/health /api/ping /health /healthz; do
+      if curl -sf "${API_ORIGIN}${suffix}" > /dev/null 2>&1; then
+        API_URL="${API_ORIGIN}${suffix}"
+        API_READY=true
+        echo "Auto: API responded at $API_URL (configured base did not)"
+        break 2
+      fi
+    done
     sleep 2
   done
 else
@@ -211,7 +238,9 @@ if [ "$HAS_CONFIG" = "true" ] && [ "$API_READY" = "true" ]; then
   AUTH_CODE=$(extract_section_code "Auth" "$CONFIG")
   if [ -n "$AUTH_CODE" ]; then
     echo "Running auth setup from review-config.md..."
-    eval "$AUTH_CODE" && AUTH_READY=true || echo "::warning::Auth setup from config failed"
+    # Same subshell-isolation pattern as the Functional validation eval:
+    # an `exit N` or unbound var in the config must not kill the step.
+    ( eval "$AUTH_CODE" ) && AUTH_READY=true || echo "::warning::Auth setup from config failed"
   fi
 fi
 echo "auth_ready=$AUTH_READY" >> "$GITHUB_OUTPUT"
