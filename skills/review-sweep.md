@@ -18,6 +18,10 @@ Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, 
 1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
 2. Read `context.md` at the repo root — full diff, file contents, convention rules, build output. This is the only file you need to Read.
 
+### Honor bugbot's acceptance sections
+
+Before flagging anything, scan the embedded `bugbot.md` for **acceptance/exemption** sections (e.g. `## Accepted supply-chain trade-offs`, `## Accepted trade-offs`, `## Do NOT flag`, `## Known exceptions`). Any finding that matches an item listed there MUST be dropped entirely — not downgraded to `note`, not moved to `uncertain_observations`. The project owner has explicitly declared those patterns accepted.
+
 ## Your scope — finding types
 
 | Type | Definition |

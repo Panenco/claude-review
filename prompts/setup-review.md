@@ -42,8 +42,19 @@ on:
         description: 'PR number to review'
         required: true
         type: string
+
+# Cancel superseded review runs when a PR branch is repushed. Manual dispatch
+# gets a per-invocation group so it never cancels concurrent PR runs.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   review:
+    # Skip drafts to avoid burning review budget on in-progress work. The
+    # pipeline still re-runs automatically on `ready_for_review`. Manual
+    # dispatch is always allowed.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     # Track the v1 floating tag so pipeline fixes propagate automatically to
     # every consumer repo. Supply-chain acceptance is declared in bugbot.md
     # under "Accepted supply-chain trade-offs" so the reviewer does not
@@ -53,6 +64,11 @@ jobs:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
 ```
+
+Note: the `concurrency:` block and the `if:` draft guard are required — omitting
+either causes recurring reviewer noise (cursor-style bots flag missing concurrency
+alongside all other repo workflows, and the pipeline re-runs on every `synchronize`
+against draft PRs, wasting budget).
 
 ## Step 3: Create bugbot.md
 
@@ -67,7 +83,7 @@ Include a "Verify before flagging" section AND an "Accepted supply-chain trade-o
 ## Verify before flagging
 
 Before reporting a finding that cites a library or component, confirm it exists:
-- Check `context.md` → "Repo capabilities" for available exports and dependencies.
+- Check `context.md` (generated at review runtime by the Context Builder agent; written to the workspace root during the run, not committed) → "Repo capabilities" for available exports and dependencies.
 - If the artifact is not listed, drop the finding or move to `uncertain_observations`.
 
 ## Accepted supply-chain trade-offs
@@ -226,6 +242,7 @@ Before committing, re-read your own `.github/review-config.md` and confirm:
 - [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
 - [ ] The caller workflow tracks `@v1` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v1 + secrets: inherit` as accepted. Both are needed — the @v1 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
+- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR.
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
 
