@@ -105,8 +105,11 @@ jobs:
           fetch-depth: 50
 
       # Install review pipeline skills + scripts from the central repo.
+      # TESTING: pin to branch during PR #3 validation so helper-script and
+      # build-review changes are actually installed (not just the workflow).
+      # Revert to @v1 before merging so v1-tracking works for consumers.
       - name: Install review pipeline
-        uses: panenco/claude-review@v1
+        uses: panenco/claude-review@fix/helper-script-orphan-reviewers
 
       # Validate review-config.md sections (warn on missing recommended sections)
       # and sanity-check that file paths it references actually exist in the repo.
