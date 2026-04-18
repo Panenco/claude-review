@@ -30,12 +30,71 @@ set -euo pipefail
 
 echo "::group::Merge findings + build review"
 
-# Guard: check which agents produced output
+# Guard: check which agents produced VALID output. An agent's findings
+# file being present but not JSON (e.g. an invalid escape in a free-text
+# `evidence` field) used to crash the whole step with `jq: parse error`
+# on the slurpfile below. Now we validate up front, warn, and preserve
+# the malformed file for artifact upload so the agent output can be
+# inspected without re-running.
+is_valid_findings() {
+  # Accept only a JSON array — agents are required to write `[]` at minimum.
+  [ -f "$1" ] && jq -e 'type == "array"' "$1" >/dev/null 2>&1
+}
+is_valid_json() {
+  [ -f "$1" ] && jq empty "$1" >/dev/null 2>&1
+}
+preserve_invalid() {
+  local src="$1"
+  [ -f "$src" ] || return 0
+  cp "$src" "${src%.json}.invalid.json" 2>/dev/null || true
+  # Show the first parse error in logs for immediate diagnosis
+  jq empty "$src" 2>&1 | head -3 || true
+}
+
 CORE_HAS_OUTPUT=false; SWEEP_HAS_OUTPUT=false; SPEC_HAS_OUTPUT=false; FUNCTIONAL_HAS_OUTPUT=false
-[ -f /tmp/core-findings.json ] && CORE_HAS_OUTPUT=true
-[ -f /tmp/sweep-findings.json ] && SWEEP_HAS_OUTPUT=true
-[ -f /tmp/spec-findings.json ] && SPEC_HAS_OUTPUT=true
-[ -f /tmp/functional-findings.json ] && FUNCTIONAL_HAS_OUTPUT=true
+if [ -f /tmp/core-findings.json ]; then
+  if is_valid_findings /tmp/core-findings.json; then
+    CORE_HAS_OUTPUT=true
+  else
+    echo "::warning::Core reviewer findings are not a valid JSON array — treating as failed."
+    preserve_invalid /tmp/core-findings.json
+  fi
+fi
+if [ -f /tmp/sweep-findings.json ]; then
+  if is_valid_findings /tmp/sweep-findings.json; then
+    SWEEP_HAS_OUTPUT=true
+  else
+    echo "::warning::Sweep reviewer findings are not a valid JSON array — treating as failed."
+    preserve_invalid /tmp/sweep-findings.json
+  fi
+fi
+if [ -f /tmp/spec-findings.json ]; then
+  if is_valid_findings /tmp/spec-findings.json; then
+    SPEC_HAS_OUTPUT=true
+  else
+    echo "::warning::Spec-compliance findings are not a valid JSON array — treating as failed."
+    preserve_invalid /tmp/spec-findings.json
+  fi
+fi
+if [ -f /tmp/functional-findings.json ]; then
+  if is_valid_findings /tmp/functional-findings.json; then
+    FUNCTIONAL_HAS_OUTPUT=true
+  else
+    echo "::warning::Functional tester findings are not a valid JSON array — treating as failed."
+    preserve_invalid /tmp/functional-findings.json
+  fi
+fi
+# Meta files are also agent-written JSON — fall back to empty if malformed.
+if [ -f /tmp/core-meta.json ] && ! is_valid_json /tmp/core-meta.json; then
+  echo "::warning::Core reviewer meta is not valid JSON — falling back to {}."
+  preserve_invalid /tmp/core-meta.json
+  echo '{}' > /tmp/core-meta.json
+fi
+if [ -f /tmp/functional-meta.json ] && ! is_valid_json /tmp/functional-meta.json; then
+  echo "::warning::Functional tester meta is not valid JSON — falling back to {}."
+  preserve_invalid /tmp/functional-meta.json
+  echo '{}' > /tmp/functional-meta.json
+fi
 
 if [ "$CORE_HAS_OUTPUT" = "false" ] && [ "$SWEEP_HAS_OUTPUT" = "false" ]; then
   echo "::error::Both code reviewers failed to produce output — cannot generate a verdict."
