@@ -167,12 +167,23 @@ if [ -n "$SCREENSHOT_DIR" ]; then
 
   TREE_ENTRIES="[]"
   UPLOAD_COUNT=0
+  FAILED_COUNT=0
+  TOTAL_COUNT=$(ls "$SCREENSHOT_DIR"/*.png 2>/dev/null | wc -l)
   for img in "$SCREENSHOT_DIR"/*.png; do
     BASENAME=$(basename "$img")
-    B64=$(base64 -w0 < "$img" 2>/dev/null || base64 < "$img")
     UPLOAD_PATH="pr-${PR_NUMBER}/${BASENAME}"
-    BLOB_SHA=$(GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/blobs" \
-      --method POST -f content="$B64" -f encoding="base64" --jq '.sha' 2>/dev/null) || true
+    # Pipe the base64 payload via stdin + --input rather than `-f content=`.
+    # The argv-form field silently fails for blobs above ~200 KB on GitHub
+    # runners (form-encoded body outgrows some internal buffer), leaving
+    # `BLOB_SHA` empty and the image silently dropped. argenx-argo-map#227
+    # run 24578947702 uploaded 4/9 screenshots exactly along the 26 KB
+    # boundary — every larger PNG (map view, user menu, SAML redirect)
+    # was dropped and only survived as a "see build artifacts" link. A
+    # JSON body through stdin sidesteps the form-encoding path entirely.
+    BLOB_SHA=$(base64 -w0 < "$img" 2>/dev/null | \
+      jq -Rs '{content: ., encoding: "base64"}' | \
+      GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/blobs" \
+        --method POST --input - --jq '.sha' 2>/tmp/blob-err.log) || true
     if [ -n "$BLOB_SHA" ]; then
       TREE_ENTRIES=$(echo "$TREE_ENTRIES" | jq --arg p "$UPLOAD_PATH" --arg s "$BLOB_SHA" \
         '. + [{"path": $p, "mode": "100644", "type": "blob", "sha": $s}]')
@@ -180,8 +191,16 @@ if [ -n "$SCREENSHOT_DIR" ]; then
       SCREENSHOT_URLS=$(echo "$SCREENSHOT_URLS" | jq --arg k "$BASENAME" --arg v "$URL" '. + {($k): $v}')
       echo "  $BASENAME -> $URL"
       UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+    else
+      FAILED_COUNT=$((FAILED_COUNT + 1))
+      SIZE=$(wc -c < "$img" | tr -d ' ')
+      ERR_TAIL=$(tail -c 200 /tmp/blob-err.log 2>/dev/null | tr '\n' ' ')
+      echo "::warning::Blob upload failed for $BASENAME ($SIZE bytes) — will render as fallback link. API err: ${ERR_TAIL:-<empty>}"
     fi
   done
+  if [ "$FAILED_COUNT" -gt 0 ]; then
+    echo "::warning::Screenshot upload: $UPLOAD_COUNT/$TOTAL_COUNT succeeded ($FAILED_COUNT failed). Failed images fall back to 'see build artifacts' text in the review body."
+  fi
 
   if [ "$UPLOAD_COUNT" -gt 0 ]; then
     echo "$TREE_ENTRIES" > /tmp/tree-entries.json
@@ -206,7 +225,7 @@ if [ -n "$SCREENSHOT_DIR" ]; then
         GH_TOKEN="$GITHUB_REPO_TOKEN" gh api "repos/$GITHUB_REPOSITORY/git/refs" \
           --method POST -f ref="refs/heads/review-assets" -f sha="$COMMIT" >/dev/null 2>&1
       fi
-      echo "Uploaded $UPLOAD_COUNT screenshots (1 orphan commit, old URLs preserved)"
+      echo "Uploaded $UPLOAD_COUNT/$TOTAL_COUNT screenshots (1 orphan commit, old URLs preserved)"
     fi
   fi
 fi
