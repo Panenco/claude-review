@@ -26,6 +26,9 @@ on:
         required: false
       CLAUDE_REVIEW_APP_SLUG:
         required: false
+      TRACKER_SECRETS:
+        required: false
+        description: "Optional. Newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/fetch-issue.sh. Populated from the caller repo's secret of the same name via `secrets: inherit`."
 
 jobs:
   review:
@@ -399,6 +402,182 @@ jobs:
             : > /tmp/prd-files.txt
             : > /tmp/prd-content.md
           fi
+
+      # Extract every recognized ticket-reference pattern from the branch name,
+      # PR title, and PR body into a structured candidates file. Provider-agnostic:
+      # we never hardcode a tracker's host or ID format. The optional hook script
+      # (next step) reads this file and decides which signal matches its tracker.
+      # Runs unconditionally — the file is always present and well-formed even when
+      # nothing matches, so downstream readers don't need a guard.
+      - name: Extract external-issue candidates
+        shell: bash
+        env:
+          # PR metadata flows through env vars (never inlined into run: via ${{ }})
+          # to avoid command injection from a maliciously-crafted PR body/title/branch.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -uo pipefail
+          # Pre-create /tmp/external-issue.md as empty so the context-builder skill's
+          # "ALWAYS read" invariant holds for pure-GitHub consumers (no hook script).
+          # The hook step below overwrites this on opt-in; otherwise it stays empty
+          # and Turn 6-7 omits the "Linked external issue" section.
+          : > /tmp/external-issue.md
+
+          python3 <<'PY'
+          import json, os, re
+
+          pr_title = os.environ.get('PR_TITLE') or ''
+          pr_body = os.environ.get('PR_BODY') or ''
+          head_ref = os.environ.get('HEAD_REF') or ''
+
+          TICKET_RE = re.compile(r'\b[A-Z][A-Z0-9]+-\d+\b')
+          URL_RE = re.compile(r'https?://[^\s)\]>]+')
+          URL_WITH_HOST_RE = re.compile(r'https?://([^/\s)\]>]+)')
+          # Lines like "Key: value" — we filter to values that contain a URL or
+          # ticket ID, otherwise every "Status: WIP" line becomes a marker.
+          LINE_MARKER_RE = re.compile(
+              r'^\s*([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.+?)\s*$',
+              re.MULTILINE,
+          )
+          # Closing-keyword style: "Fixes LIN-123", "Closes https://..."
+          CLOSING_RE = re.compile(
+              r'\b(fixes?|closes?|resolves?|implements?|refs?|tracks?)\s+'
+              r'(https?://\S+|[A-Z][A-Z0-9]+-\d+)',
+              re.IGNORECASE,
+          )
+
+          def strip_trailing_punct(s):
+              return s.rstrip('.,;:!?')
+
+          explicit_markers = []
+          closing_keywords = []
+          urls = []
+          ids = []
+
+          # Tier 1: explicit markers in PR body.
+          for key, value in LINE_MARKER_RE.findall(pr_body):
+              if URL_RE.search(value) or TICKET_RE.search(value):
+                  explicit_markers.append({
+                      'key': key,
+                      'value': value.strip(),
+                      'source': 'pr_body_line',
+                  })
+
+          # Tier 2: closing-keyword matches in PR body.
+          seen_closing = set()
+          for keyword, target in CLOSING_RE.findall(pr_body):
+              target = strip_trailing_punct(target)
+              sig = (keyword.lower(), target)
+              if sig in seen_closing:
+                  continue
+              seen_closing.add(sig)
+              closing_keywords.append({
+                  'keyword': keyword,
+                  'target': target,
+                  'source': 'pr_body',
+              })
+
+          # Tier 3: URLs in PR body, host exposed.
+          seen_urls = set()
+          for url in URL_RE.findall(pr_body):
+              url = strip_trailing_punct(url)
+              if url in seen_urls:
+                  continue
+              seen_urls.add(url)
+              m = URL_WITH_HOST_RE.match(url)
+              host = m.group(1) if m else ''
+              urls.append({'url': url, 'host': host, 'source': 'pr_body'})
+
+          # Tier 4: branch-name ticket tokens.
+          branch_seen = set()
+          for m in TICKET_RE.finditer(head_ref):
+              tok = m.group(0)
+              if tok in branch_seen:
+                  continue
+              branch_seen.add(tok)
+              ids.append({'id': tok, 'source': 'branch_name'})
+
+          # Tier 5: PR-body ticket tokens (dedup per-source).
+          body_seen = set()
+          for m in TICKET_RE.finditer(pr_body):
+              tok = m.group(0)
+              if tok in body_seen:
+                  continue
+              body_seen.add(tok)
+              ids.append({'id': tok, 'source': 'pr_body'})
+
+          # PR-title ticket tokens (dedup per-source). Titles often carry a
+          # `[LIN-123]` prefix; catching them here means a ticket mentioned only
+          # in the title still surfaces even if the branch naming convention
+          # isn't followed.
+          title_seen = set()
+          for m in TICKET_RE.finditer(pr_title):
+              tok = m.group(0)
+              if tok in title_seen:
+                  continue
+              title_seen.add(tok)
+              ids.append({'id': tok, 'source': 'pr_title'})
+
+          out = {
+              'explicit_markers': explicit_markers,
+              'closing_keywords': closing_keywords,
+              'urls': urls,
+              'ids': ids,
+          }
+          with open('/tmp/external-issue-candidates.json', 'w') as f:
+              json.dump(out, f, indent=2)
+
+          branch_ids = sum(1 for i in ids if i['source'] == 'branch_name')
+          body_ids = sum(1 for i in ids if i['source'] == 'pr_body')
+          title_ids = sum(1 for i in ids if i['source'] == 'pr_title')
+          print(
+              f"External-issue candidates: {len(explicit_markers)} markers, "
+              f"{len(closing_keywords)} keywords, {len(urls)} urls, "
+              f"{branch_ids} branch-ids, {body_ids} body-ids, {title_ids} title-ids"
+          )
+          PY
+
+      # Optional hook: if the consumer repo has a fetch-issue.sh script, run it
+      # with PR metadata + candidates-file path + TRACKER_SECRETS-derived env
+      # vars. Stdout is inlined into context.md as the external-spec section.
+      # Soft-fails — a bad credential or tracker outage must not block reviews.
+      # GH_TOKEN is deliberately NOT forwarded; consumers who need authenticated
+      # GitHub calls put their own PAT in TRACKER_SECRETS.
+      - name: Fetch external linked issue (optional hook)
+        if: hashFiles('.github/claude-review/fetch-issue.sh') != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          # Untrusted PR inputs flow through env only (never ${{ }} in run:).
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          REPO: ${{ github.repository }}
+          ISSUE_CANDIDATES_FILE: /tmp/external-issue-candidates.json
+          TRACKER_SECRETS: ${{ secrets.TRACKER_SECRETS }}
+        run: |
+          set -uo pipefail
+          # Expose each KEY=VALUE line of TRACKER_SECRETS as an env var to the
+          # script. Consumers pick their own names ($LINEAR_API_KEY, $JIRA_EMAIL,
+          # whatever). Blank lines and `# comments` are skipped; everything after
+          # the first `=` is preserved verbatim so tokens containing `=` survive.
+          if [ -n "${TRACKER_SECRETS:-}" ]; then
+            while IFS= read -r line; do
+              case "$line" in ''|'#'*) continue ;; esac
+              [[ "$line" != *=* ]] && continue
+              export "${line%%=*}=${line#*=}"
+            done <<< "$TRACKER_SECRETS"
+          fi
+          chmod +x .github/claude-review/fetch-issue.sh
+          .github/claude-review/fetch-issue.sh > /tmp/external-issue.md 2> /tmp/fetch-issue.stderr || {
+            echo "::warning::fetch-issue.sh exited non-zero — continuing without external spec"
+            cat /tmp/fetch-issue.stderr >&2 || true
+            : > /tmp/external-issue.md
+          }
 
       - name: 'Review: build context'
         id: context_builder

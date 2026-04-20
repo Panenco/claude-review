@@ -238,6 +238,82 @@ Authentication for functional testing:
 | Web | http://localhost:3000 | |
 ```
 
+### `.github/claude-review/fetch-issue.sh` (optional — external issue trackers)
+
+The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from the PR/issue body. Repos that track specs in Linear, Jira, Monday, Notion, etc. can opt into a hook that fetches the external spec and includes it in `context.md` alongside the GitHub one. **No provider is built in here** — the consumer owns the script and picks whatever API call makes sense for their tracker.
+
+Three steps to opt in:
+
+**1. Create a repo secret `TRACKER_SECRETS`** with your credentials in `KEY=VALUE` lines (blank lines and `# comments` are skipped). Pick any names that make sense for your tracker — the workflow exports each line as an env var to your script:
+
+```
+LINEAR_API_KEY=lin_api_xxxxx
+LINEAR_WORKSPACE=panenco
+```
+
+**2. Drop `.github/claude-review/fetch-issue.sh`**. Adapt the `jq` filters and the `curl` call to your tracker:
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+
+# 1. Pick the best ticket reference from the pre-extracted candidates.
+#    Prefer explicit markers, then URLs whose host matches your tracker, then
+#    keyword-qualified targets, then bare IDs. Exit 0 with no output if nothing
+#    matches — that's a normal case, the workflow handles it cleanly.
+TICKET=$(jq -r '
+    [.explicit_markers[] | select(.key | ascii_downcase == "<your-tracker>") | .value][0]
+    // [.urls[] | select(.host == "<your-tracker-host>") | .url][0]
+    // [.closing_keywords[] | .target][0]
+    // [.ids[] | .id][0]
+    // empty
+  ' "$ISSUE_CANDIDATES_FILE")
+[ -z "${TICKET:-}" ] && exit 0
+
+# 2. Fetch from your tracker using env vars you set via TRACKER_SECRETS.
+curl -sS --fail-with-body "<your-tracker-api-url>" \
+  -H "Authorization: $YOUR_API_KEY" \
+  -H "Accept: application/json" \
+| jq -r '"# " + .title + "\n\n" + .description'
+```
+
+**3. (Optional, recommended) Add a `Ticket:` line to your PR template** so authors paste the tracker URL — this lands in the highest-confidence bucket:
+
+```
+Ticket: https://linear.app/team/issue/LIN-123/...
+```
+
+#### Contract
+
+```
+Script:  .github/claude-review/fetch-issue.sh  (presence = opt-in)
+Env in:
+  PR_NUMBER, PR_TITLE, PR_BODY, HEAD_REF, BASE_REF, REPO    (always set)
+  ISSUE_CANDIDATES_FILE=/tmp/external-issue-candidates.json  (always set)
+  <anything you put in TRACKER_SECRETS>                      (your chosen names)
+Stdout:  markdown. Inlined verbatim under "## Linked external issue" in context.md.
+Exit:    0 with output     = success.
+         0 with no output  = no external issue for this PR (normal).
+         non-zero          = soft-fail: ::warning:: logged, review continues.
+```
+
+`GH_TOKEN` is deliberately **not** forwarded. If your script needs authenticated GitHub calls, add your own PAT via `TRACKER_SECRETS`.
+
+#### `$ISSUE_CANDIDATES_FILE` schema
+
+A workflow step scans the branch name, PR title, and PR body for every recognized ticket-reference pattern and writes the result here before your script runs. The file is always present and always valid JSON (empty arrays when nothing matches). Your script picks the signal that matches your tracker.
+
+```json
+{
+  "explicit_markers": [{"key": "Linear", "value": "LIN-123", "source": "pr_body_line"}],
+  "closing_keywords": [{"keyword": "Fixes", "target": "LIN-123", "source": "pr_body"}],
+  "urls":             [{"url": "https://linear.app/...", "host": "linear.app", "source": "pr_body"}],
+  "ids":              [{"id": "LIN-123", "source": "branch_name"}]
+}
+```
+
+Confidence tiers (in extraction priority order): (1) `explicit_markers` — `Ticket: …` / `<Provider>: …` lines in the PR body; (2) `closing_keywords` — `Fixes LIN-123` / `Closes https://…`; (3) `urls` in the PR body (host exposed so you can filter); (4) `ids` from the branch name; (5) `ids` from the PR body without a keyword; (6) `ids` from the PR title (often a `[LIN-123]` prefix). Source field on each `ids` entry is one of `branch_name`, `pr_body`, `pr_title`.
+
 ---
 
 ## Degradation Matrix
@@ -245,6 +321,7 @@ Authentication for functional testing:
 | Missing file | Impact | Behavior |
 |---|---|---|
 | `.github/claude-review/dev-start.sh` | Expected for degraded mode | Functional tester skipped. Core + sweep reviewers still run. |
+| `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Skipped silently. GitHub-issue lookup remains the default spec source. |
 | `review-config.md` | Reduced | No build prep doc, no convention-rule routing, no Known-service-ports URLs to probe, no auth setup. |
 | `bugbot.md` | Minor | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
 | `CLAUDE.md` | Minor | No architecture context. Reviewers rely on diff + issue. |

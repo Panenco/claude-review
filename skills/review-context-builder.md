@@ -518,6 +518,7 @@ Issue a single turn with parallel Read calls for ALL of these:
 - `/tmp/issue.json` (if it exists)
 - `/tmp/project-card.json` (if it exists)
 - **`/tmp/prd-content.md`** — ALWAYS read this file. If non-empty, it contains the full content of the linked PRD (auto-detected by a prior workflow step). PRDs are the authoritative spec: field definitions, validation rules, default values, status transitions. You MUST include it verbatim in context.md under a `## PRD` section. If empty, note "No PRD linked."
+- **`/tmp/external-issue.md`** — ALWAYS read this file. If non-empty, the consumer repo has an optional `.github/claude-review/fetch-issue.sh` hook that fetched spec content from an external tracker (Linear, Jira, Monday, etc.). Include it verbatim in context.md under a `## Linked external issue` section. If empty, skip the section entirely — do not render an empty heading.
 - `.github/review-config.md` (if it exists)
 - `CLAUDE.md`
 
@@ -580,7 +581,8 @@ Check `.github/review-config.md` for build preparation commands. Run them, then 
 - Full diff content (or summary if >800 lines)
 - Linked issue number + full issue body (or "none found")
 - **PRD content** — paste the full content of `/tmp/prd-content.md` verbatim. This is the authoritative spec: field definitions, validation rules, default values, status transitions, UI expectations. Reviewers and the functional tester use it for precise spec-mismatch detection. If empty, note "No PRD linked."
-- **Acceptance criteria** — extract from issue body AND PRD (if available): checkboxes, "should/must/needs to" statements, sections titled "Acceptance Criteria", field definitions, validation rules, default values. If none found, extract intent from PR title + body as 2-3 bullet points.
+- **Linked external issue** — if `/tmp/external-issue.md` is non-empty, add a `## Linked external issue` section with its content verbatim. This is spec content fetched by the consumer's optional tracker hook (Linear/Jira/Monday/etc.) and should be treated as spec-authoritative alongside the PRD and the GitHub issue. If empty, omit the section entirely — do not render an empty heading.
+- **Acceptance criteria** — extract from issue body, PRD, AND the external-issue content (if available): checkboxes, "should/must/needs to" statements, sections titled "Acceptance Criteria", field definitions, validation rules, default values. If none found, extract intent from PR title + body as 2-3 bullet points.
 - GitHub Projects v2 card fields (if available)
 - Review config: stack-specific focus areas from `.github/review-config.md` (if exists)
 - Convention rules: which files apply and their full content
