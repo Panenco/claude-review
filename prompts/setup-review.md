@@ -234,6 +234,50 @@ Rules:
 
 If the project has no services to start (pure-docs repo, lib-only package), do **not** create this file. Its absence triggers degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step — either commit a real one or don't commit one at all.
 
+### Common extras (add only when the repo actually needs them)
+
+These aren't generic enough for the scaffold above, but are common enough to keep hitting — recognize the shape and fold the snippet in when the repo has the prerequisite. Do not add any of these blindly.
+
+- **AWS SDK against LocalStack.** If the backend talks to LocalStack (DynamoDB / SNS / SQS / S3), the AWS SDK's credential provider chain still runs on every call. A runner with no `~/.aws` and no env-var creds raises `CredentialsProviderError: Could not load credentials from any providers` and the service either loops on retry or crashes on startup. LocalStack accepts anything, so stub:
+  ```bash
+  export AWS_ACCESS_KEY_ID=test
+  export AWS_SECRET_ACCESS_KEY=test
+  export AWS_REGION=<your-region>   # must match what the app's config expects
+  ```
+  Put this in the service's env line or export it at the top of the script, before the service boots.
+
+- **Firebase auth emulator for apps that verify Firebase JWTs.** If the backend's auth stack is Firebase, the functional tester can't sign in against real Firebase from a runner (no whitelisted OAuth redirect for `localhost`). Bring up the emulator instead and point the backend at it via `FIREBASE_AUTH_EMULATOR_HOST`. Requires `firebase.json` + `.firebaserc` checked in and `firebase-tools` installed (dev-dep or global). Skeleton:
+  ```bash
+  # Start the auth emulator (port from firebase.json; 59099 is a common override).
+  pnpm firebase emulators:start --only auth --project <your-project-id> > /tmp/firebase.log 2>&1 &
+  FB_READY=false
+  for i in $(seq 1 60); do
+    # Any HTTP response (even 404) means the emulator bound the port.
+    curl -s -o /dev/null --max-time 2 -w '%{http_code}' http://127.0.0.1:<port>/ | grep -qE '^[0-9]+$' \
+      && { FB_READY=true; break; }
+    sleep 2
+  done
+  [ "$FB_READY" = "true" ] || { echo "::error::Firebase emulator never bound within 120s"; tail -n 200 /tmp/firebase.log; exit 1; }
+
+  # Then boot the backend with FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:<port>.
+  ```
+  With the emulator running, any email/password combo signs in successfully — the tester can create a test user via your `/auth/sign-up` endpoint and reach authenticated pages without a real Google account.
+
+- **Vite dev server mode selection.** If `apps/web/.env.development` points `VITE_API_BASE_URL` at a *hosted* dev API (the common case), starting Vite in its default mode makes the tester talk to the hosted API from the runner — which typically fails auth or hits rate limits. Add an `.env.test` (or similar) with URLs pointing at `127.0.0.1:<port>` and start Vite with `--mode test` so it loads that env file:
+  ```bash
+  pnpm --filter <web-app> start:test   # or: vite --host --mode test
+  ```
+  The generic rule: pick the Vite mode whose env file points at the local backend you just started. Same pattern applies to Next.js (`NEXT_PUBLIC_API_URL` in `.env.local`), CRA (`REACT_APP_API_URL`), etc.
+
+- **Detaching background services correctly.** GitHub-hosted runners SIGKILL every process in the step's process group at step-end, so a plain `pnpm start &` does **not** survive into the tester's step — by the time the tester probes `http://localhost:<port>`, the Node process has already been reaped. All three of `setsid`, `nohup`, and `disown` are required:
+  ```bash
+  setsid nohup bash -c 'NODE_ENV=test pnpm --filter <service> start' \
+    < /dev/null > /tmp/<service>.log 2>&1 &
+  pid=$!
+  disown "$pid" 2>/dev/null || true
+  ```
+  `setsid` detaches from the step's process group; `nohup` + stdin-from-`/dev/null` ignores SIGHUP and drops the controlling terminal; `disown` removes the job from the shell's job table. macOS runners don't always ship `setsid`, so fall back to plain `nohup` there for local dev — the pipeline itself runs on ubuntu-latest where all three are present.
+
 ## Step 4.6: External issue tracker (optional)
 
 The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can opt into an extra hook that fetches the external spec and includes it in the reviewer's context. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.

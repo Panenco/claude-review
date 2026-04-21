@@ -700,6 +700,23 @@ jobs:
           MCPEOF
           sed -i 's/^[[:space:]]*//' /tmp/mcp-playwright.json
 
+          # Pre-warm the @playwright/mcp npm cache. The functional tester's
+          # `npx @playwright/mcp@latest ...` spawn happens inside Claude
+          # Code CLI's MCP-init timeout window. With a heavy consumer dev
+          # stack (multiple Node services + emulators competing for
+          # disk/network during the tester's launch), the first cold
+          # `npm install` of @playwright/mcp + its Playwright deps can
+          # exceed that window, leaving the tester with no MCP tools
+          # registered — it reports "ToolSearch for mcp__playwright__*
+          # returned no matches (MCP server did not connect)" and falls
+          # back to static analysis with zero screenshots. Running `--help`
+          # here downloads + caches the package now, so the later npx spawn
+          # hits the cache and completes within Claude's init timeout.
+          # Non-fatal on failure: the tester still runs, just without the
+          # cache warmed.
+          npx --yes @playwright/mcp@latest --help > /dev/null 2>&1 \
+            || echo "::warning::Pre-warm of @playwright/mcp failed — functional tester may hit MCP init timeout under heavy runner load."
+
       # Pre-start dev environment for functional testing.
       - name: Pre-start dev environment for test runner
         if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true' && steps.check_context.outputs.exists == 'true'
