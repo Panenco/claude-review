@@ -349,7 +349,7 @@ jq -n \
     verdict: $verdict,
     summary: $summary,
     spec_compliance: $spec_compliance,
-    spec_sources: ($meta.spec_sources // {linked_issue: null, prd_path: null, convention_rules: []}),
+    spec_sources: ($meta.spec_sources // {linked_issue: null, external_issue: null, prd_path: null, convention_rules: []}),
     findings: $findings,
     requires_human_review: ($meta.requires_human_review // false),
     requires_human_review_reason: ($meta.requires_human_review_reason // null),
@@ -366,13 +366,28 @@ jq -n \
   }' > review-result.json
 
 # ── Build /tmp/review-body.md ──
+# `linked_issue` is the GitHub-native issue number (from closingIssuesReferences).
+# `external_issue` is the tracker identifier (e.g. ABC-123) surfaced by the
+# consumer's optional fetch-issue.sh hook. Show #N when present, otherwise the
+# external identifier, falling back to "none found" only when neither exists.
 ISSUE=$(jq -r '.spec_sources.linked_issue // "none found"' review-result.json)
+EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
 {
   echo "## Claude PR Review — $VERDICT"
   echo ""
   echo "### Spec sources"
   echo ""
-  echo "- Linked issue: $([ "$ISSUE" != "null" ] && [ "$ISSUE" != "none found" ] && echo "#$ISSUE" || echo "none found")"
+  if [ "$ISSUE" != "null" ] && [ "$ISSUE" != "none found" ]; then
+    if [ -n "$EXTERNAL" ] && [ "$EXTERNAL" != "null" ]; then
+      echo "- Linked issue: #$ISSUE (external tracker: $EXTERNAL)"
+    else
+      echo "- Linked issue: #$ISSUE"
+    fi
+  elif [ -n "$EXTERNAL" ] && [ "$EXTERNAL" != "null" ]; then
+    echo "- Linked issue: $EXTERNAL (external tracker)"
+  else
+    echo "- Linked issue: none found"
+  fi
   RULES=$(jq -r '.spec_sources.convention_rules // [] | map("`\(.)`") | join(", ")' review-result.json)
   echo "- Convention rules: ${RULES:-none identified}"
   echo ""
