@@ -292,6 +292,12 @@ Env in:
   ISSUE_CANDIDATES_FILE=/tmp/external-issue-candidates.json  (always set)
   <anything you put in TRACKER_SECRETS>                      (your chosen names)
 Stdout:  markdown. Inlined verbatim under "## Linked external issue" in context.md.
+         For best results, make the first line a heading that surfaces the
+         tracker identifier, e.g. "## Linked Linear issue: LIN-123" — the
+         core reviewer extracts this into spec_sources.external_issue so
+         the final review summary can show the tracker ID alongside any
+         GitHub #N link. Omit the identifier and external_issue stays null;
+         the section body is still read for acceptance-criteria extraction.
 Exit:    0 with output     = success.
          0 with no output  = no external issue for this PR (normal).
          non-zero          = soft-fail: ::warning:: logged, review continues.

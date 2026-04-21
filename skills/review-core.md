@@ -130,6 +130,7 @@ Do NOT set it for:
   "spec_compliance": "Brief statement of spec alignment (1-2 sentences).",
   "spec_sources": {
     "linked_issue": 42,
+    "external_issue": "ABC-123",
     "prd_path": "path or null",
     "convention_rules": ["rules applied"]
   }
@@ -137,6 +138,7 @@ Do NOT set it for:
 ```
 
 - `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec.
-- `spec_sources` extracts the linked issue number, PRD path, and which convention rules applied — read these from context.md. Use `null` for missing values.
+- `spec_sources` extracts the linked issue number, external tracker identifier, PRD path, and which convention rules applied — read these from context.md. Use `null` for missing values.
+- `external_issue` is the tracker identifier (e.g. `ABC-123`, `ENG-214`, `MON-1234`) surfaced by the consumer's optional `.github/claude-review/fetch-issue.sh` hook. Parse it from the heading at the top of the `## Linked external issue` section in context.md — the hook convention is `## Linked <tracker> issue: <IDENTIFIER>` as its first line. If the section is absent or no identifier can be parsed, set to `null`.
 
 Write `[]` for empty findings. ALWAYS write both files.
