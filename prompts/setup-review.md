@@ -60,6 +60,18 @@ jobs:
     # under "Accepted supply-chain trade-offs" so the reviewer does not
     # re-flag `@v1 + secrets: inherit` on every PR.
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    # Grant the reusable workflow the write scopes it needs. Reusable
+    # workflows cannot elevate permissions above the caller, and GitHub's
+    # default `GITHUB_TOKEN` since 2023 is read-only at both org and repo
+    # level. Without this block the run fails at startup with `startup_failure`,
+    # zero jobs, and no downloadable logs — extremely painful to debug.
+    # Required scopes: `contents: write` (push screenshots to the
+    # review-assets branch), `pull-requests: write` + `issues: write`
+    # (post reviews and comments).
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
@@ -68,7 +80,21 @@ jobs:
 Note: the `concurrency:` block and the `if:` draft guard are required — omitting
 either causes recurring reviewer noise (cursor-style bots flag missing concurrency
 alongside all other repo workflows, and the pipeline re-runs on every `synchronize`
-against draft PRs, wasting budget).
+against draft PRs, wasting budget). The `permissions:` block is also required;
+its omission is the #1 startup failure for repos in orgs with the GitHub-default
+read-only `GITHUB_TOKEN` scope (see inline comment above).
+
+**If `secrets: inherit` fails with `Secret CLAUDE_CODE_OAUTH_TOKEN is required, but not provided while calling`** — even though the secret is clearly set on the repo — swap `inherit` for the explicit form as a fallback:
+
+```yaml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_REVIEW_APP_ID: ${{ secrets.CLAUDE_REVIEW_APP_ID }}
+      CLAUDE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
+      CLAUDE_REVIEW_APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
+```
+
+This has been observed on same-repo PRs in at least one external org and is likely caused by an org-level policy interacting with `inherit`. The explicit form unblocks the run; root cause can be investigated later.
 
 ## Step 3: Create bugbot.md
 
@@ -317,23 +343,79 @@ If any check fails, fix before committing. The pipeline's reviewer will catch th
 
 ## Step 6: Verify secrets and App install
 
-Three required secrets, one optional tracker secret, and one App install decision. **The install and the secrets are independent — miss either and the workflow breaks in a different way.** Walk through the required set, then confirm the optional fourth if Step 4.6 opted in:
+The OAuth token is required for every repo; the App-token path is how reviews get posted under a branded bot identity instead of `github-actions[bot]`. **Which track you follow depends on whether the repo is inside the Panenco org or external.** Pick one:
+
+### Track A — Repos inside the Panenco org (short path)
 
 1. `CLAUDE_CODE_OAUTH_TOKEN` (required) — generate with `claude setup-token` and add as a repo or org secret. Without it the workflow fails at the first step with `::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured.`
 
-2. `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (optional, recommended for orgs) — set all three as org secrets with "All repositories" visibility so new repos inherit them automatically via `secrets: inherit`. Without them the workflow still runs but posts as `github-actions[bot]`.
+2. `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (recommended) — these are typically already set as **Panenco org secrets** with "All repositories" visibility, so `secrets: inherit` picks them up automatically for any new repo. If they're not, ask a Panenco org owner to add them once, org-wide.
 
-3. **Install the `panenco-claude-reviewer` GitHub App on the target repo (or org-wide, matching #2)**. This is separate from the secrets and both are required. Symptoms when each is missing:
+3. **Install the `panenco-claude-reviewer` App on the repo** (already org-installed in most cases — the app lives inside Panenco). Go to `github.com/organizations/Panenco/settings/installations` → `panenco-claude-reviewer` → Configure → add the repo if not already covered by "All repositories".
 
-   | Missing | Failure mode |
-   |---|---|
-   | Secrets only | "Create GitHub App token" step is **skipped** → `github-actions[bot]` posts the review. |
-   | Secrets set, App not installed on repo | "Create GitHub App token" step **fails** with `RequestError [HttpError]: Not Found` / `Failed to create token for "<repo>": Not Found`. Downstream steps skip or abort. Fix: go to `github.com/organizations/<org>/settings/installations` → `panenco-claude-reviewer` → Configure → add the repo (or switch to "All repositories"). |
-   | Both set correctly | "Create GitHub App token" = `success`, "Resolve review identity" logs `Review identity: panenco-claude-reviewer[bot]`. |
+Verify after the first PR run: the job log should contain `Review identity: panenco-claude-reviewer[bot]`.
 
-   Verify after the first PR run by opening the job log and grepping for `Review identity:` — it should print the App slug, not `github-actions`.
+### Track B — Repos outside the Panenco org (external-org path)
 
-4. `TRACKER_SECRETS` (optional, required only if Step 4.6 opted into an external tracker) — single multiline secret with newline-separated `KEY=VALUE` pairs that your `fetch-issue.sh` will read as env vars. Without it, the hook runs but every env var the script references is empty — the Actions log will show a `::warning::` from `fetch-issue.sh`, the review completes without external-spec context.
+The shared Panenco app can't be installed on a different org (its visibility is typically private to Panenco). You create your own GitHub App in the external org, wire up the same four secrets pointing at *your* app, and install *your* app on the repo.
+
+**Step B1 — Create your own GitHub App in the external org.**
+
+Go to `github.com/organizations/<your-org>/settings/apps` → **New GitHub App**. Fill in:
+
+- **GitHub App name** — anything, e.g. `<org>-claude-reviewer`. Must be globally unique across GitHub. The URL slug is auto-derived from this name (lowercased, spaces → hyphens, apostrophes stripped) — this slug becomes the value of `CLAUDE_REVIEW_APP_SLUG`.
+- **Homepage URL** — anything; not used by the pipeline.
+- **Webhook** — uncheck **Active**. The pipeline calls GitHub's API; it does not receive webhook events.
+- **Repository permissions** — set exactly these:
+
+  | Permission | Access |
+  |---|---|
+  | Contents | Read |
+  | Pull requests | Read and write |
+  | Issues | Read and write |
+  | Metadata | Read (auto-selected) |
+
+  A freshly-created App defaults to **No permissions**. The pipeline's "Create GitHub App token" call will succeed against a no-perms App (it just issues an empty-scope token), but subsequent API calls — posting reviews, pushing assets — silently fail. Set all four above before installing.
+
+- **Where can this GitHub App be installed?** — "Only on this account".
+
+Create, then on the App's settings page:
+
+1. Note the **App ID** at the top (integer, e.g. `3442056`) — this is `CLAUDE_REVIEW_APP_ID`.
+2. Click **Generate a private key** — downloads a `.pem` file. Its full contents (including `-----BEGIN RSA PRIVATE KEY-----` and `-----END RSA PRIVATE KEY-----` lines) become `CLAUDE_REVIEW_APP_PRIVATE_KEY`.
+3. Record the slug from the App's settings URL (`github.com/organizations/<org>/settings/apps/<slug>`) — this becomes `CLAUDE_REVIEW_APP_SLUG`.
+
+**Step B2 — Set the four secrets on the target repo (or external org).**
+
+- `CLAUDE_CODE_OAUTH_TOKEN` — generate with `claude setup-token`.
+- `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` — from Step B1.
+
+**Step B3 — Install your App on the target repo.**
+
+In the App's left sidebar click **Install App** → choose the external org → pick "All repositories" or select the target repo.
+
+**Then verify on the installation page (`github.com/organizations/<your-org>/settings/installations` → `<your-app>` → Configure) that BOTH fields are correctly populated:**
+
+- **Repository access** — shows the target repo (or "All repositories"). If it says "No repositories", the App is technically "installed" but can't act on anything; the token call returns `Not Found`.
+- **Permissions** — shows the four permissions from Step B1. If it says "No permissions", you created the App without setting them and need to go back to App settings → Permissions & events → add them → request/approve new permissions on the installation.
+
+It is common to fix one and miss the other on a first setup; the installation page surfaces both in the same view. Check both before re-running.
+
+### Symptom table (both tracks)
+
+| Missing / misconfigured | Failure mode |
+|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | First step fails: `::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured.` |
+| `CLAUDE_REVIEW_APP_*` secrets | "Create GitHub App token" step is **skipped** → `github-actions[bot]` posts the review. Functionally OK, just the wrong identity. |
+| `CLAUDE_REVIEW_APP_*` secrets set, App not installed on repo | "Create GitHub App token" step **fails** with `RequestError [HttpError]: Not Found` / `Failed to create token for "<repo>": Not Found`. Fix: add the repo under the installation's Repository access. |
+| App installed but with "No repositories" | Same `Not Found` as above. Installation record exists but is empty. |
+| App installed but with "No permissions" | Token creation **succeeds**, posting the review **fails** with 403s in later steps. Fix: add Contents R / Pull requests RW / Issues RW / Metadata R in App settings, then approve the updated permissions on the installation. |
+| Caller workflow missing `permissions:` block | `startup_failure`, zero jobs, no logs. Happens when the org's default `GITHUB_TOKEN` is read-only. Fix: add the `permissions:` block from Step 2. |
+| All correct | "Create GitHub App token" = `success`, "Resolve review identity" logs `Review identity: <your-app-slug>[bot]`. |
+
+### `TRACKER_SECRETS` (optional, for Step 4.6 opt-in)
+
+Single multiline secret with newline-separated `KEY=VALUE` pairs that your `fetch-issue.sh` reads as env vars. Without it, the hook runs but every referenced env var is empty — the Actions log will show a `::warning::` from `fetch-issue.sh`, and the review completes without external-spec context.
 
 ## Step 7: Test
 
