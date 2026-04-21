@@ -139,6 +139,7 @@ Do NOT set it for:
 
 - `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec.
 - `spec_sources` extracts the linked issue number, external tracker identifier, PRD path, and which convention rules applied — read these from context.md. Use `null` for missing values.
+- `linked_issue` must come ONLY from the context-builder's `**Linked GitHub issues:**` line (derived from GitHub's `closingIssuesReferences`). **Do NOT** scrape `#N` patterns from the PR title, PR body, branch name, or conventional-commit suffixes — those often carry the PR number itself or stale references, and "Linked issue: #<PR-number>" in the summary confuses reviewers. If the context-builder line reads `none (closingIssuesReferences is empty)` or the section is absent, use `null` — even when the PR title contains `(#123)` or similar.
 - `external_issue` is the tracker identifier (e.g. `ABC-123`, `ENG-214`, `MON-1234`) surfaced by the consumer's optional `.github/claude-review/fetch-issue.sh` hook. Parse it from the heading at the top of the `## Linked external issue` section in context.md — the hook convention is `## Linked <tracker> issue: <IDENTIFIER>` as its first line. If the section is absent or no identifier can be parsed, set to `null`.
 
 Write `[]` for empty findings. ALWAYS write both files.
