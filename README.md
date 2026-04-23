@@ -39,7 +39,7 @@ Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo or org secret. Generate it with:
 claude setup-token
 ```
 
-Optional: for a custom review bot identity, also set `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, and `CLAUDE_REVIEW_APP_SLUG`.
+Optional: for a custom review bot identity, also set `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, and `CLAUDE_REVIEW_APP_SLUG`.
 
 ### 3. (Optional) Add project config
 
