@@ -89,7 +89,7 @@ read-only `GITHUB_TOKEN` scope (see inline comment above).
 ```yaml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      CLAUDE_REVIEW_APP_ID: ${{ secrets.CLAUDE_REVIEW_APP_ID }}
+      CLAUDE_REVIEW_APP_CLIENT_ID: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
       CLAUDE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
       CLAUDE_REVIEW_APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
 ```
@@ -349,7 +349,7 @@ The OAuth token is required for every repo; the App-token path is how reviews ge
 
 1. `CLAUDE_CODE_OAUTH_TOKEN` (required) — generate with `claude setup-token` and add as a repo or org secret. Without it the workflow fails at the first step with `::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured.`
 
-2. `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (recommended) — these are typically already set as **Panenco org secrets** with "All repositories" visibility, so `secrets: inherit` picks them up automatically for any new repo. If they're not, ask a Panenco org owner to add them once, org-wide.
+2. `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (recommended) — these are typically already set as **Panenco org secrets** with "All repositories" visibility, so `secrets: inherit` picks them up automatically for any new repo. If they're not, ask a Panenco org owner to add them once, org-wide.
 
 3. **Install the `panenco-claude-reviewer` App on the repo** (already org-installed in most cases — the app lives inside Panenco). Go to `github.com/organizations/Panenco/settings/installations` → `panenco-claude-reviewer` → Configure → add the repo if not already covered by "All repositories".
 
@@ -381,14 +381,14 @@ Go to `github.com/organizations/<your-org>/settings/apps` → **New GitHub App**
 
 Create, then on the App's settings page:
 
-1. Note the **App ID** at the top (integer, e.g. `3442056`) — this is `CLAUDE_REVIEW_APP_ID`.
+1. Note the **Client ID** (string starting with `Iv`, e.g. `Iv23li...`) — this is `CLAUDE_REVIEW_APP_CLIENT_ID`.
 2. Click **Generate a private key** — downloads a `.pem` file. Its full contents (including `-----BEGIN RSA PRIVATE KEY-----` and `-----END RSA PRIVATE KEY-----` lines) become `CLAUDE_REVIEW_APP_PRIVATE_KEY`.
 3. Record the slug from the App's settings URL (`github.com/organizations/<org>/settings/apps/<slug>`) — this becomes `CLAUDE_REVIEW_APP_SLUG`.
 
 **Step B2 — Set the four secrets on the target repo (or external org).**
 
 - `CLAUDE_CODE_OAUTH_TOKEN` — generate with `claude setup-token`.
-- `CLAUDE_REVIEW_APP_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` — from Step B1.
+- `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` — from Step B1.
 
 **Step B3 — Install your App on the target repo.**
 
