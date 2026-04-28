@@ -148,6 +148,7 @@ Always write both files, even on partial completion.
 ```json
 {
   "strategy": "functional|quick|skip",
+  "technical_change": false,
   "areas_tested": ["list-page", "create-form", "auth"],
   "screenshots": [
     {"file": "/tmp/screenshots/01-list.png", "description": "List page with data", "area": "list"}
@@ -157,6 +158,8 @@ Always write both files, even on partial completion.
   "uncertain_observations": ["Things not tested or ambiguous results"]
 }
 ```
+
+- `technical_change` — copy verbatim from `test-plan.md`'s front matter. If the planner emitted `## Technical change: true`, set `true`. Otherwise set `false` (or omit). The verdict gate uses this to withhold APPROVE when a refactor/upgrade PR was not actually smoke-tested — including the degraded-mode case where the dev environment couldn't be brought up at all.
 
 ### Severity
 

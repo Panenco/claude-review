@@ -306,6 +306,39 @@ HUMAN_REVIEW=$(echo "$CORE_META" | jq -r '.requires_human_review // false')
 # `is_valid_json` check only verifies parseability, not shape.
 MANUAL_SPEC_PRESENT=$(echo "$CORE_META" | jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end')
 
+# Smoke-test gate. The test planner flags PRs whose stated intent is "no
+# user-visible behavior change" (refactor, upgrade, library swap, perf
+# rewrite, build/config change) by emitting `## Technical change: true` in
+# test-plan.md. These PRs have no acceptance criteria to validate against —
+# specs by design say "nothing should change" — so the only regression-
+# catching path is to actually run the app. APPROVE is withheld unless the
+# smoke run came back PASS or WARN. This fires both when the smoke run
+# failed AND when it couldn't run at all (no dev-start.sh in the consumer
+# repo, or tester crashed).
+#
+# Read directly from test-plan.md, NOT functional-meta.json. The planner
+# always writes test-plan.md to completion before the tester runs, so the
+# flag survives tester crashes. Reading from functional-meta.json would be
+# defeated by the workflow's synthetic `{strategy:"skip",overall:"PASS"}`
+# crash placeholder, which would silently bypass exactly the case the gate
+# needs to catch (tester didn't actually run). The tester ALSO copies the
+# flag into functional-meta.json for the JSON artifact record, but that's
+# a secondary record — this is the source of truth.
+TECHNICAL_CHANGE=false
+if [ -f test-plan.md ] && grep -qiE '^## *Technical change: *true *$' test-plan.md; then
+  TECHNICAL_CHANGE=true
+fi
+
+# Did the smoke test actually pass? Account for the workflow's synthetic
+# `{strategy:"skip",overall:"PASS"}` placeholder injected on tester crash —
+# without this guard, FUNCTIONAL_OVERALL would read "PASS" for a crashed
+# tester and the technical-change gate would be silently bypassed in
+# exactly the case it's meant to catch.
+SMOKE_OK=false
+if [ "${FUNCTIONAL_OK:-1}" -eq 1 ] && { [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; }; then
+  SMOKE_OK=true
+fi
+
 if [ "$HAS_BLOCKING" = "true" ]; then
   VERDICT="REQUEST_CHANGES"
 elif [ "$HUMAN_REVIEW" = "true" ]; then
@@ -317,13 +350,16 @@ elif [ "$CORE_HAS_OUTPUT" = "false" ]; then
 elif [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
   VERDICT="COMMENT"
   echo "::warning::No manual spec available — downgrading APPROVE to COMMENT (core reviewer set manual_spec_present=false)"
+elif [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
+  VERDICT="COMMENT"
+  echo "::warning::Technical change without successful smoke test (overall=$FUNCTIONAL_OVERALL, ok=${FUNCTIONAL_OK:-1}) — downgrading APPROVE to COMMENT"
 elif [ "$HAS_ANY" = "true" ]; then
   VERDICT="COMMENT"
 else
   VERDICT="APPROVE"
 fi
 
-echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, manual_spec=$MANUAL_SPEC_PRESENT, functional=$FUNCTIONAL_OVERALL)"
+echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, manual_spec=$MANUAL_SPEC_PRESENT, technical_change=$TECHNICAL_CHANGE, smoke_ok=$SMOKE_OK, functional=$FUNCTIONAL_OVERALL)"
 
 # ── Build review-result.json ──
 # Crash-aware functional_meta view, used ONLY for the JSON artifact. If
@@ -356,6 +392,7 @@ jq -n \
   --arg verdict "$VERDICT" \
   --arg summary "$SUMMARY" \
   --arg spec_compliance "$SPEC_COMPLIANCE" \
+  --arg technical_change "$TECHNICAL_CHANGE" \
   --argjson findings "$ALL_FINDINGS" \
   --argjson meta "$CORE_META" \
   --argjson functional_meta "$JSON_FUNCTIONAL_META" \
@@ -366,6 +403,7 @@ jq -n \
     spec_compliance: $spec_compliance,
     spec_sources: ($meta.spec_sources // {linked_issue: null, external_issue: null, prd_path: null, convention_rules: []}),
     manual_spec_present: (if ($meta | type == "object" and has("manual_spec_present")) then $meta.manual_spec_present else true end),
+    technical_change: ($technical_change == "true"),
     findings: $findings,
     requires_human_review: ($meta.requires_human_review // false),
     requires_human_review_reason: ($meta.requires_human_review_reason // null),
@@ -418,6 +456,10 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
   # Conditional banners
   if [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
     echo "> :no_entry: **No manual spec available — APPROVE withheld.** Reviews can only validate code against a human-authored requirement source: a linked GitHub issue, a PRD, an external tracker spec, or a manually-written PR description. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) summarise the diff — they describe what the code does, not what it should do — so they aren't a basis for spec validation. Link an issue, paste acceptance criteria into the PR body, or wire up an external tracker to enable APPROVE."
+    echo ""
+  fi
+  if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
+    echo "> :no_entry: **Technical change — APPROVE withheld until smoke-tested.** Refactors, library swaps, framework/runtime upgrades, and build-config changes claim no user-visible behavior change, so there are no acceptance criteria to validate against. The only way to catch regressions is to run the app and walk through a representative user flow. The smoke test did not pass here (overall=\`$FUNCTIONAL_OVERALL\`). To enable APPROVE: configure \`.github/claude-review/dev-start.sh\` so the reviewer can launch the app (see README), or fix the issues that caused the smoke run to fail."
     echo ""
   fi
   if [ "$(jq -r '.requires_human_review' review-result.json)" = "true" ]; then
