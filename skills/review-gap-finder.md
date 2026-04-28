@@ -9,24 +9,23 @@ You are the **third perspective** on this PR. Two parallel reviewer pairs have a
 
 ## Efficiency
 
-Target: **≤10 turns**. Turn 1: Read inputs. Turns 2-7: hunt for gaps. Turn 8-9: Write output.
+Target: **≤12 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every prior-finding file + every diff chunk + spec sources + user-replies. Turns 3-9: hunt for gaps. Turn 10-11: Write output. Turn 12: buffer.
 
 Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read context.md, prior findings, and the diff chunks
+## Turn 1: Read context.md (single Read tool call)
 
-1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
-2. Read `context.md` at the repo root — short index.
-3. Read each prior-pass finding file directly (in order, skipping ones that don't exist on disk):
-   - `/tmp/core-findings.json`
-   - `/tmp/core-findings-2.json` (round-1 core pass-2; absent on round 2)
-   - `/tmp/sweep-findings.json`
-   - `/tmp/sweep-findings-2.json` (round-1 sweep pass-2; absent on round 2)
-   - `/tmp/spec-findings.json` (when a PRD was present)
-   These together are the **prior-pass set**. Treat them as one logical pool when running your dedup checks. **You must read every file that exists.**
-4. From context.md's `## Per-file diff index`, Read every chunk path. You inherit core+sweep scope so all chunks are in scope (skip pure `functional` chunks — UI E2E specs are out of your gap-finding remit).
-5. From context.md's `## Spec sources`, Read `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` when listed as non-empty — needed for the spec-coverage pass below.
-6. Read `/tmp/user-replies-on-ours.json` if context.md lists it as non-empty — human rebuttals to prior bot findings. Anything rebutted there is off-limits unless you have new counter-evidence.
+Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool. Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT spread them across turns.
+
+In this single response, Read all of:
+- Prior-pass finding files (the **prior-pass set** for dedup): `/tmp/core-findings.json`, `/tmp/core-findings-2.json` (round 1 only), `/tmp/sweep-findings.json`, `/tmp/sweep-findings-2.json` (round 1 only), `/tmp/spec-findings.json` (when a PRD was present). Issue Reads for all of them; if a file doesn't exist the Read will fail and that's fine — treat the union of the successful ones as the prior set.
+- Every chunk path in context.md's `## Per-file diff index`. You inherit core+sweep scope so all chunks are in scope (skip pure `functional` chunks — UI E2E specs are out of your gap-finding remit).
+- From `## Spec sources`: `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` when context.md lists them as non-empty.
+- `/tmp/user-replies-on-ours.json` when context.md lists it as non-empty.
 
 ### Honor bugbot's acceptance sections
 

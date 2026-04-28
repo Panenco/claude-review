@@ -15,17 +15,25 @@ The PRD is the source of truth. The developer may have misread it, abbreviated a
 
 ## Efficiency
 
-Target: **<=6 turns**. Turn 1: Read inputs. Turns 2-4: Compare. Turn 5-6: Write output.
+Target: **≤8 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of PRD + external issue + spec/core/multi diff chunks. Turns 3-5: compare. Turn 6-7: write outputs. Turn 8: buffer.
 
 Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read context.md and the spec sources + diff chunks
+## Turn 1: Read context.md (single Read tool call)
 
-1. Read `context.md` at the repo root — short index.
-2. From `## Spec sources`, Read the PRD (`/tmp/prd-content.md`). If the file is empty or context.md says "none", write `[]` to `/tmp/spec-findings.json` and `{}` to `/tmp/spec-meta.json` and stop — nothing to compare against.
-3. Also Read the linked external issue (`/tmp/external-issue.md`) and the GitHub issue (`/tmp/issue.json`) when listed as non-empty — they may add criteria the PRD doesn't cover.
-4. From `## Per-file diff index`, Read every chunk tagged `spec`, `core`, or `multi` — you need to compare against actual code, not just the PRD.
-5. On round 2, also Read `/tmp/since-last-chunks/<file>.diff` for files in `## Diff since last review`.
+Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+If context.md's `## Spec sources` lists the PRD as empty AND no external issue is listed, write `[]` to `/tmp/spec-findings.json` and `{}` to `/tmp/spec-meta.json` and stop — nothing to compare against.
+
+Otherwise, issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT spread them across turns:
+
+- `/tmp/prd-content.md` (the PRD)
+- `/tmp/external-issue.md` (when context.md lists it as non-empty — adds criteria the PRD doesn't cover)
+- `/tmp/issue.json` (when context.md lists it as non-empty)
+- Every chunk path tagged `spec`, `core`, or `multi` from context.md's `## Per-file diff index` — you need actual code to compare against the PRD.
+- On round 2, also every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
 
 ## What to compare
 

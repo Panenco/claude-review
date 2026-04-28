@@ -9,19 +9,24 @@ You are one of two parallel reviewers. You focus on **codebase consistency, test
 
 ## Efficiency
 
-Target: **≤6 turns**. Turn 1: Read inputs. Turns 2-4: analyze. Turn 5: Write output.
+Target: **≤8 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every chunk + convention file. Turns 3-6: analyze (test-coverage on-demand Reads happen here). Turn 7: Write output. Turn 8: buffer.
 
 Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read context.md and the paths it points at
+## Turn 1: Read context.md (single Read tool call)
 
-1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
-2. Read `context.md` at the repo root — short index.
-3. Then in **one parallel Read batch**, fetch only what your role needs:
-   - From `## Per-file diff index`: every `chunk` path tagged `sweep` or `multi`. Skip `core` / `spec` / `functional` chunks — that's not your scope.
-   - The convention rule files listed under `## Convention files` that apply to your changed paths.
-   - On round 2, also read every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
-4. For the test-coverage walk (next section), Read sibling spec paths on-demand — the index doesn't pre-list them.
+Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool. Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT issue them across multiple turns — drip-Reading will exhaust your turn budget.
+
+In this single response, Read all of:
+- Every `chunk` path tagged `sweep` or `multi` from context.md's `## Per-file diff index`. Skip `core` / `spec` / `functional` chunks.
+- The convention rule files listed under `## Convention files` that apply to your changed paths.
+- On round 2, also read every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
+
+For the test-coverage walk (next section), Read sibling spec paths on-demand in turn 3 or later — the index doesn't pre-list them.
 
 ### Honor bugbot's acceptance sections
 

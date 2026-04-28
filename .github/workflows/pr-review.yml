@@ -494,31 +494,52 @@ jobs:
       # (prior run failed before upload, or retention expired), the round-2
       # steps gate on the file's presence and degrade to a full re-review
       # with a ::notice:: explaining why.
+      # Look for a prior run that uploaded the round-state artifact. The
+      # artifact is what makes round-2 possible — not whether a bot review
+      # was posted. So we search for any prior run on this branch that has
+      # a `claude-review-state-pr-N` artifact (uploaded on `claude_run.outcome
+      # == success`, regardless of the rest of the run's outcome) and use
+      # the most recent. If a prior run was cancelled mid-flight or its
+      # post-step failed, we still get the last good state.
+      #
+      # This also makes round-2 fire on ANY 2nd-or-later run with a state
+      # artifact, even when the first-review detection above said `is_first`
+      # — e.g. when the bot review couldn't be posted (auth glitch) but
+      # the analyzer did finish and uploaded state. The verdict gate still
+      # protects against bad state via the artifact's schema check.
       - name: Find prior review run
         id: prior_run
-        if: steps.first_review.outputs.is_first == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.head_ref }}
-          # $WORKFLOW_NAME is the *caller* workflow's display name (this
-          # workflow is reusable via workflow_call, so runs are filed under
-          # the caller, not under "Claude PR Review"). Filtering by the
-          # caller's name finds prior runs in any consumer repo regardless
-          # of what they named their wrapper workflow.
-          WORKFLOW_NAME: ${{ github.workflow }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
-          RUN_ID=$(gh run list --branch "$BRANCH" --workflow "$WORKFLOW_NAME" \
-            --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+          ARTIFACT_NAME="claude-review-state-pr-${PR_NUMBER}"
+          # List up to 30 recent runs on this branch, then find the most
+          # recent one whose artifacts include the per-PR state artifact.
+          RUN_IDS=$(gh api --paginate "repos/${REPO}/actions/runs?branch=${BRANCH}&per_page=30" \
+            --jq '.workflow_runs[].id' 2>/dev/null || echo "")
+          RUN_ID=""
+          for id in $RUN_IDS; do
+            HAS=$(gh api "repos/${REPO}/actions/runs/${id}/artifacts" \
+              --jq ".artifacts[] | select(.name==\"${ARTIFACT_NAME}\") | .id" \
+              2>/dev/null | head -1)
+            if [ -n "$HAS" ]; then
+              RUN_ID="$id"
+              break
+            fi
+          done
           echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
           if [ -z "$RUN_ID" ]; then
-            echo "No successful prior run found on this branch — round 2 will degrade to full re-review."
+            echo "No prior review-state artifact found for PR #${PR_NUMBER} on branch ${BRANCH} — round 1 (full review)."
           else
-            echo "Prior successful run: $RUN_ID"
+            echo "Prior review-state artifact: run_id=${RUN_ID} → round 2 (focused on diff-since-last)."
           fi
 
       - name: Download prior review state
-        if: steps.first_review.outputs.is_first == 'false' && steps.prior_run.outputs.run_id != ''
+        if: steps.prior_run.outputs.run_id != ''
         continue-on-error: true
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
@@ -528,7 +549,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve prior review state
-        if: steps.first_review.outputs.is_first == 'false'
+        if: steps.prior_run.outputs.run_id != ''
         id: prior_state
         shell: bash
         run: |
@@ -544,7 +565,7 @@ jobs:
               echo "available=false" >> "$GITHUB_OUTPUT"
             fi
           else
-            echo "::notice::Round 2 detected (prior bot review present) but no state artifact found — degrading to full re-review. Likely cause: prior run failed before upload, or artifact retention expired."
+            echo "::notice::Prior run identified but no state artifact downloaded — degrading to full re-review. Likely cause: download step failed or retention expired."
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -1011,21 +1032,25 @@ jobs:
             PIDS[$role]=$!
           }
 
-          launch_agent core review-core "${{ inputs.model_high }}" 10 \
+          launch_agent core review-core "${{ inputs.model_high }}" 15 \
             "You are the core reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output files it specifies.${ROUND2_HINT}"
 
-          launch_agent sweep review-sweep "${{ inputs.model_standard }}" 8 \
+          launch_agent sweep review-sweep "${{ inputs.model_standard }}" 10 \
             "You are the sweep reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output file it specifies.${ROUND2_HINT}"
 
           # Round-1 only: a second independent pass of core + sweep. Same
           # skills, independent LLM sampling — the union catches misses.
           # Pass-2 writes to *-findings-2.json so pass-1 verdict-critical
           # meta is not clobbered.
-          if [ "${IS_FIRST_REVIEW:-false}" = "true" ]; then
+          # Gate is "no prior state artifact" — i.e. this is the first
+          # attempt at this PR with no usable history. On round 2+ the
+          # resolution checker + focused diff replace the boost; running
+          # it again would re-flag everything we already classified.
+          if [ "${PRIOR_STATE_AVAILABLE:-false}" != "true" ]; then
             echo "Round-1 redundancy: launching core + sweep pass-2 in parallel"
-            launch_agent core-pass2 review-core "${{ inputs.model_high }}" 10 \
+            launch_agent core-pass2 review-core "${{ inputs.model_high }}" 15 \
               "You are the core reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). OUTPUT_FINDINGS=/tmp/core-findings-2.json OUTPUT_META=/tmp/core-meta-2.json — write to these paths so pass-1 is not clobbered. Follow the skill above exactly, including writing the JSON output files it specifies."
-            launch_agent sweep-pass2 review-sweep "${{ inputs.model_standard }}" 8 \
+            launch_agent sweep-pass2 review-sweep "${{ inputs.model_standard }}" 10 \
               "You are the sweep reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). OUTPUT_FINDINGS=/tmp/sweep-findings-2.json — write to this path so pass-1 is not clobbered. Follow the skill above exactly, including writing the JSON output file it specifies."
           fi
 
@@ -1044,7 +1069,7 @@ jobs:
           # detected (otherwise no spec to compare against).
           if [ -s /tmp/prd-content.md ]; then
             echo "Running spec-compliance reviewer (PRD detected)..."
-            launch_agent spec review-spec-compliance "${{ inputs.model_standard }}" 8 \
+            launch_agent spec review-spec-compliance "${{ inputs.model_standard }}" 10 \
               "You are the spec-compliance reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the spec sources (/tmp/prd-content.md, /tmp/external-issue.md, /tmp/issue.json) and the diff chunks it points at, per the Turn 1 instructions in the skill above. Follow the skill above exactly, including writing the JSON output file it specifies.${ROUND2_HINT}"
           else
             echo "Spec-compliance reviewer skipped — no PRD detected"
@@ -1136,7 +1161,7 @@ jobs:
               echo "::warning::review-gap-finder.md not found at $SKILLS_DIR — skipping gap-finder stage"
             else
               echo "::group::Gap-finder critic (Opus, sequential)"
-              launch_agent gap review-gap-finder "${{ inputs.model_high }}" 12 \
+              launch_agent gap review-gap-finder "${{ inputs.model_high }}" 16 \
                 "You are the gap-finder critic for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at, per the Turn 1 instructions in the skill above. The prior-pass finding files (/tmp/core-findings.json, /tmp/core-findings-2.json, /tmp/sweep-findings.json, /tmp/sweep-findings-2.json, /tmp/spec-findings.json) are the dedup baseline — Read each that exists. Follow the skill above exactly, including writing the JSON output file it specifies.${ROUND2_HINT}"
               wait "${PIDS[gap]}" || echo "::warning::gap-finder exited non-zero — continuing with prior findings only"
               # Synthesize [] when the agent exited cleanly but never wrote

@@ -9,20 +9,25 @@ You are one of two parallel reviewers. You focus on **correctness and spec compl
 
 ## Efficiency
 
-Target: **≤8 turns**. Turn 1: Read inputs. Turns 2-5: analyze. Turn 6-7: Write output files.
+Target: **≤10 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every chunk + spec source. Turns 3-7: analyze. Turn 8-9: Write findings + meta. Turn 10: buffer.
 
 Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read context.md and the paths it points at
+## Turn 1: Read context.md (single Read tool call)
 
-1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
-2. Read `context.md` at the repo root — short index.
-3. Then in **one parallel Read batch**, fetch only what your role needs:
-   - From `## Per-file diff index`: every `chunk` path tagged `core`, `spec`, or `multi`. Skip `sweep` / `functional` chunks — that's not your scope.
-   - From `## Spec sources`: `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` if the index lists them as non-empty.
-   - The convention rule files listed under `## Convention files` that apply to your changed paths.
-   - On round 2, also read every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
-4. If a finding candidate references a specific library/export/component, you may also Read the relevant `package.json` / source file to confirm it exists before flagging.
+Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool. Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT issue them across multiple turns. Doing one Read per turn will burn your turn budget before you reach the analysis phase, and the runner will kill you with `Reached max turns`.
+
+In this single response, Read all of:
+- Every `chunk` path tagged `core`, `spec`, or `multi` from context.md's `## Per-file diff index`. Skip `sweep` / `functional` chunks — that's not your scope.
+- From `## Spec sources`: `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` — only the ones context.md lists as non-empty.
+- The convention rule files listed under `## Convention files` that apply to your changed paths.
+- On round 2, also read every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
+
+If a finding candidate later references a specific library/export/component, you may issue a follow-up Read of `package.json` / source file in turn 3 or later — but do not let that case become an excuse to drip-Read in Turn 2.
 
 ### Honor bugbot's acceptance sections
 
