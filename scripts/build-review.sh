@@ -23,7 +23,6 @@ set -euo pipefail
 #   /tmp/core-meta.json           — core reviewer metadata (optional)
 #   /tmp/core-findings-2.json     — round-1 redundancy: core pass-2 findings (optional)
 #   /tmp/sweep-findings-2.json    — round-1 redundancy: sweep pass-2 findings (optional)
-#   /tmp/gap-findings.json        — round-1 critic: gap-finder findings (optional)
 #
 # Output files:
 #   review-result.json            — full review result
@@ -39,7 +38,7 @@ echo "::group::Merge findings + build review"
 # and treat that source as "no output" for the failure gate downstream.
 declare -A HAS_OUTPUT=(
   [core]=false [sweep]=false [spec]=false [functional]=false
-  [core2]=false [sweep2]=false [gap]=false [resolution]=false
+  [core2]=false [sweep2]=false [resolution]=false
 )
 declare -A FINDINGS_FILE=(
   [core]=/tmp/core-findings.json
@@ -48,7 +47,6 @@ declare -A FINDINGS_FILE=(
   [functional]=/tmp/functional-findings.json
   [core2]=/tmp/core-findings-2.json
   [sweep2]=/tmp/sweep-findings-2.json
-  [gap]=/tmp/gap-findings.json
   # Round-2 resolution checker may surface high-severity net-new findings
   # alongside its classification output (see review-resolution-checker.md).
   # Most runs leave this as []; when populated, the entries flow through
@@ -74,7 +72,6 @@ SPEC_HAS_OUTPUT="${HAS_OUTPUT[spec]}"
 FUNCTIONAL_HAS_OUTPUT="${HAS_OUTPUT[functional]}"
 CORE2_HAS_OUTPUT="${HAS_OUTPUT[core2]}"
 SWEEP2_HAS_OUTPUT="${HAS_OUTPUT[sweep2]}"
-GAP_HAS_OUTPUT="${HAS_OUTPUT[gap]}"
 
 # Aggregate flags: pass-2 substitutes for pass-1 if pass-1 failed but pass-2
 # succeeded. Used for the failure gate, the warnings below, and the verdict
@@ -244,7 +241,7 @@ fi
 # HAS_OUTPUT flags above tell us which files survived validation; we
 # feed only those into jq -s 'add'. No intermediate per-source files.
 SAFE_INPUTS=()
-for key in core sweep spec functional gap core2 sweep2 resolution; do
+for key in core sweep spec functional core2 sweep2 resolution; do
   [ "${HAS_OUTPUT[$key]}" = "true" ] && SAFE_INPUTS+=("${FINDINGS_FILE[$key]}")
 done
 # Merge pass-1 + pass-2 core meta. OR-merge safety booleans (any signal
@@ -285,7 +282,7 @@ else
   echo '[]' > /tmp/all-findings-merged.json
 fi
 report_count() { jq 'length' "$1" 2>/dev/null || echo 0; }
-echo "Findings: core=$(report_count /tmp/core-findings.json) sweep=$(report_count /tmp/sweep-findings.json) spec=$(report_count /tmp/spec-findings.json) functional=$(report_count /tmp/functional-findings.json) gap=$(report_count /tmp/gap-findings.json) core2=$(report_count /tmp/core-findings-2.json) sweep2=$(report_count /tmp/sweep-findings-2.json) resolution=$(report_count /tmp/resolution-findings.json) — total=$(jq 'length' /tmp/all-findings-merged.json)"
+echo "Findings: core=$(report_count /tmp/core-findings.json) sweep=$(report_count /tmp/sweep-findings.json) spec=$(report_count /tmp/spec-findings.json) functional=$(report_count /tmp/functional-findings.json) core2=$(report_count /tmp/core-findings-2.json) sweep2=$(report_count /tmp/sweep-findings-2.json) resolution=$(report_count /tmp/resolution-findings.json) — total=$(jq 'length' /tmp/all-findings-merged.json)"
 TOTAL=$(jq 'length' /tmp/all-findings-merged.json)
 
 # ── Deduplication ──
@@ -330,12 +327,15 @@ validate_dedup_output() {
   out_len=$(jq 'length' "$out")
   in_len=$(jq 'length' /tmp/all-findings-merged.json)
   [ "$out_len" -le "$in_len" ] || return 1
-  # Reject suspicious all-drop: input had findings, output is empty. A
-  # legitimate dedup shrinks the array; it never zeroes it. On rejection
-  # we retry once, then fall back to raw findings with a visible error.
+  # Drop-all is allowed: review-dedup.md authorizes it when every input
+  # matches a bugbot-accepted trade-off, or (round 2) every new finding
+  # overlaps a STILL_PRESENT prior. Rejecting drop-all here used to
+  # cause a regression where the fallback re-posted the raw concatenated
+  # findings — exactly the duplicates / exempt entries the dedup is
+  # meant to filter. We log the drop-all case as a notice (so an
+  # operator can audit) but treat it as valid output.
   if [ "$in_len" -gt 0 ] && [ "$out_len" -eq 0 ]; then
-    echo "::warning::Dedup output is empty but input had $in_len finding(s) — rejecting (Haiku likely dropped everything)."
-    return 1
+    echo "::notice::Dedup dropped all $in_len finding(s) — accepting (matches bugbot-exempt or round-2 STILL_PRESENT-overlap rules in review-dedup.md). Audit /tmp/all-findings-merged.json + /tmp/deduped-findings.json if this looks wrong."
   fi
   jq --slurpfile in /tmp/all-findings-merged.json \
      -e 'all(.id as $id | $in[0] | any(.id == $id))' \

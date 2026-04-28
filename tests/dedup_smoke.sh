@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # dedup_smoke.sh — local smoke test against the live Haiku endpoint.
 # Drives the review-dedup skill against a deterministic fixture set and

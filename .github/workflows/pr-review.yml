@@ -362,9 +362,9 @@ jobs:
       # First-review vs follow-up detection. The variable name stays
       # IS_FIRST_REVIEW (renaming churns every reader); what it gates is
       # round-1 vs round-2:
-      #   - Round 1 (IS_FIRST_REVIEW=true): full fan including pass-2
-      #     core+sweep redundancy and the gap-finder critic.
-      #   - Round 2 (IS_FIRST_REVIEW=false): focused fan on
+      #   - Round 1 (no prior state artifact): full fan including the
+      #     pass-2 core+sweep redundancy.
+      #   - Round 2 (prior state artifact present): focused fan on
       #     /tmp/since-last.diff plus the resolution checker against the
       #     prior state artifact.
       # Detection is fail-closed: if the API can't be queried we default
@@ -996,7 +996,6 @@ jobs:
             [core-pass2]=/tmp/core-output-2.txt
             [sweep-pass2]=/tmp/sweep-output-2.txt
             [resolution]=/tmp/resolution-output.txt
-            [gap]=/tmp/gap-output.txt
           )
 
           # Reap any agents still alive on early exit so their output files
@@ -1134,9 +1133,7 @@ jobs:
           # 1 = launched and exited 0; 0 = launched and failed; 1 also for
           # "not launched" so the summary line doesn't show FAILED on
           # legitimately-skipped roles. ROLES is the single source of truth
-          # for which agents go through the wait/status/log loops below —
-          # gap-finder is launched separately in its own block (sequential
-          # after the parallel fan), so it is intentionally excluded.
+          # for which agents go through the wait/status/log loops below.
           ROLES=(core sweep spec functional core-pass2 sweep-pass2 resolution)
           declare -A AGENT_OK=()
           for role in "${ROLES[@]}"; do
@@ -1164,35 +1161,15 @@ jobs:
             echo "::endgroup::"
           done
 
-          # Round-1 critic: gap-finder. Sequential — runs AFTER core+sweep
-          # (and any pass-2 / spec) finish, so the critic sees the union of
-          # every prior finding and hunts for what they missed. Output goes
-          # through Haiku dedup downstream so any overlap collapses there.
-          # Soft-skip on missing skill (gap-finder is non-blocking — pass-1
-          # findings are still useful without a critic), unlike the hard
-          # exits in launch_agent for the always-on roles.
-          if [ "${IS_FIRST_REVIEW:-false}" = "true" ]; then
-            if [ ! -f "$SKILLS_DIR/review-gap-finder.md" ]; then
-              echo "::warning::review-gap-finder.md not found at $SKILLS_DIR — skipping gap-finder stage"
-            else
-              echo "::group::Gap-finder critic (Opus, sequential)"
-              launch_agent gap review-gap-finder "${{ inputs.model_high }}" 16 \
-                "You are the gap-finder critic for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at, per the Turn 1 instructions in the skill above. The prior-pass finding files (/tmp/core-findings.json, /tmp/core-findings-2.json, /tmp/sweep-findings.json, /tmp/sweep-findings-2.json, /tmp/spec-findings.json) are the dedup baseline — Read each that exists. Follow the skill above exactly, including writing the JSON output file it specifies.${ROUND2_HINT}"
-              wait "${PIDS[gap]}" || echo "::warning::gap-finder exited non-zero — continuing with prior findings only"
-              # Synthesize [] when the agent exited cleanly but never wrote
-              # the file (e.g. hit max-turns mid-draft). The skill documents
-              # `[]` as the clean-run success state so this is indistinguishable
-              # downstream — emit a warning so the log shows what happened.
-              if [ ! -f /tmp/gap-findings.json ]; then
-                echo "::warning::gap-finder did not write /tmp/gap-findings.json despite exiting cleanly — likely hit max-turns. Synthesizing [] (no critic findings)."
-                echo '[]' > /tmp/gap-findings.json
-              fi
-              echo "::endgroup::"
-              echo "::group::Gap-finder log"
-              [ -f "${LOGS[gap]}" ] && cat "${LOGS[gap]}" || echo "(no output)"
-              echo "::endgroup::"
-            fi
-          fi
+          # Gap-finder is no longer launched. It used to run sequentially after
+          # the parallel fan as an Opus "critic" reading prior findings to
+          # hunt for what they missed. In practice it added a 9-minute tail
+          # for marginal recall: the parallel fan already runs core×2 +
+          # sweep×2 + spec, and the Haiku semantic dedup downstream collapses
+          # overlap regardless of which agent surfaced what. The cost-benefit
+          # didn't survive measurement (PR #19 dogfood: 0 net-new findings,
+          # 9m05s wall-time). We can re-add it gated on PR size if recall
+          # data later shows it worth the time.
 
           # Export FUNCTIONAL_OK for build-review.sh (it uses it for crash section)
           export FUNCTIONAL_OK
@@ -1274,11 +1251,9 @@ jobs:
             /tmp/functional-meta.json
             /tmp/core-findings-2.json
             /tmp/sweep-findings-2.json
-            /tmp/gap-findings.json
             /tmp/core-meta-2.json
             /tmp/core-output-2.txt
             /tmp/sweep-output-2.txt
-            /tmp/gap-output.txt
             /tmp/resolution-output.txt
             /tmp/resolution-status.json
             /tmp/resolution-findings.json

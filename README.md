@@ -83,8 +83,6 @@ PR opened / updated
     Round 1 only (first review of the PR):
     |-- Core pass-2 (Opus): independent re-review, union-of-finding boost
     |-- Sweep pass-2 (Sonnet): independent re-review
-    |-- Gap-finder critic (Opus, sequential after the parallel fan):
-        net-new findings the prior pairs missed
     |
     Round 2 only (subsequent pushes):
     |-- Resolution checker (Sonnet): classifies every prior finding as
@@ -404,7 +402,7 @@ If you have a polished config for a stack not covered here (e.g. Python/FastAPI,
 The pipeline consists of:
 
 - **Reusable workflow** (`.github/workflows/pr-review.yml`) — orchestration, dev env setup, agent launching, finding merge, review posting
-- **9 skill files** (`skills/`) — prompt templates defining review methodology: `review-context-builder`, `review-core`, `review-sweep`, `review-spec-compliance`, `review-functional-tester`, `review-test-planner`, `review-gap-finder` (round-1 critic), `review-dedup` (Haiku semantic dedup), `review-resolution-checker` (round-2 prior-finding classifier)
+- **8 skill files** (`skills/`) — prompt templates defining review methodology: `review-context-builder`, `review-core`, `review-sweep`, `review-spec-compliance`, `review-functional-tester`, `review-test-planner`, `review-dedup` (Haiku semantic dedup), `review-resolution-checker` (round-2 prior-finding classifier)
 - **Functional prompt template** (`scripts/functional-prompt.template.txt`) — bootstraps the functional tester with auth + env info
 
 All project-specific configuration is read from the consuming repo's `bugbot.md` and `.github/review-config.md` by convention.

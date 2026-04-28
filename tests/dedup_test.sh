@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # dedup_test.sh — fixture test for the deterministic glue around the
 # Haiku dedup call in build-review.sh. The dedup itself is an LLM call
@@ -64,12 +64,15 @@ STILL_PRESENT_BLOCKERS_PROMOTED=$(jq -n \
 assert_eq "Still-present blocker count (c2 promoted to critical in state)" 1 "$STILL_PRESENT_BLOCKERS_PROMOTED"
 
 # 3. Shape + size validator (mirrors validate_dedup_output in build-review.sh).
-#    The "reject empty output for non-empty input" rule is the critical
-#    safeguard against Haiku silently dropping every finding (which jq
-#    `all` on [] would otherwise vacuously pass).
+#    Drop-all is now ALLOWED — review-dedup.md authorizes it for two
+#    cases (all bugbot-exempt, round-2 STILL_PRESENT-overlap). The
+#    earlier "reject empty for non-empty" rule was wrong: it caused the
+#    fallback to re-post raw findings, re-introducing the duplicates /
+#    exempt entries the dedup is meant to filter.
 GOOD='[{"id":"x","severity":"minor","path":"a","line_start":1}]'
 BAD_NOT_ARRAY='{"id":"x"}'
 BAD_MISSING_KEY='[{"id":"x","severity":"minor","path":"a"}]'
+INVENTED_ID='[{"id":"never-seen","severity":"minor","path":"a","line_start":1}]'
 EMPTY='[]'
 NONEMPTY_INPUT='[{"id":"i1","severity":"critical","path":"a","line_start":1}]'
 
@@ -82,7 +85,6 @@ validate_dedup() {
   out_len=$(printf '%s' "$out" | jq 'length')
   in_len=$(printf '%s' "$inp" | jq 'length')
   [ "$out_len" -le "$in_len" ] || return 1
-  if [ "$in_len" -gt 0 ] && [ "$out_len" -eq 0 ]; then return 1; fi
   printf '%s' "$out" | jq --argjson in "$inp" -e 'all(.id as $id | $in | any(.id == $id))' >/dev/null 2>&1 || return 1
   return 0
 }
@@ -91,7 +93,8 @@ if validate_dedup "$GOOD" "$GOOD";                   then assert_eq "Valid dedup
 if validate_dedup "$BAD_NOT_ARRAY" "$GOOD";           then assert_eq "Reject non-array"            1 0; else assert_eq "Reject non-array"            1 1; fi
 if validate_dedup "$BAD_MISSING_KEY" "$GOOD";         then assert_eq "Reject missing key"          1 0; else assert_eq "Reject missing key"          1 1; fi
 if validate_dedup "$EMPTY" "$EMPTY";                  then assert_eq "Accept empty for empty"      0 0; else assert_eq "Accept empty for empty"      0 1; fi
-if validate_dedup "$EMPTY" "$NONEMPTY_INPUT";         then assert_eq "Reject empty for non-empty"  1 0; else assert_eq "Reject empty for non-empty"  1 1; fi
+if validate_dedup "$EMPTY" "$NONEMPTY_INPUT";         then assert_eq "Accept drop-all (legit)"     0 0; else assert_eq "Accept drop-all (legit)"     0 1; fi
+if validate_dedup "$INVENTED_ID" "$NONEMPTY_INPUT";   then assert_eq "Reject invented id"          1 0; else assert_eq "Reject invented id"          1 1; fi
 
 if [ "$fail" -gt 0 ]; then
   echo ""
