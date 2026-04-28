@@ -30,18 +30,18 @@ You own **test coverage** end-to-end (alongside consistency/performance/design):
 |---|---|
 | `consistency` | Diverges from patterns in sibling files. Must quote the sibling file + line being diverged from. |
 | `weak-test` | SUT itself is mocked, assertions only check mock calls, test still passes if SUT is deleted. Must show how. |
-| `missing-test` | Changed source file contains non-trivial logic (handler, hook, util, service) but has no corresponding test file. Verify by attempting to `Read` the expected sibling spec (e.g. for `src/auth.ts`, try `src/auth.spec.ts` / `src/auth.test.ts` / `src/__tests__/auth.spec.ts`); a Read error means no test exists. Severity `minor` for handlers/hooks/utils, `note` for DTOs/modules/thin wrappers. |
+| `missing-test` | Changed source file contains non-trivial logic (handler, hook, util, service) but has no corresponding test file. Check context.md → "Test coverage" section — only flag files marked UNTESTED. Severity `minor` for handlers/hooks/utils, `note` for DTOs/modules/thin wrappers. |
 | `performance` | N+1 queries (DB call in loop), unbounded queries without pagination, expensive ops in hot paths. Must identify the specific loop/query. |
 | `design-smell` | From the consistency angle: change introduces a pattern worse than what exists. Must show the sibling that does it better. |
 | `overcomplicated` | Unnecessarily complex where a simpler approach exists in the codebase. Must show the simpler sibling. |
 
 ### Test coverage (FIRST-CLASS)
 
-Before evaluating consistency or performance, walk the changed-files list in `context.md` and produce one finding per genuinely untested non-trivial file:
+Before evaluating consistency or performance, walk the "Test coverage" section in `context.md` and produce one finding per genuinely untested non-trivial file:
 
-1. For each non-test changed file, classify: handler / hook / util / service / route / DTO / module / thin-wrapper.
-2. To check whether a test exists for `path/foo.ts`, try `Read`ing the most likely sibling specs in order — `path/foo.spec.ts`, `path/foo.test.ts`, `path/__tests__/foo.spec.ts`, `path/__tests__/foo.test.ts`, and (for monorepos) `<workspace>/test/<rel>/foo.spec.ts`. The first successful Read = TESTED. If all four Reads error → UNTESTED. Skip files clearly already in the diff as their own test (`*.spec.*` / `*.test.*` / `*_test.go` / `test_*.py`).
-3. If UNTESTED and the file is a handler / hook / util / service / route → `missing-test` at `severity=minor`. If it's a DTO / module / thin-wrapper → `missing-test` at `severity=note`. Anything else → use judgement; default to `note` if unsure.
+1. Each entry marked UNTESTED in that section is a candidate. Skip entries marked TESTED — even if the test feels thin, that's `weak-test`, not `missing-test`.
+2. For each candidate, classify the changed file: handler / hook / util / service / route / DTO / module / thin-wrapper.
+3. If the file is a handler / hook / util / service / route → `missing-test` at `severity=minor`. If it's a DTO / module / thin-wrapper → `missing-test` at `severity=note`. Anything else → use judgement; default to `note` if unsure.
 4. For tests that exist but assert against mocks of the system under test (mock returns "ok" → test asserts "ok"): `weak-test` at `severity=minor`, with the exact mock and assertion lines quoted.
 
 A sweep run that flags consistency issues but ignores untested handlers is incomplete.
