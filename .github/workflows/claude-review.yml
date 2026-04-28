@@ -1,0 +1,45 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+        type: string
+
+# Cancel superseded review runs when a PR branch is repushed. Manual dispatch
+# gets a per-invocation group so it never cancels concurrent PR runs.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip drafts to avoid burning review budget on in-progress work. The
+    # pipeline still re-runs automatically on `ready_for_review`. Manual
+    # dispatch is always allowed.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # This repo IS panenco/claude-review, so we call the reusable workflow
+    # via its local path rather than `panenco/claude-review/.github/workflows/
+    # pr-review.yml@v1`. Two reasons:
+    #   1. The `org/repo/...@tag` form trips a `startup_failure` here even
+    #      with explicit secret mappings — the cross-repo treatment of
+    #      same-repo reusable calls is the documented quirk in
+    #      `prompts/setup-review.md` Step 2.
+    #   2. The local path exercises the in-PR copy of pr-review.yml, which
+    #      is a stronger dogfood: orchestration changes in a PR get tested
+    #      on that PR's own review run. (Skills + scripts still come from
+    #      @v1 because pr-review.yml's install step uses the @v1 action —
+    #      see line 112 of pr-review.yml — so consumer-visible behavior
+    #      around skills/scripts is unchanged.)
+    uses: ./.github/workflows/pr-review.yml
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets: inherit
