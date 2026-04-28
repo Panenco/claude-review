@@ -1,0 +1,39 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+        type: string
+
+# Cancel superseded review runs when a PR branch is repushed. Manual dispatch
+# gets a per-invocation group so it never cancels concurrent PR runs.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip drafts to avoid burning review budget on in-progress work. The
+    # pipeline still re-runs automatically on `ready_for_review`. Manual
+    # dispatch is always allowed.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # This repo IS panenco/claude-review, so the caller invokes its own
+    # released v1 pipeline against itself. Pinning to @v1 (rather than the
+    # in-PR copy at ./.github/workflows/pr-review.yml) is intentional: it
+    # mirrors how every consumer repo uses the pipeline, so we dogfood the
+    # same path our users hit. Trade-off: pipeline changes in this PR are
+    # NOT exercised by this run — that's a separate concern handled at
+    # tag-cut time.
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+    secrets: inherit
