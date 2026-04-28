@@ -302,24 +302,53 @@ echo '[]' > /tmp/merged-gap.json
 [ "$CORE2_HAS_OUTPUT" = "true" ] && cp /tmp/core-findings-2.json /tmp/merged-core2.json
 [ "$SWEEP2_HAS_OUTPUT" = "true" ] && cp /tmp/sweep-findings-2.json /tmp/merged-sweep2.json
 [ "$GAP_HAS_OUTPUT" = "true" ] && cp /tmp/gap-findings.json /tmp/merged-gap.json
-CORE_META='{}'
-# Pass-1 meta is preferred. Pass-2 meta is the equal-trust fallback when
-# pass-1 didn't write one — required to keep the verdict gates honest
-# under the boost. CORE_ANY_OUTPUT lets pass-2 substitute for pass-1's
-# *findings*, so the same substitution must apply to pass-2's *meta*
-# (manual_spec_present, requires_human_review, spec_compliance,
-# spec_sources, prompt_injection_detected, build_unavailable). Without
-# this, a pass-1 crash + pass-2 success would leave CORE_META='{}',
-# default `manual_spec_present` to true, default `requires_human_review`
-# to false, and silently bypass the spec-presence and human-review gates
-# introduced by 50cc139 — exactly the regression the PR self-review
-# (3 bots converged) flagged.
-if [ -f /tmp/core-meta.json ]; then
-  CORE_META=$(cat /tmp/core-meta.json)
-elif [ -f /tmp/core-meta-2.json ]; then
-  CORE_META=$(cat /tmp/core-meta-2.json)
-  echo "Pass-1 core meta absent; using pass-2 meta for verdict gates."
-fi
+# Merge pass-1 and pass-2 core meta into a single CORE_META that drives the
+# verdict gates. Naming the merge convention so future readers can audit it:
+#
+#   - **OR-merge** on safety-critical booleans (`requires_human_review`,
+#     `prompt_injection_detected`, `reviewer_self_modification`,
+#     `build_unavailable`). If EITHER pass detected the issue, surface it.
+#     Losing an escalation is strictly worse than redundant escalation.
+#   - **AND-merge** on `manual_spec_present`. If EITHER pass says no spec is
+#     available, treat as no spec (block APPROVE via the spec-presence gate
+#     from 50cc139). Losing the gate is strictly worse than spurious downgrade.
+#   - **Pass-1-prefer with pass-2 fallback** on prose / structured fields
+#     (`spec_compliance`, `spec_sources`, `requires_human_review_reason`).
+#     Pass-1 is canonical when present; pass-2 fills in when pass-1 didn't
+#     write the field (or wasn't run at all).
+#   - **Union** on `uncertain_observations` arrays.
+#
+# Without this, CORE_ANY_OUTPUT lets pass-2's *findings* substitute for a
+# missing pass-1 — but pass-2's *meta* would be silently dropped, and the
+# spec-presence / human-review / prompt-injection gates would default to
+# permissive. The PR self-review (3 bots converged) flagged exactly this.
+META1='{}'
+META2='{}'
+[ -f /tmp/core-meta.json ] && META1=$(cat /tmp/core-meta.json)
+[ -f /tmp/core-meta-2.json ] && META2=$(cat /tmp/core-meta-2.json)
+CORE_META=$(jq -n --argjson m1 "$META1" --argjson m2 "$META2" '
+  def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
+  # has() is required because manual_spec_present absence must default to
+  # true (legacy behavior preserved for re-reviews where only pass-1 ran).
+  # `// true` would also fire on explicit false — wrong direction.
+  def and_present:
+    (if ($m1 | type == "object" and has("manual_spec_present")) then $m1.manual_spec_present else true end)
+    and
+    (if ($m2 | type == "object" and has("manual_spec_present")) then $m2.manual_spec_present else true end);
+  def prefer_prose(k): ($m1[k] // $m2[k] // null);
+  def union_arr(k): (($m1[k] // []) + ($m2[k] // []));
+  {
+    requires_human_review: or_bool("requires_human_review"),
+    requires_human_review_reason: prefer_prose("requires_human_review_reason"),
+    uncertain_observations: union_arr("uncertain_observations"),
+    prompt_injection_detected: or_bool("prompt_injection_detected"),
+    reviewer_self_modification: or_bool("reviewer_self_modification"),
+    build_unavailable: or_bool("build_unavailable"),
+    manual_spec_present: and_present,
+    spec_compliance: prefer_prose("spec_compliance"),
+    spec_sources: ($m1.spec_sources // $m2.spec_sources // null)
+  }
+')
 
 CORE_COUNT=$(jq 'length' /tmp/merged-core.json)
 SWEEP_COUNT=$(jq 'length' /tmp/merged-sweep.json)
