@@ -346,18 +346,31 @@ jobs:
         run: |
           set -uo pipefail
           IS_FIRST="false"
-          REVIEWS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null) || REVIEWS=""
-          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" 2>/dev/null) || COMMENTS=""
-          if [ -n "$REVIEWS" ] || [ -n "$COMMENTS" ]; then
-            PRIOR=$(echo "${REVIEWS:-[]}" | jq --arg bot "$BOT_USER" \
-              '[.[] | select(.user.login == $bot and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED"))] | length' 2>/dev/null || echo 0)
-            MARKER=$(echo "${COMMENTS:-[]}" | jq --arg bot "$BOT_USER" \
-              '[.[] | select(.user.login == $bot)] | length' 2>/dev/null || echo 0)
-            if [ "${PRIOR:-0}" -eq 0 ] && [ "${MARKER:-0}" -eq 0 ]; then
+          # Track each gh call independently so a partial failure (one OK,
+          # one network/auth error) is visible — the pre-existing single
+          # warning only fired when BOTH calls failed, masking the more
+          # likely "comments paginated and timed out mid-stream" case.
+          REVIEWS_OK=true; COMMENTS_OK=true
+          REVIEWS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null) || { REVIEWS=""; REVIEWS_OK=false; }
+          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" 2>/dev/null) || { COMMENTS=""; COMMENTS_OK=false; }
+          if [ "$REVIEWS_OK" = "false" ] || [ "$COMMENTS_OK" = "false" ]; then
+            echo "::warning::gh API failure on first-review detection (reviews_ok=$REVIEWS_OK, comments_ok=$COMMENTS_OK) — defaulting IS_FIRST_REVIEW=false (fail-closed)."
+          else
+            # gh api --paginate concatenates per-page arrays as separate
+            # JSON inputs (newline-separated). Without -s the jq filter
+            # runs once per page and produces multi-line counts, which
+            # then crash the `[ -eq 0 ]` test with "integer expression
+            # expected" — silently leaving IS_FIRST=false.
+            # `-s 'add'` slurps all pages into one array first.
+            PRIOR=$(echo "${REVIEWS:-[]}" | jq -s --arg bot "$BOT_USER" \
+              'add | [.[] | select(.user.login == $bot and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED"))] | length' 2>/dev/null || echo "?")
+            MARKER=$(echo "${COMMENTS:-[]}" | jq -s --arg bot "$BOT_USER" \
+              'add | [.[] | select(.user.login == $bot)] | length' 2>/dev/null || echo "?")
+            if ! [[ "$PRIOR" =~ ^[0-9]+$ ]] || ! [[ "$MARKER" =~ ^[0-9]+$ ]]; then
+              echo "::warning::Could not parse review/comment counts (PRIOR='$PRIOR' MARKER='$MARKER') — defaulting IS_FIRST_REVIEW=false (fail-closed)."
+            elif [ "$PRIOR" -eq 0 ] && [ "$MARKER" -eq 0 ]; then
               IS_FIRST="true"
             fi
-          else
-            echo "::warning::Could not query prior reviews/comments — defaulting IS_FIRST_REVIEW=false (fail-closed)"
           fi
           echo "is_first=$IS_FIRST" >> "$GITHUB_OUTPUT"
           echo "First-review boost: IS_FIRST_REVIEW=$IS_FIRST"
@@ -865,15 +878,31 @@ jobs:
           # so the union catches issues that any single pass might miss
           # (per-run recall is well below 100%). Pass-2 findings flow through
           # build-review.sh's existing dedup with the rest, so duplicates
-          # collapse automatically. Output paths are overridden in the
-          # prompt suffix to avoid clobbering pass-1 outputs.
+          # collapse automatically.
+          #
+          # Output-path safety: we sed-rewrite the embedded skill text so the
+          # agent's "ALWAYS write /tmp/core-findings.json + /tmp/core-meta.json"
+          # / "ALWAYS write /tmp/sweep-findings.json" instructions become
+          # "/tmp/core-findings-2.json + /tmp/core-meta-2.json" /
+          # "/tmp/sweep-findings-2.json". A naked prompt-suffix override
+          # would fight the embedded skill text and risk pass-2 clobbering
+          # pass-1's verdict-critical core-meta.json (manual_spec_present,
+          # requires_human_review, spec_compliance) — the spec-presence and
+          # human-review verdict gates introduced by 50cc139 must survive the
+          # boost. Sed substitution removes the conflict at the source.
           if [ "${IS_FIRST_REVIEW:-false}" = "true" ]; then
             echo "First-review boost: launching core + sweep pass-2 in parallel"
-            ~/.local/bin/claude -p "You are the core reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly. **Override**: write findings to /tmp/core-findings-2.json and meta to /tmp/core-meta-2.json (NOT the default paths). Do not touch the pass-1 outputs.${BUGBOT_BLOCK}
+            CORE_SKILL_PASS2=$(echo "$CORE_SKILL" | sed \
+              -e 's|/tmp/core-findings\.json|/tmp/core-findings-2.json|g' \
+              -e 's|/tmp/core-meta\.json|/tmp/core-meta-2.json|g')
+            SWEEP_SKILL_PASS2=$(echo "$SWEEP_SKILL" | sed \
+              -e 's|/tmp/sweep-findings\.json|/tmp/sweep-findings-2.json|g')
+
+            ~/.local/bin/claude -p "You are the core reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly, including writing the JSON output files it specifies (the skill has been pre-edited to point at pass-2 output paths so it will not clobber pass-1).${BUGBOT_BLOCK}
 
           === review-core skill (follow exactly) ===
 
-          $CORE_SKILL" \
+          $CORE_SKILL_PASS2" \
               --model ${{ inputs.model_high }} \
               --permission-mode dontAsk \
               --setting-sources user \
@@ -882,11 +911,11 @@ jobs:
               --max-turns 10 > /tmp/core-output-2.txt 2>&1 &
             PID_CORE2=$!
 
-            ~/.local/bin/claude -p "You are the sweep reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly. **Override**: write findings to /tmp/sweep-findings-2.json (NOT the default path). Do not touch the pass-1 output.${BUGBOT_BLOCK}
+            ~/.local/bin/claude -p "You are the sweep reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly, including writing the JSON output file it specifies (the skill has been pre-edited to point at the pass-2 output path so it will not clobber pass-1).${BUGBOT_BLOCK}
 
           === review-sweep skill (follow exactly) ===
 
-          $SWEEP_SKILL" \
+          $SWEEP_SKILL_PASS2" \
               --model ${{ inputs.model_standard }} \
               --permission-mode dontAsk \
               --setting-sources user \
@@ -1026,14 +1055,30 @@ jobs:
             else
               GAP_SKILL=$(cat "$SKILLS_DIR/review-gap-finder.md")
               # Concatenate all prior-stage findings into one input file for
-              # the critic to read. `2>/dev/null || echo '[]'` keeps the file
-              # valid even when one pass-2 input is missing (e.g. that pass
-              # crashed) — the agent reads the file unconditionally per skill.
-              jq -s 'add' \
-                /tmp/core-findings.json /tmp/core-findings-2.json \
-                /tmp/sweep-findings.json /tmp/sweep-findings-2.json \
-                2>/dev/null > /tmp/prior-pass-findings.json \
-                || echo '[]' > /tmp/prior-pass-findings.json
+              # the critic to read. Per-file validation: `jq -s 'add'` on
+              # multiple files fails-the-whole-call if ANY input is missing
+              # or malformed, silently producing []. That would blind the
+              # gap-finder's dedup contract — every pass-1 finding becomes
+              # a "net-new" candidate, wasting Opus turns and producing
+              # rephrased duplicates that the merge step's path+line ±5
+              # dedup may not catch (line shifts > 5). We keep the valid
+              # inputs and emit a ::warning:: per excluded file so the
+              # cause is visible in the workflow log.
+              SAFE_INPUTS=()
+              for ppf in /tmp/core-findings.json /tmp/core-findings-2.json \
+                         /tmp/sweep-findings.json /tmp/sweep-findings-2.json; do
+                if [ -f "$ppf" ] && jq -e 'type == "array"' "$ppf" >/dev/null 2>&1; then
+                  SAFE_INPUTS+=("$ppf")
+                elif [ -f "$ppf" ]; then
+                  echo "::warning::$ppf is not a valid JSON array — excluding from gap-finder dedup input. Gap-finder may re-flag issues this pass already covered."
+                fi
+              done
+              if [ "${#SAFE_INPUTS[@]}" -eq 0 ]; then
+                echo "::warning::All prior-pass findings inputs unusable — gap-finder will run with empty dedup input."
+                echo '[]' > /tmp/prior-pass-findings.json
+              else
+                jq -s 'add' "${SAFE_INPUTS[@]}" > /tmp/prior-pass-findings.json
+              fi
               echo "::group::Gap-finder critic (Opus, sequential)"
               ~/.local/bin/claude -p "You are the gap-finder critic for PR #$PR_NUMBER. context.md at the repo root has the diff + project context — Read it. /tmp/prior-pass-findings.json contains every finding the prior pairs already produced — Read it. Follow the skill below exactly, including writing the JSON output file it specifies.${BUGBOT_BLOCK}
 
@@ -1047,7 +1092,16 @@ jobs:
                 --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
                 --max-turns 12 > /tmp/gap-output.txt 2>&1 \
                 || echo "::warning::gap-finder exited non-zero — continuing with prior findings only"
-              [ -f /tmp/gap-findings.json ] || echo '[]' > /tmp/gap-findings.json
+              # Distinguish "agent ran clean and found nothing" from "agent
+              # exited 0 but never wrote the file" (e.g. hit max-turns
+              # mid-draft, or refused to write). The skill documents
+              # `[]` as the success state, so a synthesized [] is shape-
+              # identical to a successful clean run — emit a warning so
+              # a reviewer reading the log can see this happened.
+              if [ ! -f /tmp/gap-findings.json ]; then
+                echo "::warning::gap-finder did not write /tmp/gap-findings.json despite exiting cleanly — likely hit max-turns. Synthesizing [] (no critic findings)."
+                echo '[]' > /tmp/gap-findings.json
+              fi
               echo "::endgroup::"
               echo "::group::Gap-finder log"
               [ -f /tmp/gap-output.txt ] && cat /tmp/gap-output.txt || echo "(no output)"
