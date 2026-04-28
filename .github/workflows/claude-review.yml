@@ -22,30 +22,24 @@ jobs:
     # pipeline still re-runs automatically on `ready_for_review`. Manual
     # dispatch is always allowed.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
-    # This repo IS panenco/claude-review, so the caller invokes its own
-    # released v1 pipeline against itself. Pinning to @v1 (rather than the
-    # in-PR copy at ./.github/workflows/pr-review.yml) is intentional: it
-    # mirrors how every consumer repo uses the pipeline, so we dogfood the
-    # same path our users hit. Trade-off: pipeline changes in this PR are
-    # NOT exercised by this run — that's a separate concern handled at
-    # tag-cut time.
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    # This repo IS panenco/claude-review, so we call the reusable workflow
+    # via its local path rather than `panenco/claude-review/.github/workflows/
+    # pr-review.yml@v1`. Two reasons:
+    #   1. The `org/repo/...@tag` form trips a `startup_failure` here even
+    #      with explicit secret mappings — the cross-repo treatment of
+    #      same-repo reusable calls is the documented quirk in
+    #      `prompts/setup-review.md` Step 2.
+    #   2. The local path exercises the in-PR copy of pr-review.yml, which
+    #      is a stronger dogfood: orchestration changes in a PR get tested
+    #      on that PR's own review run. (Skills + scripts still come from
+    #      @v1 because pr-review.yml's install step uses the @v1 action —
+    #      see line 112 of pr-review.yml — so consumer-visible behavior
+    #      around skills/scripts is unchanged.)
+    uses: ./.github/workflows/pr-review.yml
     permissions:
       contents: write
       pull-requests: write
       issues: write
     with:
       pr_number: ${{ inputs.pr_number || '' }}
-    # `secrets: inherit` is the conventional form, but it failed on this repo
-    # with `Secret CLAUDE_CODE_OAUTH_TOKEN is required, but not provided while
-    # calling` even though the secret is set at the org level. The setup
-    # recipe (`prompts/setup-review.md` Step 2) documents this fallback for
-    # the same error: pass each secret explicitly. Likely an Actions quirk
-    # with `inherit` on workflow_call across an `org/repo/...@tag` reference,
-    # even within the same org.
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      CLAUDE_REVIEW_APP_CLIENT_ID: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
-      CLAUDE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
-      CLAUDE_REVIEW_APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
-      TRACKER_SECRETS: ${{ secrets.TRACKER_SECRETS }}
+    secrets: inherit
