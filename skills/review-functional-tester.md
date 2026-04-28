@@ -159,7 +159,7 @@ Always write both files, even on partial completion.
 }
 ```
 
-- `technical_change` — copy verbatim from `test-plan.md`'s front matter. If the planner emitted `## Technical change: true`, set `true`. Otherwise set `false` (or omit). The verdict gate uses this to withhold APPROVE when a refactor/upgrade PR was not actually smoke-tested — including the degraded-mode case where the dev environment couldn't be brought up at all.
+- `technical_change` — set `true` if `test-plan.md` contains a line matching `## Technical change: true`; otherwise `false` (or omit). This field is for artifact completeness only — `build-review.sh` reads the flag directly from `test-plan.md`, not from this JSON, so the gate fires even if you omit this field.
 
 ### Severity
 
