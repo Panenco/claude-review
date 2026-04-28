@@ -329,13 +329,26 @@ if [ -f test-plan.md ] && grep -qiE '^## *Technical change: *true *$' test-plan.
   TECHNICAL_CHANGE=true
 fi
 
-# Did the smoke test actually pass? Account for the workflow's synthetic
-# `{strategy:"skip",overall:"PASS"}` placeholder injected on tester crash —
-# without this guard, FUNCTIONAL_OVERALL would read "PASS" for a crashed
-# tester and the technical-change gate would be silently bypassed in
-# exactly the case it's meant to catch.
+# Did the smoke test actually pass? Three failure modes to disqualify:
+#
+#   1. Tester crashed (FUNCTIONAL_OK != 1).
+#   2. Tester was never launched — the WEB_READY=false / no-dev-start.sh
+#      path in pr-review.yml short-circuits before launching the agent and
+#      sets FUNCTIONAL_OK=1 ("skipped = OK"), then writes the synthetic
+#      `{strategy:"skip",overall:"PASS"}` placeholder. STRATEGY="skip" is
+#      the reliable signal that the tester didn't actually run, since the
+#      planner sets strategy="functional" or "quick" for any tech PR.
+#   3. Tester ran but reported FAIL.
+#
+# Without (2), a technical PR in a repo without dev-start.sh would silently
+# bypass the gate via the synthetic PASS placeholder — exactly the case
+# Cursor flagged on the previous commit.
 SMOKE_OK=false
-if [ "${FUNCTIONAL_OK:-1}" -eq 1 ] && { [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; }; then
+if [ "${FUNCTIONAL_OK:-1}" -ne 1 ]; then
+  :  # tester crashed
+elif [ "$FUNCTIONAL_STRATEGY" = "skip" ]; then
+  :  # tester never launched (degraded mode) or planner skipped — no smoke evidence either way
+elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; then
   SMOKE_OK=true
 fi
 
