@@ -22,10 +22,18 @@ on:
 jobs:
   review:
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    permissions:
+      contents: write       # screenshots → review-assets branch
+      pull-requests: write  # post review + comments
+      issues: write
+      actions: read         # round-2 follow-up reviews look up the prior
+                            # run's review-state artifact by run-id
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
 ```
+
+The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. See `prompts/setup-review.md` for the full troubleshooting flow.
 
 Why `@v1` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If *your* repo has different trust needs, substitute a 40-char SHA for `@v1`.
 

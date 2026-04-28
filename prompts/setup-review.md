@@ -67,11 +67,15 @@ jobs:
     # zero jobs, and no downloadable logs — extremely painful to debug.
     # Required scopes: `contents: write` (push screenshots to the
     # review-assets branch), `pull-requests: write` + `issues: write`
-    # (post reviews and comments).
+    # (post reviews and comments), `actions: read` (round-2 follow-up
+    # reviews look up the prior run's review-state artifact by run-id —
+    # omitting this means follow-up reviews silently degrade to a full
+    # re-review on every push).
     permissions:
       contents: write
       pull-requests: write
       issues: write
+      actions: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
