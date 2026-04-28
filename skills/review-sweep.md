@@ -24,6 +24,8 @@ Before flagging anything, scan the embedded `bugbot.md` for **acceptance/exempti
 
 ## Your scope — finding types
 
+You own **test coverage** end-to-end (alongside consistency/performance/design): no other reviewer flags `weak-test` or `missing-test`, so producing them when warranted is non-negotiable.
+
 | Type | Definition |
 |---|---|
 | `consistency` | Diverges from patterns in sibling files. Must quote the sibling file + line being diverged from. |
@@ -32,6 +34,17 @@ Before flagging anything, scan the embedded `bugbot.md` for **acceptance/exempti
 | `performance` | N+1 queries (DB call in loop), unbounded queries without pagination, expensive ops in hot paths. Must identify the specific loop/query. |
 | `design-smell` | From the consistency angle: change introduces a pattern worse than what exists. Must show the sibling that does it better. |
 | `overcomplicated` | Unnecessarily complex where a simpler approach exists in the codebase. Must show the simpler sibling. |
+
+### Test coverage (FIRST-CLASS)
+
+Before evaluating consistency or performance, walk the "Test coverage" section in `context.md` and produce one finding per genuinely untested non-trivial file:
+
+1. Each entry marked UNTESTED in that section is a candidate. Skip entries marked TESTED — even if the test feels thin, that's `weak-test`, not `missing-test`.
+2. For each candidate, classify the changed file: handler / hook / util / service / route / DTO / module / thin-wrapper.
+3. If the file is a handler / hook / util / service / route → `missing-test` at `severity=minor`. If it's a DTO / module / thin-wrapper → `missing-test` at `severity=note`. Anything else → use judgement; default to `note` if unsure.
+4. For tests that exist but assert against mocks of the system under test (mock returns "ok" → test asserts "ok"): `weak-test` at `severity=minor`, with the exact mock and assertion lines quoted.
+
+A sweep run that flags consistency issues but ignores untested handlers is incomplete.
 
 ## NOT your scope (the core reviewer handles these)
 
@@ -68,7 +81,11 @@ If you can't provide this evidence, drop the finding. **A clean `[]` is a confid
 
 ## Output: Write ONE file
 
-**`/tmp/sweep-findings.json`** — array:
+You MUST write the file before exiting. After completing analysis, STOP and write — do not open new investigations.
+
+The launching workflow may set the output path via the prompt (e.g. `OUTPUT_FINDINGS=/tmp/sweep-findings-2.json` for the second pass of the same skill). When the prompt does NOT specify a path, use the default below.
+
+**Findings file** (default `/tmp/sweep-findings.json`, override via `OUTPUT_FINDINGS` in the prompt) — array:
 
 ```json
 [
@@ -87,4 +104,4 @@ If you can't provide this evidence, drop the finding. **A clean `[]` is a confid
 ]
 ```
 
-Write `[]` for empty findings. ALWAYS write the file.
+Write `[]` for empty findings. ALWAYS write the file. ALWAYS use the path from `OUTPUT_FINDINGS` if the prompt sets it; only fall back to the default if the prompt is silent.

@@ -17,7 +17,13 @@ Use only Read and Write. Everything is in context.md and the JSON inputs — do 
 
 1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
 2. Read `context.md` at the repo root — full diff, file contents, issue, conventions, build output, prior bot comments.
-3. Read `/tmp/prior-pass-findings.json` — the union of every finding the core+sweep pairs produced this run. **You must read this fully.** It is the load-bearing input for your dedup decisions.
+3. Read each prior-pass finding file directly (in order, skipping ones that don't exist on disk):
+   - `/tmp/core-findings.json`
+   - `/tmp/core-findings-2.json` (round-1 core pass-2; absent on round 2)
+   - `/tmp/sweep-findings.json`
+   - `/tmp/sweep-findings-2.json` (round-1 sweep pass-2; absent on round 2)
+   - `/tmp/spec-findings.json` (when a PRD was present)
+   These together are the **prior-pass set**. Treat them as one logical pool when running your dedup checks. **You must read every file that exists.** They are the load-bearing input for your dedup decisions.
 4. Read `/tmp/user-replies-on-ours.json` if present — human rebuttals to prior bot findings. Anything rebutted there is off-limits unless you have new counter-evidence.
 
 ### Honor bugbot's acceptance sections
@@ -59,7 +65,7 @@ Prior reviewers run on a single pass each and have known blind spots. Bias your 
 3. **Error/edge paths** — happy-path code is often well-reviewed; null/empty/timeout/concurrency paths less so.
 4. **Test gaps** — non-trivial new logic with no corresponding test file (`missing-test`), tests that mock the SUT (`weak-test`).
 5. **Nits and minor consistency** — small divergences from sibling-file patterns, low-severity items prior passes deprioritized. These are noise on re-reviews if not caught now, so be willing to flag genuine `minor` and `note` items here.
-6. **Spec coverage gaps** — acceptance criteria or PRD items not mentioned by any prior finding and not visibly satisfied by the diff.
+6. **Spec coverage** — walk every acceptance criterion in `context.md`'s linked-issue / PRD / external-spec sections. For each criterion, verify either (a) a prior finding flags it as unmet, or (b) the diff visibly satisfies it. If neither holds, raise a `spec-mismatch` finding pinned to the relevant changed file. This is the first-class spec-coverage pass that prior reviewers often skip when no obvious code line maps to a criterion.
 
 ## False-positive self-check (MANDATORY)
 
@@ -75,7 +81,7 @@ Before finalizing ANY finding, verify all five (mirrored from review-core):
 
 The whole point of this stage is **net-new findings only**. For each candidate finding, run both checks below in order. If either fires, **drop it**.
 
-**Check 1 — path + line proximity.** Iterate `/tmp/prior-pass-findings.json`. If any prior entry has the same `path` AND its `line_start` is within ±5 of your candidate's `line_start`, drop your candidate. The prior pair already covered that location.
+**Check 1 — path + line proximity.** Iterate every entry across the prior-pass set you read in Turn 1. If any prior entry has the same `path` AND its `line_start` is within ±5 of your candidate's `line_start`, drop your candidate. The prior pair already covered that location.
 
 **Check 2 — path + normalized title.** Normalize titles by lowercasing and collapsing all non-alphanumeric runs to single spaces. If any prior entry on the same `path` has the same normalized title as your candidate, drop your candidate — even if the line numbers differ.
 
@@ -83,7 +89,7 @@ The whole point of this stage is **net-new findings only**. For each candidate f
 
 **A clean `[]` is the expected outcome on a thorough first pass.** False positives waste team time more than a missed minor issue. If after honest hunting you find no net-new issues, write `[]` and exit. That is a successful gap-finder run.
 
-The merge step (`scripts/build-review.sh`) also dedupes by path+line ±5 and path+normalized-title across all sources, so even if you slip, duplicates collapse there. But your dedup is the first line of defense — and if your output is full of duplicates, the merge will silently drop your work.
+The merge step (`.review-scripts/build-review.sh`) runs a semantic Haiku dedup across all reviewer outputs and will collapse near-duplicates regardless of finding type or wording. Your dedup above is still the first line of defense — feeding the merge step a clean input avoids relying on the dedup to recover from your noise.
 
 ## Output: Write ONE file
 

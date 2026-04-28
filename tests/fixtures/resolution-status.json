@@ -1,0 +1,20 @@
+[
+  {
+    "id": "c1",
+    "status": "RESOLVED",
+    "evidence": "Line 42 of src/auth.ts now awaits the promise (diff @@ -40,3 +40,4 @@)",
+    "prior_severity": "major"
+  },
+  {
+    "id": "c2",
+    "status": "STILL_PRESENT",
+    "evidence": "path unchanged in diff",
+    "prior_severity": "minor"
+  },
+  {
+    "id": "s1",
+    "status": "STILL_PRESENT",
+    "evidence": "path unchanged in diff",
+    "prior_severity": "minor"
+  }
+]

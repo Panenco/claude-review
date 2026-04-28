@@ -98,7 +98,11 @@ Do NOT set it for:
 
 ## Output: Write TWO files
 
-**`/tmp/core-findings.json`** — array:
+You MUST write both files before exiting. After completing analysis, STOP and write — do not open new investigations.
+
+The launching workflow may set output paths via the prompt (e.g. `OUTPUT_FINDINGS=/tmp/core-findings-2.json` for the second pass of the same skill). When the prompt does NOT specify paths, use the defaults below.
+
+**Findings file** (default `/tmp/core-findings.json`, override via `OUTPUT_FINDINGS` in the prompt) — array:
 
 ```json
 [
@@ -117,7 +121,7 @@ Do NOT set it for:
 ]
 ```
 
-**`/tmp/core-meta.json`**:
+**Meta file** (default `/tmp/core-meta.json`, override via `OUTPUT_META` in the prompt):
 
 ```json
 {
@@ -143,4 +147,4 @@ Do NOT set it for:
 - `spec_sources` extracts the linked issue number, external tracker identifier, PRD path, and which convention rules applied — read these from context.md. Use `null` for missing values.
 - `external_issue` is the tracker identifier (e.g. `ABC-123`, `ENG-214`, `MON-1234`) surfaced by the consumer's optional `.github/claude-review/fetch-issue.sh` hook. Parse it from the heading at the top of the `## Linked external issue` section in context.md — the hook convention is `## Linked <tracker> issue: <IDENTIFIER>` as its first line. If the section is absent or no identifier can be parsed, set to `null`.
 
-Write `[]` for empty findings. ALWAYS write both files.
+Write `[]` for empty findings. ALWAYS write both files. ALWAYS use the paths from `OUTPUT_FINDINGS` / `OUTPUT_META` if the prompt sets them; only fall back to defaults if the prompt is silent.

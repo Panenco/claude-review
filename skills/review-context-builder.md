@@ -66,6 +66,32 @@ for chunk in files[1:]:
 print(f'Split diff: {kept} reviewable chunks, {skipped} skipped ({total_lines} lines)')
 "
 
+# Round-2 only: when PRIOR_HEAD_SHA is set, also emit the diff since the
+# previous review and per-file chunks for that subset. The round-2 fan
+# (focused core / sweep / gap-finder / spec / resolution checker) reads
+# /tmp/since-last.diff and /tmp/since-last-chunks/ to keep its scope tight.
+if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
+  if git cat-file -e "$PRIOR_HEAD_SHA" 2>/dev/null; then
+    git diff "$PRIOR_HEAD_SHA..HEAD" > /tmp/since-last.diff
+    mkdir -p /tmp/since-last-chunks
+    python3 -c "
+import re
+with open('/tmp/since-last.diff') as f:
+    content = f.read()
+files = re.split(r'^diff --git ', content, flags=re.MULTILINE)
+for chunk in files[1:]:
+    m = re.match(r'a/(.*?) b/', chunk)
+    if not m: continue
+    safe = m.group(1).replace('/', '--')
+    with open(f'/tmp/since-last-chunks/{safe}.diff', 'w') as out:
+        out.write('diff --git ' + chunk)
+"
+    echo "Round-2 since-last.diff: $(wc -l < /tmp/since-last.diff) lines, $(ls /tmp/since-last-chunks/ 2>/dev/null | wc -l) per-file chunks"
+  else
+    echo "::warning::PRIOR_HEAD_SHA=$PRIOR_HEAD_SHA not present in this clone — round-2 scope reduction unavailable, full diff will be reviewed."
+  fi
+fi
+
 DIFF_SIZE=$(wc -l < /tmp/pr.diff)
 echo "Total diff lines: $DIFF_SIZE"
 echo "Reviewable chunks: $(ls /tmp/diff-chunks/ | wc -l)"
@@ -83,12 +109,6 @@ jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot and .in_reply_to_id 
 jq --arg bot "$BOT_USER" '[.[] | select(.user.type == "Bot" and .user.login != $bot and .in_reply_to_id == null) | {id, node_id, user: .user.login, path, line, body: (.body[:500])}]' \
   /tmp/all-raw-comments.json > /tmp/other-bot-comments.json
 
-# Parent comment IDs we have ALREADY replied to in any prior run. Turn 4
-# consults this to avoid re-posting "Fixed/Still present/Addressed" replies
-# every time the workflow runs.
-jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot and .in_reply_to_id != null) | .in_reply_to_id]' \
-  /tmp/all-raw-comments.json > /tmp/already-replied-parents.json
-
 # Human / non-bot replies on OUR prior comments. If a maintainer replied
 # "false positive" or added context, the reviewers need to see it so they
 # don't re-flag the same thing. Keyed by the parent_id so Turn 7 can attach
@@ -100,30 +120,7 @@ jq --arg bot "$BOT_USER" '
 ' /tmp/all-raw-comments.json > /tmp/user-replies-on-ours.json
 
 echo "Other bot comments: $(jq 'length' /tmp/other-bot-comments.json)"
-echo "Already-replied parents (skip re-replying): $(jq 'length' /tmp/already-replied-parents.json)"
 echo "User replies on our comments: $(jq 'length' /tmp/user-replies-on-ours.json)"
-
-# Pre-filter "Fixed in this revision" reply candidates. Only threads whose
-# file was modified in the latest push are eligible, AND only parents we
-# haven't already replied to. This keeps Turn 4 cheap (no iteration over
-# every prior comment) and makes it impossible for the agent to decide to
-# reply to something we've already handled.
-LAST_PUSH_FILES=$(git diff HEAD~1 HEAD --name-only 2>/dev/null || true)
-printf '%s\n' "$LAST_PUSH_FILES" > /tmp/last-push-files.txt
-
-jq --slurpfile replied /tmp/already-replied-parents.json --rawfile mf /tmp/last-push-files.txt '
-  ($replied[0] // []) as $skip |
-  ($mf | split("\n") | map(select(length>0))) as $modfiles |
-  [.[] | select((.id as $id | $skip | index($id) | not) and ($modfiles | index(.path)))]
-' /tmp/prior-bot-comments.json > /tmp/fix-candidates-own.json
-
-jq --slurpfile replied /tmp/already-replied-parents.json --rawfile mf /tmp/last-push-files.txt '
-  ($replied[0] // []) as $skip |
-  ($mf | split("\n") | map(select(length>0))) as $modfiles |
-  [.[] | select((.id as $id | $skip | index($id) | not) and ($modfiles | index(.path)))]
-' /tmp/other-bot-comments.json > /tmp/fix-candidates-other.json
-
-echo "Fix-reply candidates: own=$(jq 'length' /tmp/fix-candidates-own.json) other=$(jq 'length' /tmp/fix-candidates-other.json)"
 
 # Snapshot the repo's actual capabilities so reviewers verify conventions
 # against reality. A rule like "use X from @org/shared-ui" is meaningless when
@@ -534,32 +531,6 @@ Based on what `.github/review-config.md` or `CLAUDE.md` says, read the relevant 
 
 If no review-config.md exists, skip this turn.
 
-## Turn 4: "Fixed in this revision" replies — ONLY kind allowed
-
-**The only reply you may post in this turn is `Fixed in this revision. <one sentence>`.** No other reply text. No "Still present", no "Addressed", no "Acknowledged", no "Confirmed", no "Noted". If you cannot honestly claim "Fixed", skip the thread entirely. The bash post-step will reject anything that doesn't match the `^Fixed in this revision\.` prefix, so posting the wrong shape wastes an API call.
-
-**Inputs (already pre-filtered in Turn 1):**
-- `/tmp/fix-candidates-own.json` — our own prior findings on files modified in the latest push, excluding any we've already replied to.
-- `/tmp/fix-candidates-other.json` — third-party bot comments (cursor, aikido, etc.) on files modified in the latest push, excluding parents we've already replied to.
-
-If both files are empty arrays, skip this turn entirely. Do not read or iterate over `/tmp/prior-bot-comments.json` or `/tmp/other-bot-comments.json` — those are Turn-7 inputs, not Turn-4.
-
-**For each candidate:**
-1. Look at the diff for that file (`/tmp/pr.diff` has the full PR diff; for the latest push only, run `git diff HEAD~1 HEAD -- <path>`).
-2. Does the code change on or near the flagged line plausibly *fix* what the finding describes? A surface edit that doesn't address the finding does NOT qualify.
-3. If yes → add an entry `{"parent_id": <id>, "body": "Fixed in this revision. <1 sentence describing the concrete change>"}` to `/tmp/turn4-replies.json`.
-4. If no or uncertain → skip.
-
-**You do NOT post the replies yourself.** Write the full array to `/tmp/turn4-replies.json` and stop. A deterministic bash step after this skill posts only entries whose `body` starts with `Fixed in this revision.` — any other body is dropped with a warning. Do NOT call `gh api POST .../replies` in this skill.
-
-If there are zero candidates or none qualify, write `[]` to `/tmp/turn4-replies.json`.
-
-**`/tmp/user-replies-on-ours.json`** is read-only here — it exists so Turn 7 can embed it in context.md for the reviewers. Never reply to a user.
-
-**Do NOT try to resolve threads** — `resolveReviewThread` needs extra permissions.
-
-This turn should finish in **at most 2 agent turns** (read candidates + write file). If both candidate files are empty, write `[]` immediately and move on.
-
 ## Turn 5: Build verification (single Bash call)
 
 ```bash
@@ -589,6 +560,8 @@ Check `.github/review-config.md` for build preparation commands. Run them, then 
 - **Repo capabilities** — paste the full content of `/tmp/repo-capabilities.md`. Reviewers MUST consult this before flagging a convention breach that references a library or component. If the artifact isn't in the snapshot, the finding is a false positive — drop it.
 - **Test coverage** — paste the full content of `/tmp/test-coverage.md`. Lists which changed source files have corresponding test files and which don't. Reviewers should flag UNTESTED files that contain non-trivial logic (handlers, hooks, utils) as `missing-test` findings.
 - Full content of each changed file
+- **Per-file diff index** — emit a `## Per-file diff index` section as a markdown table with three columns: `file`, `chunk` (path under `/tmp/diff-chunks/`, with slashes already replaced by `--`), and `role hint` (one of `core` / `sweep` / `functional` / `spec` / `multi`, based on the file's path: handlers/services/middleware → `core`, tests/specs → `sweep`, UI/E2E specs → `functional`, schema/PRD → `spec`, ambiguous or polyglot → `multi`). One row per chunk in `/tmp/diff-chunks/`. Reviewers use this to fetch only the chunks relevant to their role instead of re-reading the concatenated diff in context.md, which keeps their turn budget tight.
+- **Diff since last review** — when `/tmp/since-last.diff` exists (round 2), emit a `## Diff since last review` section listing only the files changed since `PRIOR_HEAD_SHA`, one per line as `<path>` (no diff content — the round-2 reviewers read `/tmp/since-last-chunks/<path>.diff` directly). Skip the section entirely on round 1.
 - Build results: typecheck PASSED/FAILED + output, lint PASSED/FAILED + output
 - **Prior-finding rebuttals** — if `/tmp/user-replies-on-ours.json` has entries, include a `## User replies on prior findings` section listing each: parent comment id, path/line of the original finding, the reply body, and the reply author. Reviewers must read these and NOT re-flag the same issue when a maintainer has marked it as a false positive (unless they have new counter-evidence).
 - `reviewer_self_modification: true/false` (set if `.claude/skills/**`, `.claude/settings.json`, `bugbot.md`, `.github/review-config.md`, or `.github/workflows/pr-review.yml` changed)
