@@ -32,8 +32,7 @@ Otherwise, issue **all** of the following Reads in **one assistant response** wi
 - `/tmp/prd-content.md` (the PRD)
 - `/tmp/external-issue.md` (when context.md lists it as non-empty — adds criteria the PRD doesn't cover)
 - `/tmp/issue.json` (when context.md lists it as non-empty)
-- Every chunk path tagged `spec`, `core`, or `multi` from context.md's `## Per-file diff index` — you need actual code to compare against the PRD.
-- On round 2, also every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
+- Every chunk path tagged `spec`, `core`, or `multi` from context.md's `## Per-file diff index` — you need actual code to compare against the PRD. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`). You do NOT also read the original `/tmp/diff-chunks/` set — that was covered in round 1.
 
 ## What to compare
 

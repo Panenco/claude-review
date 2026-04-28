@@ -22,10 +22,9 @@ Project-specific review standards from `bugbot.md` (if the project has one) are 
 This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT issue them across multiple turns. Doing one Read per turn will burn your turn budget before you reach the analysis phase, and the runner will kill you with `Reached max turns`.
 
 In this single response, Read all of:
-- Every `chunk` path tagged `core`, `spec`, or `multi` from context.md's `## Per-file diff index`. Skip `sweep` / `functional` chunks — that's not your scope.
+- Every `chunk` path tagged `core`, `spec`, or `multi` from context.md's `## Per-file diff index`. Skip `sweep` / `functional` chunks — that's not your scope. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`). You do NOT also read the original `/tmp/diff-chunks/` set — that was covered in round 1, and the resolution checker is classifying any prior findings against the new commits in parallel.
 - From `## Spec sources`: `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` — only the ones context.md lists as non-empty.
 - The convention rule files listed under `## Convention files` that apply to your changed paths.
-- On round 2, also read every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
 
 If a finding candidate later references a specific library/export/component, you may issue a follow-up Read of `package.json` / source file in turn 3 or later — but do not let that case become an excuse to drip-Read in Turn 2.
 

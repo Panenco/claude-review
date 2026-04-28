@@ -271,10 +271,14 @@ Extract criteria from the spec sources above. Look for: checkboxes, "should/must
 If after that filter no acceptance criteria exist, write **"No spec available — review will be code-quality only"** rather than fabricating criteria from the diff. The core reviewer reads this section and gates APPROVE on whether real criteria are present.
 
 ### `## Per-file diff index` (REQUIRED)
-Markdown table with three columns: `file`, `chunk` (path under `/tmp/diff-chunks/`, slashes already replaced by `--`), `role hint` (one of `core` / `sweep` / `functional` / `spec` / `multi` — handlers/services/middleware → `core`; tests/specs → `sweep`; UI/E2E → `functional`; schema/PRD → `spec`; ambiguous or polyglot → `multi`). One row per chunk in `/tmp/diff-chunks/`. Reviewers Read only the chunks tagged with their role.
+Markdown table with three columns: `file`, `chunk` (path under `/tmp/diff-chunks/`, slashes already replaced by `--`), `role hint` (one of `core` / `sweep` / `functional` / `spec` / `multi` — handlers/services/middleware → `core`; tests/specs → `sweep`; UI/E2E → `functional`; schema/PRD → `spec`; ambiguous or polyglot → `multi`). Reviewers Read only the chunks tagged with their role.
 
-### `## Diff since last review` (round 2 only)
-When `/tmp/since-last.diff` exists, list only the files changed since `PRIOR_HEAD_SHA`, one per line as a path. No diff content — round-2 reviewers Read `/tmp/since-last-chunks/<path>.diff` directly. Skip the entire section on round 1.
+**Round-2 scope reduction (REQUIRED when `/tmp/since-last.diff` exists and is non-empty):** the index lists ONLY the files in `/tmp/since-last-chunks/`, with chunk paths pointing at `/tmp/since-last-chunks/<file>.diff` (slashes replaced by `--`). The full PR diff was already covered in round 1 — re-reading every original chunk burns Opus turn budget for changes the resolution checker is already classifying. Apply role tagging to the since-last subset only. If `/tmp/since-last-chunks/` is empty (e.g. the prior commit had no code change), fall through to listing the full diff so round-2 still has something to review.
+
+On round 1 (no `/tmp/since-last.diff`), list one row per chunk in `/tmp/diff-chunks/` — the full diff.
+
+### `## Diff since last review` (round 2 only — header note)
+When `/tmp/since-last.diff` exists, add this section as a one-line note: `Round-2 focused review — Per-file diff index above is scoped to files changed since PRIOR_HEAD_SHA. Original full-diff chunks remain at /tmp/diff-chunks/ if a reviewer needs to consult upstream context.` Skip on round 1.
 
 ### `## Convention files`
 List the convention/rule file paths that apply to the changed files (derived from `.github/review-config.md`'s routing). Just paths — reviewers Read the ones relevant to their role.

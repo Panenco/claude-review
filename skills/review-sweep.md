@@ -22,9 +22,8 @@ Project-specific review standards from `bugbot.md` (if the project has one) are 
 This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT issue them across multiple turns — drip-Reading will exhaust your turn budget.
 
 In this single response, Read all of:
-- Every `chunk` path tagged `sweep` or `multi` from context.md's `## Per-file diff index`. Skip `core` / `spec` / `functional` chunks.
+- Every `chunk` path tagged `sweep` or `multi` from context.md's `## Per-file diff index`. Skip `core` / `spec` / `functional` chunks. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`). You do NOT also read the original `/tmp/diff-chunks/` set — that was covered in round 1.
 - The convention rule files listed under `## Convention files` that apply to your changed paths.
-- On round 2, also read every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
 
 For the test-coverage walk (next section), Read sibling spec paths on-demand in turn 3 or later — the index doesn't pre-list them.
 
