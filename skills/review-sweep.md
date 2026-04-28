@@ -11,12 +11,17 @@ You are one of two parallel reviewers. You focus on **codebase consistency, test
 
 Target: **≤6 turns**. Turn 1: Read inputs. Turns 2-4: analyze. Turn 5: Write output.
 
-Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, or Grep.
+Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read inputs
+## Turn 1: Read context.md and the paths it points at
 
 1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
-2. Read `context.md` at the repo root — full diff, file contents, convention rules, build output. This is the only file you need to Read.
+2. Read `context.md` at the repo root — short index.
+3. Then in **one parallel Read batch**, fetch only what your role needs:
+   - From `## Per-file diff index`: every `chunk` path tagged `sweep` or `multi`. Skip `core` / `spec` / `functional` chunks — that's not your scope.
+   - The convention rule files listed under `## Convention files` that apply to your changed paths.
+   - On round 2, also read every `/tmp/since-last-chunks/<file>.diff` listed under `## Diff since last review`.
+4. For the test-coverage walk (next section), Read sibling spec paths on-demand — the index doesn't pre-list them.
 
 ### Honor bugbot's acceptance sections
 
@@ -77,7 +82,7 @@ Additionally per type:
 
 If you can't provide this evidence, drop the finding. **A clean `[]` is a confident, valuable review.**
 
-**Verify the referenced artifact exists.** If a consistency finding references a specific library, component, or export, check the `# Repo capabilities snapshot` section of context.md. If the artifact isn't listed as installed/exported, DROP the finding — suggesting a replacement that doesn't exist is worse than flagging nothing. Also check `# User replies on prior findings`: if a maintainer already rebutted the same issue as a false positive, don't re-flag.
+**Verify the referenced artifact exists.** If a consistency finding references a specific library, component, or export, Read the relevant `package.json` or sibling source file to confirm it's actually installed/exported. If it isn't, DROP the finding — suggesting a replacement that doesn't exist is worse than flagging nothing. Also Read `/tmp/user-replies-on-ours.json` if context.md's `## User replies on prior findings` section lists it: if a maintainer already rebutted the same issue as a false positive, don't re-flag.
 
 ## Output: Write ONE file
 
