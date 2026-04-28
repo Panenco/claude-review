@@ -139,6 +139,11 @@ if [ -f /tmp/core-meta.json ] && ! is_valid_json /tmp/core-meta.json; then
   preserve_invalid /tmp/core-meta.json
   echo '{}' > /tmp/core-meta.json
 fi
+if [ -f /tmp/core-meta-2.json ] && ! is_valid_json /tmp/core-meta-2.json; then
+  echo "::warning::Core reviewer pass-2 meta is not valid JSON — falling back to {}."
+  preserve_invalid /tmp/core-meta-2.json
+  echo '{}' > /tmp/core-meta-2.json
+fi
 if [ -f /tmp/functional-meta.json ] && ! is_valid_json /tmp/functional-meta.json; then
   echo "::warning::Functional tester meta is not valid JSON — falling back to {}."
   preserve_invalid /tmp/functional-meta.json
@@ -298,7 +303,23 @@ echo '[]' > /tmp/merged-gap.json
 [ "$SWEEP2_HAS_OUTPUT" = "true" ] && cp /tmp/sweep-findings-2.json /tmp/merged-sweep2.json
 [ "$GAP_HAS_OUTPUT" = "true" ] && cp /tmp/gap-findings.json /tmp/merged-gap.json
 CORE_META='{}'
-[ -f /tmp/core-meta.json ] && CORE_META=$(cat /tmp/core-meta.json)
+# Pass-1 meta is preferred. Pass-2 meta is the equal-trust fallback when
+# pass-1 didn't write one — required to keep the verdict gates honest
+# under the boost. CORE_ANY_OUTPUT lets pass-2 substitute for pass-1's
+# *findings*, so the same substitution must apply to pass-2's *meta*
+# (manual_spec_present, requires_human_review, spec_compliance,
+# spec_sources, prompt_injection_detected, build_unavailable). Without
+# this, a pass-1 crash + pass-2 success would leave CORE_META='{}',
+# default `manual_spec_present` to true, default `requires_human_review`
+# to false, and silently bypass the spec-presence and human-review gates
+# introduced by 50cc139 — exactly the regression the PR self-review
+# (3 bots converged) flagged.
+if [ -f /tmp/core-meta.json ]; then
+  CORE_META=$(cat /tmp/core-meta.json)
+elif [ -f /tmp/core-meta-2.json ]; then
+  CORE_META=$(cat /tmp/core-meta-2.json)
+  echo "Pass-1 core meta absent; using pass-2 meta for verdict gates."
+fi
 
 CORE_COUNT=$(jq 'length' /tmp/merged-core.json)
 SWEEP_COUNT=$(jq 'length' /tmp/merged-sweep.json)
