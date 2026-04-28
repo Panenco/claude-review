@@ -531,6 +531,10 @@ Based on what `.github/review-config.md` or `CLAUDE.md` says, read the relevant 
 
 If no review-config.md exists, skip this turn.
 
+## Turn 4: (retired)
+
+The previous "Fixed in this revision" reply turn was removed when the round-2 resolution checker + Haiku dedup's STILL_PRESENT-overlap drop took over the same role more directly. Numbering of subsequent turns is preserved to keep diffs from cascading.
+
 ## Turn 5: Build verification (single Bash call)
 
 ```bash

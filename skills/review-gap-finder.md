@@ -1,6 +1,6 @@
 ---
 name: review-gap-finder
-description: Gap-finder critic — third perspective that hunts for issues the core+sweep pairs missed. Reads context.md and /tmp/prior-pass-findings.json, writes /tmp/gap-findings.json. Runs only on first reviews, sequentially after the parallel reviewers.
+description: Gap-finder critic — third perspective that hunts for issues the core+sweep pairs missed. Reads context.md plus the prior-pass finding files that exist on disk (/tmp/core-findings.json, /tmp/core-findings-2.json, /tmp/sweep-findings.json, /tmp/sweep-findings-2.json, /tmp/spec-findings.json), writes /tmp/gap-findings.json. Runs only on first reviews, sequentially after the parallel reviewers.
 ---
 
 # Gap-Finder Review (Net-New Issues Only)

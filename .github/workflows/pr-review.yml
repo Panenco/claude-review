@@ -1093,9 +1093,13 @@ jobs:
           # Wait for every launched parallel agent. Status convention:
           # 1 = launched and exited 0; 0 = launched and failed; 1 also for
           # "not launched" so the summary line doesn't show FAILED on
-          # legitimately-skipped roles.
+          # legitimately-skipped roles. ROLES is the single source of truth
+          # for which agents go through the wait/status/log loops below —
+          # gap-finder is launched separately in its own block (sequential
+          # after the parallel fan), so it is intentionally excluded.
+          ROLES=(core sweep spec functional core-pass2 sweep-pass2 resolution)
           declare -A AGENT_OK=()
-          for role in core sweep spec functional core-pass2 sweep-pass2 resolution; do
+          for role in "${ROLES[@]}"; do
             if [ -z "${PIDS[$role]:-}" ]; then
               AGENT_OK[$role]=1; continue
             fi
@@ -1106,7 +1110,7 @@ jobs:
           FUNCTIONAL_OK="${AGENT_OK[functional]}"
 
           status_parts=()
-          for role in core sweep spec functional core-pass2 sweep-pass2 resolution; do
+          for role in "${ROLES[@]}"; do
             if [ "${AGENT_OK[$role]}" -eq 1 ]; then status_parts+=("$role: OK")
             else status_parts+=("$role: FAILED"); fi
           done
@@ -1114,7 +1118,7 @@ jobs:
           echo "::endgroup::"
 
           # Replay each agent's log in its own group.
-          for role in core sweep spec functional core-pass2 sweep-pass2 resolution; do
+          for role in "${ROLES[@]}"; do
             echo "::group::${role} log"
             [ -f "${LOGS[$role]}" ] && cat "${LOGS[$role]}" || echo "(skipped or no output)"
             echo "::endgroup::"
