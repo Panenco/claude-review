@@ -58,6 +58,7 @@ POSTING_ERROR=$(jq -r '.posting_error // empty' review-result.json)
 HUMAN_REVIEW=$(jq -r '.requires_human_review // false' review-result.json)
 HUMAN_REASON=$(jq -r '.requires_human_review_reason // empty' review-result.json)
 BUILD_UNAVAILABLE=$(jq -r '.build_unavailable // false' review-result.json)
+MANUAL_SPEC=$(jq -r 'if has("manual_spec_present") then .manual_spec_present else true end' review-result.json)
 
 # Step summary for the Actions UI.
 {
@@ -70,6 +71,10 @@ BUILD_UNAVAILABLE=$(jq -r '.build_unavailable // false' review-result.json)
   if [ "$HUMAN_REVIEW" = "true" ]; then
     echo ""
     echo "> :stop_sign: **Human review required.** $HUMAN_REASON"
+  fi
+  if [ "$MANUAL_SPEC" = "false" ]; then
+    echo ""
+    echo "> :no_entry: **No manual spec available — APPROVE withheld.** Link an issue, paste acceptance criteria, or wire up an external tracker to enable APPROVE."
   fi
   if [ "$BUILD_UNAVAILABLE" = "true" ]; then
     echo ""
