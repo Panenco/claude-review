@@ -75,18 +75,17 @@ if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
   if git cat-file -e "$PRIOR_HEAD_SHA" 2>/dev/null; then
     git diff "$PRIOR_HEAD_SHA..HEAD" > /tmp/since-last.diff
     mkdir -p /tmp/since-last-chunks
-    python3 -c "
-import re
-with open('/tmp/since-last.diff') as f:
-    content = f.read()
-files = re.split(r'^diff --git ', content, flags=re.MULTILINE)
-for chunk in files[1:]:
-    m = re.match(r'a/(.*?) b/', chunk)
-    if not m: continue
-    safe = m.group(1).replace('/', '--')
-    with open(f'/tmp/since-last-chunks/{safe}.diff', 'w') as out:
-        out.write('diff --git ' + chunk)
-"
+    # Use git directly (one diff per file) — avoids the inline-python diff
+    # parser, which silently produced 0 chunks in some CI environments.
+    # `git diff --name-only` lists files changed in the range; we then run
+    # a focused `git diff <range> -- <path>` per file. The work is bounded
+    # by the count of changed files (typically 1-5 between consecutive
+    # review rounds), so per-file invocation is fine.
+    while IFS= read -r path; do
+      [ -z "$path" ] && continue
+      safe="${path//\//--}"
+      git diff "$PRIOR_HEAD_SHA..HEAD" -- "$path" > "/tmp/since-last-chunks/${safe}.diff"
+    done < <(git diff --name-only "$PRIOR_HEAD_SHA..HEAD")
     echo "Round-2 since-last.diff: $(wc -l < /tmp/since-last.diff) lines, $(ls /tmp/since-last-chunks/ 2>/dev/null | wc -l) per-file chunks"
   else
     echo "::warning::PRIOR_HEAD_SHA=$PRIOR_HEAD_SHA not present in this clone — round-2 scope reduction unavailable, full diff will be reviewed."
