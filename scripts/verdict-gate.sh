@@ -58,7 +58,7 @@ POSTING_ERROR=$(jq -r '.posting_error // empty' review-result.json)
 HUMAN_REVIEW=$(jq -r '.requires_human_review // false' review-result.json)
 HUMAN_REASON=$(jq -r '.requires_human_review_reason // empty' review-result.json)
 BUILD_UNAVAILABLE=$(jq -r '.build_unavailable // false' review-result.json)
-MANUAL_SPEC=$(jq -r 'if has("manual_spec_present") then .manual_spec_present else true end' review-result.json)
+MANUAL_SPEC=$(jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end' review-result.json)
 
 # Step summary for the Actions UI.
 {

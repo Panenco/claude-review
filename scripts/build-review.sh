@@ -300,8 +300,11 @@ HUMAN_REVIEW=$(echo "$CORE_META" | jq -r '.requires_human_review // false')
 # spec we cannot validate "code matches requirements" — auto-generated PR
 # descriptions (Cursor/Bugbot/CodeRabbit/Gemini/Claude Code) summarise the
 # diff, they don't define it. `// true`-style defaults are wrong here because
-# jq's `//` treats explicit `false` as missing; use `if has() then ... else`.
-MANUAL_SPEC_PRESENT=$(echo "$CORE_META" | jq -r 'if has("manual_spec_present") then .manual_spec_present else true end')
+# jq's `//` treats explicit `false` as missing — `false // true` is `true`.
+# Use `if has() then ... else` instead, but type-guard with `type == "object"`
+# because `has()` crashes on non-object JSON (null, arrays) and our
+# `is_valid_json` check only verifies parseability, not shape.
+MANUAL_SPEC_PRESENT=$(echo "$CORE_META" | jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end')
 
 if [ "$HAS_BLOCKING" = "true" ]; then
   VERDICT="REQUEST_CHANGES"
@@ -362,7 +365,7 @@ jq -n \
     summary: $summary,
     spec_compliance: $spec_compliance,
     spec_sources: ($meta.spec_sources // {linked_issue: null, external_issue: null, prd_path: null, convention_rules: []}),
-    manual_spec_present: (if ($meta | has("manual_spec_present")) then $meta.manual_spec_present else true end),
+    manual_spec_present: (if ($meta | type == "object" and has("manual_spec_present")) then $meta.manual_spec_present else true end),
     findings: $findings,
     requires_human_review: ($meta.requires_human_review // false),
     requires_human_review_reason: ($meta.requires_human_review_reason // null),
