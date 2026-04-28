@@ -337,6 +337,12 @@ Note: a *present but broken* `dev-start.sh` is **not** a soft-degrade case — t
 
 ---
 
+## Spec-presence gate
+
+The pipeline withholds `APPROVE` whenever the PR has no human-authored spec. The core reviewer judges this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff *does*, not what it *should do*, and don't qualify on their own — they're a code summary, not a contract. When the core reviewer sets `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated.
+
+---
+
 ## Versioning
 
 - `@v1` — floating tag, always points to latest v1.x.x. Use this for auto-updates.

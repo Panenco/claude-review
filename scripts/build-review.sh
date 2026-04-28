@@ -294,6 +294,18 @@ HAS_BLOCKING=$(echo "$ALL_FINDINGS" | jq '[.[] | select(.severity == "critical" 
 HAS_ANY=$(echo "$ALL_FINDINGS" | jq 'length > 0')
 HUMAN_REVIEW=$(echo "$CORE_META" | jq -r '.requires_human_review // false')
 
+# Spec-presence gate. The core reviewer judges whether a human-authored spec
+# source is available (linked issue, PRD, external tracker, or substantive
+# manual PR body) and sets manual_spec_present in core-meta.json. Without a
+# spec we cannot validate "code matches requirements" — auto-generated PR
+# descriptions (Cursor/Bugbot/CodeRabbit/Gemini/Claude Code) summarise the
+# diff, they don't define it. `// true`-style defaults are wrong here because
+# jq's `//` treats explicit `false` as missing — `false // true` is `true`.
+# Use `if has() then ... else` instead, but type-guard with `type == "object"`
+# because `has()` crashes on non-object JSON (null, arrays) and our
+# `is_valid_json` check only verifies parseability, not shape.
+MANUAL_SPEC_PRESENT=$(echo "$CORE_META" | jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end')
+
 if [ "$HAS_BLOCKING" = "true" ]; then
   VERDICT="REQUEST_CHANGES"
 elif [ "$HUMAN_REVIEW" = "true" ]; then
@@ -302,13 +314,16 @@ elif [ "$CORE_HAS_OUTPUT" = "false" ]; then
   # Core reviewer (bugs/spec) failed — can't confidently approve without it
   VERDICT="COMMENT"
   echo "::warning::Core reviewer failed — downgrading from APPROVE to COMMENT (cannot verify correctness)"
+elif [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
+  VERDICT="COMMENT"
+  echo "::warning::No manual spec available — downgrading APPROVE to COMMENT (core reviewer set manual_spec_present=false)"
 elif [ "$HAS_ANY" = "true" ]; then
   VERDICT="COMMENT"
 else
   VERDICT="APPROVE"
 fi
 
-echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, functional=$FUNCTIONAL_OVERALL)"
+echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, manual_spec=$MANUAL_SPEC_PRESENT, functional=$FUNCTIONAL_OVERALL)"
 
 # ── Build review-result.json ──
 # Crash-aware functional_meta view, used ONLY for the JSON artifact. If
@@ -350,6 +365,7 @@ jq -n \
     summary: $summary,
     spec_compliance: $spec_compliance,
     spec_sources: ($meta.spec_sources // {linked_issue: null, external_issue: null, prd_path: null, convention_rules: []}),
+    manual_spec_present: (if ($meta | type == "object" and has("manual_spec_present")) then $meta.manual_spec_present else true end),
     findings: $findings,
     requires_human_review: ($meta.requires_human_review // false),
     requires_human_review_reason: ($meta.requires_human_review_reason // null),
@@ -400,6 +416,10 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
     echo ""
   fi
   # Conditional banners
+  if [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
+    echo "> :no_entry: **No manual spec available — APPROVE withheld.** Reviews can only validate code against a human-authored requirement source: a linked GitHub issue, a PRD, an external tracker spec, or a manually-written PR description. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) summarise the diff — they describe what the code does, not what it should do — so they aren't a basis for spec validation. Link an issue, paste acceptance criteria into the PR body, or wire up an external tracker to enable APPROVE."
+    echo ""
+  fi
   if [ "$(jq -r '.requires_human_review' review-result.json)" = "true" ]; then
     echo "> :stop_sign: **Human review required.** $(jq -r '.requires_human_review_reason // ""' review-result.json)"
     echo ""

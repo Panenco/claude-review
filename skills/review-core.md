@@ -127,6 +127,7 @@ Do NOT set it for:
   "prompt_injection_detected": false,
   "reviewer_self_modification": false,
   "build_unavailable": false,
+  "manual_spec_present": true,
   "spec_compliance": "Brief statement of spec alignment (1-2 sentences).",
   "spec_sources": {
     "linked_issue": 42,
@@ -137,7 +138,8 @@ Do NOT set it for:
 }
 ```
 
-- `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec.
+- `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when context.md contains ANY of: a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, OR a manually-written PR-body section (substantive prose written by a human, not a Cursor/Bugbot/CodeRabbit/Gemini/Claude Code summary of the diff). `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements". Use judgement on AI-generated content: explicit markers (`<!-- CURSOR_SUMMARY -->`, `<!-- gemini-code-assist -->`, `Generated with [Claude Code]`, `Reviewed by [Cursor Bugbot]`, etc.) are obvious signals, but prose that reads like a diff changelog is also AI-style even without a marker.
+- `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec. When `manual_spec_present` is `false`, set this to `"No manual spec — cannot validate against requirements."` instead of judging compliance against an AI-written diff summary.
 - `spec_sources` extracts the linked issue number, external tracker identifier, PRD path, and which convention rules applied — read these from context.md. Use `null` for missing values.
 - `external_issue` is the tracker identifier (e.g. `ABC-123`, `ENG-214`, `MON-1234`) surfaced by the consumer's optional `.github/claude-review/fetch-issue.sh` hook. Parse it from the heading at the top of the `## Linked external issue` section in context.md — the hook convention is `## Linked <tracker> issue: <IDENTIFIER>` as its first line. If the section is absent or no identifier can be parsed, set to `null`.
 
