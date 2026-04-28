@@ -17,12 +17,15 @@ The PRD is the source of truth. The developer may have misread it, abbreviated a
 
 Target: **<=6 turns**. Turn 1: Read inputs. Turns 2-4: Compare. Turn 5-6: Write output.
 
-Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, or Grep.
+Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read inputs
+## Turn 1: Read context.md and the spec sources + diff chunks
 
-1. Read `context.md` at the repo root — contains the diff, file contents, AND the PRD content (under `## PRD` section).
-2. If context.md has no PRD section or it says "No PRD linked", write `[]` to `/tmp/spec-findings.json` and `{}` to `/tmp/spec-meta.json` and stop — nothing to compare against.
+1. Read `context.md` at the repo root — short index.
+2. From `## Spec sources`, Read the PRD (`/tmp/prd-content.md`). If the file is empty or context.md says "none", write `[]` to `/tmp/spec-findings.json` and `{}` to `/tmp/spec-meta.json` and stop — nothing to compare against.
+3. Also Read the linked external issue (`/tmp/external-issue.md`) and the GitHub issue (`/tmp/issue.json`) when listed as non-empty — they may add criteria the PRD doesn't cover.
+4. From `## Per-file diff index`, Read every chunk tagged `spec`, `core`, or `multi` — you need to compare against actual code, not just the PRD.
+5. On round 2, also Read `/tmp/since-last-chunks/<file>.diff` for files in `## Diff since last review`.
 
 ## What to compare
 

@@ -11,7 +11,7 @@ The test runner (Sonnet) will read your plan and execute it mechanically. Good p
 
 ## Input
 
-- `context.md` at the repo root (PR metadata, diff, acceptance criteria, conventions, build results)
+- `context.md` at the repo root — short index containing PR metadata, `## Acceptance criteria`, `## Per-file diff index`, build-results status. Diff content lives at `/tmp/diff-chunks/<file>.diff`; Read those only if you need to see what actually changed in a specific file.
 - `.github/review-config.md` (optional — may contain service URLs, auth hints, dev server commands)
 - `CLAUDE.md` (repo architecture overview)
 
