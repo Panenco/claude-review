@@ -323,6 +323,45 @@ jobs:
           echo "bot_user=$BOT_USER" >> "$GITHUB_OUTPUT"
           echo "Review identity: $BOT_USER"
 
+      # First-review detection. Re-reviews are common; first reviews are not.
+      # The "first-review boost" — double-pass core+sweep + gap-finder critic —
+      # only fires when no prior review or top-level review-comment by this
+      # bot exists on the PR. Detection is fail-closed: if the API can't be
+      # queried we default to false rather than spending the +2.5x cost on
+      # every push when auth glitches. This naturally distinguishes the
+      # synchronize event (re-review, prior comments present) from
+      # opened/reopened/ready_for_review (first review, none) and correctly
+      # treats workflow_dispatch re-runs against a reviewed PR as re-reviews.
+      #
+      # All untrusted PR inputs (number) and bot identity (token, BOT_USER)
+      # flow through env vars — never inlined into run: via ${{ }} — so
+      # this step is not vulnerable to workflow-command injection.
+      - name: Detect first review
+        id: first_review
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
+        run: |
+          set -uo pipefail
+          IS_FIRST="false"
+          REVIEWS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null) || REVIEWS=""
+          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" 2>/dev/null) || COMMENTS=""
+          if [ -n "$REVIEWS" ] || [ -n "$COMMENTS" ]; then
+            PRIOR=$(echo "${REVIEWS:-[]}" | jq --arg bot "$BOT_USER" \
+              '[.[] | select(.user.login == $bot and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED"))] | length' 2>/dev/null || echo 0)
+            MARKER=$(echo "${COMMENTS:-[]}" | jq --arg bot "$BOT_USER" \
+              '[.[] | select(.user.login == $bot)] | length' 2>/dev/null || echo 0)
+            if [ "${PRIOR:-0}" -eq 0 ] && [ "${MARKER:-0}" -eq 0 ]; then
+              IS_FIRST="true"
+            fi
+          else
+            echo "::warning::Could not query prior reviews/comments — defaulting IS_FIRST_REVIEW=false (fail-closed)"
+          fi
+          echo "is_first=$IS_FIRST" >> "$GITHUB_OUTPUT"
+          echo "First-review boost: IS_FIRST_REVIEW=$IS_FIRST"
+
       # ── Review pipeline ─────────────────────────────────────────
       # Stage 1: Context Builder (Sonnet) — gathers PR data, runs build,
       #          writes context.md AND test-plan.md (test planning folded in)
@@ -726,6 +765,7 @@ jobs:
           WEB_READY: ${{ steps.dev_env.outputs.web_ready || 'false' }}
           WEB_URL: ${{ steps.dev_env.outputs.web_url || '' }}
           AUTH_READY: ${{ steps.dev_env.outputs.auth_ready || 'false' }}
+          IS_FIRST_REVIEW: ${{ steps.first_review.outputs.is_first }}
         run: |
           set -euo pipefail
 
@@ -780,11 +820,11 @@ jobs:
           # core/sweep output files would be empty — which is exactly how this
           # step silently failed in the past. Trap EXIT reaps any still-running
           # reviewer PIDs so we preserve their output even on abort.
-          PID_CORE=""; PID_SWEEP=""; PID_SPEC=""; PID_FUNCTIONAL=""
+          PID_CORE=""; PID_SWEEP=""; PID_SPEC=""; PID_FUNCTIONAL=""; PID_CORE2=""; PID_SWEEP2=""
           reap_on_exit() {
             local rc=$?
             set +x
-            for pid in "$PID_CORE" "$PID_SWEEP" "$PID_SPEC" "$PID_FUNCTIONAL"; do
+            for pid in "$PID_CORE" "$PID_SWEEP" "$PID_SPEC" "$PID_FUNCTIONAL" "$PID_CORE2" "$PID_SWEEP2"; do
               [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && wait "$pid" 2>/dev/null || true
             done
             exit "$rc"
@@ -818,6 +858,43 @@ jobs:
             --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
             --max-turns 8 > /tmp/sweep-output.txt 2>&1 &
           PID_SWEEP=$!
+
+          # First-review boost: on the first review of a PR, run a second
+          # independent pass of core + sweep in parallel. The two passes use
+          # the same skills/prompts but their LLM sampling is independent,
+          # so the union catches issues that any single pass might miss
+          # (per-run recall is well below 100%). Pass-2 findings flow through
+          # build-review.sh's existing dedup with the rest, so duplicates
+          # collapse automatically. Output paths are overridden in the
+          # prompt suffix to avoid clobbering pass-1 outputs.
+          if [ "${IS_FIRST_REVIEW:-false}" = "true" ]; then
+            echo "First-review boost: launching core + sweep pass-2 in parallel"
+            ~/.local/bin/claude -p "You are the core reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly. **Override**: write findings to /tmp/core-findings-2.json and meta to /tmp/core-meta-2.json (NOT the default paths). Do not touch the pass-1 outputs.${BUGBOT_BLOCK}
+
+          === review-core skill (follow exactly) ===
+
+          $CORE_SKILL" \
+              --model ${{ inputs.model_high }} \
+              --permission-mode dontAsk \
+              --setting-sources user \
+              --allowedTools Read,Write \
+              --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
+              --max-turns 10 > /tmp/core-output-2.txt 2>&1 &
+            PID_CORE2=$!
+
+            ~/.local/bin/claude -p "You are the sweep reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root contains the full diff and project context — Read it. Follow the skill below exactly. **Override**: write findings to /tmp/sweep-findings-2.json (NOT the default path). Do not touch the pass-1 output.${BUGBOT_BLOCK}
+
+          === review-sweep skill (follow exactly) ===
+
+          $SWEEP_SKILL" \
+              --model ${{ inputs.model_standard }} \
+              --permission-mode dontAsk \
+              --setting-sources user \
+              --allowedTools Read,Write \
+              --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
+              --max-turns 8 > /tmp/sweep-output-2.txt 2>&1 &
+            PID_SWEEP2=$!
+          fi
 
           # Spec-compliance reviewer: PRD vs code comparison (Sonnet)
           # Only runs when a PRD was detected — otherwise no spec to compare against.
@@ -887,10 +964,13 @@ jobs:
           [ -f /tmp/functional-findings.json ] || echo '[]' > /tmp/functional-findings.json
           [ -f /tmp/functional-meta.json ] || echo '{"strategy":"skip","areas_tested":[],"screenshots":[],"overall":"PASS","summary":"Functional testing skipped.","uncertain_observations":[]}' > /tmp/functional-meta.json
 
-          echo "Core PID=$PID_CORE, Sweep PID=$PID_SWEEP, Spec PID=${PID_SPEC:-skipped}, Functional PID=${PID_FUNCTIONAL:-skipped}"
+          echo "Core PID=$PID_CORE, Sweep PID=$PID_SWEEP, Spec PID=${PID_SPEC:-skipped}, Functional PID=${PID_FUNCTIONAL:-skipped}, Core2 PID=${PID_CORE2:-skipped}, Sweep2 PID=${PID_SWEEP2:-skipped}"
 
           # Wait for all launched agents to complete
           CORE_OK=0; SWEEP_OK=0; SPEC_OK=0; FUNCTIONAL_OK=0
+          # Boost passes default to OK=1 ("not launched = OK") so the success
+          # log doesn't show FAILED on re-reviews where the boost is disabled.
+          CORE2_OK=1; SWEEP2_OK=1
           wait $PID_CORE && CORE_OK=1 || true
           wait $PID_SWEEP && SWEEP_OK=1 || true
           if [ -n "$PID_SPEC" ]; then
@@ -903,7 +983,15 @@ jobs:
           else
             FUNCTIONAL_OK=1  # skipped = OK
           fi
-          echo "Core: $([ $CORE_OK -eq 1 ] && echo OK || echo FAILED), Sweep: $([ $SWEEP_OK -eq 1 ] && echo OK || echo FAILED), Spec: $([ $SPEC_OK -eq 1 ] && echo OK || echo FAILED), Functional: $([ $FUNCTIONAL_OK -eq 1 ] && echo OK || echo FAILED)"
+          if [ -n "$PID_CORE2" ]; then
+            CORE2_OK=0
+            wait $PID_CORE2 && CORE2_OK=1 || true
+          fi
+          if [ -n "$PID_SWEEP2" ]; then
+            SWEEP2_OK=0
+            wait $PID_SWEEP2 && SWEEP2_OK=1 || true
+          fi
+          echo "Core: $([ $CORE_OK -eq 1 ] && echo OK || echo FAILED), Sweep: $([ $SWEEP_OK -eq 1 ] && echo OK || echo FAILED), Spec: $([ $SPEC_OK -eq 1 ] && echo OK || echo FAILED), Functional: $([ $FUNCTIONAL_OK -eq 1 ] && echo OK || echo FAILED), Core(2): $([ $CORE2_OK -eq 1 ] && echo OK || echo FAILED), Sweep(2): $([ $SWEEP2_OK -eq 1 ] && echo OK || echo FAILED)"
           echo "::endgroup::"
 
           # Print each agent's log in its own group for clean readability
@@ -919,6 +1007,53 @@ jobs:
           echo "::group::Functional tester (Playwright + Bash) log"
           [ -f /tmp/functional-output.txt ] && cat /tmp/functional-output.txt || echo "(skipped or no output)"
           echo "::endgroup::"
+          echo "::group::Core reviewer pass-2 (Opus) log"
+          [ -f /tmp/core-output-2.txt ] && cat /tmp/core-output-2.txt || echo "(skipped or no output)"
+          echo "::endgroup::"
+          echo "::group::Sweep reviewer pass-2 (Sonnet) log"
+          [ -f /tmp/sweep-output-2.txt ] && cat /tmp/sweep-output-2.txt || echo "(skipped or no output)"
+          echo "::endgroup::"
+
+          # First-review boost: gap-finder critic. Sequential — runs AFTER
+          # core+sweep (and any pass-2 / spec) finish, so the critic sees
+          # the union of every prior finding and explicitly hunts for what
+          # they missed. Output goes through the same dedup as the others,
+          # so any candidate that overlaps prior passes collapses cleanly
+          # in build-review.sh.
+          if [ "${IS_FIRST_REVIEW:-false}" = "true" ]; then
+            if [ ! -f "$SKILLS_DIR/review-gap-finder.md" ]; then
+              echo "::warning::review-gap-finder.md not found at $SKILLS_DIR — skipping gap-finder stage"
+            else
+              GAP_SKILL=$(cat "$SKILLS_DIR/review-gap-finder.md")
+              # Concatenate all prior-stage findings into one input file for
+              # the critic to read. `2>/dev/null || echo '[]'` keeps the file
+              # valid even when one pass-2 input is missing (e.g. that pass
+              # crashed) — the agent reads the file unconditionally per skill.
+              jq -s 'add' \
+                /tmp/core-findings.json /tmp/core-findings-2.json \
+                /tmp/sweep-findings.json /tmp/sweep-findings-2.json \
+                2>/dev/null > /tmp/prior-pass-findings.json \
+                || echo '[]' > /tmp/prior-pass-findings.json
+              echo "::group::Gap-finder critic (Opus, sequential)"
+              ~/.local/bin/claude -p "You are the gap-finder critic for PR #$PR_NUMBER. context.md at the repo root has the diff + project context — Read it. /tmp/prior-pass-findings.json contains every finding the prior pairs already produced — Read it. Follow the skill below exactly, including writing the JSON output file it specifies.${BUGBOT_BLOCK}
+
+          === review-gap-finder skill (follow exactly) ===
+
+          $GAP_SKILL" \
+                --model ${{ inputs.model_high }} \
+                --permission-mode dontAsk \
+                --setting-sources user \
+                --allowedTools Read,Write \
+                --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
+                --max-turns 12 > /tmp/gap-output.txt 2>&1 \
+                || echo "::warning::gap-finder exited non-zero — continuing with prior findings only"
+              [ -f /tmp/gap-findings.json ] || echo '[]' > /tmp/gap-findings.json
+              echo "::endgroup::"
+              echo "::group::Gap-finder log"
+              [ -f /tmp/gap-output.txt ] && cat /tmp/gap-output.txt || echo "(no output)"
+              echo "::endgroup::"
+            fi
+          fi
 
           # Export FUNCTIONAL_OK for build-review.sh (it uses it for crash section)
           export FUNCTIONAL_OK
@@ -974,6 +1109,14 @@ jobs:
             /tmp/functional-findings.json
             /tmp/core-meta.json
             /tmp/functional-meta.json
+            /tmp/core-findings-2.json
+            /tmp/sweep-findings-2.json
+            /tmp/gap-findings.json
+            /tmp/core-meta-2.json
+            /tmp/core-output-2.txt
+            /tmp/sweep-output-2.txt
+            /tmp/gap-output.txt
+            /tmp/prior-pass-findings.json
             /tmp/*-findings.invalid.json
             /tmp/*-meta.invalid.json
           if-no-files-found: ignore

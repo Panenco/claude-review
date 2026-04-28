@@ -21,6 +21,9 @@ set -euo pipefail
 #   /tmp/functional-findings.json — functional tester findings (optional)
 #   /tmp/functional-meta.json     — functional tester metadata (optional)
 #   /tmp/core-meta.json           — core reviewer metadata (optional)
+#   /tmp/core-findings-2.json     — first-review boost: core pass-2 findings (optional)
+#   /tmp/sweep-findings-2.json    — first-review boost: sweep pass-2 findings (optional)
+#   /tmp/gap-findings.json        — first-review boost: gap-finder critic findings (optional)
 #
 # Output files:
 #   review-result.json            — full review result
@@ -84,6 +87,52 @@ if [ -f /tmp/functional-findings.json ]; then
     preserve_invalid /tmp/functional-findings.json
   fi
 fi
+
+# First-review boost inputs. These files are only present when pr-review.yml
+# detects IS_FIRST_REVIEW=true and runs the second pass of core/sweep plus the
+# gap-finder critic. On re-reviews they are absent and the flags stay false —
+# all downstream merge logic treats absence as "no findings from this source".
+CORE2_HAS_OUTPUT=false; SWEEP2_HAS_OUTPUT=false; GAP_HAS_OUTPUT=false
+if [ -f /tmp/core-findings-2.json ]; then
+  if is_valid_findings /tmp/core-findings-2.json; then
+    CORE2_HAS_OUTPUT=true
+  else
+    echo "::warning::Core reviewer pass-2 findings are not a valid JSON array — treating as failed."
+    preserve_invalid /tmp/core-findings-2.json
+  fi
+fi
+if [ -f /tmp/sweep-findings-2.json ]; then
+  if is_valid_findings /tmp/sweep-findings-2.json; then
+    SWEEP2_HAS_OUTPUT=true
+  else
+    echo "::warning::Sweep reviewer pass-2 findings are not a valid JSON array — treating as failed."
+    preserve_invalid /tmp/sweep-findings-2.json
+  fi
+fi
+if [ -f /tmp/gap-findings.json ]; then
+  if is_valid_findings /tmp/gap-findings.json; then
+    GAP_HAS_OUTPUT=true
+  else
+    echo "::warning::Gap-finder critic findings are not a valid JSON array — treating as failed."
+    preserve_invalid /tmp/gap-findings.json
+  fi
+fi
+
+# Aggregate flags: pass-2 substitutes for pass-1 if pass-1 failed but pass-2
+# succeeded. Used for the failure gate, the warnings below, and the verdict
+# downgrade logic — any successful pass means we have those findings and can
+# trust the review on that axis.
+if [ "$CORE_HAS_OUTPUT" = "true" ] || [ "$CORE2_HAS_OUTPUT" = "true" ]; then
+  CORE_ANY_OUTPUT=true
+else
+  CORE_ANY_OUTPUT=false
+fi
+if [ "$SWEEP_HAS_OUTPUT" = "true" ] || [ "$SWEEP2_HAS_OUTPUT" = "true" ]; then
+  SWEEP_ANY_OUTPUT=true
+else
+  SWEEP_ANY_OUTPUT=false
+fi
+
 # Meta files are also agent-written JSON — fall back to empty if malformed.
 if [ -f /tmp/core-meta.json ] && ! is_valid_json /tmp/core-meta.json; then
   echo "::warning::Core reviewer meta is not valid JSON — falling back to {}."
@@ -96,16 +145,16 @@ if [ -f /tmp/functional-meta.json ] && ! is_valid_json /tmp/functional-meta.json
   echo '{}' > /tmp/functional-meta.json
 fi
 
-if [ "$CORE_HAS_OUTPUT" = "false" ] && [ "$SWEEP_HAS_OUTPUT" = "false" ]; then
-  echo "::error::Both code reviewers failed to produce output — cannot generate a verdict."
+if [ "$CORE_ANY_OUTPUT" = "false" ] && [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
+  echo "::error::All code reviewers failed to produce output (core+sweep, both passes if boost ran) — cannot generate a verdict."
   echo "::error::Check rate limits and OAuth token."
   exit 1
 fi
 
-if [ "$CORE_HAS_OUTPUT" = "false" ]; then
+if [ "$CORE_ANY_OUTPUT" = "false" ]; then
   echo "::warning::Core reviewer (Opus) failed — proceeding with sweep-only findings. Correctness/spec review may be incomplete."
 fi
-if [ "$SWEEP_HAS_OUTPUT" = "false" ]; then
+if [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
   echo "::warning::Sweep reviewer (Sonnet) failed — proceeding with core-only findings. Consistency/performance review may be incomplete."
 fi
 if [ "$FUNCTIONAL_HAS_OUTPUT" = "false" ]; then
@@ -238,10 +287,16 @@ echo '[]' > /tmp/merged-core.json
 echo '[]' > /tmp/merged-sweep.json
 echo '[]' > /tmp/merged-spec.json
 echo '[]' > /tmp/merged-functional.json
+echo '[]' > /tmp/merged-core2.json
+echo '[]' > /tmp/merged-sweep2.json
+echo '[]' > /tmp/merged-gap.json
 [ "$CORE_HAS_OUTPUT" = "true" ] && cp /tmp/core-findings.json /tmp/merged-core.json
 [ "$SWEEP_HAS_OUTPUT" = "true" ] && cp /tmp/sweep-findings.json /tmp/merged-sweep.json
 [ "$SPEC_HAS_OUTPUT" = "true" ] && cp /tmp/spec-findings.json /tmp/merged-spec.json
 [ "$FUNCTIONAL_HAS_OUTPUT" = "true" ] && cp /tmp/functional-findings.json /tmp/merged-functional.json
+[ "$CORE2_HAS_OUTPUT" = "true" ] && cp /tmp/core-findings-2.json /tmp/merged-core2.json
+[ "$SWEEP2_HAS_OUTPUT" = "true" ] && cp /tmp/sweep-findings-2.json /tmp/merged-sweep2.json
+[ "$GAP_HAS_OUTPUT" = "true" ] && cp /tmp/gap-findings.json /tmp/merged-gap.json
 CORE_META='{}'
 [ -f /tmp/core-meta.json ] && CORE_META=$(cat /tmp/core-meta.json)
 
@@ -249,7 +304,10 @@ CORE_COUNT=$(jq 'length' /tmp/merged-core.json)
 SWEEP_COUNT=$(jq 'length' /tmp/merged-sweep.json)
 SPEC_COUNT=$(jq 'length' /tmp/merged-spec.json)
 FUNCTIONAL_COUNT=$(jq 'length' /tmp/merged-functional.json)
-echo "Core: $CORE_COUNT, Sweep: $SWEEP_COUNT, Spec: $SPEC_COUNT, Functional: $FUNCTIONAL_COUNT findings"
+CORE2_COUNT=$(jq 'length' /tmp/merged-core2.json)
+SWEEP2_COUNT=$(jq 'length' /tmp/merged-sweep2.json)
+GAP_COUNT=$(jq 'length' /tmp/merged-gap.json)
+echo "Core: $CORE_COUNT, Sweep: $SWEEP_COUNT, Spec: $SPEC_COUNT, Functional: $FUNCTIONAL_COUNT, Core(2): $CORE2_COUNT, Sweep(2): $SWEEP2_COUNT, Gap: $GAP_COUNT findings"
 
 # ── Deduplication ──
 # Pass 1 (line-based): collapse findings at the same path+line_start.
@@ -271,7 +329,7 @@ def pick_best:
   then $best + {screenshot: $shot_donor.screenshot}
   else $best end;
 
-($c[0] + $s[0] + $p[0] + $f[0])
+($c[0] + $s[0] + $p[0] + $f[0] + $c2[0] + $s2[0] + $g[0])
 | group_by(.path + ":" + (.line_start | tostring))
 | map(pick_best)
 | group_by(.path + "|" + norm_title)
@@ -282,9 +340,12 @@ ALL_FINDINGS=$(jq -n \
   --slurpfile s /tmp/merged-sweep.json \
   --slurpfile p /tmp/merged-spec.json \
   --slurpfile f /tmp/merged-functional.json \
+  --slurpfile c2 /tmp/merged-core2.json \
+  --slurpfile s2 /tmp/merged-sweep2.json \
+  --slurpfile g /tmp/merged-gap.json \
   -f /tmp/dedup.jq)
 DEDUPED_COUNT=$(echo "$ALL_FINDINGS" | jq 'length')
-TOTAL=$((CORE_COUNT + SWEEP_COUNT + SPEC_COUNT + FUNCTIONAL_COUNT))
+TOTAL=$((CORE_COUNT + SWEEP_COUNT + SPEC_COUNT + FUNCTIONAL_COUNT + CORE2_COUNT + SWEEP2_COUNT + GAP_COUNT))
 if [ "$DEDUPED_COUNT" -lt "$TOTAL" ]; then
   echo "Within-run dedup (path+line then path+normalized-title, highest severity wins): $TOTAL -> $DEDUPED_COUNT (removed $((TOTAL - DEDUPED_COUNT)))"
 fi
@@ -356,8 +417,10 @@ if [ "$HAS_BLOCKING" = "true" ]; then
   VERDICT="REQUEST_CHANGES"
 elif [ "$HUMAN_REVIEW" = "true" ]; then
   VERDICT="COMMENT"
-elif [ "$CORE_HAS_OUTPUT" = "false" ]; then
-  # Core reviewer (bugs/spec) failed — can't confidently approve without it
+elif [ "$CORE_ANY_OUTPUT" = "false" ]; then
+  # Core reviewer (bugs/spec) failed — can't confidently approve without it.
+  # On first reviews this means BOTH core passes failed; on re-reviews this is
+  # the single core run.
   VERDICT="COMMENT"
   echo "::warning::Core reviewer failed — downgrading from APPROVE to COMMENT (cannot verify correctness)"
 elif [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
@@ -485,11 +548,11 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
     echo "> :gear: **Build verification was unavailable.**"
     echo ""
   fi
-  if [ "$CORE_HAS_OUTPUT" = "false" ]; then
+  if [ "$CORE_ANY_OUTPUT" = "false" ]; then
     echo "> :warning: **Core reviewer (Opus) failed** — correctness and spec compliance review may be incomplete."
     echo ""
   fi
-  if [ "$SWEEP_HAS_OUTPUT" = "false" ]; then
+  if [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
     echo "> :warning: **Sweep reviewer (Sonnet) failed** — consistency and performance review may be incomplete."
     echo ""
   fi
