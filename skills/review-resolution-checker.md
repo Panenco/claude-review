@@ -1,6 +1,6 @@
 ---
 name: review-resolution-checker
-description: Round-2 resolution classifier. Reads /tmp/prior-state/state.json (the prior review's findings) and /tmp/since-last.diff (changes since the last review), then writes /tmp/resolution-status.json classifying each prior finding as RESOLVED, STILL_PRESENT, or NEW_CONTEXT. May also surface a small number of high-severity net-new findings to /tmp/resolution-findings.json when the diff introduces something the prior review clearly missed.
+description: Round-2 resolution classifier. Reads /tmp/prior-state/review-state.json (the prior review's findings) and /tmp/since-last.diff (changes since the last review), then writes /tmp/resolution-status.json classifying each prior finding as RESOLVED, STILL_PRESENT, or NEW_CONTEXT. May also surface a small number of high-severity net-new findings to /tmp/resolution-findings.json when the diff introduces something the prior review clearly missed.
 ---
 
 # Resolution Checker (round 2 only)
@@ -17,7 +17,7 @@ Most runs write `[]` to `/tmp/resolution-findings.json` — that's expected and 
 
 ## Turn 1: Read inputs
 
-1. `/tmp/prior-state/state.json` — the previous review's deduped findings array under `.findings`. Each entry has at minimum `id`, `severity`, `path`, `line_start`, optional `line_end`, `title`, `evidence`, `expected`. **You must read this fully.**
+1. `/tmp/prior-state/review-state.json` — the previous review's deduped findings array under `.findings`. Each entry has at minimum `id`, `severity`, `path`, `line_start`, optional `line_end`, `title`, `evidence`, `expected`. **You must read this fully.**
 2. `/tmp/since-last.diff` — `git diff $PRIOR_HEAD_SHA..HEAD`. The complete change since the last review. **You must read this fully.**
 3. Optionally read `context.md` at the repo root for project context.
 
@@ -25,7 +25,7 @@ If either input is missing, write `[]` to `/tmp/resolution-status.json` and exit
 
 ## Classification (one entry per prior finding)
 
-For each finding in `state.json.findings`, locate the relevant code in `since-last.diff` by:
+For each finding in `review-state.json.findings`, locate the relevant code in `since-last.diff` by:
 
 1. Searching for the `path` of the finding in the diff (`+++ b/<path>` or `--- a/<path>` headers).
 2. If the path appears, scanning the hunks for changes that overlap `line_start ±10`.

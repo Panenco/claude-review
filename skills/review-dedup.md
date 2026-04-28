@@ -18,7 +18,7 @@ Use only Read and Write. Do NOT use Bash, Glob, Grep, WebFetch, WebSearch.
 1. `/tmp/all-findings-merged.json` — concatenated array of every finding produced this run. This is your only input that matters for grouping.
 2. `bugbot.md` (if a `## Accepted trade-offs` / `## Do NOT flag` / `## Accepted supply-chain trade-offs` / `## Known exceptions` section exists in the prompt above) — items there are exempt from review and must be **dropped from the output**, not just merged.
 3. **Round-2 only** — when these two files exist, the run is a follow-up review and you must apply the resolution-aware drop rule below:
-   - `/tmp/prior-state/state.json` — the previous review's deduped findings under `.findings`.
+   - `/tmp/prior-state/review-state.json` — the previous review's deduped findings under `.findings`.
    - `/tmp/resolution-status.json` — array classifying each prior finding as `RESOLVED` / `STILL_PRESENT` / `NEW_CONTEXT`. Match by `id`.
 
 If `/tmp/all-findings-merged.json` is missing or empty, write `[]` to the output path and exit.
@@ -55,7 +55,7 @@ Walk the `bugbot.md` content embedded above. For every line in an `## Accepted t
 
 ## Drop STILL_PRESENT-overlapping findings (round 2 only)
 
-When `/tmp/resolution-status.json` exists, the resolution checker has already classified every prior finding. For each entry with `status: STILL_PRESENT`, look up the matching prior finding in `/tmp/prior-state/state.json` (match on `id`) — that's the issue the user *already saw flagged on the previous review*.
+When `/tmp/resolution-status.json` exists, the resolution checker has already classified every prior finding. For each entry with `status: STILL_PRESENT`, look up the matching prior finding in `/tmp/prior-state/review-state.json` (match on `id`) — that's the issue the user *already saw flagged on the previous review*.
 
 For each such still-present prior, **drop any new finding whose root cause matches it**, using the same root-cause rules from the grouping section above (same path + overlapping evidence/symbol; line numbers can drift on big refactors). The user has already been told about this issue — re-flagging it on every push is exactly the noise the user complained about.
 

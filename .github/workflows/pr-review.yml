@@ -569,10 +569,10 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          if [ -f /tmp/prior-state/state.json ]; then
-            PRIOR_HEAD_SHA=$(jq -r '.prior_head_sha // empty' /tmp/prior-state/state.json 2>/dev/null || echo "")
+          if [ -f /tmp/prior-state/review-state.json ]; then
+            PRIOR_HEAD_SHA=$(jq -r '.prior_head_sha // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
             if [ -n "$PRIOR_HEAD_SHA" ]; then
-              echo "Prior state loaded: head=$PRIOR_HEAD_SHA, findings=$(jq '.findings | length' /tmp/prior-state/state.json), verdict=$(jq -r '.verdict' /tmp/prior-state/state.json)"
+              echo "Prior state loaded: head=$PRIOR_HEAD_SHA, findings=$(jq '.findings | length' /tmp/prior-state/review-state.json), verdict=$(jq -r '.verdict' /tmp/prior-state/review-state.json)"
               echo "prior_head_sha=$PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
               echo "available=true" >> "$GITHUB_OUTPUT"
             else
@@ -1072,10 +1072,10 @@ jobs:
           # STILL_PRESENT / NEW_CONTEXT against the diff-since-last. Output
           # at /tmp/resolution-status.json drives both the body section and
           # the verdict-table adjustment downstream.
-          if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ] && [ -f /tmp/prior-state/state.json ] && [ -f /tmp/since-last.diff ]; then
+          if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ] && [ -f /tmp/prior-state/review-state.json ] && [ -f /tmp/since-last.diff ]; then
             echo "Round-2: launching resolution checker (Sonnet, parallel)"
             launch_agent resolution review-resolution-checker "${{ inputs.model_standard }}" 10 \
-              "You are the resolution checker for PR #$PR_NUMBER. /tmp/prior-state/state.json contains the previous review's findings. /tmp/since-last.diff contains the changes since that review. Classify every prior finding as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/resolution-status.json. If — and only if — you spot a high-severity (critical/major) net-new issue in the diff that the prior reviewers clearly missed, append it to /tmp/resolution-findings.json (otherwise write []). Follow the skill above exactly." \
+              "You are the resolution checker for PR #$PR_NUMBER. /tmp/prior-state/review-state.json contains the previous review's findings. /tmp/since-last.diff contains the changes since that review. Classify every prior finding as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/resolution-status.json. If — and only if — you spot a high-severity (critical/major) net-new issue in the diff that the prior reviewers clearly missed, append it to /tmp/resolution-findings.json (otherwise write []). Follow the skill above exactly." \
               false
           fi
 

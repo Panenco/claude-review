@@ -300,7 +300,7 @@ run_haiku_dedup() {
 
 ${DEDUP_SKILL}${BUGBOT_BLOCK:-}
 
-You are the dedup reviewer. Read /tmp/all-findings-merged.json (the full reviewer output). When /tmp/resolution-status.json AND /tmp/prior-state/state.json exist, this is a round-2 follow-up — Read both and apply the STILL_PRESENT drop rule from the skill. OUTPUT_PATH=${out} — write the deduped JSON array to that exact path. Follow the skill above exactly." \
+You are the dedup reviewer. Read /tmp/all-findings-merged.json (the full reviewer output). When /tmp/resolution-status.json AND /tmp/prior-state/review-state.json exist, this is a round-2 follow-up — Read both and apply the STILL_PRESENT drop rule from the skill. OUTPUT_PATH=${out} — write the deduped JSON array to that exact path. Follow the skill above exactly." \
     --model "${MODEL_FAST:-claude-haiku-4-5}" \
     --permission-mode dontAsk \
     --setting-sources user \
@@ -499,22 +499,32 @@ fi
 # round-1 with no findings would default to APPROVE here, but round-2
 # preserves COMMENT/REQUEST_CHANGES until either the prior blockers are
 # resolved OR the prior verdict was already non-blocking.
-if [ -f /tmp/prior-state/state.json ]; then
-  PRIOR_VERDICT=$(jq -r '.verdict // "MISSING"' /tmp/prior-state/state.json 2>/dev/null || echo "MISSING")
-  PRIOR_BLOCKERS=$(jq -r '[.findings[]? | select(.severity == "critical" or .severity == "major")] | length' /tmp/prior-state/state.json 2>/dev/null || echo 0)
+if [ -f /tmp/prior-state/review-state.json ]; then
+  PRIOR_VERDICT=$(jq -r '.verdict // "MISSING"' /tmp/prior-state/review-state.json 2>/dev/null || echo "MISSING")
+  PRIOR_BLOCKERS=$(jq -r '[.findings[]? | select(.severity == "critical" or .severity == "major")] | length' /tmp/prior-state/review-state.json 2>/dev/null || echo 0)
+  # If resolution-status.json is missing (resolution checker didn't run —
+  # since-last.diff couldn't be computed because PRIOR_HEAD_SHA wasn't in
+  # the shallow clone, or the agent crashed before writing it), we don't
+  # know whether prior blockers are resolved. Treat unknown-resolution as
+  # "all blockers still present" so we never silently downgrade
+  # REQUEST_CHANGES → APPROVE on a path that was meant to be focused.
+  RESOLUTION_KNOWN=true
+  if [ ! -f /tmp/resolution-status.json ]; then
+    RESOLUTION_KNOWN=false
+  fi
   # Derive the still-present blocker count by id-joining STILL_PRESENT
   # entries against prior-state.findings, instead of trusting the
   # resolution checker's `prior_severity` field. The verdict gate must
   # not ride on LLM compliance: if the agent forgets or mistypes
   # `prior_severity`, an approve-via-zero-blockers slips through.
   STILL_PRESENT_BLOCKERS=$(jq -n \
-    --slurpfile state /tmp/prior-state/state.json \
+    --slurpfile state /tmp/prior-state/review-state.json \
     --argjson still "$STILL_PRESENT_LIST" \
     '($still | map(.id)) as $ids
      | ($state[0].findings // [])
      | map(select((.id as $id | $ids | index($id)) and (.severity == "critical" or .severity == "major")))
      | length')
-  echo "Round-2 verdict input: prior_verdict=$PRIOR_VERDICT prior_blockers=$PRIOR_BLOCKERS still_present_blockers=$STILL_PRESENT_BLOCKERS new_blocking=$HAS_BLOCKING current_verdict=$VERDICT"
+  echo "Round-2 verdict input: prior_verdict=$PRIOR_VERDICT prior_blockers=$PRIOR_BLOCKERS still_present_blockers=$STILL_PRESENT_BLOCKERS resolution_known=$RESOLUTION_KNOWN new_blocking=$HAS_BLOCKING current_verdict=$VERDICT"
   case "$PRIOR_VERDICT" in
     REQUEST_CHANGES)
       if [ "$HAS_BLOCKING" = "true" ]; then
@@ -522,9 +532,15 @@ if [ -f /tmp/prior-state/state.json ]; then
       elif [ "$STILL_PRESENT_BLOCKERS" -gt 0 ]; then
         VERDICT="REQUEST_CHANGES"
         echo "::notice::Round-2: $STILL_PRESENT_BLOCKERS prior blocking finding(s) still present — keeping REQUEST_CHANGES."
+      elif [ "$RESOLUTION_KNOWN" = "false" ] && [ "$PRIOR_BLOCKERS" -gt 0 ]; then
+        # Prior had blockers but we couldn't run the resolution checker
+        # — preserve REQUEST_CHANGES rather than guess they're resolved.
+        VERDICT="REQUEST_CHANGES"
+        echo "::warning::Round-2 with unknown resolution status (no /tmp/resolution-status.json) and $PRIOR_BLOCKERS prior blocker(s) — preserving REQUEST_CHANGES until resolution status is computed."
       fi
-      # else: no new blockers AND all prior blockers resolved → keep
-      # whatever the per-PR verdict computed above (APPROVE if clean).
+      # else: no new blockers AND (all prior blockers resolved per the
+      # checker, OR the prior verdict was REQUEST_CHANGES with no
+      # blockers in the first place) → keep the per-PR verdict above.
       ;;
     COMMENT)
       if [ "$HAS_BLOCKING" = "true" ]; then
@@ -818,9 +834,9 @@ CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
 CURRENT_BASE_SHA=$(git merge-base HEAD "${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}" 2>/dev/null || echo "")
 PRIOR_HEAD_SHA_FROM_STATE=""
 PRIOR_ROUND=1
-if [ -f /tmp/prior-state/state.json ]; then
-  PRIOR_HEAD_SHA_FROM_STATE=$(jq -r '.prior_head_sha // empty' /tmp/prior-state/state.json 2>/dev/null || echo "")
-  PRIOR_ROUND=$(jq -r '.round // 1' /tmp/prior-state/state.json 2>/dev/null || echo "1")
+if [ -f /tmp/prior-state/review-state.json ]; then
+  PRIOR_HEAD_SHA_FROM_STATE=$(jq -r '.prior_head_sha // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+  PRIOR_ROUND=$(jq -r '.round // 1' /tmp/prior-state/review-state.json 2>/dev/null || echo "1")
 fi
 NEXT_ROUND=$((PRIOR_ROUND + 1))
 [ -z "$PRIOR_HEAD_SHA_FROM_STATE" ] && NEXT_ROUND=1
