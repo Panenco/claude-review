@@ -41,9 +41,33 @@ Map to a strategy:
 
 | Condition | Strategy | What runs |
 |-----------|----------|-----------|
-| Docs-only, CI-only, config-only, review pipeline changes | `skip` | Nothing |
-| <30 LoC trivial change | `quick` | One smoke check |
-| Anything with real feature changes | `functional` | Functional tester agent (Playwright + Bash) |
+| Docs-only, CI-only, review-pipeline changes | `skip` | Nothing |
+| Lint/format-only diffs, README, CI-only YAML that doesn't deploy or build the deliverable | `skip` | Nothing |
+| Trivial single-file rename, type-only edits, patch-level lockfile churn | `quick` | One smoke check |
+| **Technical change** — any PR whose stated intent is "no user-visible behavior change", but that touches non-trivial runtime code (see "Technical change detection" below) | `functional` + `Technical change: true` | Smoke scenario (see "Technical-change smoke scenario") |
+| Real feature changes | `functional` | Functional tester agent (Playwright + Bash) |
+
+#### Technical change detection
+
+A "technical change" is any PR whose **stated intent is "no user-visible behavior change"** — but the diff is non-trivial. These are the highest-risk PRs to APPROVE without a smoke test, because there are no acceptance criteria to validate against — the spec, by design, says "nothing should change". Examples:
+
+- Refactors / restructures / renames / file splits / dead-code removal
+- Architectural migrations (Pages Router → App Router, classes → hooks, callbacks → async, DI/error-handling rework)
+- Library swaps claimed to be functionally equivalent (lodash → native, moment → date-fns, axios → fetch)
+- Performance / readability optimisations claimed to preserve behavior
+- **Major-version bumps in any ecosystem** — Node/npm, Python (poetry/uv/pip), Go modules, Ruby, Rust (Cargo), JVM (Maven/Gradle), Docker base image, runtime pin (`.tool-versions`/`.nvmrc`), GitHub Actions majors on workflows that build or deploy
+- Build / config / runtime changes (Vite/Webpack/Next/Nest, `tsconfig.target`, Dockerfile, env-var schema)
+
+**Detect from these signals in `context.md`:**
+
+1. **PR title prefix or keyword** — `refactor`, `chore`, `build`, `deps`, `bump`, `upgrade`, `migrate`, `rename`, `extract`, `cleanup`, `reorganize`, `port`, `simplify`.
+2. **PR body / description** — phrases like "no behavior change", "behavior-preserving", "pure refactor", "no user-facing change", "no functional change", "equivalent", or a body that summarises a manifest/config-only change.
+3. **Diff shape** — high move/rename ratio, large `−` matched by similar `+` elsewhere, many touched files but small net new logic, no test additions for new behavior (only updates to existing tests because of moves).
+4. **Linked issue** — issue talks about "tech debt", "modernisation", "migration", "upgrade".
+
+If any of these signals is present and the diff isn't trivially small, set strategy `functional` AND emit `## Technical change: true` in the front matter.
+
+**NOT a technical change** — dev-only tool churn that doesn't ship (Prettier/ESLint/Vitest config), lint/format-only YAML, pure docs/test-only diffs. Classify these as `skip`/`quick` as before.
 
 ### Step 2: Design scenarios
 
@@ -73,6 +97,11 @@ Use this exact format so the test runner can parse it:
 # Test Plan — PR #<number>
 
 ## Strategy: <skip|quick|functional>
+
+<!-- Only include the next line when the PR matches "Technical change detection" above.
+     The functional tester copies this flag into functional-meta.json, and
+     build-review.sh gates APPROVE → COMMENT when the smoke run does not pass. -->
+## Technical change: true
 
 ## Setup hints
 
@@ -157,18 +186,32 @@ Example:
 - **Why**: Acceptance criterion: "user can view the list and see details"
 ```
 
-### For `quick` strategy
+### For `quick` strategy and technical-change smoke scenarios
 
-One or two scenarios max:
+When the PR's stated intent is "no user-visible behavior change" (refactor, upgrade, library swap, perf rewrite, build-config change), the goal is **does the app still work end-to-end** — not "test the change". One scenario is enough.
+
+Pick the flow that exercises the code paths most affected by the change. Use judgement based on the diff + `CLAUDE.md` + `review-config.md`'s `## Functional validation` prose:
+
+- **Refactor of module X** → a flow that drives X's public surface
+- **Library swap (lodash → native, moment → date-fns)** → a flow with formatting / data transformation that used the old library
+- **Framework major upgrade** → a route that uses framework features (routing, data loading, forms)
+- **HTTP/DB client bump** → a flow that hits the network / DB
+- **Build/config change** → the most-trafficked authenticated page (the build is global)
+- **Trivial `quick` PR** → just hit the changed page/endpoint
+
+Pass criterion: page loads, no uncaught console errors, no 5xx on documented routes, axe-core a11y has no new criticals vs. main.
+
 ```markdown
-### 1. App starts and changed page loads
+### 1. App still works end-to-end
 - **Type**: browser (or curl)
 - **Priority**: critical
 - **Steps**:
-  1. Navigate to the changed page / hit the changed endpoint
+  1. Navigate to <chosen flow's entry URL>
   2. Screenshot
-- **Expected**: Page loads without errors / endpoint responds 200
-- **Why**: Smoke test — verify the change doesn't break the app
+  3. <One representative interaction — click / fill / navigate>
+  4. Screenshot
+- **Expected**: Page loads without errors, interaction works, no console errors, no 5xx
+- **Why**: Smoke test — refactor/upgrade has no acceptance criteria, so we verify behavior is unchanged by walking through a real flow
 ```
 
 ### For `skip` strategy

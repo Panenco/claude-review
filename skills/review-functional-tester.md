@@ -148,6 +148,7 @@ Always write both files, even on partial completion.
 ```json
 {
   "strategy": "functional|quick|skip",
+  "technical_change": false,
   "areas_tested": ["list-page", "create-form", "auth"],
   "screenshots": [
     {"file": "/tmp/screenshots/01-list.png", "description": "List page with data", "area": "list"}
@@ -157,6 +158,8 @@ Always write both files, even on partial completion.
   "uncertain_observations": ["Things not tested or ambiguous results"]
 }
 ```
+
+- `technical_change` — set `true` if `test-plan.md` contains a line matching `## Technical change: true`; otherwise `false` (or omit). This field is for artifact completeness only — `build-review.sh` reads the flag directly from `test-plan.md`, not from this JSON, so the gate fires even if you omit this field.
 
 ### Severity
 
