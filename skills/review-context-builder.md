@@ -9,13 +9,14 @@ You are the first stage of a 3-stage PR review pipeline. Your job: gather everyt
 
 ## Efficiency — CRITICAL
 
-Target: **≤10 turns**. You MUST write context.md before turn 8, then test-plan.md by turn 10. Batch aggressively:
+Target: **≤6 turns**. You MUST write context.md by turn 5, then test-plan.md by turn 6. Batch aggressively:
 - Combine ALL independent reads into a single turn (parallel Read calls)
 - Combine ALL bash commands that don't depend on each other into a single Bash call
 - Do NOT read sibling files for comparison — the sweep reviewer handles that
 - Do NOT read files not in the diff unless they're convention/rule files
+- Do NOT pre-compute repo capabilities, package exports, or test-coverage maps. Reviewers grep/glob when they need to verify a specific claim.
 
-If you're on turn 6 and haven't written context.md yet, **write it immediately** with whatever you have. Partial context > no context.
+If you're on turn 5 and haven't written context.md yet, **write it immediately** with whatever you have. Partial context > no context.
 
 ## Turn 1: Setup + PR metadata (single Bash call)
 
@@ -122,311 +123,12 @@ jq --arg bot "$BOT_USER" '
 echo "Other bot comments: $(jq 'length' /tmp/other-bot-comments.json)"
 echo "User replies on our comments: $(jq 'length' /tmp/user-replies-on-ours.json)"
 
-# Snapshot the repo's actual capabilities so reviewers verify conventions
-# against reality. A rule like "use X from @org/shared-ui" is meaningless when
-# that package doesn't export X — this file prevents false-positive findings.
-python3 -c "
-import json, os, glob
-
-output = ['# Repo capabilities snapshot', '']
-
-# --- Discover all workspace packages (Node, Python, Go) within 3 levels ---
-# Node: package.json
-pkg_jsons = []
-for depth_pattern in ['*/package.json', '*/*/package.json', '*/*/*/package.json']:
-    pkg_jsons.extend(glob.glob(depth_pattern))
-# Filter out node_modules and .review-pipeline
-pkg_jsons = [p for p in pkg_jsons if 'node_modules' not in p and '.review-pipeline' not in p]
-
-if pkg_jsons:
-    output.append('## Node packages')
-    output.append('')
-    for pj in sorted(pkg_jsons):
-        try:
-            with open(pj) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            continue
-        name = data.get('name', os.path.dirname(pj))
-        deps = {}
-        deps.update(data.get('dependencies', {}))
-        deps.update(data.get('devDependencies', {}))
-        output.append(f'### {name} (\`{pj}\`)')
-        output.append('')
-        if deps:
-            output.append('**Dependencies:**')
-            for d in sorted(deps.keys()):
-                output.append(f'- {d}')
-            output.append('')
-
-        # Check common component export directories
-        pkg_dir = os.path.dirname(pj)
-        for comp_dir in ['src/components', 'components', 'src/lib']:
-            full_path = os.path.join(pkg_dir, comp_dir)
-            if os.path.isdir(full_path):
-                entries = os.listdir(full_path)
-                if entries:
-                    output.append(f'**Exports in \`{comp_dir}/\`:**')
-                    for entry in sorted(entries):
-                        # Strip common extensions for readability
-                        name_clean = entry
-                        for ext in ['.tsx', '.ts', '.jsx', '.js']:
-                            if name_clean.endswith(ext):
-                                name_clean = name_clean[:-len(ext)]
-                                break
-                        output.append(f'- {name_clean}')
-                    output.append('')
-
-# --- Python projects ---
-py_files = []
-for depth_pattern in ['*/requirements.txt', '*/*/requirements.txt', '*/*/*/requirements.txt']:
-    py_files.extend(glob.glob(depth_pattern))
-for depth_pattern in ['*/pyproject.toml', '*/*/pyproject.toml', '*/*/*/pyproject.toml']:
-    py_files.extend(glob.glob(depth_pattern))
-# Also check root level
-for root_file in ['requirements.txt', 'pyproject.toml']:
-    if os.path.isfile(root_file):
-        py_files.append(root_file)
-py_files = [p for p in py_files if 'node_modules' not in p and '.review-pipeline' not in p]
-
-if py_files:
-    output.append('## Python packages')
-    output.append('')
-    for pf in sorted(set(py_files)):
-        output.append(f'### \`{pf}\`')
-        output.append('')
-        if pf.endswith('requirements.txt'):
-            try:
-                with open(pf) as f:
-                    deps = [l.strip().split('==')[0].split('>=')[0].split('~=')[0].split('[')[0]
-                            for l in f if l.strip() and not l.startswith('#') and not l.startswith('-')]
-                if deps:
-                    output.append('**Dependencies:**')
-                    for d in sorted(deps):
-                        output.append(f'- {d}')
-                    output.append('')
-            except FileNotFoundError:
-                pass
-        elif pf.endswith('pyproject.toml'):
-            output.append('_(pyproject.toml detected — run \`pip install\` tooling to inspect)_')
-            output.append('')
-
-# --- Go projects ---
-go_mods = []
-for depth_pattern in ['*/go.mod', '*/*/go.mod', '*/*/*/go.mod']:
-    go_mods.extend(glob.glob(depth_pattern))
-if os.path.isfile('go.mod'):
-    go_mods.append('go.mod')
-go_mods = [p for p in go_mods if 'node_modules' not in p and '.review-pipeline' not in p]
-
-if go_mods:
-    output.append('## Go modules')
-    output.append('')
-    for gm in sorted(set(go_mods)):
-        output.append(f'### \`{gm}\`')
-        output.append('')
-        try:
-            with open(gm) as f:
-                lines = f.readlines()
-            module_name = next((l.split()[1] for l in lines if l.startswith('module ')), 'unknown')
-            output.append(f'Module: \`{module_name}\`')
-            # Extract require block
-            in_require = False
-            deps = []
-            for l in lines:
-                if l.strip() == 'require (':
-                    in_require = True
-                    continue
-                if in_require and l.strip() == ')':
-                    in_require = False
-                    continue
-                if in_require and l.strip():
-                    parts = l.strip().split()
-                    if parts:
-                        deps.append(parts[0])
-            if deps:
-                output.append('')
-                output.append('**Dependencies:**')
-                for d in sorted(deps):
-                    output.append(f'- {d}')
-            output.append('')
-        except FileNotFoundError:
-            pass
-
-if not pkg_jsons and not py_files and not go_mods:
-    output.append('_(No package manifests found within 3 directory levels)_')
-    output.append('')
-
-print('\n'.join(output))
-" > /tmp/repo-capabilities.md
-echo "Wrote /tmp/repo-capabilities.md ($(wc -l < /tmp/repo-capabilities.md) lines)"
-
-# Test coverage: check which changed source files have corresponding test files.
-# Deterministic — no LLM involved. Output goes into context.md so reviewers can
-# flag untested new code without needing to run coverage tools.
-python3 -c "
-import json, os, glob
-
-with open('/tmp/pr.json') as f:
-    pr = json.load(f)
-
-# Source extensions we care about
-SOURCE_EXTS = {'.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs'}
-# Test file patterns (by extension)
-TEST_PATTERNS_BY_EXT = {
-    '.ts':  ['{base}.spec.ts', '{base}.test.ts'],
-    '.tsx': ['{base}.spec.tsx', '{base}.test.tsx', '{base}.spec.ts', '{base}.test.ts'],
-    '.js':  ['{base}.spec.js', '{base}.test.js'],
-    '.jsx': ['{base}.spec.jsx', '{base}.test.jsx', '{base}.spec.js', '{base}.test.js'],
-    '.py':  ['test_{base}.py', '{base}_test.py'],
-    '.go':  ['{base}_test.go'],
-    '.rs':  [],  # Rust tests are typically inline; skip file-based detection
-}
-
-# Generic skip patterns (filenames and path segments)
-SKIP_BASENAMES = {'index.ts', 'index.tsx', 'index.js', 'index.jsx', '__init__.py', 'mod.rs', 'lib.rs', 'main.rs'}
-SKIP_EXTENSIONS = {'.config.ts', '.config.js', '.config.mjs', '.config.cjs'}
-SKIP_PATH_SEGMENTS = {'generated', 'migrations'}
-
-# Detect workspace package roots from directory structure
-# Look for directories containing package.json, pyproject.toml, go.mod, etc.
-workspace_roots = set()
-for pattern in ['*/package.json', '*/*/package.json']:
-    for pj in glob.glob(pattern):
-        if 'node_modules' not in pj:
-            workspace_roots.add(os.path.dirname(pj))
-
-lines = ['# Test coverage for changed files', '']
-tested = 0
-untested = 0
-
-for file_info in pr.get('files', []):
-    f = file_info['path']
-
-    # Determine extension
-    base_name = os.path.basename(f)
-    _, ext = os.path.splitext(f)
-
-    # Skip non-source files
-    if ext not in SOURCE_EXTS:
-        continue
-
-    # Skip test files themselves
-    lower = base_name.lower()
-    if any(lower.endswith(s) for s in ['.spec.ts', '.spec.tsx', '.test.ts', '.test.tsx',
-                                        '.spec.js', '.spec.jsx', '.test.js', '.test.jsx',
-                                        '_test.py', '_test.go']):
-        continue
-    if lower.startswith('test_') and ext == '.py':
-        continue
-    if ext in {'.ts', '.tsx', '.js', '.jsx'} and lower.endswith('.d.ts'):
-        continue
-
-    # Skip generic patterns
-    if base_name in SKIP_BASENAMES:
-        continue
-    if any(f.endswith(skip_ext) for skip_ext in SKIP_EXTENSIONS):
-        continue
-    if any(seg in f.split('/') for seg in SKIP_PATH_SEGMENTS):
-        continue
-
-    # Strip extension to get base for test file matching
-    base = os.path.splitext(base_name)[0]
-    dir_path = os.path.dirname(f)
-
-    test_patterns = TEST_PATTERNS_BY_EXT.get(ext, [])
-    found = False
-
-    # 1. Co-located tests: same directory
-    for pat in test_patterns:
-        candidate = os.path.join(dir_path, pat.format(base=base))
-        if os.path.isfile(candidate):
-            found = True
-            break
-
-    # 2. __tests__/ subdirectory
-    if not found:
-        tests_subdir = os.path.join(dir_path, '__tests__')
-        for pat in test_patterns:
-            candidate = os.path.join(tests_subdir, pat.format(base=base))
-            if os.path.isfile(candidate):
-                found = True
-                break
-
-    # 3. Sibling test/ directory
-    if not found:
-        sibling_test = os.path.join(dir_path, 'test')
-        for pat in test_patterns:
-            candidate = os.path.join(sibling_test, pat.format(base=base))
-            if os.path.isfile(candidate):
-                found = True
-                break
-
-    # 4. Python: tests/ directory at same level
-    if not found and ext == '.py':
-        tests_dir = os.path.join(dir_path, 'tests')
-        for pat in test_patterns:
-            candidate = os.path.join(tests_dir, pat.format(base=base))
-            if os.path.isfile(candidate):
-                found = True
-                break
-
-    # 5. App-root level test/ directory
-    # For <app-root>/src/foo/bar.ts -> <app-root>/test/foo/bar.spec.ts
-    if not found:
-        # Try to find the workspace root this file belongs to
-        app_root = None
-        for wr in sorted(workspace_roots, key=len, reverse=True):
-            if f.startswith(wr + '/'):
-                app_root = wr
-                break
-        # Fallback: infer from first two path segments if they look like app dirs
-        if not app_root:
-            parts = f.split('/')
-            if len(parts) >= 2:
-                candidate_root = '/'.join(parts[:2])
-                if os.path.isdir(candidate_root):
-                    app_root = candidate_root
-
-        if app_root:
-            # Strip app_root/src/ prefix to get relative path
-            rel_path = f[len(app_root) + 1:]
-            for prefix in ['src/', 'lib/', 'pkg/', 'internal/', 'cmd/']:
-                if rel_path.startswith(prefix):
-                    rel_path = rel_path[len(prefix):]
-                    break
-            rel_dir = os.path.dirname(rel_path)
-
-            for pat in test_patterns:
-                candidate = os.path.join(app_root, 'test', rel_dir, pat.format(base=base))
-                if os.path.isfile(candidate):
-                    found = True
-                    break
-
-            # Also check module-level test files
-            # e.g. test/users/users.spec.ts
-            if not found and rel_dir:
-                module = rel_dir.split('/')[0]
-                for pat in test_patterns:
-                    candidate = os.path.join(app_root, 'test', module, pat.format(base=module))
-                    if os.path.isfile(candidate):
-                        found = True
-                        break
-
-    if found:
-        lines.append(f'- TESTED: \`{f}\`')
-        tested += 1
-    else:
-        lines.append(f'- UNTESTED: \`{f}\`')
-        untested += 1
-
-lines.append('')
-lines.append(f'Summary: {tested} tested, {untested} untested')
-
-with open('/tmp/test-coverage.md', 'w') as out:
-    out.write('\n'.join(lines) + '\n')
-print(f'Test coverage: {tested + untested} files checked, {untested} untested')
-"
+# (Repo capabilities + test-coverage are NOT pre-computed any more.
+# Reviewers grep / glob the repo themselves when they need to verify a
+# library export or look for a sibling test file. Killing the 200-line
+# Python walkers cut ~5 minutes off context-builder wall time on
+# medium-large PRs and removes one whole class of false positives where
+# the snapshot disagreed with `find` reality.)
 
 # Linked issue. Prefer GitHub's `closingIssuesReferences` (set by "Closes #N"
 # syntax) — it's authoritative. Only fall back to PR-body grep when that's
@@ -531,11 +233,7 @@ Based on what `.github/review-config.md` or `CLAUDE.md` says, read the relevant 
 
 If no review-config.md exists, skip this turn.
 
-## Turn 4: (retired)
-
-The previous "Fixed in this revision" reply turn was removed when the round-2 resolution checker + Haiku dedup's STILL_PRESENT-overlap drop took over the same role more directly. Numbering of subsequent turns is preserved to keep diffs from cascading.
-
-## Turn 5: Build verification (single Bash call)
+## Turn 4: Build verification (single Bash call)
 
 ```bash
 BUILD_AVAILABLE=$(jq -r '.build_available' /tmp/build-status.json 2>/dev/null || echo "false")
@@ -548,7 +246,7 @@ fi
 
 Check `.github/review-config.md` for build preparation commands. Run them, then typecheck + lint in parallel capturing to `/tmp/typecheck.out` and `/tmp/lint.out`.
 
-## Turn 6-7: Write context.md
+## Turn 5: Write context.md
 
 **Write `context.md`** at the repo root with ALL gathered context:
 
@@ -561,8 +259,7 @@ Check `.github/review-config.md` for build preparation commands. Run them, then 
 - GitHub Projects v2 card fields (if available)
 - Review config: stack-specific focus areas from `.github/review-config.md` (if exists)
 - Convention rules: which files apply and their full content
-- **Repo capabilities** — paste the full content of `/tmp/repo-capabilities.md`. Reviewers MUST consult this before flagging a convention breach that references a library or component. If the artifact isn't in the snapshot, the finding is a false positive — drop it.
-- **Test coverage** — paste the full content of `/tmp/test-coverage.md`. Lists which changed source files have corresponding test files and which don't. Reviewers should flag UNTESTED files that contain non-trivial logic (handlers, hooks, utils) as `missing-test` findings.
+- **No pre-computed repo snapshot.** When the diff or convention rules reference a library / component / sibling test, reviewers grep or glob the repo themselves at finding-time. Do NOT pre-list package exports or test-file presence here — it goes stale fast and creates false-positive findings when the snapshot disagrees with reality.
 - Full content of each changed file
 - **Per-file diff index** — emit a `## Per-file diff index` section as a markdown table with three columns: `file`, `chunk` (path under `/tmp/diff-chunks/`, with slashes already replaced by `--`), and `role hint` (one of `core` / `sweep` / `functional` / `spec` / `multi`, based on the file's path: handlers/services/middleware → `core`, tests/specs → `sweep`, UI/E2E specs → `functional`, schema/PRD → `spec`, ambiguous or polyglot → `multi`). One row per chunk in `/tmp/diff-chunks/`. Reviewers use this to fetch only the chunks relevant to their role instead of re-reading the concatenated diff in context.md, which keeps their turn budget tight.
 - **Diff since last review** — when `/tmp/since-last.diff` exists (round 2), emit a `## Diff since last review` section listing only the files changed since `PRIOR_HEAD_SHA`, one per line as `<path>` (no diff content — the round-2 reviewers read `/tmp/since-last-chunks/<path>.diff` directly). Skip the section entirely on round 1.
@@ -574,7 +271,7 @@ Check `.github/review-config.md` for build preparation commands. Run them, then 
 
 **context.md must be self-contained.** The reviewer agents read ONLY this file. Include actual file contents, not just paths.
 
-## Turn 7-10: Write test-plan.md
+## Turn 6: Write test-plan.md
 
 After context.md, write `test-plan.md` at the repo root. A single **functional tester agent** (Playwright MCP + Bash, see `.claude/skills/review-functional-tester.md`) reads this plan and executes it. You do NOT generate any test scripts — the agent handles execution.
 
