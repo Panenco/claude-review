@@ -328,43 +328,43 @@ META2='{}'
 [ -f /tmp/core-meta-2.json ] && META2=$(cat /tmp/core-meta-2.json)
 # Externalize the merge program so it can be exercised by fixture tests
 # without re-running the whole script, mirroring the existing dedup.jq
-# pattern above. The leading `as $m1obj | as $m2obj` coerces non-object
-# inputs (e.g. an agent that wrote `[]` to its meta — is_valid_json
-# accepts that since it only checks `jq empty`) to `{}` so subsequent
-# `.[k]` lookups don't error on jq 1.7+ (ubuntu-24.04 default).
+# pattern above. The leading `as $m1` / `as $m2` rebinds at the top of
+# the program coerce non-object inputs (e.g. an agent that wrote `[]`
+# to its meta — is_valid_json accepts that since it only checks
+# `jq empty`) to `{}` so subsequent `$m1[k]` / `$m1 | has(...)` calls
+# don't error on jq 1.7+ (ubuntu-24.04 default) with "Cannot index
+# array with string" / "Cannot check whether array has a string key".
+# The coercion lives inside the .jq so the program is self-contained
+# and safe to invoke directly from a fixture test, not just from the
+# bash wrapper.
 cat > /tmp/meta-merge.jq <<'JQEOF'
-def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
-# has() requires manual_spec_present absence to default to true (legacy
-# behavior preserved for re-reviews where only pass-1 ran). `// true`
-# would also fire on explicit false — wrong direction.
-def and_present:
-  (if $m1 | has("manual_spec_present") then $m1.manual_spec_present else true end)
-  and
-  (if $m2 | has("manual_spec_present") then $m2.manual_spec_present else true end);
-def prefer_prose(k): ($m1[k] // $m2[k] // null);
-def union_arr(k): (($m1[k] // []) + ($m2[k] // []));
-{
-  requires_human_review: or_bool("requires_human_review"),
-  requires_human_review_reason: prefer_prose("requires_human_review_reason"),
-  uncertain_observations: union_arr("uncertain_observations"),
-  prompt_injection_detected: or_bool("prompt_injection_detected"),
-  reviewer_self_modification: or_bool("reviewer_self_modification"),
-  build_unavailable: or_bool("build_unavailable"),
-  manual_spec_present: and_present,
-  spec_compliance: prefer_prose("spec_compliance"),
-  spec_sources: ($m1.spec_sources // $m2.spec_sources // null)
-}
+($m1 | if type == "object" then . else {} end) as $m1
+| ($m2 | if type == "object" then . else {} end) as $m2
+| def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
+  # has() requires manual_spec_present absence to default to true (legacy
+  # behavior preserved for re-reviews where only pass-1 ran). `// true`
+  # would also fire on explicit false — wrong direction.
+  def and_present:
+    (if $m1 | has("manual_spec_present") then $m1.manual_spec_present else true end)
+    and
+    (if $m2 | has("manual_spec_present") then $m2.manual_spec_present else true end);
+  def prefer_prose(k): ($m1[k] // $m2[k] // null);
+  def union_arr(k): (($m1[k] // []) + ($m2[k] // []));
+  {
+    requires_human_review: or_bool("requires_human_review"),
+    requires_human_review_reason: prefer_prose("requires_human_review_reason"),
+    uncertain_observations: union_arr("uncertain_observations"),
+    prompt_injection_detected: or_bool("prompt_injection_detected"),
+    reviewer_self_modification: or_bool("reviewer_self_modification"),
+    build_unavailable: or_bool("build_unavailable"),
+    manual_spec_present: and_present,
+    spec_compliance: prefer_prose("spec_compliance"),
+    spec_sources: ($m1.spec_sources // $m2.spec_sources // null)
+  }
 JQEOF
-# Top-level guard: coerce non-object meta to {} before binding $m1/$m2 so
-# the helpers in meta-merge.jq can index uniformly without per-call type
-# guards. Without this, an agent that writes `[]` (a valid JSON array
-# that passes is_valid_json) crashes the merge on jq 1.7+ with
-# "Cannot index array with string".
-NORM_META1=$(jq 'if type == "object" then . else {} end' <<<"$META1")
-NORM_META2=$(jq 'if type == "object" then . else {} end' <<<"$META2")
 CORE_META=$(jq -n \
-  --argjson m1 "$NORM_META1" \
-  --argjson m2 "$NORM_META2" \
+  --argjson m1 "$META1" \
+  --argjson m2 "$META2" \
   -f /tmp/meta-merge.jq)
 
 CORE_COUNT=$(jq 'length' /tmp/merged-core.json)
