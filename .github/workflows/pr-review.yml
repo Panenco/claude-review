@@ -113,8 +113,23 @@ jobs:
           ref: ${{ steps.pr_sha.outputs.sha }}
           fetch-depth: 50
 
-      # Install review pipeline skills + scripts from the central repo.
-      - name: Install review pipeline
+      # Install review pipeline skills + scripts.
+      #
+      # DOGFOOD: when this repo (panenco/claude-review) is reviewing itself,
+      # install from the local checkout (`./`) instead of the @v1 tag. The
+      # @v1 tag is a moving target meant for downstream consumers; pinning
+      # the dogfood to it would mean PRs on this repo get reviewed by their
+      # own old code, which makes iteration impossible (every "fix" is
+      # tested against the prior release, not the current branch).
+      #
+      # DOWNSTREAM: every other repo gets the @v1 install — same as before.
+      # The two steps are mutually exclusive on `if:`; only one ever runs.
+      - name: Install review pipeline (dogfood — local checkout)
+        if: github.repository == 'panenco/claude-review'
+        uses: ./
+
+      - name: Install review pipeline (downstream — from @v1)
+        if: github.repository != 'panenco/claude-review'
         uses: panenco/claude-review@v1
 
       # Validate review-config.md sections (warn on missing recommended sections)
