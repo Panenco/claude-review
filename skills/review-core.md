@@ -9,14 +9,24 @@ You are one of two parallel reviewers. You focus on **correctness and spec compl
 
 ## Efficiency
 
-Target: **≤8 turns**. Turn 1: Read inputs. Turns 2-5: analyze. Turn 6-7: Write output files.
+Target: **≤10 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every chunk + spec source. Turns 3-7: analyze. Turn 8-9: Write findings + meta. Turn 10: buffer.
 
-Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, or Grep.
+Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read inputs
+## Turn 1: Read context.md (single Read tool call)
 
-1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
-2. Read `context.md` at the repo root — full diff, file contents, issue, conventions, build output. This is the only file you need to Read.
+Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool. Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT issue them across multiple turns. Doing one Read per turn will burn your turn budget before you reach the analysis phase, and the runner will kill you with `Reached max turns`.
+
+In this single response, Read all of:
+- Every `chunk` path tagged `core`, `spec`, or `multi` from context.md's `## Per-file diff index`. Skip `sweep` / `functional` chunks — that's not your scope. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`). You do NOT also read the original `/tmp/diff-chunks/` set — that was covered in round 1, and the resolution checker is classifying any prior findings against the new commits in parallel.
+- From `## Spec sources`: `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` — only the ones context.md lists as non-empty.
+- The convention rule files listed under `## Convention files` that apply to your changed paths.
+
+If a finding candidate later references a specific library/export/component, you may issue a follow-up Read of `package.json` / source file in turn 3 or later — but do not let that case become an excuse to drip-Read in Turn 2.
 
 ### Honor bugbot's acceptance sections
 
@@ -78,7 +88,7 @@ Before finalizing ANY finding, verify all five:
 2. **Refutation test** — Could the author dismiss this in one sentence? If yes → too weak → drop it.
 3. **Senior-engineer test** — Would an experienced engineer agree this is objectively wrong — not just "could be different"?
 4. **Exact reference** — For spec-mismatch, quote the exact rule/criterion. For bugs, show the failure path. "Generally bad practice" is not evidence.
-5. **Artifact exists** — If the finding references a specific library, component, or export (e.g. "use X from shared-ui", "import Y from some-lib"), look in the `# Repo capabilities snapshot` section of context.md and confirm the artifact is actually exported/installed. If it isn't, drop the finding — "use X" isn't actionable when X doesn't exist. Similarly, if there's an entry in `# User replies on prior findings` rebutting the same issue as a false positive, do not re-flag unless you have new counter-evidence.
+5. **Artifact exists** — If the finding references a specific library, component, or export (e.g. "use X from shared-ui", "import Y from some-lib"), Read the relevant `package.json` (or grep target source file) to confirm the artifact is actually exported/installed. If it isn't, drop the finding — "use X" isn't actionable when X doesn't exist. Also Read `/tmp/user-replies-on-ours.json` (path is in context.md when non-empty): if a maintainer already rebutted the same issue as a false positive, don't re-flag unless you have new counter-evidence.
 
 **A clean `[]` is a confident, valuable review.** False positives waste more team time than a missed minor issue. When in doubt, drop the finding — or move it to `uncertain_observations[]` in core-meta.json.
 
@@ -98,7 +108,11 @@ Do NOT set it for:
 
 ## Output: Write TWO files
 
-**`/tmp/core-findings.json`** — array:
+You MUST write both files before exiting. After completing analysis, STOP and write — do not open new investigations.
+
+The launching workflow may set output paths via the prompt (e.g. `OUTPUT_FINDINGS=/tmp/core-findings-2.json` for the second pass of the same skill). When the prompt does NOT specify paths, use the defaults below.
+
+**Findings file** (default `/tmp/core-findings.json`, override via `OUTPUT_FINDINGS` in the prompt) — array:
 
 ```json
 [
@@ -117,7 +131,7 @@ Do NOT set it for:
 ]
 ```
 
-**`/tmp/core-meta.json`**:
+**Meta file** (default `/tmp/core-meta.json`, override via `OUTPUT_META` in the prompt):
 
 ```json
 {
@@ -138,9 +152,8 @@ Do NOT set it for:
 }
 ```
 
-- `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when context.md contains ANY of: a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, OR a manually-written PR-body section (substantive prose written by a human, not a Cursor/Bugbot/CodeRabbit/Gemini/Claude Code summary of the diff). `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements". Use judgement on AI-generated content: explicit markers (`<!-- CURSOR_SUMMARY -->`, `<!-- gemini-code-assist -->`, `Generated with [Claude Code]`, `Reviewed by [Cursor Bugbot]`, etc.) are obvious signals, but prose that reads like a diff changelog is also AI-style even without a marker.
+- `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when ANY of these is non-empty: the linked GitHub issue body (Read `/tmp/issue.json`), a PRD (Read `/tmp/prd-content.md`), an external-tracker spec (Read `/tmp/external-issue.md`), OR a manually-written PR-body section (substantive prose written by a human, not a Cursor/Bugbot/CodeRabbit/Gemini/Claude Code summary of the diff — see the AI-content filter in context.md's `## Acceptance criteria`). `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements".
 - `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec. When `manual_spec_present` is `false`, set this to `"No manual spec — cannot validate against requirements."` instead of judging compliance against an AI-written diff summary.
-- `spec_sources` extracts the linked issue number, external tracker identifier, PRD path, and which convention rules applied — read these from context.md. Use `null` for missing values.
-- `external_issue` is the tracker identifier (e.g. `ABC-123`, `ENG-214`, `MON-1234`) surfaced by the consumer's optional `.github/claude-review/fetch-issue.sh` hook. Parse it from the heading at the top of the `## Linked external issue` section in context.md — the hook convention is `## Linked <tracker> issue: <IDENTIFIER>` as its first line. If the section is absent or no identifier can be parsed, set to `null`.
+- `spec_sources` extracts the linked issue number (from `/tmp/issue.json`), external tracker identifier (first line of `/tmp/external-issue.md` follows the hook convention `## Linked <tracker> issue: <IDENTIFIER>`), PRD path (`/tmp/prd-files.txt`), and which convention rules applied. Use `null` for missing values.
 
-Write `[]` for empty findings. ALWAYS write both files.
+Write `[]` for empty findings. ALWAYS write both files. ALWAYS use the paths from `OUTPUT_FINDINGS` / `OUTPUT_META` if the prompt sets them; only fall back to defaults if the prompt is silent.

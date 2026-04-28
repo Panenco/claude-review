@@ -40,6 +40,11 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      actions: read    # round-2 follow-up reviews need this to download
+                       # the prior run's review-state artifact via run-id.
+                       # Omitting this triggers startup_failure (caller perms
+                       # cap the called workflow's perms — and the called
+                       # workflow declares actions: read at job level).
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit

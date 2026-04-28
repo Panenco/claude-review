@@ -9,14 +9,23 @@ You are one of two parallel reviewers. You focus on **codebase consistency, test
 
 ## Efficiency
 
-Target: **≤6 turns**. Turn 1: Read inputs. Turns 2-4: analyze. Turn 5: Write output.
+Target: **≤8 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every chunk + convention file. Turns 3-6: analyze (test-coverage on-demand Reads happen here). Turn 7: Write output. Turn 8: buffer.
 
-Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, or Grep.
+Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read inputs
+## Turn 1: Read context.md (single Read tool call)
 
-1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
-2. Read `context.md` at the repo root — full diff, file contents, convention rules, build output. This is the only file you need to Read.
+Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool. Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT issue them across multiple turns — drip-Reading will exhaust your turn budget.
+
+In this single response, Read all of:
+- Every `chunk` path tagged `sweep` or `multi` from context.md's `## Per-file diff index`. Skip `core` / `spec` / `functional` chunks. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`). You do NOT also read the original `/tmp/diff-chunks/` set — that was covered in round 1.
+- The convention rule files listed under `## Convention files` that apply to your changed paths.
+
+For the test-coverage walk (next section), Read sibling spec paths on-demand in turn 3 or later — the index doesn't pre-list them.
 
 ### Honor bugbot's acceptance sections
 
@@ -24,14 +33,27 @@ Before flagging anything, scan the embedded `bugbot.md` for **acceptance/exempti
 
 ## Your scope — finding types
 
+You own **test coverage** end-to-end (alongside consistency/performance/design): no other reviewer flags `weak-test` or `missing-test`, so producing them when warranted is non-negotiable.
+
 | Type | Definition |
 |---|---|
 | `consistency` | Diverges from patterns in sibling files. Must quote the sibling file + line being diverged from. |
 | `weak-test` | SUT itself is mocked, assertions only check mock calls, test still passes if SUT is deleted. Must show how. |
-| `missing-test` | Changed source file contains non-trivial logic (handler, hook, util, service) but has no corresponding test file. Check context.md → "Test coverage" section — only flag files marked UNTESTED. Severity `minor` for handlers/hooks/utils, `note` for DTOs/modules/thin wrappers. |
+| `missing-test` | Changed source file contains non-trivial logic (handler, hook, util, service) but has no corresponding test file. Verify by attempting to `Read` the expected sibling spec (e.g. for `src/auth.ts`, try `src/auth.spec.ts` / `src/auth.test.ts` / `src/__tests__/auth.spec.ts`); a Read error means no test exists. Severity `minor` for handlers/hooks/utils, `note` for DTOs/modules/thin wrappers. |
 | `performance` | N+1 queries (DB call in loop), unbounded queries without pagination, expensive ops in hot paths. Must identify the specific loop/query. |
 | `design-smell` | From the consistency angle: change introduces a pattern worse than what exists. Must show the sibling that does it better. |
 | `overcomplicated` | Unnecessarily complex where a simpler approach exists in the codebase. Must show the simpler sibling. |
+
+### Test coverage (FIRST-CLASS)
+
+Before evaluating consistency or performance, walk the changed-files list in `context.md` and produce one finding per genuinely untested non-trivial file:
+
+1. For each non-test changed file, classify: handler / hook / util / service / route / DTO / module / thin-wrapper.
+2. To check whether a test exists for `path/foo.ts`, try `Read`ing the most likely sibling specs in order — `path/foo.spec.ts`, `path/foo.test.ts`, `path/__tests__/foo.spec.ts`, `path/__tests__/foo.test.ts`, and (for monorepos) `<workspace>/test/<rel>/foo.spec.ts`. The first successful Read = TESTED. If all four Reads error → UNTESTED. Skip files clearly already in the diff as their own test (`*.spec.*` / `*.test.*` / `*_test.go` / `test_*.py`).
+3. If UNTESTED and the file is a handler / hook / util / service / route → `missing-test` at `severity=minor`. If it's a DTO / module / thin-wrapper → `missing-test` at `severity=note`. Anything else → use judgement; default to `note` if unsure.
+4. For tests that exist but assert against mocks of the system under test (mock returns "ok" → test asserts "ok"): `weak-test` at `severity=minor`, with the exact mock and assertion lines quoted.
+
+A sweep run that flags consistency issues but ignores untested handlers is incomplete.
 
 ## NOT your scope (the core reviewer handles these)
 
@@ -64,11 +86,15 @@ Additionally per type:
 
 If you can't provide this evidence, drop the finding. **A clean `[]` is a confident, valuable review.**
 
-**Verify the referenced artifact exists.** If a consistency finding references a specific library, component, or export, check the `# Repo capabilities snapshot` section of context.md. If the artifact isn't listed as installed/exported, DROP the finding — suggesting a replacement that doesn't exist is worse than flagging nothing. Also check `# User replies on prior findings`: if a maintainer already rebutted the same issue as a false positive, don't re-flag.
+**Verify the referenced artifact exists.** If a consistency finding references a specific library, component, or export, Read the relevant `package.json` or sibling source file to confirm it's actually installed/exported. If it isn't, DROP the finding — suggesting a replacement that doesn't exist is worse than flagging nothing. Also Read `/tmp/user-replies-on-ours.json` if context.md's `## User replies on prior findings` section lists it: if a maintainer already rebutted the same issue as a false positive, don't re-flag.
 
 ## Output: Write ONE file
 
-**`/tmp/sweep-findings.json`** — array:
+You MUST write the file before exiting. After completing analysis, STOP and write — do not open new investigations.
+
+The launching workflow may set the output path via the prompt (e.g. `OUTPUT_FINDINGS=/tmp/sweep-findings-2.json` for the second pass of the same skill). When the prompt does NOT specify a path, use the default below.
+
+**Findings file** (default `/tmp/sweep-findings.json`, override via `OUTPUT_FINDINGS` in the prompt) — array:
 
 ```json
 [
@@ -87,4 +113,4 @@ If you can't provide this evidence, drop the finding. **A clean `[]` is a confid
 ]
 ```
 
-Write `[]` for empty findings. ALWAYS write the file.
+Write `[]` for empty findings. ALWAYS write the file. ALWAYS use the path from `OUTPUT_FINDINGS` if the prompt sets it; only fall back to the default if the prompt is silent.

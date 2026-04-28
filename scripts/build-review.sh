@@ -21,9 +21,8 @@ set -euo pipefail
 #   /tmp/functional-findings.json — functional tester findings (optional)
 #   /tmp/functional-meta.json     — functional tester metadata (optional)
 #   /tmp/core-meta.json           — core reviewer metadata (optional)
-#   /tmp/core-findings-2.json     — first-review boost: core pass-2 findings (optional)
-#   /tmp/sweep-findings-2.json    — first-review boost: sweep pass-2 findings (optional)
-#   /tmp/gap-findings.json        — first-review boost: gap-finder critic findings (optional)
+#   /tmp/core-findings-2.json     — round-1 redundancy: core pass-2 findings (optional)
+#   /tmp/sweep-findings-2.json    — round-1 redundancy: sweep pass-2 findings (optional)
 #
 # Output files:
 #   review-result.json            — full review result
@@ -33,95 +32,53 @@ set -euo pipefail
 
 echo "::group::Merge findings + build review"
 
-# Guard: check which agents produced VALID output. An agent's findings
-# file being present but not JSON (e.g. an invalid escape in a free-text
-# `evidence` field) used to crash the whole step with `jq: parse error`
-# on the slurpfile below. Now we validate up front, warn, and preserve
-# the malformed file for artifact upload so the agent output can be
-# inspected without re-running.
-is_valid_findings() {
-  # Accept only a JSON array — agents are required to write `[]` at minimum.
-  [ -f "$1" ] && jq -e 'type == "array"' "$1" >/dev/null 2>&1
-}
-is_valid_json() {
-  [ -f "$1" ] && jq empty "$1" >/dev/null 2>&1
-}
-preserve_invalid() {
-  local src="$1"
-  [ -f "$src" ] || return 0
-  cp "$src" "${src%.json}.invalid.json" 2>/dev/null || true
-  # Show the first parse error in logs for immediate diagnosis
-  jq empty "$src" 2>&1 | head -3 || true
-}
+# Validate every reviewer's findings file in one loop. If a file is present
+# but malformed (e.g. unescaped quotes in free-text evidence), preserve it
+# under .invalid.json for the artifact upload, log the first parse error,
+# and treat that source as "no output" for the failure gate downstream.
+declare -A HAS_OUTPUT=(
+  [core]=false [sweep]=false [spec]=false [functional]=false
+  [core2]=false [sweep2]=false [resolution]=false
+)
+declare -A FINDINGS_FILE=(
+  [core]=/tmp/core-findings.json
+  [sweep]=/tmp/sweep-findings.json
+  [spec]=/tmp/spec-findings.json
+  [functional]=/tmp/functional-findings.json
+  [core2]=/tmp/core-findings-2.json
+  [sweep2]=/tmp/sweep-findings-2.json
+  # Round-2 resolution checker may surface high-severity net-new findings
+  # alongside its classification output (see review-resolution-checker.md).
+  # Most runs leave this as []; when populated, the entries flow through
+  # the same Haiku dedup as every other reviewer's output.
+  [resolution]=/tmp/resolution-findings.json
+)
+for key in "${!FINDINGS_FILE[@]}"; do
+  f="${FINDINGS_FILE[$key]}"
+  [ -f "$f" ] || continue
+  if jq -e 'type == "array"' "$f" >/dev/null 2>&1; then
+    HAS_OUTPUT[$key]=true
+  else
+    echo "::warning::${key} findings ($f) are not a valid JSON array — treating as failed."
+    cp "$f" "${f%.json}.invalid.json" 2>/dev/null \
+      || echo "::warning::Failed to preserve $f to ${f%.json}.invalid.json (filesystem permissions or disk space?). Original kept in place."
+    jq empty "$f" 2>&1 | head -3 || true
+  fi
+done
 
-CORE_HAS_OUTPUT=false; SWEEP_HAS_OUTPUT=false; SPEC_HAS_OUTPUT=false; FUNCTIONAL_HAS_OUTPUT=false
-if [ -f /tmp/core-findings.json ]; then
-  if is_valid_findings /tmp/core-findings.json; then
-    CORE_HAS_OUTPUT=true
-  else
-    echo "::warning::Core reviewer findings are not a valid JSON array — treating as failed."
-    preserve_invalid /tmp/core-findings.json
-  fi
-fi
-if [ -f /tmp/sweep-findings.json ]; then
-  if is_valid_findings /tmp/sweep-findings.json; then
-    SWEEP_HAS_OUTPUT=true
-  else
-    echo "::warning::Sweep reviewer findings are not a valid JSON array — treating as failed."
-    preserve_invalid /tmp/sweep-findings.json
-  fi
-fi
-if [ -f /tmp/spec-findings.json ]; then
-  if is_valid_findings /tmp/spec-findings.json; then
-    SPEC_HAS_OUTPUT=true
-  else
-    echo "::warning::Spec-compliance findings are not a valid JSON array — treating as failed."
-    preserve_invalid /tmp/spec-findings.json
-  fi
-fi
-if [ -f /tmp/functional-findings.json ]; then
-  if is_valid_findings /tmp/functional-findings.json; then
-    FUNCTIONAL_HAS_OUTPUT=true
-  else
-    echo "::warning::Functional tester findings are not a valid JSON array — treating as failed."
-    preserve_invalid /tmp/functional-findings.json
-  fi
-fi
-
-# First-review boost inputs. These files are only present when pr-review.yml
-# detects IS_FIRST_REVIEW=true and runs the second pass of core/sweep plus the
-# gap-finder critic. On re-reviews they are absent and the flags stay false —
-# all downstream merge logic treats absence as "no findings from this source".
-CORE2_HAS_OUTPUT=false; SWEEP2_HAS_OUTPUT=false; GAP_HAS_OUTPUT=false
-if [ -f /tmp/core-findings-2.json ]; then
-  if is_valid_findings /tmp/core-findings-2.json; then
-    CORE2_HAS_OUTPUT=true
-  else
-    echo "::warning::Core reviewer pass-2 findings are not a valid JSON array — treating as failed."
-    preserve_invalid /tmp/core-findings-2.json
-  fi
-fi
-if [ -f /tmp/sweep-findings-2.json ]; then
-  if is_valid_findings /tmp/sweep-findings-2.json; then
-    SWEEP2_HAS_OUTPUT=true
-  else
-    echo "::warning::Sweep reviewer pass-2 findings are not a valid JSON array — treating as failed."
-    preserve_invalid /tmp/sweep-findings-2.json
-  fi
-fi
-if [ -f /tmp/gap-findings.json ]; then
-  if is_valid_findings /tmp/gap-findings.json; then
-    GAP_HAS_OUTPUT=true
-  else
-    echo "::warning::Gap-finder critic findings are not a valid JSON array — treating as failed."
-    preserve_invalid /tmp/gap-findings.json
-  fi
-fi
+CORE_HAS_OUTPUT="${HAS_OUTPUT[core]}"
+SWEEP_HAS_OUTPUT="${HAS_OUTPUT[sweep]}"
+SPEC_HAS_OUTPUT="${HAS_OUTPUT[spec]}"
+FUNCTIONAL_HAS_OUTPUT="${HAS_OUTPUT[functional]}"
+CORE2_HAS_OUTPUT="${HAS_OUTPUT[core2]}"
+SWEEP2_HAS_OUTPUT="${HAS_OUTPUT[sweep2]}"
 
 # Aggregate flags: pass-2 substitutes for pass-1 if pass-1 failed but pass-2
 # succeeded. Used for the failure gate, the warnings below, and the verdict
-# downgrade logic — any successful pass means we have those findings and can
-# trust the review on that axis.
+# downgrade logic — any successful pass means we have those findings.
+# Explicit form (not `$(... && echo … || echo …)`) — the && / || precedence
+# trick produces the right truth table here but is one restructure away
+# from breaking silently.
 if [ "$CORE_HAS_OUTPUT" = "true" ] || [ "$CORE2_HAS_OUTPUT" = "true" ]; then
   CORE_ANY_OUTPUT=true
 else
@@ -133,22 +90,17 @@ else
   SWEEP_ANY_OUTPUT=false
 fi
 
-# Meta files are also agent-written JSON — fall back to empty if malformed.
-if [ -f /tmp/core-meta.json ] && ! is_valid_json /tmp/core-meta.json; then
-  echo "::warning::Core reviewer meta is not valid JSON — falling back to {}."
-  preserve_invalid /tmp/core-meta.json
-  echo '{}' > /tmp/core-meta.json
-fi
-if [ -f /tmp/core-meta-2.json ] && ! is_valid_json /tmp/core-meta-2.json; then
-  echo "::warning::Core reviewer pass-2 meta is not valid JSON — falling back to {}."
-  preserve_invalid /tmp/core-meta-2.json
-  echo '{}' > /tmp/core-meta-2.json
-fi
-if [ -f /tmp/functional-meta.json ] && ! is_valid_json /tmp/functional-meta.json; then
-  echo "::warning::Functional tester meta is not valid JSON — falling back to {}."
-  preserve_invalid /tmp/functional-meta.json
-  echo '{}' > /tmp/functional-meta.json
-fi
+# Meta files are also agent-written JSON — coerce malformed/non-object to {}
+# so the verdict gates and meta-merge below see a stable shape.
+for mf in /tmp/core-meta.json /tmp/core-meta-2.json /tmp/functional-meta.json; do
+  [ -f "$mf" ] || continue
+  if ! jq -e 'type == "object"' "$mf" >/dev/null 2>&1; then
+    echo "::warning::${mf} is not a JSON object — falling back to {}."
+    cp "$mf" "${mf%.json}.invalid.json" 2>/dev/null \
+      || echo "::warning::Failed to preserve $mf to ${mf%.json}.invalid.json (filesystem permissions or disk space?). Coercing to {} anyway."
+    echo '{}' > "$mf"
+  fi
+done
 
 if [ "$CORE_ANY_OUTPUT" = "false" ] && [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
   echo "::error::All code reviewers failed to produce output (core+sweep, both passes if boost ran) — cannot generate a verdict."
@@ -284,137 +236,169 @@ if [ -n "$SCREENSHOT_DIR" ]; then
   fi
 fi
 
-# ── Merge findings from all sources (core + sweep + spec + functional) ──
-# Write safe defaults, then overwrite with actual findings if available.
-# Using files + --slurpfile avoids bash variable expansion issues with
-# large JSON payloads that can break --argjson on some runners.
-echo '[]' > /tmp/merged-core.json
-echo '[]' > /tmp/merged-sweep.json
-echo '[]' > /tmp/merged-spec.json
-echo '[]' > /tmp/merged-functional.json
-echo '[]' > /tmp/merged-core2.json
-echo '[]' > /tmp/merged-sweep2.json
-echo '[]' > /tmp/merged-gap.json
-[ "$CORE_HAS_OUTPUT" = "true" ] && cp /tmp/core-findings.json /tmp/merged-core.json
-[ "$SWEEP_HAS_OUTPUT" = "true" ] && cp /tmp/sweep-findings.json /tmp/merged-sweep.json
-[ "$SPEC_HAS_OUTPUT" = "true" ] && cp /tmp/spec-findings.json /tmp/merged-spec.json
-[ "$FUNCTIONAL_HAS_OUTPUT" = "true" ] && cp /tmp/functional-findings.json /tmp/merged-functional.json
-[ "$CORE2_HAS_OUTPUT" = "true" ] && cp /tmp/core-findings-2.json /tmp/merged-core2.json
-[ "$SWEEP2_HAS_OUTPUT" = "true" ] && cp /tmp/sweep-findings-2.json /tmp/merged-sweep2.json
-[ "$GAP_HAS_OUTPUT" = "true" ] && cp /tmp/gap-findings.json /tmp/merged-gap.json
-# Merge pass-1 and pass-2 core meta into a single CORE_META that drives the
-# verdict gates. Naming the merge convention so future readers can audit it:
-#
-#   - **OR-merge** on safety-critical booleans (`requires_human_review`,
-#     `prompt_injection_detected`, `reviewer_self_modification`,
-#     `build_unavailable`). If EITHER pass detected the issue, surface it.
-#     Losing an escalation is strictly worse than redundant escalation.
-#   - **AND-merge** on `manual_spec_present`. If EITHER pass says no spec is
-#     available, treat as no spec (block APPROVE via the spec-presence gate
-#     from 50cc139). Losing the gate is strictly worse than spurious downgrade.
-#   - **Pass-1-prefer with pass-2 fallback** on prose / structured fields
-#     (`spec_compliance`, `spec_sources`, `requires_human_review_reason`).
-#     Pass-1 is canonical when present; pass-2 fills in when pass-1 didn't
-#     write the field (or wasn't run at all).
-#   - **Union** on `uncertain_observations` arrays.
-#
-# Without this, CORE_ANY_OUTPUT lets pass-2's *findings* substitute for a
-# missing pass-1 — but pass-2's *meta* would be silently dropped, and the
-# spec-presence / human-review / prompt-injection gates would default to
-# permissive. The PR self-review (3 bots converged) flagged exactly this.
-META1='{}'
-META2='{}'
+# ── Merge findings from all sources ──
+# Concatenate every valid reviewer output into a single array. The
+# HAS_OUTPUT flags above tell us which files survived validation; we
+# feed only those into jq -s 'add'. No intermediate per-source files.
+SAFE_INPUTS=()
+for key in core sweep spec functional core2 sweep2 resolution; do
+  [ "${HAS_OUTPUT[$key]}" = "true" ] && SAFE_INPUTS+=("${FINDINGS_FILE[$key]}")
+done
+# Merge pass-1 + pass-2 core meta. OR-merge safety booleans (any signal
+# wins), AND-merge `manual_spec_present` (either NO blocks APPROVE),
+# pass-1-prefer for prose. The bash loop above already coerces non-object
+# meta to {}, but the program rebinds $m1/$m2 with an in-jq type guard
+# anyway so it stays self-contained — has() crashes on non-object types
+# in jq 1.7+ (ubuntu-24.04 default), and a future refactor that drops
+# the bash coercion shouldn't be able to re-introduce that crash.
+META1='{}'; META2='{}'
 [ -f /tmp/core-meta.json ] && META1=$(cat /tmp/core-meta.json)
 [ -f /tmp/core-meta-2.json ] && META2=$(cat /tmp/core-meta-2.json)
-# Externalize the merge program so it can be exercised by fixture tests
-# without re-running the whole script, mirroring the existing dedup.jq
-# pattern above. The leading `as $m1` / `as $m2` rebinds at the top of
-# the program coerce non-object inputs (e.g. an agent that wrote `[]`
-# to its meta — is_valid_json accepts that since it only checks
-# `jq empty`) to `{}` so subsequent `$m1[k]` / `$m1 | has(...)` calls
-# don't error on jq 1.7+ (ubuntu-24.04 default) with "Cannot index
-# array with string" / "Cannot check whether array has a string key".
-# The coercion lives inside the .jq so the program is self-contained
-# and safe to invoke directly from a fixture test, not just from the
-# bash wrapper.
-cat > /tmp/meta-merge.jq <<'JQEOF'
-($m1 | if type == "object" then . else {} end) as $m1
-| ($m2 | if type == "object" then . else {} end) as $m2
-| def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
-  # has() requires manual_spec_present absence to default to true (legacy
-  # behavior preserved for re-reviews where only pass-1 ran). `// true`
-  # would also fire on explicit false — wrong direction.
-  def and_present:
-    (if $m1 | has("manual_spec_present") then $m1.manual_spec_present else true end)
-    and
-    (if $m2 | has("manual_spec_present") then $m2.manual_spec_present else true end);
-  def prefer_prose(k): ($m1[k] // $m2[k] // null);
-  def union_arr(k): (($m1[k] // []) + ($m2[k] // []));
-  {
-    requires_human_review: or_bool("requires_human_review"),
-    requires_human_review_reason: prefer_prose("requires_human_review_reason"),
-    uncertain_observations: union_arr("uncertain_observations"),
-    prompt_injection_detected: or_bool("prompt_injection_detected"),
-    reviewer_self_modification: or_bool("reviewer_self_modification"),
-    build_unavailable: or_bool("build_unavailable"),
-    manual_spec_present: and_present,
-    spec_compliance: prefer_prose("spec_compliance"),
-    spec_sources: ($m1.spec_sources // $m2.spec_sources // null)
-  }
-JQEOF
-CORE_META=$(jq -n \
-  --argjson m1 "$META1" \
-  --argjson m2 "$META2" \
-  -f /tmp/meta-merge.jq)
+CORE_META=$(jq -n --argjson m1 "$META1" --argjson m2 "$META2" '
+  ($m1 | if type == "object" then . else {} end) as $m1
+  | ($m2 | if type == "object" then . else {} end) as $m2
+  | def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
+    # `has()` rather than `// true`: jq treats explicit false as missing,
+    # so `false // true` is `true` — wrong direction here.
+    def and_present:
+      (if $m1 | has("manual_spec_present") then $m1.manual_spec_present else true end)
+      and
+      (if $m2 | has("manual_spec_present") then $m2.manual_spec_present else true end);
+    {
+      requires_human_review:        or_bool("requires_human_review"),
+      requires_human_review_reason: ($m1.requires_human_review_reason // $m2.requires_human_review_reason // null),
+      uncertain_observations:       (($m1.uncertain_observations // []) + ($m2.uncertain_observations // [])),
+      prompt_injection_detected:    or_bool("prompt_injection_detected"),
+      reviewer_self_modification:   or_bool("reviewer_self_modification"),
+      build_unavailable:            or_bool("build_unavailable"),
+      manual_spec_present:          and_present,
+      spec_compliance:              ($m1.spec_compliance // $m2.spec_compliance // null),
+      spec_sources:                 ($m1.spec_sources // $m2.spec_sources // null)
+    }')
 
-CORE_COUNT=$(jq 'length' /tmp/merged-core.json)
-SWEEP_COUNT=$(jq 'length' /tmp/merged-sweep.json)
-SPEC_COUNT=$(jq 'length' /tmp/merged-spec.json)
-FUNCTIONAL_COUNT=$(jq 'length' /tmp/merged-functional.json)
-CORE2_COUNT=$(jq 'length' /tmp/merged-core2.json)
-SWEEP2_COUNT=$(jq 'length' /tmp/merged-sweep2.json)
-GAP_COUNT=$(jq 'length' /tmp/merged-gap.json)
-echo "Core: $CORE_COUNT, Sweep: $SWEEP_COUNT, Spec: $SPEC_COUNT, Functional: $FUNCTIONAL_COUNT, Core(2): $CORE2_COUNT, Sweep(2): $SWEEP2_COUNT, Gap: $GAP_COUNT findings"
+if [ "${#SAFE_INPUTS[@]}" -gt 0 ]; then
+  jq -s 'add' "${SAFE_INPUTS[@]}" > /tmp/all-findings-merged.json
+else
+  echo '[]' > /tmp/all-findings-merged.json
+fi
+report_count() { jq 'length' "$1" 2>/dev/null || echo 0; }
+echo "Findings: core=$(report_count /tmp/core-findings.json) sweep=$(report_count /tmp/sweep-findings.json) spec=$(report_count /tmp/spec-findings.json) functional=$(report_count /tmp/functional-findings.json) core2=$(report_count /tmp/core-findings-2.json) sweep2=$(report_count /tmp/sweep-findings-2.json) resolution=$(report_count /tmp/resolution-findings.json) — total=$(jq 'length' /tmp/all-findings-merged.json)"
+TOTAL=$(jq 'length' /tmp/all-findings-merged.json)
 
 # ── Deduplication ──
-# Pass 1 (line-based): collapse findings at the same path+line_start.
-# Pass 2 (content-based): collapse findings with the same normalized
-#   title in the same file, even when reported on different lines.
-# In both passes, highest severity wins (critical > major > minor > note).
-cat > /tmp/dedup.jq <<'JQEOF'
-def sev_rank:
-  if .severity == "critical" then 0
-  elif .severity == "major" then 1
-  elif .severity == "minor" then 2
-  else 3 end;
-def norm_title: (.title // "") | ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "");
-def pick_best:
-  sort_by(sev_rank) |
-  (.[0]) as $best |
-  ([.[] | select(.screenshot != null)] | .[0] // null) as $shot_donor |
-  if $best.screenshot == null and $shot_donor != null
-  then $best + {screenshot: $shot_donor.screenshot}
-  else $best end;
+# One Haiku call groups by root cause across every reviewer's output.
+# The previous two-pass jq dedup (path+line then path+title) missed
+# semantic duplicates with different categories on adjacent lines.
+# On Haiku failure (after one retry) we post the raw concatenated
+# input with a visible ::error:: — no second dedup path to maintain.
 
-($c[0] + $s[0] + $p[0] + $f[0] + $c2[0] + $s2[0] + $g[0])
-| group_by(.path + ":" + (.line_start | tostring))
-| map(pick_best)
-| group_by(.path + "|" + norm_title)
-| map(pick_best)
-JQEOF
-ALL_FINDINGS=$(jq -n \
-  --slurpfile c /tmp/merged-core.json \
-  --slurpfile s /tmp/merged-sweep.json \
-  --slurpfile p /tmp/merged-spec.json \
-  --slurpfile f /tmp/merged-functional.json \
-  --slurpfile c2 /tmp/merged-core2.json \
-  --slurpfile s2 /tmp/merged-sweep2.json \
-  --slurpfile g /tmp/merged-gap.json \
-  -f /tmp/dedup.jq)
+run_haiku_dedup() {
+  local out="$1"
+  : > /tmp/dedup-output.txt
+  rm -f "$out"
+  ~/.local/bin/claude -p "=== review-dedup skill (follow exactly) ===
+
+${DEDUP_SKILL}${BUGBOT_BLOCK:-}
+
+You are the dedup reviewer. Read /tmp/all-findings-merged.json (the full reviewer output). When /tmp/resolution-status.json AND /tmp/prior-state/review-state.json exist, this is a round-2 follow-up — Read both and apply the STILL_PRESENT drop rule from the skill. OUTPUT_PATH=${out} — write the deduped JSON array to that exact path. Follow the skill above exactly." \
+    --model "${MODEL_FAST:-claude-haiku-4-5}" \
+    --permission-mode dontAsk \
+    --setting-sources user \
+    --allowedTools Read,Write \
+    --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
+    --max-turns 4 > /tmp/dedup-output.txt 2>&1
+}
+
+# Validate dedup output: must be a JSON array; every element must be an
+# object with severity/path/line_start/id; length must be ≤ input length
+# but > 0 when input was non-empty; every output id must appear in the
+# input. The non-empty check is critical: jq `all` on [] is vacuously
+# true, so an LLM that silently writes [] for a non-empty input would
+# pass shape + id-membership checks and produce a spurious APPROVE on a
+# PR with real bugs. is_valid_json only verifies parseability — that's
+# why the 412ac65 / 231722f hardening exists. Shape validation below is
+# the regression guard.
+validate_dedup_output() {
+  local out="$1"
+  [ -f "$out" ] || return 1
+  jq -e 'type == "array"' "$out" >/dev/null 2>&1 || return 1
+  jq -e 'all(type == "object" and has("severity") and has("path") and has("line_start") and has("id"))' "$out" >/dev/null 2>&1 || return 1
+  local out_len in_len
+  out_len=$(jq 'length' "$out")
+  in_len=$(jq 'length' /tmp/all-findings-merged.json)
+  [ "$out_len" -le "$in_len" ] || return 1
+  # Drop-all is allowed: review-dedup.md authorizes it when every input
+  # matches a bugbot-accepted trade-off, or (round 2) every new finding
+  # overlaps a STILL_PRESENT prior. Rejecting drop-all here used to
+  # cause a regression where the fallback re-posted the raw concatenated
+  # findings — exactly the duplicates / exempt entries the dedup is
+  # meant to filter. We log the drop-all case as a notice (so an
+  # operator can audit) but treat it as valid output.
+  if [ "$in_len" -gt 0 ] && [ "$out_len" -eq 0 ]; then
+    echo "::notice::Dedup dropped all $in_len finding(s) — accepting (matches bugbot-exempt or round-2 STILL_PRESENT-overlap rules in review-dedup.md). Audit /tmp/all-findings-merged.json + /tmp/deduped-findings.json if this looks wrong."
+  fi
+  jq --slurpfile in /tmp/all-findings-merged.json \
+     -e 'all(.id as $id | $in[0] | any(.id == $id))' \
+     "$out" >/dev/null 2>&1 || return 1
+  return 0
+}
+
+DEDUP_SKILL=""
+if [ -n "${SKILLS_DIR:-}" ] && [ -f "$SKILLS_DIR/review-dedup.md" ]; then
+  DEDUP_SKILL=$(cat "$SKILLS_DIR/review-dedup.md")
+elif [ -f "${CLAUDE_REVIEW_PIPELINE_DIR:-}/skills/review-dedup.md" ]; then
+  DEDUP_SKILL=$(cat "${CLAUDE_REVIEW_PIPELINE_DIR}/skills/review-dedup.md")
+fi
+
+ALL_FINDINGS=""
+if [ -z "$DEDUP_SKILL" ] || [ -z "${MODEL_FAST:-}" ]; then
+  echo "::warning::review-dedup.md or MODEL_FAST not available — skipping LLM dedup, posting raw concatenated findings"
+  ALL_FINDINGS=$(cat /tmp/all-findings-merged.json)
+else
+  DEDUP_OK=false
+  for attempt in 1 2; do
+    echo "Haiku dedup attempt $attempt/2..."
+    if run_haiku_dedup /tmp/deduped-findings.json && validate_dedup_output /tmp/deduped-findings.json; then
+      DEDUP_OK=true
+      break
+    fi
+    echo "::warning::Haiku dedup attempt $attempt failed (invalid output or non-zero exit). See /tmp/dedup-output.txt"
+  done
+  if [ "$DEDUP_OK" = "true" ]; then
+    ALL_FINDINGS=$(cat /tmp/deduped-findings.json)
+  else
+    echo "::error::Haiku dedup failed twice; posting raw findings (may include duplicates). Investigate /tmp/dedup-output.txt and /tmp/all-findings-merged.json."
+    ALL_FINDINGS=$(cat /tmp/all-findings-merged.json)
+  fi
+fi
+
 DEDUPED_COUNT=$(echo "$ALL_FINDINGS" | jq 'length')
-TOTAL=$((CORE_COUNT + SWEEP_COUNT + SPEC_COUNT + FUNCTIONAL_COUNT + CORE2_COUNT + SWEEP2_COUNT + GAP_COUNT))
 if [ "$DEDUPED_COUNT" -lt "$TOTAL" ]; then
-  echo "Within-run dedup (path+line then path+normalized-title, highest severity wins): $TOTAL -> $DEDUPED_COUNT (removed $((TOTAL - DEDUPED_COUNT)))"
+  echo "Haiku dedup: $TOTAL -> $DEDUPED_COUNT (removed $((TOTAL - DEDUPED_COUNT)))"
+fi
+
+# Quality safeguard: dedup is allowed to merge duplicate criticals (highest
+# severity wins within a group, per the skill), but it should never zero
+# them out. Two criticals merging to one is fine; many criticals merging
+# to zero means Haiku misclassified severity. Warn loudly so the operator
+# can audit /tmp/deduped-findings.json without having to compare counts.
+IN_CRITS=$(jq '[.[] | select(.severity == "critical")] | length' /tmp/all-findings-merged.json 2>/dev/null || echo 0)
+OUT_CRITS=$(echo "$ALL_FINDINGS" | jq '[.[] | select(.severity == "critical")] | length' 2>/dev/null || echo 0)
+if [ "$IN_CRITS" -gt 0 ] && [ "$OUT_CRITS" -eq 0 ]; then
+  echo "::warning::Dedup dropped every critical finding ($IN_CRITS in -> 0 out). Audit /tmp/deduped-findings.json — possible severity misclassification."
+fi
+
+# ── Round-2 body inputs ──
+# Haiku dedup above already drops STILL_PRESENT-overlapping new findings
+# semantically (it reads /tmp/resolution-status.json + prior-state). We
+# only need the RESOLVED/STILL_PRESENT lists here so the body composition
+# below can render the "Since previous review" section.
+RESOLVED_LIST="[]"
+STILL_PRESENT_LIST="[]"
+if [ -f /tmp/resolution-status.json ] && jq -e 'type == "array"' /tmp/resolution-status.json >/dev/null 2>&1; then
+  RESOLVED_LIST=$(jq '[.[] | select(.status == "RESOLVED")]' /tmp/resolution-status.json)
+  STILL_PRESENT_LIST=$(jq '[.[] | select(.status == "STILL_PRESENT")]' /tmp/resolution-status.json)
+  echo "Round-2 resolution status: $(echo "$RESOLVED_LIST" | jq 'length') RESOLVED, $(echo "$STILL_PRESENT_LIST" | jq 'length') STILL_PRESENT, $(jq '[.[] | select(.status == "NEW_CONTEXT")] | length' /tmp/resolution-status.json) NEW_CONTEXT"
 fi
 
 # ── Determine verdict ──
@@ -500,6 +484,85 @@ elif [ "$HAS_ANY" = "true" ]; then
   VERDICT="COMMENT"
 else
   VERDICT="APPROVE"
+fi
+
+# ── Round-2 verdict adjustment ──
+# When a prior state exists, blend the new-finding verdict above with the
+# resolution-checker output. Spec from the plan §3 table:
+#   - Prior REQUEST_CHANGES, no new criticals/majors, all prior blockers
+#     RESOLVED   → APPROVE.
+#   - Prior REQUEST_CHANGES, no new blockers, some prior blockers still
+#     present     → REQUEST_CHANGES.
+#   - Prior COMMENT, no new blockers → COMMENT (don't escalate to APPROVE).
+#   - Any prior verdict + ≥1 new critical/major → REQUEST_CHANGES.
+# The "no new blockers" branch is what makes this round-2 specific:
+# round-1 with no findings would default to APPROVE here, but round-2
+# preserves COMMENT/REQUEST_CHANGES until either the prior blockers are
+# resolved OR the prior verdict was already non-blocking.
+if [ -f /tmp/prior-state/review-state.json ]; then
+  PRIOR_VERDICT=$(jq -r '.verdict // "MISSING"' /tmp/prior-state/review-state.json 2>/dev/null || echo "MISSING")
+  PRIOR_BLOCKERS=$(jq -r '[.findings[]? | select(.severity == "critical" or .severity == "major")] | length' /tmp/prior-state/review-state.json 2>/dev/null || echo 0)
+  # If resolution-status.json is missing (resolution checker didn't run —
+  # since-last.diff couldn't be computed because PRIOR_HEAD_SHA wasn't in
+  # the shallow clone, or the agent crashed before writing it), we don't
+  # know whether prior blockers are resolved. Treat unknown-resolution as
+  # "all blockers still present" so we never silently downgrade
+  # REQUEST_CHANGES → APPROVE on a path that was meant to be focused.
+  RESOLUTION_KNOWN=true
+  if [ ! -f /tmp/resolution-status.json ]; then
+    RESOLUTION_KNOWN=false
+  fi
+  # Derive the still-present blocker count by id-joining STILL_PRESENT
+  # entries against prior-state.findings, instead of trusting the
+  # resolution checker's `prior_severity` field. The verdict gate must
+  # not ride on LLM compliance: if the agent forgets or mistypes
+  # `prior_severity`, an approve-via-zero-blockers slips through.
+  STILL_PRESENT_BLOCKERS=$(jq -n \
+    --slurpfile state /tmp/prior-state/review-state.json \
+    --argjson still "$STILL_PRESENT_LIST" \
+    '($still | map(.id)) as $ids
+     | ($state[0].findings // [])
+     | map(select((.id as $id | $ids | index($id)) and (.severity == "critical" or .severity == "major")))
+     | length')
+  echo "Round-2 verdict input: prior_verdict=$PRIOR_VERDICT prior_blockers=$PRIOR_BLOCKERS still_present_blockers=$STILL_PRESENT_BLOCKERS resolution_known=$RESOLUTION_KNOWN new_blocking=$HAS_BLOCKING current_verdict=$VERDICT"
+  case "$PRIOR_VERDICT" in
+    REQUEST_CHANGES)
+      if [ "$HAS_BLOCKING" = "true" ]; then
+        VERDICT="REQUEST_CHANGES"
+      elif [ "$STILL_PRESENT_BLOCKERS" -gt 0 ]; then
+        VERDICT="REQUEST_CHANGES"
+        echo "::notice::Round-2: $STILL_PRESENT_BLOCKERS prior blocking finding(s) still present — keeping REQUEST_CHANGES."
+      elif [ "$RESOLUTION_KNOWN" = "false" ] && [ "$PRIOR_BLOCKERS" -gt 0 ]; then
+        # Prior had blockers but we couldn't run the resolution checker
+        # — preserve REQUEST_CHANGES rather than guess they're resolved.
+        VERDICT="REQUEST_CHANGES"
+        echo "::warning::Round-2 with unknown resolution status (no /tmp/resolution-status.json) and $PRIOR_BLOCKERS prior blocker(s) — preserving REQUEST_CHANGES until resolution status is computed."
+      fi
+      # else: no new blockers AND (all prior blockers resolved per the
+      # checker, OR the prior verdict was REQUEST_CHANGES with no
+      # blockers in the first place) → keep the per-PR verdict above.
+      ;;
+    COMMENT)
+      if [ "$HAS_BLOCKING" = "true" ]; then
+        VERDICT="REQUEST_CHANGES"
+      elif [ "$VERDICT" = "APPROVE" ]; then
+        # Don't escalate to APPROVE on a pure follow-up — prior verdict
+        # was non-blocking but the user hadn't approved yet.
+        VERDICT="COMMENT"
+      fi
+      ;;
+    APPROVE)
+      if [ "$HAS_BLOCKING" = "true" ]; then
+        VERDICT="REQUEST_CHANGES"
+      fi
+      ;;
+    *)
+      # Unrecognized verdict (state file present but .verdict missing /
+      # corrupted / unknown enum value) — leave the per-PR verdict alone
+      # but emit a visible warning so the operator can audit.
+      echo "::warning::Round-2 verdict adjustment skipped — unrecognized prior_verdict='$PRIOR_VERDICT'. Using per-PR verdict '$VERDICT' as-is."
+      ;;
+  esac
 fi
 
 echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, manual_spec=$MANUAL_SPEC_PRESENT, technical_change=$TECHNICAL_CHANGE, smoke_ok=$SMOKE_OK, functional=$FUNCTIONAL_OVERALL)"
@@ -623,6 +686,23 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
     echo "> :warning: **Sweep reviewer (Sonnet) failed** — consistency and performance review may be incomplete."
     echo ""
   fi
+  # Round-2 only: surface what the resolution checker found.
+  RESOLVED_N=$(echo "$RESOLVED_LIST" | jq 'length')
+  STILL_N=$(echo "$STILL_PRESENT_LIST" | jq 'length')
+  if [ "$RESOLVED_N" -gt 0 ] || [ "$STILL_N" -gt 0 ]; then
+    echo "### Since previous review"
+    echo ""
+    if [ "$RESOLVED_N" -gt 0 ]; then
+      echo "**Resolved (${RESOLVED_N}):**"
+      echo "$RESOLVED_LIST" | jq -r '.[] | "- `\(.id)` — \(.evidence)"'
+      echo ""
+    fi
+    if [ "$STILL_N" -gt 0 ]; then
+      echo "**Still present (${STILL_N}):**"
+      echo "$STILL_PRESENT_LIST" | jq -r '.[] | "- `\(.id)` (\(.prior_severity // "?")) — \(.evidence)"'
+      echo ""
+    fi
+  fi
 } > /tmp/review-body.md
 
 # ── Append functional validation section ──
@@ -745,4 +825,36 @@ cp /tmp/all-findings.json findings.draft.json
 
 echo "review-result.json: $VERDICT, $(echo "$ALL_FINDINGS" | jq 'length') findings"
 echo "review-comments.json: $(jq 'length' /tmp/review-comments.json) inline comments"
+
+# ── Persist round-state for the next follow-up review ──
+# The Upload review state workflow step packages this for cross-run pickup.
+# Schema is documented in pr-review.yml (round-2 read step) and in
+# skills/review-resolution-checker.md.
+CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+CURRENT_BASE_SHA=$(git merge-base HEAD "${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}" 2>/dev/null || echo "")
+PRIOR_HEAD_SHA_FROM_STATE=""
+PRIOR_ROUND=1
+if [ -f /tmp/prior-state/review-state.json ]; then
+  PRIOR_HEAD_SHA_FROM_STATE=$(jq -r '.prior_head_sha // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+  PRIOR_ROUND=$(jq -r '.round // 1' /tmp/prior-state/review-state.json 2>/dev/null || echo "1")
+fi
+NEXT_ROUND=$((PRIOR_ROUND + 1))
+[ -z "$PRIOR_HEAD_SHA_FROM_STATE" ] && NEXT_ROUND=1
+jq -n \
+  --arg head "$CURRENT_HEAD_SHA" \
+  --arg base "$CURRENT_BASE_SHA" \
+  --argjson round "$NEXT_ROUND" \
+  --argjson findings "$ALL_FINDINGS" \
+  --arg verdict "$VERDICT" \
+  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{
+    schema_version: 1,
+    prior_head_sha: $head,
+    prior_base_sha: $base,
+    round: $round,
+    findings: $findings,
+    verdict: $verdict,
+    reviewed_at: $ts
+  }' > /tmp/review-state.json
+echo "review-state.json: head=$CURRENT_HEAD_SHA round=$NEXT_ROUND findings=$(echo "$ALL_FINDINGS" | jq 'length')"
 echo "::endgroup::"

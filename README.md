@@ -22,14 +22,33 @@ on:
 jobs:
   review:
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    permissions:
+      contents: write       # screenshots → review-assets branch
+      pull-requests: write  # post review + comments
+      issues: write
+      actions: read         # round-2 follow-up reviews look up the prior
+                            # run's review-state artifact by run-id
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
 ```
 
+The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. See `prompts/setup-review.md` for the full troubleshooting flow.
+
 Why `@v1` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If *your* repo has different trust needs, substitute a 40-char SHA for `@v1`.
 
-**Tag-resolution caveat.** The reusable workflow file and the composite action resolve `@v1` at different moments of the job. Moving `v1` while a run is starting can cause a mismatch between the two — push the `v1` tag at idle times, not while runs are in flight.
+**Tag-resolution caveat.** The reusable workflow file and the install step resolve their refs at different moments of the job. Moving `v1` while a run is starting can cause a mismatch — push the `v1` tag at idle times, not while runs are in flight.
+
+**Pinning to a non-default ref.** Pre-release dogfooding (testing pipeline changes against a real consumer repo before merging to `main`) needs both the workflow file and the install step at the same ref. Pass `pipeline_ref` so the install matches:
+
+```yaml
+uses: panenco/claude-review/.github/workflows/pr-review.yml@<branch-or-sha>
+with:
+  pr_number: ${{ inputs.pr_number || '' }}
+  pipeline_ref: <branch-or-sha>
+```
+
+Without `pipeline_ref`, the install defaults to `@v1` and consumers get new orchestration on old skills, which fails at max-turns. The `@v1` default is correct for normal use; only override during testing.
 
 ### 2. Set secrets
 
@@ -57,22 +76,48 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
 ```
 PR opened / updated
     |
-[Setup] Node, deps, Playwright, dev environment
+[Setup] Node, deps, Playwright, dev environment (launched in background
+        alongside Stage 1 to overlap bring-up with context gathering)
     |
 [Stage 1: Context Builder] (Sonnet)
-    Gathers PR metadata, diff, issue, conventions, build verification
+    Gathers PR metadata, diff, issue, conventions, build verification.
+    On round-2 follow-up reviews also computes /tmp/since-last.diff
+    against the prior review's HEAD.
     Writes context.md + test-plan.md
     |
 [Stage 2: Parallel Reviewers]
     |-- Core (Opus): bugs, spec mismatches, security
     |-- Sweep (Sonnet): consistency, test quality, performance
+    |-- Spec-compliance (Sonnet): PRD-vs-code (only when a PRD is detected)
     |-- Functional (Sonnet + Playwright): E2E testing, screenshots
     |
-[Stage 3: Merge + Post]
-    Deduplicates findings, uploads screenshots, posts atomic review
+    Round 1 only (first review of the PR):
+    |-- Core pass-2 (Opus): independent re-review, union-of-finding boost
+    |-- Sweep pass-2 (Sonnet): independent re-review
+    |
+    Round 2 only (subsequent pushes):
+    |-- Resolution checker (Sonnet): classifies every prior finding as
+        RESOLVED / STILL_PRESENT / NEW_CONTEXT against /tmp/since-last.diff
+    |
+[Stage 3: Merge + Dedup + Post]
+    Haiku-driven semantic dedup across every reviewer's output (groups
+    by root cause, not just path+line; on round 2 also drops new findings
+    whose root cause matches a STILL_PRESENT prior). Uploads screenshots,
+    persists round-state for the next follow-up review, posts atomic review.
     |
 Verdict: APPROVE / COMMENT / REQUEST_CHANGES
 ```
+
+### Round 1 vs round 2
+
+The pipeline persists a small state artifact (`/tmp/review-state.json`) on every successful run — the deduped findings, verdict, and head SHA reviewed. On the next push to the same PR, the next run downloads it, computes the diff since that SHA, and runs the round-2 fan above. The verdict ladder gains a round-2 layer:
+
+- Prior `REQUEST_CHANGES`, no new criticals/majors, all prior blockers `RESOLVED` → `APPROVE`.
+- Prior `REQUEST_CHANGES`, no new blockers, some prior blockers `STILL_PRESENT` → keep `REQUEST_CHANGES`.
+- Prior `COMMENT`, no new blockers → keep `COMMENT` (don't auto-promote on a pure follow-up).
+- Any prior verdict + ≥1 new critical/major → `REQUEST_CHANGES`.
+
+Round-1 is otherwise identical to the legacy single-pass review with the recall boost (double-pass + critic) layered on. If the prior state artifact is missing (retention expired, prior run failed before upload), round 2 degrades to a clean full re-review with a `::notice::` explaining why.
 
 ---
 
@@ -368,7 +413,7 @@ If you have a polished config for a stack not covered here (e.g. Python/FastAPI,
 The pipeline consists of:
 
 - **Reusable workflow** (`.github/workflows/pr-review.yml`) — orchestration, dev env setup, agent launching, finding merge, review posting
-- **5 skill files** (`skills/`) — prompt templates defining review methodology
+- **8 skill files** (`skills/`) — prompt templates defining review methodology: `review-context-builder`, `review-core`, `review-sweep`, `review-spec-compliance`, `review-functional-tester`, `review-test-planner`, `review-dedup` (Haiku semantic dedup), `review-resolution-checker` (round-2 prior-finding classifier)
 - **Functional prompt template** (`scripts/functional-prompt.template.txt`) — bootstraps the functional tester with auth + env info
 
 All project-specific configuration is read from the consuming repo's `bugbot.md` and `.github/review-config.md` by convention.

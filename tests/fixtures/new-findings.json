@@ -1,0 +1,29 @@
+[
+  {
+    "id": "c10",
+    "severity": "minor",
+    "type": "wrong-impl",
+    "path": "src/api.ts",
+    "line_start": 102,
+    "title": "Returns 200 on schema mismatch",
+    "evidence": "still no res.status(400) call"
+  },
+  {
+    "id": "c11",
+    "severity": "major",
+    "type": "bug",
+    "path": "src/payments.ts",
+    "line_start": 60,
+    "title": "Off-by-one in retry loop",
+    "evidence": "for (i=0; i<MAX-1; i++) — last attempt skipped"
+  },
+  {
+    "id": "s10",
+    "severity": "minor",
+    "type": "consistency",
+    "path": "src/utils.ts",
+    "line_start": 21,
+    "title": "Same inconsistent return type",
+    "evidence": "still Result<T> mismatch"
+  }
+]

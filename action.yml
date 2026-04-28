@@ -12,7 +12,7 @@ runs:
         # Verify the action download is complete — catch a broken release here
         # instead of letting the failure surface 3 minutes later in the analyze
         # step with a cryptic "skill not found" message.
-        EXPECTED_SKILLS="review-core review-sweep review-context-builder review-functional-tester review-spec-compliance review-test-planner review-gap-finder"
+        EXPECTED_SKILLS="review-core review-sweep review-context-builder review-functional-tester review-spec-compliance review-test-planner review-dedup review-resolution-checker"
         MISSING=""
         for s in $EXPECTED_SKILLS; do
           if [ ! -f "$PIPELINE_DIR/skills/${s}.md" ]; then
@@ -26,7 +26,7 @@ runs:
           ls -la "$PIPELINE_DIR/skills/" 2>&1 || true
           exit 1
         fi
-        for s in build-review.sh verdict-gate.sh post-review.sh setup-dev-env.sh generate-functional-prompt.sh; do
+        for s in build-review.sh verdict-gate.sh post-review.sh setup-dev-env.sh generate-functional-prompt.sh phase-timing.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1

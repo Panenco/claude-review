@@ -159,6 +159,24 @@ if [ ! -f /tmp/review-comments.json ]; then
 fi
 jq -e 'type == "array"' /tmp/review-comments.json > /dev/null || echo '[]' > /tmp/review-comments.json
 
+# Append a phase-timing footer if any timing was captured.
+# Format: *Pipeline: context Xs, dev-env Ys, analyze Zs, dedup Ws, total Ts*
+if [ -s /tmp/phase-summary.txt ]; then
+  TOTAL=0
+  PARTS=""
+  while IFS='=' read -r name dur; do
+    [ -z "$name" ] && continue
+    secs="${dur%s}"
+    case "$secs" in *[!0-9]*|"") continue ;; esac
+    TOTAL=$(( TOTAL + secs ))
+    [ -n "$PARTS" ] && PARTS="$PARTS, "
+    PARTS="$PARTS$name ${secs}s"
+  done < /tmp/phase-summary.txt
+  if [ -n "$PARTS" ]; then
+    printf '\n\n---\n*Pipeline: %s, total %ss*\n' "$PARTS" "$TOTAL" >> /tmp/review-body.md
+  fi
+fi
+
 # Build and POST atomic review
 VERDICT=$(jq -r '.verdict' review-result.json)
 jq -n \
