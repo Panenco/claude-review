@@ -393,6 +393,7 @@ jq -n \
   --arg summary "$SUMMARY" \
   --arg spec_compliance "$SPEC_COMPLIANCE" \
   --arg technical_change "$TECHNICAL_CHANGE" \
+  --arg smoke_ok "$SMOKE_OK" \
   --argjson findings "$ALL_FINDINGS" \
   --argjson meta "$CORE_META" \
   --argjson functional_meta "$JSON_FUNCTIONAL_META" \
@@ -404,6 +405,7 @@ jq -n \
     spec_sources: ($meta.spec_sources // {linked_issue: null, external_issue: null, prd_path: null, convention_rules: []}),
     manual_spec_present: (if ($meta | type == "object" and has("manual_spec_present")) then $meta.manual_spec_present else true end),
     technical_change: ($technical_change == "true"),
+    smoke_ok: ($smoke_ok == "true"),
     findings: $findings,
     requires_human_review: ($meta.requires_human_review // false),
     requires_human_review_reason: ($meta.requires_human_review_reason // null),

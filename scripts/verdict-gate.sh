@@ -60,6 +60,15 @@ HUMAN_REASON=$(jq -r '.requires_human_review_reason // empty' review-result.json
 BUILD_UNAVAILABLE=$(jq -r '.build_unavailable // false' review-result.json)
 MANUAL_SPEC=$(jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end' review-result.json)
 TECHNICAL_CHANGE=$(jq -r 'if (type == "object" and has("technical_change")) then .technical_change else false end' review-result.json)
+# Read smoke_ok directly — it captures both the FUNCTIONAL_OK crash flag and
+# the FUNCTIONAL_OVERALL value as build-review.sh saw them. Reading
+# functional_validation.overall here would diverge from the gate condition
+# in the partial-crash scenario where the tester wrote
+# `{strategy: "functional", overall: "PASS"}` and then crashed: the
+# JSON_FUNCTIONAL_META override only fires for the {skip,PASS} synthetic, so
+# overall would still read "PASS" and the banner would silently disappear
+# even though the verdict was correctly downgraded to COMMENT.
+SMOKE_OK=$(jq -r 'if (type == "object" and has("smoke_ok")) then .smoke_ok else true end' review-result.json)
 FUNCTIONAL_OVERALL=$(jq -r '.functional_validation.overall // "N/A"' review-result.json)
 
 # Step summary for the Actions UI.
@@ -78,7 +87,7 @@ FUNCTIONAL_OVERALL=$(jq -r '.functional_validation.overall // "N/A"' review-resu
     echo ""
     echo "> :no_entry: **No manual spec available — APPROVE withheld.** Link an issue, paste acceptance criteria, or wire up an external tracker to enable APPROVE."
   fi
-  if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$FUNCTIONAL_OVERALL" != "PASS" ] && [ "$FUNCTIONAL_OVERALL" != "WARN" ]; then
+  if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
     echo ""
     echo "> :no_entry: **Technical change — APPROVE withheld until smoke-tested** (overall=\`$FUNCTIONAL_OVERALL\`). Refactors/upgrades have no acceptance criteria, so a passing smoke run is required. Configure \`.github/claude-review/dev-start.sh\` to bring up the app, or fix the issues that caused the smoke run to fail."
   fi
