@@ -12,7 +12,7 @@ The feature is built and running. You have a real browser (Playwright MCP), can 
 ## Input
 
 1. **`test-plan.md`** at repo root — scenarios to execute (may be a mix of UI flows, API checks, edge cases)
-2. **`context.md`** at repo root — short index: PR metadata, `## Acceptance criteria`, `## Per-file diff index`. Diff chunks live at `/tmp/diff-chunks/<file>.diff` — Read those if you need to see what changed in specific files. Spec sources (`/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md`) are listed in context.md's `## Spec sources` — Read whichever ones are non-empty if the acceptance criteria summary doesn't have what you need.
+2. **`context.md`** at repo root — PR metadata, acceptance criteria, diff, full file contents
 
 Read both. The plan tells you WHAT to test. The context tells you WHY (acceptance criteria, spec).
 
