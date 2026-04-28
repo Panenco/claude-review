@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: 'claude-haiku-4-5'
+      pipeline_ref:
+        description: 'Ref of panenco/claude-review to install skills/scripts from. Default v1 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo.'
+        required: false
+        type: string
+        default: 'v1'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -119,48 +124,32 @@ jobs:
       # install from the local checkout (`./`). PRs on this repo get reviewed
       # by their own current branch, not by whatever was last released.
       #
-      # DOWNSTREAM: install at the SAME ref the caller workflow pinned. This
-      # avoids the trap where a consumer pins
-      #   uses: panenco/claude-review/.github/workflows/pr-review.yml@<X>
-      # and gets new orchestration with old (`@v1`) skills, which produces
-      # max-turns failures because the orchestration assumes a newer skill
-      # contract. `github.workflow_ref` exposes the caller's ref to the
-      # reusable workflow; we extract it, check out claude-review at that
-      # ref into a sibling path, and run the local action from there.
+      # DOWNSTREAM: install at `inputs.pipeline_ref` (default 'v1'). The
+      # historic mismatch was that the workflow file's ref (caller's `uses:
+      # panenco/claude-review/.github/workflows/pr-review.yml@<X>`) and the
+      # install action's ref (hardcoded `@v1`) were independent — pinning the
+      # workflow to a non-v1 ref would silently install old `@v1` skills on
+      # top of the new orchestration and hit max-turns. GitHub does not
+      # expose the called workflow's ref inside the reusable workflow
+      # (`github.workflow_ref` returns the OUTER caller's ref on pull_request
+      # events), so we accept it as an input. Consumers stay on `@v1` by
+      # default; pipeline-pre-release dogfooding pins the input to a SHA or
+      # branch.
       #
       # The two steps are mutually exclusive on `if:`; only one ever runs.
       - name: Install review pipeline (dogfood — local checkout)
         if: github.repository == 'panenco/claude-review'
         uses: ./
 
-      - name: Resolve pipeline ref (downstream)
-        if: github.repository != 'panenco/claude-review'
-        id: pipeline_ref
-        shell: bash
-        env:
-          # Take through env to avoid expression interpolation in run scripts.
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: |
-          # WORKFLOW_REF format:
-          #   panenco/claude-review/.github/workflows/pr-review.yml@<ref>
-          # Strip everything up to and including the last '@' to get <ref>.
-          REF="${WORKFLOW_REF##*@}"
-          if [ -z "$REF" ] || [ "$REF" = "$WORKFLOW_REF" ]; then
-            echo "::warning::Could not parse pipeline ref from github.workflow_ref ($WORKFLOW_REF) — falling back to v1"
-            REF="v1"
-          fi
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          echo "Pipeline ref: $REF"
-
-      - name: Checkout review pipeline at caller's ref (downstream)
+      - name: Checkout review pipeline at pipeline_ref (downstream)
         if: github.repository != 'panenco/claude-review'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: panenco/claude-review
-          ref: ${{ steps.pipeline_ref.outputs.ref }}
+          ref: ${{ inputs.pipeline_ref }}
           path: __claude-review-pipeline
 
-      - name: Install review pipeline (downstream — at caller ref)
+      - name: Install review pipeline (downstream — at pipeline_ref)
         if: github.repository != 'panenco/claude-review'
         uses: ./__claude-review-pipeline
 
