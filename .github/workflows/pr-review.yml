@@ -116,21 +116,53 @@ jobs:
       # Install review pipeline skills + scripts.
       #
       # DOGFOOD: when this repo (panenco/claude-review) is reviewing itself,
-      # install from the local checkout (`./`) instead of the @v1 tag. The
-      # @v1 tag is a moving target meant for downstream consumers; pinning
-      # the dogfood to it would mean PRs on this repo get reviewed by their
-      # own old code, which makes iteration impossible (every "fix" is
-      # tested against the prior release, not the current branch).
+      # install from the local checkout (`./`). PRs on this repo get reviewed
+      # by their own current branch, not by whatever was last released.
       #
-      # DOWNSTREAM: every other repo gets the @v1 install — same as before.
+      # DOWNSTREAM: install at the SAME ref the caller workflow pinned. This
+      # avoids the trap where a consumer pins
+      #   uses: panenco/claude-review/.github/workflows/pr-review.yml@<X>
+      # and gets new orchestration with old (`@v1`) skills, which produces
+      # max-turns failures because the orchestration assumes a newer skill
+      # contract. `github.workflow_ref` exposes the caller's ref to the
+      # reusable workflow; we extract it, check out claude-review at that
+      # ref into a sibling path, and run the local action from there.
+      #
       # The two steps are mutually exclusive on `if:`; only one ever runs.
       - name: Install review pipeline (dogfood — local checkout)
         if: github.repository == 'panenco/claude-review'
         uses: ./
 
-      - name: Install review pipeline (downstream — from @v1)
+      - name: Resolve pipeline ref (downstream)
         if: github.repository != 'panenco/claude-review'
-        uses: panenco/claude-review@v1
+        id: pipeline_ref
+        shell: bash
+        env:
+          # Take through env to avoid expression interpolation in run scripts.
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          # WORKFLOW_REF format:
+          #   panenco/claude-review/.github/workflows/pr-review.yml@<ref>
+          # Strip everything up to and including the last '@' to get <ref>.
+          REF="${WORKFLOW_REF##*@}"
+          if [ -z "$REF" ] || [ "$REF" = "$WORKFLOW_REF" ]; then
+            echo "::warning::Could not parse pipeline ref from github.workflow_ref ($WORKFLOW_REF) — falling back to v1"
+            REF="v1"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Pipeline ref: $REF"
+
+      - name: Checkout review pipeline at caller's ref (downstream)
+        if: github.repository != 'panenco/claude-review'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: panenco/claude-review
+          ref: ${{ steps.pipeline_ref.outputs.ref }}
+          path: __claude-review-pipeline
+
+      - name: Install review pipeline (downstream — at caller ref)
+        if: github.repository != 'panenco/claude-review'
+        uses: ./__claude-review-pipeline
 
       # Validate review-config.md sections (warn on missing recommended sections)
       # and sanity-check that file paths it references actually exist in the repo.
