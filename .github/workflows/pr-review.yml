@@ -740,14 +740,22 @@ jobs:
           : > /tmp/dev-env/outputs
           : > /tmp/dev-env/log
           rm -f /tmp/dev-env/rc
-          # Wrap the bring-up so we capture its exit code separately from the
-          # nohup wrapper's. The wait step honors /tmp/dev-env/rc.
-          nohup bash -c '
+          # Detach the bring-up from this step's process group + job table so
+          # GitHub Actions doesn't SIGKILL it at step-end. setsid creates a
+          # new session (the recorded PID is the new group leader), nohup
+          # ignores SIGHUP, < /dev/null prevents tty inheritance, and disown
+          # removes the job from the launching shell's table. The wait step
+          # honors /tmp/dev-env/rc; the kill paths use `kill -- -PID` so the
+          # whole group (dev server + children) is reaped, not just the
+          # wrapper.
+          setsid nohup bash -c '
             GITHUB_OUTPUT=/tmp/dev-env/outputs .review-scripts/setup-dev-env.sh
             echo $? > /tmp/dev-env/rc
-          ' > /tmp/dev-env/log 2>&1 &
-          echo $! > /tmp/dev-env/pid
-          echo "Background dev-env launched: PID=$(cat /tmp/dev-env/pid)"
+          ' > /tmp/dev-env/log 2>&1 < /dev/null &
+          PID=$!
+          disown "$PID"
+          echo "$PID" > /tmp/dev-env/pid
+          echo "Background dev-env launched: PID=$PID (process group leader)"
 
       - name: 'Review: build context'
         id: context_builder
@@ -793,10 +801,12 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "::error::context.md was not written by the context builder. Check the 'Review: build context' step log — max-turns is the most common cause. Skipping analyzer; reaping background dev-env."
-            # Reap the background dev-env (started in parallel with the
-            # context builder) so it doesn't keep running for nothing.
+            # Reap the background dev-env's whole process group (the
+            # setsid-detached launcher + the dev server it spawned).
+            # `kill -- -PID` signals the group; the leading -- is mandatory
+            # so the negative PID isn't parsed as an option.
             if [ -f /tmp/dev-env/pid ]; then
-              kill "$(cat /tmp/dev-env/pid)" 2>/dev/null || true
+              kill -- -"$(cat /tmp/dev-env/pid)" 2>/dev/null || true
             fi
           fi
 
@@ -847,8 +857,8 @@ jobs:
           DEADLINE=$(( $(date +%s) + 180 ))
           while kill -0 "$PID" 2>/dev/null; do
             if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-              echo "::error::Background dev-env timed out after 180s; killing PID=$PID"
-              kill "$PID" 2>/dev/null || true
+              echo "::error::Background dev-env timed out after 180s; killing process group -$PID"
+              kill -- -"$PID" 2>/dev/null || true
               [ -f /tmp/dev-env/log ] && tail -200 /tmp/dev-env/log
               phase_end dev-env
               exit 1

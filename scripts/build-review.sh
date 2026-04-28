@@ -62,7 +62,8 @@ for key in "${!FINDINGS_FILE[@]}"; do
     HAS_OUTPUT[$key]=true
   else
     echo "::warning::${key} findings ($f) are not a valid JSON array — treating as failed."
-    cp "$f" "${f%.json}.invalid.json" 2>/dev/null || true
+    cp "$f" "${f%.json}.invalid.json" 2>/dev/null \
+      || echo "::warning::Failed to preserve $f to ${f%.json}.invalid.json (filesystem permissions or disk space?). Original kept in place."
     jq empty "$f" 2>&1 | head -3 || true
   fi
 done
@@ -98,7 +99,8 @@ for mf in /tmp/core-meta.json /tmp/core-meta-2.json /tmp/functional-meta.json; d
   [ -f "$mf" ] || continue
   if ! jq -e 'type == "object"' "$mf" >/dev/null 2>&1; then
     echo "::warning::${mf} is not a JSON object — falling back to {}."
-    cp "$mf" "${mf%.json}.invalid.json" 2>/dev/null || true
+    cp "$mf" "${mf%.json}.invalid.json" 2>/dev/null \
+      || echo "::warning::Failed to preserve $mf to ${mf%.json}.invalid.json (filesystem permissions or disk space?). Coercing to {} anyway."
     echo '{}' > "$mf"
   fi
 done
@@ -247,30 +249,35 @@ for key in core sweep spec functional gap core2 sweep2 resolution; do
 done
 # Merge pass-1 + pass-2 core meta. OR-merge safety booleans (any signal
 # wins), AND-merge `manual_spec_present` (either NO blocks APPROVE),
-# pass-1-prefer for prose. Inputs are pre-coerced to {} above, so the
-# merge program doesn't need its own type guards.
+# pass-1-prefer for prose. The bash loop above already coerces non-object
+# meta to {}, but the program rebinds $m1/$m2 with an in-jq type guard
+# anyway so it stays self-contained — has() crashes on non-object types
+# in jq 1.7+ (ubuntu-24.04 default), and a future refactor that drops
+# the bash coercion shouldn't be able to re-introduce that crash.
 META1='{}'; META2='{}'
 [ -f /tmp/core-meta.json ] && META1=$(cat /tmp/core-meta.json)
 [ -f /tmp/core-meta-2.json ] && META2=$(cat /tmp/core-meta-2.json)
 CORE_META=$(jq -n --argjson m1 "$META1" --argjson m2 "$META2" '
-  def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
-  # `has()` rather than `// true`: jq treats explicit false as missing,
-  # so `false // true` is `true` — wrong direction here.
-  def and_present:
-    (if $m1 | has("manual_spec_present") then $m1.manual_spec_present else true end)
-    and
-    (if $m2 | has("manual_spec_present") then $m2.manual_spec_present else true end);
-  {
-    requires_human_review:        or_bool("requires_human_review"),
-    requires_human_review_reason: ($m1.requires_human_review_reason // $m2.requires_human_review_reason // null),
-    uncertain_observations:       (($m1.uncertain_observations // []) + ($m2.uncertain_observations // [])),
-    prompt_injection_detected:    or_bool("prompt_injection_detected"),
-    reviewer_self_modification:   or_bool("reviewer_self_modification"),
-    build_unavailable:            or_bool("build_unavailable"),
-    manual_spec_present:          and_present,
-    spec_compliance:              ($m1.spec_compliance // $m2.spec_compliance // null),
-    spec_sources:                 ($m1.spec_sources // $m2.spec_sources // null)
-  }')
+  ($m1 | if type == "object" then . else {} end) as $m1
+  | ($m2 | if type == "object" then . else {} end) as $m2
+  | def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
+    # `has()` rather than `// true`: jq treats explicit false as missing,
+    # so `false // true` is `true` — wrong direction here.
+    def and_present:
+      (if $m1 | has("manual_spec_present") then $m1.manual_spec_present else true end)
+      and
+      (if $m2 | has("manual_spec_present") then $m2.manual_spec_present else true end);
+    {
+      requires_human_review:        or_bool("requires_human_review"),
+      requires_human_review_reason: ($m1.requires_human_review_reason // $m2.requires_human_review_reason // null),
+      uncertain_observations:       (($m1.uncertain_observations // []) + ($m2.uncertain_observations // [])),
+      prompt_injection_detected:    or_bool("prompt_injection_detected"),
+      reviewer_self_modification:   or_bool("reviewer_self_modification"),
+      build_unavailable:            or_bool("build_unavailable"),
+      manual_spec_present:          and_present,
+      spec_compliance:              ($m1.spec_compliance // $m2.spec_compliance // null),
+      spec_sources:                 ($m1.spec_sources // $m2.spec_sources // null)
+    }')
 
 if [ "${#SAFE_INPUTS[@]}" -gt 0 ]; then
   jq -s 'add' "${SAFE_INPUTS[@]}" > /tmp/all-findings-merged.json
