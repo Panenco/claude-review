@@ -37,7 +37,18 @@ The `permissions:` block is required: reusable workflow permissions are capped b
 
 Why `@v1` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If *your* repo has different trust needs, substitute a 40-char SHA for `@v1`.
 
-**Tag-resolution caveat.** The reusable workflow file and the composite action resolve `@v1` at different moments of the job. Moving `v1` while a run is starting can cause a mismatch between the two — push the `v1` tag at idle times, not while runs are in flight.
+**Tag-resolution caveat.** The reusable workflow file and the install step resolve their refs at different moments of the job. Moving `v1` while a run is starting can cause a mismatch — push the `v1` tag at idle times, not while runs are in flight.
+
+**Pinning to a non-default ref.** Pre-release dogfooding (testing pipeline changes against a real consumer repo before merging to `main`) needs both the workflow file and the install step at the same ref. Pass `pipeline_ref` so the install matches:
+
+```yaml
+uses: panenco/claude-review/.github/workflows/pr-review.yml@<branch-or-sha>
+with:
+  pr_number: ${{ inputs.pr_number || '' }}
+  pipeline_ref: <branch-or-sha>
+```
+
+Without `pipeline_ref`, the install defaults to `@v1` and consumers get new orchestration on old skills, which fails at max-turns. The `@v1` default is correct for normal use; only override during testing.
 
 ### 2. Set secrets
 
