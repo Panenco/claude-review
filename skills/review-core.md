@@ -33,7 +33,7 @@ If a finding candidate later references a specific library/export/component, you
 Before flagging anything, scan the embedded `bugbot.md` for **acceptance/exemption** sections (e.g. `## Accepted supply-chain trade-offs`, `## Accepted trade-offs`, `## Do NOT flag`, `## Known exceptions`). Any finding that matches an item listed there MUST be dropped — not downgraded to `note`, not moved to `uncertain_observations`, **dropped entirely**. The project owner has explicitly declared those patterns accepted, and re-flagging them every PR is the single biggest source of reviewer noise.
 
 Concrete examples of what to drop on sight when an acceptance entry exists:
-- `@v1 + secrets: inherit` when `bugbot.md` has an "Accepted supply-chain trade-offs" entry covering the reusable workflow reference.
+- `panenco/claude-review/.github/workflows/pr-review.yml@<tag> + secrets: inherit` (where `<tag>` is `v1`, `v2`, or any future major) when `bugbot.md` has an "Accepted supply-chain trade-offs" entry covering the reusable workflow reference.
 - Any rule whose policy exception is spelled out verbatim in an acceptance section.
 
 ## Your scope — finding types
