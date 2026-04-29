@@ -1156,9 +1156,17 @@ jobs:
           # Strategy resolution. `|| true` guards against missing
           # '## Strategy:' line: grep's non-zero exit would otherwise
           # abort the step under GitHub Actions' default bash -eo pipefail.
+          # The whitelist filter strips markdown emphasis (`backticks`,
+          # *italic*, **bold**, "quotes") — agents sometimes wrap the
+          # value, e.g. write `## Strategy: \`pipeline-self-test\`` instead
+          # of `## Strategy: pipeline-self-test`. Whitelisting [a-zA-Z-]
+          # is robust to all of those without enumerating every wrapper.
           STRATEGY=""
           if [ -f test-plan.md ]; then
-            STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md 2>/dev/null | sed -E 's/.*Strategy:[[:space:]]*//' | tr -d '[:space:]' || true)
+            STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md 2>/dev/null \
+              | sed -E 's/.*Strategy:[[:space:]]*//' \
+              | sed -E 's/[^a-zA-Z-]//g' \
+              | tr '[:upper:]' '[:lower:]' || true)
           fi
 
           if [ "$STRATEGY" = "pipeline-self-test" ] && [ -d tests ]; then

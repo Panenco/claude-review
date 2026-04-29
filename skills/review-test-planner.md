@@ -107,7 +107,12 @@ Use this exact format so the test runner can parse it:
 ```markdown
 # Test Plan — PR #<number>
 
-## Strategy: <skip|quick|functional>
+## Strategy: <skip|quick|functional|pipeline-self-test>
+
+<!-- Write the value as a plain word, e.g. `## Strategy: pipeline-self-test`.
+     The workflow's parser strips markdown emphasis (backticks, *italic*,
+     "quotes") defensively, but plain wording is preferred. -->
+
 
 <!-- Only include the next line when the PR matches "Technical change detection" above.
      The functional tester copies this flag into functional-meta.json, and
