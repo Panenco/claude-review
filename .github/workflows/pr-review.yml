@@ -28,10 +28,10 @@ on:
         type: string
         default: 'claude-sonnet-4-6'
       pipeline_ref:
-        description: 'Ref of panenco/claude-review to install skills/scripts from. Default v1 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo.'
+        description: 'Ref of panenco/claude-review to install skills/scripts from. Default v2 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo.'
         required: false
         type: string
-        default: 'v1'
+        default: 'v2'
       dev_env_timeout_seconds:
         description: 'How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. Heavy stacks (Java + Node + Docker compose) can need 5-6 minutes on a cold runner. Default 360.'
         required: false
@@ -147,17 +147,17 @@ jobs:
       # install from the local checkout (`./`). PRs on this repo get reviewed
       # by their own current branch, not by whatever was last released.
       #
-      # DOWNSTREAM: install at `inputs.pipeline_ref` (default 'v1'). The
+      # DOWNSTREAM: install at `inputs.pipeline_ref` (default 'v2'). The
       # historic mismatch was that the workflow file's ref (caller's `uses:
       # panenco/claude-review/.github/workflows/pr-review.yml@<X>`) and the
-      # install action's ref (hardcoded `@v1`) were independent — pinning the
-      # workflow to a non-v1 ref would silently install old `@v1` skills on
-      # top of the new orchestration and hit max-turns. GitHub does not
-      # expose the called workflow's ref inside the reusable workflow
-      # (`github.workflow_ref` returns the OUTER caller's ref on pull_request
-      # events), so we accept it as an input. Consumers stay on `@v1` by
-      # default; pipeline-pre-release dogfooding pins the input to a SHA or
-      # branch.
+      # install action's ref (independent of the workflow ref) could drift —
+      # pinning the workflow to a ref different from the install ref silently
+      # installs old skills on top of new orchestration and hits max-turns.
+      # GitHub does not expose the called workflow's ref inside the reusable
+      # workflow (`github.workflow_ref` returns the OUTER caller's ref on
+      # pull_request events), so we accept it as an input. Consumers stay on
+      # `@v2` by default; pipeline-pre-release dogfooding pins the input to a
+      # SHA or branch.
       #
       # The two steps are mutually exclusive on `if:`; only one ever runs.
       - name: Install review pipeline (dogfood — local checkout)

@@ -9,7 +9,7 @@ Your output must pass the pipeline's own review on the first commit — **no fin
 1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. The validator step flags missing paths; don't let it.
 2. **Prefer fail-fast patterns over silent timeouts.** Every readiness wait loop must explicitly log and warn (or exit) when it times out, not just `break` out. "Silently succeeds on timeout" is the #1 bug the reviewer catches in review-configs.
 3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the "Validate review config" step greps for `^### Auth` and `^### Known service ports` to count detected sections, and getting the level wrong emits warnings and confuses readers. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
-4. **Track the `@v1` tag for the reusable workflow** so pipeline fixes auto-propagate, and declare the supply-chain trade-off as accepted in `bugbot.md` so the reviewer doesn't re-flag it on every PR (see Step 3 template).
+4. **Track the `@v2` tag for the reusable workflow** so pipeline fixes auto-propagate, and declare the supply-chain trade-off as accepted in `bugbot.md` so the reviewer doesn't re-flag it on every PR (see Step 3 template). `@v1` is frozen and no longer receives fixes — new repos use `@v2`.
 5. **Match the exact phrasing the auto-extractor expects** for sign-in lines and auth methods (listed in Step 4 → `### Auth`).
 
 ## Step 1: Understand the repo
@@ -55,11 +55,11 @@ jobs:
     # pipeline still re-runs automatically on `ready_for_review`. Manual
     # dispatch is always allowed.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
-    # Track the v1 floating tag so pipeline fixes propagate automatically to
+    # Track the v2 floating tag so pipeline fixes propagate automatically to
     # every consumer repo. Supply-chain acceptance is declared in bugbot.md
     # under "Accepted supply-chain trade-offs" so the reviewer does not
-    # re-flag `@v1 + secrets: inherit` on every PR.
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    # re-flag `@v2 + secrets: inherit` on every PR.
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
     # Grant the reusable workflow the write scopes it needs. Reusable
     # workflows cannot elevate permissions above the caller, and GitHub's
     # default `GITHUB_TOKEN` since 2023 is read-only at both org and repo
@@ -118,10 +118,10 @@ Before reporting a finding that cites a library or component, confirm it exists:
 
 ## Accepted supply-chain trade-offs
 
-- `panenco/claude-review/.github/workflows/pr-review.yml@v1` with `secrets: inherit` is accepted. Upstream is first-party (Panenco org) and the mutable tag enables single-point propagation of pipeline fixes across every consumer repo. Do NOT flag this as a security finding — pinning to a SHA here was explicitly rejected in favor of easier upstream updates.
+- `panenco/claude-review/.github/workflows/pr-review.yml@v2` with `secrets: inherit` is accepted. Upstream is first-party (Panenco org) and the mutable tag enables single-point propagation of pipeline fixes across every consumer repo. Do NOT flag this as a security finding — pinning to a SHA here was explicitly rejected in favor of easier upstream updates.
 ```
 
-The "Accepted supply-chain trade-offs" line is what keeps the reviewer quiet about `@v1 + secrets: inherit`. Leave it in on every repo that uses `@v1`.
+The "Accepted supply-chain trade-offs" line is what keeps the reviewer quiet about `@v2 + secrets: inherit`. Leave it in on every repo that uses `@v2`.
 
 ## Step 4: Create .github/review-config.md
 
@@ -355,7 +355,7 @@ Before committing, re-read your own `.github/review-config.md` and `.github/clau
 - [ ] `### Auth` and `### Known service ports` sit at the top level of `review-config.md`, not nested inside `## Functional validation`.
 - [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
-- [ ] The caller workflow tracks `@v1` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v1 + secrets: inherit` as accepted. Both are needed — the @v1 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
+- [ ] The caller workflow tracks `@v2` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v2 + secrets: inherit` as accepted. Both are needed — the @v2 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
 - [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR.
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.

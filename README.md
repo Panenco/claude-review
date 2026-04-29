@@ -6,7 +6,7 @@ Reusable, multi-stage PR review pipeline powered by Claude Code. Runs automated 
 
 ### 1. Add the caller workflow
 
-Create `.github/workflows/claude-review.yml` in your repo. Track the `@v1` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v1 + secrets: inherit` on every PR.
+Create `.github/workflows/claude-review.yml` in your repo. Track the `@v2` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v2 + secrets: inherit` on every PR. (If you're still on `@v1`, see [Migration: v1 → v2](#migration-v1--v2) — the bump requires one new permission and may change verdicts on refactor / auto-described PRs.)
 
 ```yaml
 name: Claude PR Review
@@ -21,7 +21,7 @@ on:
         type: string
 jobs:
   review:
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@v1
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
     permissions:
       contents: write       # screenshots → review-assets branch
       pull-requests: write  # post review + comments
@@ -35,9 +35,9 @@ jobs:
 
 The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. See `prompts/setup-review.md` for the full troubleshooting flow.
 
-Why `@v1` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If *your* repo has different trust needs, substitute a 40-char SHA for `@v1`.
+Why `@v2` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If *your* repo has different trust needs, substitute a 40-char SHA for `@v2`.
 
-**Tag-resolution caveat.** The reusable workflow file and the install step resolve their refs at different moments of the job. Moving `v1` while a run is starting can cause a mismatch — push the `v1` tag at idle times, not while runs are in flight.
+**Tag-resolution caveat.** The reusable workflow file and the install step resolve their refs at different moments of the job. Moving `v2` while a run is starting can cause a mismatch — push the `v2` tag at idle times, not while runs are in flight.
 
 **Pinning to a non-default ref.** Pre-release dogfooding (testing pipeline changes against a real consumer repo before merging to `main`) needs both the workflow file and the install step at the same ref. Pass `pipeline_ref` so the install matches:
 
@@ -48,7 +48,7 @@ with:
   pipeline_ref: <branch-or-sha>
 ```
 
-Without `pipeline_ref`, the install defaults to `@v1` and consumers get new orchestration on old skills, which fails at max-turns. The `@v1` default is correct for normal use; only override during testing.
+Without `pipeline_ref`, the install defaults to `@v2` and consumers get new orchestration on old skills, which fails at max-turns. The `@v2` default is correct for normal use; only override during testing.
 
 ### 2. Set secrets
 
@@ -407,9 +407,51 @@ The pipeline withholds `APPROVE` whenever the PR's stated intent is "no user-vis
 
 ## Versioning
 
-- `@v1` — floating tag, always points to latest v1.x.x. Use this for auto-updates.
-- `@v1.0.0` — pinned tag. Use for critical stability.
-- Breaking changes (input/output format changes) bump to `@v2`.
+- `@v2` — current floating tag, always points to the latest v2.x release. Use this for auto-updates.
+- `@v2.0.0` — pinned tag. Use for critical stability.
+- `@v1` — frozen at the final v1 release (`b8223a98`, Apr 21 2026). No new fixes are backported here. Repos still on `@v1` continue to work; bump to `@v2` to receive new pipeline fixes (see [Migration: v1 → v2](#migration-v1--v2)).
+- Breaking changes (input/output format changes, new required permissions, verdict-gate additions) bump the major version.
+
+---
+
+## Migration: v1 → v2
+
+`@v1` was frozen at `b8223a98`; everything beyond that ships under `@v2`. The bump is small in code but consumer-visible — there is one **required** caller-workflow change and two new gates that can change verdicts on existing PRs without any wiring on your side.
+
+### 1. Required: add `actions: read` to the caller workflow's `permissions:` block
+
+Round-2 follow-up reviews download the prior run's `review-state` artifact via `actions/download-artifact` with `run-id`. Reusable-workflow permissions are capped by the caller's, so without `actions: read` on the caller, every push after the first silently degrades to a clean full re-review and the round-2 verdict ladder doesn't apply. Full block:
+
+```yaml
+permissions:
+  contents: write       # screenshots → review-assets branch
+  pull-requests: write  # post review + comments
+  issues: write
+  actions: read         # round-2 follow-up reviews look up the prior
+                        # run's review-state artifact by run-id
+```
+
+If your existing caller has *no* `permissions:` block at all (the original v1 README's minimal example), this is also where you fix the `startup_failure`-on-orgs-with-default-read-only-`GITHUB_TOKEN` issue — the other three lines were always required, just under-documented.
+
+### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
+
+- **Smoke-test gate** — on technical PRs (refactor / library swap / framework or runtime upgrade / build-config / `chore: bump …`), `APPROVE` is withheld unless the functional smoke run returns `PASS` or `WARN`. The trigger is *intent*, not file types: a pure-refactor commit with no manifest touch counts; a major `Cargo.toml` / `Dockerfile` / `pyproject.toml` bump counts. Repos in degraded mode (no `.github/claude-review/dev-start.sh`) will see refactor PRs flip from APPROVE → COMMENT until they configure a working bring-up.
+- **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
+
+Both gates compose with each other: `APPROVE` is granted only when *something* substantively validated the change — either a manual spec or a working app smoke-tested under the diff.
+
+### 3. New optional knobs (defaults preserve v1 behaviour)
+
+- `DEV_ENV_SECRETS` repo secret — newline-separated `KEY=VALUE` env exposed to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Mirrors `TRACKER_SECRETS`. Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot.
+- New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `core_max_turns` (25), `functional_max_turns` (120), `model_fast` (Haiku for dedup), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding).
+
+### 4. Already in `@v1`, called out for sub-tag pinners
+
+Anyone bumping straight from `@v1.4.0` (or earlier) to `@v2` also picks up the `CLAUDE_REVIEW_APP_ID` → `CLAUDE_REVIEW_APP_CLIENT_ID` secret rename and the `actions/create-github-app-token@v3` upgrade. Repos that tracked `@v1` (the moving tag) already received these in the final v1.x bumps; only sub-tag pinners are affected.
+
+### 5. Round-based reviews (informational)
+
+First reviews now run a recall-boosted round-1 fan (double-pass + gap-finder critic on core + sweep). Subsequent pushes run round-2 logic that classifies every prior finding against the diff since the last review. No consumer wiring is required beyond the `actions: read` permission in step 1; this is purely an internal mechanics change. If the prior state artifact is missing (retention expired or prior run failed), round-2 degrades to a clean full re-review with a `::notice::` explaining why.
 
 ---
 

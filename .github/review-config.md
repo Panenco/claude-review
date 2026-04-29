@@ -16,7 +16,7 @@ only the core (Opus) and sweep (Sonnet) reviewers run.
 
 **GitHub Actions YAML (`.github/workflows/*.yml`, `action.yml`)**
 - Pinned third-party actions use full 40-char SHAs (see existing `actions/checkout`, `actions/setup-node`, `pnpm/action-setup`, `actions/create-github-app-token`, `anthropics/claude-code-action`). New entries should follow the same pattern.
-- The `panenco/claude-review@v1` self-references (one in the caller workflow, one inside `pr-review.yml`'s install step) are intentional moving-tag references and are listed under `bugbot.md` → "Accepted supply-chain trade-offs". Do not flag.
+- The `panenco/claude-review@v2` self-references (one in the caller workflow, one inside `pr-review.yml`'s install step) are intentional moving-tag references and are listed under `bugbot.md` → "Accepted supply-chain trade-offs". Do not flag.
 - Reusable workflows cannot elevate permissions beyond the caller. The caller workflow's `permissions:` block (`contents: write`, `pull-requests: write`, `issues: write`) is required, not optional. Removing it produces `startup_failure` with zero jobs.
 
 **Skill prompts (`skills/review-*.md`) and the setup recipe (`prompts/setup-review.md`)**

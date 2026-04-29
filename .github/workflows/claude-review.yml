@@ -24,7 +24,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     # This repo IS panenco/claude-review, so we call the reusable workflow
     # via its local path rather than `panenco/claude-review/.github/workflows/
-    # pr-review.yml@v1`. Two reasons:
+    # pr-review.yml@v2`. Two reasons:
     #   1. The `org/repo/...@tag` form trips a `startup_failure` here even
     #      with explicit secret mappings — the cross-repo treatment of
     #      same-repo reusable calls is the documented quirk in
@@ -32,9 +32,9 @@ jobs:
     #   2. The local path exercises the in-PR copy of pr-review.yml, which
     #      is a stronger dogfood: orchestration changes in a PR get tested
     #      on that PR's own review run. (Skills + scripts still come from
-    #      @v1 because pr-review.yml's install step uses the @v1 action —
-    #      see line 112 of pr-review.yml — so consumer-visible behavior
-    #      around skills/scripts is unchanged.)
+    #      @v2 because pr-review.yml's install step defaults pipeline_ref
+    #      to 'v2' — so consumer-visible behavior around skills/scripts is
+    #      unchanged.)
     uses: ./.github/workflows/pr-review.yml
     permissions:
       contents: write
