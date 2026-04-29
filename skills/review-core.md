@@ -168,6 +168,7 @@ The launching workflow may set output paths via the prompt (e.g. `OUTPUT_FINDING
   "build_unavailable": false,
   "manual_spec_present": true,
   "spec_compliance": "Brief statement of spec alignment (1-2 sentences).",
+  "verdict_summary": "What the PR does (1 sentence) + verdict reasoning (2-3 sentences).",
   "spec_sources": {
     "linked_issue": 42,
     "external_issue": "ABC-123",
@@ -179,6 +180,16 @@ The launching workflow may set output paths via the prompt (e.g. `OUTPUT_FINDING
 
 - `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when ANY of these is non-empty: the linked GitHub issue body (Read `/tmp/issue.json`), a PRD (Read `/tmp/prd-content.md`), an external-tracker spec (Read `/tmp/external-issue.md`), OR a manually-written PR-body section (substantive prose written by a human, not a Cursor/Bugbot/CodeRabbit/Gemini/Claude Code summary of the diff — see the AI-content filter in context.md's `## Acceptance criteria`). `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements".
 - `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec. When `manual_spec_present` is `false`, set this to `"No manual spec — cannot validate against requirements."` instead of judging compliance against an AI-written diff summary.
+- `verdict_summary` is the **human-assist field** — the human reviewer reads ONLY the PR description + this summary + the inline comments to decide the merge. Aim for 3-4 sentences max:
+  1. **What the PR does** in plain English (1 sentence). Not "modifies 24 files" — instead, "Adds a personalized RSVP communication editor and backend service" or "Refactors authentication middleware to use the new session adapter".
+  2. **Verdict driver** (1-2 sentences). For each verdict:
+     - `APPROVE`: name what makes it safe — "typecheck/lint clean, no risky areas touched, follows existing X pattern, smoke test passed Y golden path".
+     - `REQUEST_CHANGES`: name the top 1-2 blockers — "Blocked by `c1` (handleCommunicationUpdate deletes data unconditionally) and `s2-1` (21 missing translation keys)".
+     - `COMMENT` due to no spec: state what code-quality coverage we DID provide AND the hypothetical verdict — "Reviewed for correctness, security, consistency. **Would otherwise APPROVE** — no blockers found." OR "Reviewed for correctness, security, consistency. **Would otherwise REQUEST_CHANGES** — `c1` and `s2-1` are blockers regardless of spec."
+     - `COMMENT` due to technical-change-no-smoke: "Refactor with no behavior change claimed; smoke test couldn't run (dev-start.sh missing). Would otherwise APPROVE on smoke pass."
+  3. **What unlocks the next state** (when applicable): "To enable APPROVE, link the GitHub issue, paste acceptance criteria into the PR body, or wire up the external tracker." Don't repeat this on round 2 if it was already said on round 1.
+
+  Write `verdict_summary` even when there are zero findings — that's the case where the human most needs to know "you can hit merge". When `manual_spec_present` is `false`, set the hypothetical-verdict explicitly so the human knows whether to fast-track or fix.
 - `spec_sources` extracts the linked issue number (from `/tmp/issue.json`), external tracker identifier (first line of `/tmp/external-issue.md` follows the hook convention `## Linked <tracker> issue: <IDENTIFIER>`), PRD path (`/tmp/prd-files.txt`), and which convention rules applied. Use `null` for missing values.
 
 Write `[]` for empty findings. ALWAYS write both files. ALWAYS use the paths from `OUTPUT_FINDINGS` / `OUTPUT_META` if the prompt sets them; only fall back to defaults if the prompt is silent.

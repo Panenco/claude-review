@@ -273,6 +273,7 @@ CORE_META=$(jq -n --argjson m1 "$META1" --argjson m2 "$META2" '
       build_unavailable:            or_bool("build_unavailable"),
       manual_spec_present:          and_present,
       spec_compliance:              ($m1.spec_compliance // $m2.spec_compliance // null),
+      verdict_summary:              ($m1.verdict_summary // $m2.verdict_summary // null),
       spec_sources:                 ($m1.spec_sources // $m2.spec_sources // null)
     }')
 
@@ -586,6 +587,7 @@ if [ "${FUNCTIONAL_OK:-1}" -eq 0 ] && [ "$FUNCTIONAL_STRATEGY" = "skip" ] && [ "
 fi
 
 SPEC_COMPLIANCE=$(echo "$CORE_META" | jq -r '.spec_compliance // ""')
+VERDICT_SUMMARY=$(echo "$CORE_META" | jq -r '.verdict_summary // ""')
 FUNCTIONAL_SUMMARY_TEXT=$(echo "$FUNCTIONAL_META" | jq -r '.summary // ""')
 if [ "$(echo "$ALL_FINDINGS" | jq 'length')" -eq 0 ]; then
   SUMMARY="${SPEC_COMPLIANCE:-No issues found. Code reviewed for correctness, spec compliance, security, consistency, and performance.}"
@@ -598,6 +600,7 @@ jq -n \
   --arg verdict "$VERDICT" \
   --arg summary "$SUMMARY" \
   --arg spec_compliance "$SPEC_COMPLIANCE" \
+  --arg verdict_summary "$VERDICT_SUMMARY" \
   --arg technical_change "$TECHNICAL_CHANGE" \
   --arg smoke_ok "$SMOKE_OK" \
   --argjson findings "$ALL_FINDINGS" \
@@ -608,6 +611,7 @@ jq -n \
     verdict: $verdict,
     summary: $summary,
     spec_compliance: $spec_compliance,
+    verdict_summary: $verdict_summary,
     spec_sources: ($meta.spec_sources // {linked_issue: null, external_issue: null, prd_path: null, convention_rules: []}),
     manual_spec_present: (if ($meta | type == "object" and has("manual_spec_present")) then $meta.manual_spec_present else true end),
     technical_change: ($technical_change == "true"),
@@ -653,29 +657,36 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
   RULES=$(jq -r '.spec_sources.convention_rules // [] | map("`\(.)`") | join(", ")' review-result.json)
   echo "- Convention rules: ${RULES:-none identified}"
   echo ""
-  # Spec compliance summary
-  if [ -n "$SPEC_COMPLIANCE" ] && [ "$SPEC_COMPLIANCE" != "null" ]; then
+  # Verdict summary — the human-assist field. The reviewer's verdict_summary
+  # explains in 3-4 sentences what the PR does + why this verdict + (when
+  # COMMENT-due-to-no-spec) what the hypothetical APPROVE/REQUEST_CHANGES
+  # would have been. Falls back to spec_compliance for older runs that
+  # didn't fill verdict_summary, then to a generic line for clean APPROVEs.
+  if [ -n "$VERDICT_SUMMARY" ] && [ "$VERDICT_SUMMARY" != "null" ]; then
+    echo "$VERDICT_SUMMARY"
+    echo ""
+  elif [ -n "$SPEC_COMPLIANCE" ] && [ "$SPEC_COMPLIANCE" != "null" ]; then
     echo "$SPEC_COMPLIANCE"
     echo ""
   elif [ "$VERDICT" = "APPROVE" ]; then
     echo "No issues found. Code reviewed for correctness, spec compliance, security, consistency, test quality, and performance."
     echo ""
   fi
-  # Conditional banners
+  # Single-line state banners — the verdict_summary above carries the why.
   if [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
-    echo "> :no_entry: **No manual spec available — APPROVE withheld.** Reviews can only validate code against a human-authored requirement source: a linked GitHub issue, a PRD, an external tracker spec, or a manually-written PR description. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) summarise the diff — they describe what the code does, not what it should do — so they aren't a basis for spec validation. Link an issue, paste acceptance criteria into the PR body, or wire up an external tracker to enable APPROVE."
+    echo "> :no_entry: **APPROVE withheld — no spec.** Link an issue, paste acceptance criteria into the PR body, or wire up the external tracker."
     echo ""
   fi
   if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
-    echo "> :no_entry: **Technical change — APPROVE withheld until smoke-tested.** Refactors, library swaps, framework/runtime upgrades, and build-config changes claim no user-visible behavior change, so there are no acceptance criteria to validate against. The only way to catch regressions is to run the app and walk through a representative user flow. The smoke test did not pass here (overall=\`$FUNCTIONAL_OVERALL\`). To enable APPROVE: configure \`.github/claude-review/dev-start.sh\` so the reviewer can launch the app (see README), or fix the issues that caused the smoke run to fail."
+    echo "> :no_entry: **APPROVE withheld — smoke test did not pass** (overall=\`$FUNCTIONAL_OVERALL\`). Configure \`.github/claude-review/dev-start.sh\` or fix the smoke run."
     echo ""
   fi
   if [ "$(jq -r '.requires_human_review' review-result.json)" = "true" ]; then
-    echo "> :stop_sign: **Human review required.** $(jq -r '.requires_human_review_reason // ""' review-result.json)"
+    echo "> :stop_sign: **Human review required** — $(jq -r '.requires_human_review_reason // ""' review-result.json)"
     echo ""
   fi
   if [ "$(jq -r '.build_unavailable' review-result.json)" = "true" ]; then
-    echo "> :gear: **Build verification was unavailable.**"
+    echo "> :gear: Build verification unavailable."
     echo ""
   fi
   if [ "$CORE_ANY_OUTPUT" = "false" ]; then
