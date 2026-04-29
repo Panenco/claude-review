@@ -23,10 +23,10 @@ on:
         type: string
         default: 'claude-haiku-4-5'
       model_functional:
-        description: 'Model for the functional tester (Playwright MCP + Bash). Defaults to Haiku because the upstream test-planner (Sonnet) writes concrete scenarios with explicit Expected values and the context-builder (Sonnet) compiles spec sources — the functional tester executes the plan and compares observed-vs-expected on concrete strings/numbers, which Haiku handles well. Override to model_standard if your test-planner outputs vague scenarios that need on-the-fly inference.'
+        description: 'Model for the functional tester (Playwright MCP + Bash). Defaults to Sonnet because empirical comparison on the Seaters dogfood showed Haiku regressed on severity calibration — it classified test-environment friction (no auth credentials, empty seed data) as CRITICAL/MAJOR product bugs, while Sonnet correctly noted them as observations and traced a real backend NPE bug that Haiku missed. Override to claude-haiku-4-5 if you accept that risk in exchange for ~3× wall-time speedup on the functional layer. The 19m→5.5m speedup IS real, but only worth it on PRs where the test-environment friction is minimal (well-seeded fixtures + pre-configured auth).'
         required: false
         type: string
-        default: 'claude-haiku-4-5'
+        default: 'claude-sonnet-4-6'
       pipeline_ref:
         description: 'Ref of panenco/claude-review to install skills/scripts from. Default v1 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo.'
         required: false
