@@ -266,7 +266,33 @@ Reviewers Read whichever of these are non-empty themselves.
 ### `## Acceptance criteria` (REQUIRED — the only synthesis you do)
 Extract criteria from the spec sources above. Look for: checkboxes, "should/must/needs to" statements, "Acceptance Criteria" sections, field definitions, validation rules, defaults.
 
-**Do NOT treat AI-generated PR-body content as a spec source.** Cursor / Cursor Bugbot / Cursor Agent / CodeRabbit / Gemini Code Assist / Claude Code summaries describe what the code DOES, not what it SHOULD do. Markers include `<!-- CURSOR_SUMMARY -->`, `<!-- CURSOR_AGENT_PR_BODY_BEGIN -->`, `<!-- gemini-code-assist -->`, "Generated with [Claude Code]", "Reviewed by [Cursor Bugbot]" — but use judgement: prose that reads like a diff changelog is not a spec even without a marker.
+**The PR body is usually MIXED, not all-or-nothing.** Bots APPEND their summary to the body without removing the human-written portion. The most common shape: a human types a description explaining the goal/scope/testing notes, then a bot (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) appends a generated summary below. The HUMAN portion above the AI block is a valid spec source even though the body as a whole contains AI-generated content.
+
+**Strip AI-generated blocks before judging.** Identify and remove these segments from the body, then evaluate what remains:
+
+- `<!-- CURSOR_SUMMARY -->` … `<!-- /CURSOR_SUMMARY -->` blocks (Cursor PR description summary)
+- `<!-- CURSOR_AGENT_PR_BODY_BEGIN -->` … `<!-- CURSOR_AGENT_PR_BODY_END -->` blocks (Cursor Agent)
+- `<!-- gemini-code-assist -->` blocks (Gemini Code Assist)
+- GitHub `> [!NOTE]` (or `> [!IMPORTANT]` / `> [!TIP]`) blockquote-alert blocks whose content includes a bot signature like "Reviewed by Cursor Bugbot", "Reviewed by [CodeRabbit]", "Bugbot is set up for automated code reviews", etc. These are the Cursor Bugbot / CodeRabbit auto-summary boxes.
+- Any trailing block separated by `---` (horizontal rule) that ends with one of the bot signatures above.
+- Trailing `🤖 Generated with [Claude Code]` lines (and any preceding `Co-Authored-By: Claude` line) appended by Claude Code.
+
+**Then judge the REMAINDER.** If ≥1 paragraph (or ≥80 chars) of substantive human-written prose survives — a paragraph describing the WHY, scope, goal, testing instructions, acceptance criteria, or behaviour expectations — set `Manually-written PR body: yes` and use that text as a spec source for `## Acceptance criteria`. Quote the relevant lines into the criteria section.
+
+If, after stripping, the remainder is empty, just a one-line title, just a checklist with no context, or itself reads like a generated changelog (bullet list of "Adds X / Refactors Y / Updates Z" mirroring the diff), set `Manually-written PR body: no`.
+
+**Concrete partitioning example.** A body like:
+
+> "In phase 6-3 of the monorepo plan, the goal is to migrate the web application from react-query v3 to @tanstack/react-query v5… For testing, you should run pnpm install at the root, then pnpm build, manually verify the main flows…"
+>
+> *— horizontal rule —*
+>
+> "> [!NOTE]
+> > **Medium Risk**
+> > Upgrades core server-state/caching hooks to TanStack Query v5…
+> > Reviewed by Cursor Bugbot for commit 65a17ad. Bugbot is set up for automated code reviews on this repo."
+
+The first paragraph (above the rule) IS the manual spec — it states the goal, scope, and testing instructions in human-authored prose. The blockquote-alert below IS the Cursor Bugbot auto-summary. Set `Manually-written PR body: yes` and extract the goal + testing instructions as acceptance criteria.
 
 If after that filter no acceptance criteria exist, write **"No spec available — review will be code-quality only"** rather than fabricating criteria from the diff. The core reviewer reads this section and gates APPROVE on whether real criteria are present.
 

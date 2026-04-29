@@ -178,7 +178,17 @@ The launching workflow may set output paths via the prompt (e.g. `OUTPUT_FINDING
 }
 ```
 
-- `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when ANY of these is non-empty: the linked GitHub issue body (Read `/tmp/issue.json`), a PRD (Read `/tmp/prd-content.md`), an external-tracker spec (Read `/tmp/external-issue.md`), OR a manually-written PR-body section (substantive prose written by a human, not a Cursor/Bugbot/CodeRabbit/Gemini/Claude Code summary of the diff — see the AI-content filter in context.md's `## Acceptance criteria`). `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements".
+- `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when ANY of these is non-empty: the linked GitHub issue body (Read `/tmp/issue.json`), a PRD (Read `/tmp/prd-content.md`), an external-tracker spec (Read `/tmp/external-issue.md`), OR a manually-written PR-body section.
+
+  **PR-body bodies are usually MIXED.** Don't reject a body just because it contains a bot footer or Cursor Bugbot block — strip the AI-generated portions and re-evaluate the remainder. Strip these before judging:
+  - `<!-- CURSOR_SUMMARY -->` / `<!-- CURSOR_AGENT_PR_BODY_BEGIN -->` / `<!-- gemini-code-assist -->` blocks
+  - `> [!NOTE]` (or `[!IMPORTANT]` / `[!TIP]`) blockquote-alert blocks whose content contains "Reviewed by Cursor Bugbot", "Reviewed by [CodeRabbit]", or similar bot signatures
+  - Trailing blocks below a `---` horizontal rule that end in one of those signatures
+  - Trailing `🤖 Generated with [Claude Code]` and `Co-Authored-By: Claude` lines
+
+  After stripping, if ≥1 paragraph of substantive human-written prose remains (explaining the WHY, scope, goal, testing instructions, acceptance criteria, or behaviour expectations), `manual_spec_present` is `true` and that prose is your spec for compliance review. If only a one-line title, a generated-style changelog, or a bare checklist remains, `manual_spec_present` is `false`.
+
+  `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements".
 - `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec. When `manual_spec_present` is `false`, set this to `"No manual spec — cannot validate against requirements."` instead of judging compliance against an AI-written diff summary.
 - `verdict_summary` is the **human-assist field** — the human reviewer reads ONLY the PR description + this summary + the inline comments to decide the merge. Aim for 3-4 sentences max:
   1. **What the PR does** in plain English (1 sentence). Not "modifies 24 files" — instead, "Adds a personalized RSVP communication editor and backend service" or "Refactors authentication middleware to use the new session adapter".
