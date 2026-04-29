@@ -333,14 +333,16 @@ You are the dedup reviewer. Read /tmp/all-findings-merged.json (the full reviewe
 }
 
 # Validate dedup output: must be a JSON array; every element must be an
-# object with severity/path/line_start/id; length must be ≤ input length
-# but > 0 when input was non-empty; every output id must appear in the
-# input. The non-empty check is critical: jq `all` on [] is vacuously
-# true, so an LLM that silently writes [] for a non-empty input would
-# pass shape + id-membership checks and produce a spurious APPROVE on a
-# PR with real bugs. is_valid_json only verifies parseability — that's
-# why the 412ac65 / 231722f hardening exists. Shape validation below is
-# the regression guard.
+# object with severity/path/line_start/id; length must be ≤ input length;
+# every output id must appear in the input. Drop-all (out_len=0 with
+# non-empty input) is **explicitly allowed** with a `::notice::` because
+# review-dedup.md authorises it for bugbot-exempt findings and
+# STILL_PRESENT-overlap suppression in round 2 — see the if-block below.
+# Shape + id-membership are the integrity guards (the dedup LLM cannot
+# invent findings or add fields it didn't receive). The pre-95cc5ca
+# behaviour rejected drop-all and forced the fallback to re-post raw
+# concatenated findings, defeating the dedup's intent — don't reintroduce
+# that. Treat drop-all as valid; let the operator audit via the notice.
 validate_dedup_output() {
   local out="$1"
   [ -f "$out" ] || return 1
@@ -525,11 +527,28 @@ fi
 # degraded round-2: pin VERDICT = max(PRIOR_VERDICT, current VERDICT) so we
 # never silently downgrade. New blockers still escalate via the per-PR
 # ladder above (HAS_BLOCKING=true → VERDICT=REQUEST_CHANGES already).
+ROUND2_PRESENT=false
 ROUND2_VALID=false
-if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ] \
-   && jq -e 'type == "object" and has("verdict") and has("findings")' \
-        /tmp/prior-state/review-state.json >/dev/null 2>&1; then
-  ROUND2_VALID=true
+if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ]; then
+  ROUND2_PRESENT=true
+  if jq -e 'type == "object" and has("verdict") and has("findings")' \
+       /tmp/prior-state/review-state.json >/dev/null 2>&1; then
+    ROUND2_VALID=true
+  fi
+fi
+
+# When the workflow signalled prior state is present but the file fails
+# the schema check (truncated upload, schema drift, agent crashed
+# mid-write), treat it as fail-closed degraded round-2: pin via
+# verdict_max with the best-effort prior verdict we can extract. Without
+# this, a malformed state file used to skip the entire round-2 block
+# and silently fall through to the per-PR ladder — REQUEST_CHANGES could
+# downgrade to APPROVE just because the state file was corrupt.
+if [ "$ROUND2_PRESENT" = "true" ] && [ "$ROUND2_VALID" = "false" ]; then
+  BEST_EFFORT_PRIOR=$(jq -r '.verdict // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+  PRE_PIN_VERDICT="$VERDICT"
+  VERDICT=$(verdict_max "${BEST_EFFORT_PRIOR:-REQUEST_CHANGES}" "$PRE_PIN_VERDICT")
+  echo "::warning::Round-2 state file failed schema check (prior_state_available=true but jq parse rejected /tmp/prior-state/review-state.json) — pinning verdict to max(best_effort_prior='${BEST_EFFORT_PRIOR:-REQUEST_CHANGES}', current=$PRE_PIN_VERDICT)=$VERDICT. Investigate the upload step + state-artifact integrity."
 fi
 
 RESOLUTION_VALID=false
@@ -539,9 +558,26 @@ RESOLUTION_VALID=false
 # `map(.id)` would yield [null,null,...], `index($id)` would never match,
 # and STILL_PRESENT_BLOCKERS would be 0 even when prior blockers persisted,
 # letting REQUEST_CHANGES → APPROVE through the gate.
-if jq -e 'type == "array" and all(type == "object" and has("id") and has("status"))' \
-     /tmp/resolution-status.json >/dev/null 2>&1; then
-  RESOLUTION_VALID=true
+#
+# Cross-check: when prior-state.findings has N entries the resolution
+# checker MUST produce N entries (one classification per prior finding).
+# A shorter array means the agent crashed mid-write and the verdict gate
+# would treat un-listed priors as zero-still-present — fail-open. We
+# require resolution-length >= prior-findings-length OR prior had no
+# findings (length 0 is a legitimate "nothing to classify").
+# `jq -e all(...)` on an empty array returns true (vacuous truth) — so
+# a crashed `[]` write would slip past a shape-only check. The length
+# cross-check below is what catches that.
+if [ "$ROUND2_VALID" = "true" ] \
+   && jq -e 'type == "array" and all(type == "object" and has("id") and has("status"))' \
+        /tmp/resolution-status.json >/dev/null 2>&1; then
+  PRIOR_FINDINGS_LEN=$(jq '.findings | length' /tmp/prior-state/review-state.json 2>/dev/null || echo 0)
+  RESOLUTION_LEN=$(jq 'length' /tmp/resolution-status.json 2>/dev/null || echo 0)
+  if [ "$RESOLUTION_LEN" -ge "$PRIOR_FINDINGS_LEN" ]; then
+    RESOLUTION_VALID=true
+  else
+    echo "::warning::Round-2: resolution-status.json has $RESOLUTION_LEN entries but prior-state.findings has $PRIOR_FINDINGS_LEN — checker likely crashed mid-write. Treating resolution as unknown (degraded round-2)."
+  fi
 fi
 
 if [ "$ROUND2_VALID" = "true" ]; then

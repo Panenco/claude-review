@@ -400,62 +400,14 @@ jobs:
           echo "bot_user=$BOT_USER" >> "$GITHUB_OUTPUT"
           echo "Review identity: $BOT_USER"
 
-      # First-review vs follow-up detection. The variable name stays
-      # IS_FIRST_REVIEW (renaming churns every reader); what it gates is
-      # round-1 vs round-2:
-      #   - Round 1 (no prior state artifact): full fan including the
-      #     pass-2 core+sweep redundancy.
-      #   - Round 2 (prior state artifact present): focused fan on
-      #     /tmp/since-last.diff plus the resolution checker against the
-      #     prior state artifact.
-      # Detection is fail-closed: if the API can't be queried we default
-      # to false rather than spending the +2.5x cost on
-      # every push when auth glitches. This naturally distinguishes the
-      # synchronize event (re-review, prior comments present) from
-      # opened/reopened/ready_for_review (first review, none) and correctly
-      # treats workflow_dispatch re-runs against a reviewed PR as re-reviews.
-      #
-      # All untrusted PR inputs (number) and bot identity (token, BOT_USER)
-      # flow through env vars — never inlined into run: via ${{ }} — so
-      # this step is not vulnerable to workflow-command injection.
-      - name: Detect first review
-        id: first_review
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
-        run: |
-          set -uo pipefail
-          IS_FIRST="false"
-          # Track each gh call independently so a partial failure (one OK,
-          # one network/auth error) is visible — the pre-existing single
-          # warning only fired when BOTH calls failed, masking the more
-          # likely "comments paginated and timed out mid-stream" case.
-          REVIEWS_OK=true; COMMENTS_OK=true
-          REVIEWS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null) || { REVIEWS=""; REVIEWS_OK=false; }
-          COMMENTS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments" 2>/dev/null) || { COMMENTS=""; COMMENTS_OK=false; }
-          if [ "$REVIEWS_OK" = "false" ] || [ "$COMMENTS_OK" = "false" ]; then
-            echo "::warning::gh API failure on first-review detection (reviews_ok=$REVIEWS_OK, comments_ok=$COMMENTS_OK) — defaulting IS_FIRST_REVIEW=false (fail-closed)."
-          else
-            # gh api --paginate concatenates per-page arrays as separate
-            # JSON inputs (newline-separated). Without -s the jq filter
-            # runs once per page and produces multi-line counts, which
-            # then crash the `[ -eq 0 ]` test with "integer expression
-            # expected" — silently leaving IS_FIRST=false.
-            # `-s 'add'` slurps all pages into one array first.
-            PRIOR=$(echo "${REVIEWS:-[]}" | jq -s --arg bot "$BOT_USER" \
-              'add | [.[] | select(.user.login == $bot and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED"))] | length' 2>/dev/null || echo "?")
-            MARKER=$(echo "${COMMENTS:-[]}" | jq -s --arg bot "$BOT_USER" \
-              'add | [.[] | select(.user.login == $bot)] | length' 2>/dev/null || echo "?")
-            if ! [[ "$PRIOR" =~ ^[0-9]+$ ]] || ! [[ "$MARKER" =~ ^[0-9]+$ ]]; then
-              echo "::warning::Could not parse review/comment counts (PRIOR='$PRIOR' MARKER='$MARKER') — defaulting IS_FIRST_REVIEW=false (fail-closed)."
-            elif [ "$PRIOR" -eq 0 ] && [ "$MARKER" -eq 0 ]; then
-              IS_FIRST="true"
-            fi
-          fi
-          echo "is_first=$IS_FIRST" >> "$GITHUB_OUTPUT"
-          echo "Round-1 detection: IS_FIRST_REVIEW=$IS_FIRST"
+      # Round-1 vs round-2 detection happens via the prior-state-artifact
+      # lookup downstream (the "Find prior review run" step). When that
+      # step finds a prior review-state artifact for THIS PR + workflow,
+      # the analyzer enters round-2 mode; otherwise round-1 (full fan).
+      # The earlier "Detect first review" step that paginated /reviews
+      # and /comments to derive IS_FIRST_REVIEW was removed: its output
+      # had no remaining consumer after PRIOR_STATE_AVAILABLE replaced
+      # the gate (cursor finding 3159797328).
 
       # ── Review pipeline ─────────────────────────────────────────
       # Stage 1: Context Builder (Sonnet) — gathers PR data, runs build,
@@ -558,10 +510,9 @@ jobs:
       # the most recent. If a prior run was cancelled mid-flight or its
       # post-step failed, we still get the last good state.
       #
-      # This also makes round-2 fire on ANY 2nd-or-later run with a state
-      # artifact, even when the first-review detection above said `is_first`
-      # — e.g. when the bot review couldn't be posted (auth glitch) but
-      # the analyzer did finish and uploaded state. The verdict gate still
+      # Round-2 fires on ANY 2nd-or-later run with a state artifact —
+      # e.g. when the bot review couldn't be posted (auth glitch) but the
+      # analyzer did finish and uploaded state. The verdict gate still
       # protects against bad state via the artifact's schema check.
       - name: Find prior review run
         id: prior_run
