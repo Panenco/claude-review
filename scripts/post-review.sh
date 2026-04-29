@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # post-review.sh — Post review results to the PR.
 #
@@ -252,13 +252,16 @@ if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json
         # Match thread by path + line (line OR originalLine — GitHub reports
         # the comment's line on the latest commit OR the original commit
         # depending on whether the line still exists). Author must be us.
+        # `|| true` on the head pipe: under pipefail, multiple matches close
+        # the pipe early and SIGPIPE jq, returning a non-zero pipeline exit.
+        # We only want the first match — closing the producer is fine.
         THREAD=$(echo "$THREADS_JSON" | jq -c --arg path "$FPATH" --argjson line "$FLINE_END" --arg bot "$BOT_USER" '
           .[] | select(
             .path == $path
             and ((.line == $line) or (.originalLine == $line))
             and (.comments.nodes[0].author.login == $bot)
             and (.isResolved == false)
-          )' | head -n1)
+          )' | head -n1 || true)
         if [ -z "$THREAD" ]; then
           SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
           continue
@@ -325,7 +328,10 @@ if [ -f /tmp/bot-resolution-status.json ]; then
     else
       RESOLVED_COUNT=0
       SKIPPED_COUNT=0
-      echo "$RESOLVED_BOT" | jq -c '.[]' | while IFS= read -r entry; do
+      # Process substitution rather than `| while`: the latter runs the loop
+      # in a subshell, so RESOLVED_COUNT / SKIPPED_COUNT increments are lost
+      # by the time the summary line below runs (always reports 0).
+      while IFS= read -r entry; do
         CID=$(echo "$entry" | jq -r '.comment_id')
         BOT=$(echo "$entry" | jq -r '.bot_user')
         FPATH=$(echo "$entry" | jq -r '.path')
@@ -333,7 +339,7 @@ if [ -f /tmp/bot-resolution-status.json ]; then
         EVIDENCE=$(echo "$entry" | jq -r '.evidence // ""' | head -c 400)
         # Match thread whose first comment's databaseId == CID AND not already resolved.
         THREAD=$(echo "$THREADS_JSON" | jq -c --argjson cid "$CID" '
-          .[] | select(.comments.nodes[0].databaseId == $cid and .isResolved == false)' | head -n1)
+          .[] | select(.comments.nodes[0].databaseId == $cid and .isResolved == false)' | head -n1 || true)
         if [ -z "$THREAD" ]; then
           SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
           continue
@@ -357,7 +363,7 @@ if [ -f /tmp/bot-resolution-status.json ]; then
         else
           echo "::warning::  $BOT $CID: resolveReviewThread mutation failed for $FPATH:$FLINE"
         fi
-      done
+      done < <(echo "$RESOLVED_BOT" | jq -c '.[]')
       echo "Resolved $RESOLVED_COUNT other-bot thread(s); skipped $SKIPPED_COUNT (already resolved or thread not found)."
     fi
   fi

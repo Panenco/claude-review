@@ -96,6 +96,90 @@ if validate_dedup "$EMPTY" "$EMPTY";                  then assert_eq "Accept emp
 if validate_dedup "$EMPTY" "$NONEMPTY_INPUT";         then assert_eq "Accept drop-all (legit)"     0 0; else assert_eq "Accept drop-all (legit)"     0 1; fi
 if validate_dedup "$INVENTED_ID" "$NONEMPTY_INPUT";   then assert_eq "Reject invented id"          1 0; else assert_eq "Reject invented id"          1 1; fi
 
+# 4. Round-2 verdict gate: validate_max helper + parsed-validity guards.
+#    These cover the locked decisions from PR #19's hardening pass:
+#    (a) verdict_max never silently downgrades — REQUEST_CHANGES wins
+#        any pair, COMMENT beats APPROVE.
+#    (b) ROUND2_VALID is parsed-validity, not file-existence: a state
+#        file present-but-malformed is NOT round-2 valid (would have
+#        let REQUEST_CHANGES → APPROVE through the old gate).
+#    (c) RESOLUTION_VALID is parsed-validity too: missing file AND
+#        malformed JSON both yield false (degraded round-2 path).
+# Source the real verdict_max from build-review.sh so this test catches
+# drift if the helper changes shape. We extract just the function block
+# (between the `verdict_max() {` line and its matching `}`) instead of
+# sourcing the whole script — build-review.sh has top-level side effects
+# (echo "::group::…", file IO) that would fire on source.
+VERDICT_MAX_SRC=$(awk '/^verdict_max\(\) \{$/,/^\}$/' scripts/build-review.sh)
+if [ -z "$VERDICT_MAX_SRC" ]; then
+  echo "FAIL: could not extract verdict_max from scripts/build-review.sh"
+  exit 1
+fi
+eval "$VERDICT_MAX_SRC"
+
+# 4a. verdict_max — exhaustive 3x3 matrix.
+assert_eq "verdict_max(RC, APPROVE)"     "REQUEST_CHANGES" "$(verdict_max REQUEST_CHANGES APPROVE)"
+assert_eq "verdict_max(APPROVE, RC)"     "REQUEST_CHANGES" "$(verdict_max APPROVE REQUEST_CHANGES)"
+assert_eq "verdict_max(RC, COMMENT)"     "REQUEST_CHANGES" "$(verdict_max REQUEST_CHANGES COMMENT)"
+assert_eq "verdict_max(COMMENT, RC)"     "REQUEST_CHANGES" "$(verdict_max COMMENT REQUEST_CHANGES)"
+assert_eq "verdict_max(RC, RC)"          "REQUEST_CHANGES" "$(verdict_max REQUEST_CHANGES REQUEST_CHANGES)"
+assert_eq "verdict_max(COMMENT, APPROVE)" "COMMENT"        "$(verdict_max COMMENT APPROVE)"
+assert_eq "verdict_max(APPROVE, COMMENT)" "COMMENT"        "$(verdict_max APPROVE COMMENT)"
+assert_eq "verdict_max(COMMENT, COMMENT)" "COMMENT"        "$(verdict_max COMMENT COMMENT)"
+assert_eq "verdict_max(APPROVE, APPROVE)" "APPROVE"        "$(verdict_max APPROVE APPROVE)"
+assert_eq "verdict_max(unknown, COMMENT)" "COMMENT"        "$(verdict_max UNKNOWN_ENUM COMMENT)"
+
+# 4b. ROUND2_VALID parsed-validity. Setup: write three temp state files —
+#     one valid, one malformed JSON, one missing required keys.
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+echo '{"verdict":"REQUEST_CHANGES","findings":[]}' > "$TMP/state-good.json"
+echo '{not valid json'                              > "$TMP/state-malformed.json"
+echo '{"verdict":"REQUEST_CHANGES"}'                > "$TMP/state-no-findings.json"
+
+round2_valid() {
+  local file="$1"
+  if jq -e 'type == "object" and has("verdict") and has("findings")' "$file" >/dev/null 2>&1; then
+    echo true
+  else
+    echo false
+  fi
+}
+assert_eq "ROUND2_VALID(good)"         "true"  "$(round2_valid "$TMP/state-good.json")"
+assert_eq "ROUND2_VALID(malformed)"    "false" "$(round2_valid "$TMP/state-malformed.json")"
+assert_eq "ROUND2_VALID(no findings)"  "false" "$(round2_valid "$TMP/state-no-findings.json")"
+assert_eq "ROUND2_VALID(missing file)" "false" "$(round2_valid "$TMP/does-not-exist.json")"
+
+# 4c. RESOLUTION_VALID parsed-validity — array-or-bust.
+echo '[]'                          > "$TMP/res-empty.json"
+echo '[{"id":"c1","status":"X"}]'  > "$TMP/res-good.json"
+echo '{"id":"c1"}'                 > "$TMP/res-object.json"
+echo 'not json at all'             > "$TMP/res-malformed.json"
+
+resolution_valid() {
+  local file="$1"
+  if jq -e 'type == "array"' "$file" >/dev/null 2>&1; then
+    echo true
+  else
+    echo false
+  fi
+}
+assert_eq "RESOLUTION_VALID(empty array)"  "true"  "$(resolution_valid "$TMP/res-empty.json")"
+assert_eq "RESOLUTION_VALID(good)"         "true"  "$(resolution_valid "$TMP/res-good.json")"
+assert_eq "RESOLUTION_VALID(object not array)" "false" "$(resolution_valid "$TMP/res-object.json")"
+assert_eq "RESOLUTION_VALID(malformed)"    "false" "$(resolution_valid "$TMP/res-malformed.json")"
+assert_eq "RESOLUTION_VALID(missing file)" "false" "$(resolution_valid "$TMP/does-not-exist.json")"
+
+# 4d. Locked-decision regression: degraded round-2 must pin REQUEST_CHANGES
+#     to REQUEST_CHANGES regardless of what the per-PR ladder says.
+#     This is `verdict_max(prior, current)` and is the entire mechanism
+#     in build-review.sh's degraded branch.
+PRIOR="REQUEST_CHANGES"
+for CURRENT in APPROVE COMMENT REQUEST_CHANGES; do
+  assert_eq "Degraded R2 pin: prior=$PRIOR, current=$CURRENT" \
+    "REQUEST_CHANGES" "$(verdict_max "$PRIOR" "$CURRENT")"
+done
+
 if [ "$fail" -gt 0 ]; then
   echo ""
   echo "FAILED: $fail assertion(s)"

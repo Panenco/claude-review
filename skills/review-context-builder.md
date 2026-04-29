@@ -14,7 +14,7 @@ Target: **≤6 turns**. You MUST write context.md by turn 5, then test-plan.md b
 - Combine ALL bash commands that don't depend on each other into a single Bash call
 - Do NOT read sibling files for comparison — the sweep reviewer handles that
 - Do NOT read files not in the diff unless they're convention/rule files
-- Do NOT pre-compute repo capabilities, package exports, or test-coverage maps. Reviewers grep/glob when they need to verify a specific claim.
+- Do NOT pre-compute repo capabilities, package exports, or test-coverage maps. Reviewers Read the specific files they need to verify a claim.
 
 If you're on turn 5 and haven't written context.md yet, **write it immediately** with whatever you have. Partial context > no context.
 
@@ -123,11 +123,12 @@ echo "Other bot comments: $(jq 'length' /tmp/other-bot-comments.json)"
 echo "User replies on our comments: $(jq 'length' /tmp/user-replies-on-ours.json)"
 
 # (Repo capabilities + test-coverage are NOT pre-computed any more.
-# Reviewers grep / glob the repo themselves when they need to verify a
-# library export or look for a sibling test file. Killing the 200-line
-# Python walkers cut ~5 minutes off context-builder wall time on
-# medium-large PRs and removes one whole class of false positives where
-# the snapshot disagreed with `find` reality.)
+# Reviewers Read the specific files they need (package.json, the
+# package's index.ts/exports, sibling test files). Reviewer launchers
+# pass --disallowedTools Bash,Edit,Glob,Grep — Read is the only option.
+# Killing the 200-line Python walkers cut ~5 minutes off context-builder
+# wall time on medium-large PRs and removed one class of false positives
+# where the snapshot disagreed with `find` reality.)
 
 # Linked issue. Prefer GitHub's `closingIssuesReferences` (set by "Closes #N"
 # syntax) — it's authoritative. Only fall back to PR-body grep when that's
@@ -278,6 +279,16 @@ On round 1 (no `/tmp/since-last.diff`), list one row per chunk in `/tmp/diff-chu
 
 ### `## Diff since last review` (round 2 only — header note)
 When `/tmp/since-last.diff` exists, add this section as a one-line note: `Round-2 focused review — Per-file diff index above is scoped to files changed since PRIOR_HEAD_SHA. Original full-diff chunks remain at /tmp/diff-chunks/ if a reviewer needs to consult upstream context.` Skip on round 1.
+
+If `PRIOR_HEAD_SHA` was set but `git cat-file -e "$PRIOR_HEAD_SHA"` failed (prior HEAD outside the shallow clone), `/tmp/since-last.diff` and `/tmp/since-last-chunks/` will be absent. In that case write this section as: `Round-2 fallback — prior HEAD outside shallow clone, full diff is being reviewed. Reviewers: scope as round 1 over /tmp/diff-chunks/.` This stops reviewers chasing phantom paths.
+
+### `## Round-2 inputs` (round 2 only — REQUIRED when prior state was loaded)
+Single-purpose section listing the round-2 input files reviewers should read alongside the diff. Write it whenever any of these exist:
+- `/tmp/prior-state/review-state.json` — the prior round's findings list. Reviewers consult `.findings[]` to recognise issues that were already flagged.
+- `/tmp/resolution-status.json` — the resolution checker's classification of each prior finding (`RESOLVED` / `STILL_PRESENT` / `NEW_CONTEXT`). Reviewers MUST NOT re-flag entries with `status: STILL_PRESENT` or `RESOLVED` — the Haiku dedup step suppresses overlap, but reviewers who re-introduce the same issue waste turn budget and inflate the body.
+- `/tmp/since-last.diff` (and `/tmp/since-last-chunks/<file>.diff`) — the diff narrowed to changes since the prior review. Used together with `## Per-file diff index` above.
+
+If none of these files exist, omit the section.
 
 ### `## Convention files`
 List the convention/rule file paths that apply to the changed files (derived from `.github/review-config.md`'s routing). Just paths — reviewers Read the ones relevant to their role.

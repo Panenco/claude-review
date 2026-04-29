@@ -30,6 +30,19 @@ set -euo pipefail
 #   /tmp/review-comments.json     — inline comments array
 #   findings.draft.json           — all findings for artifact upload
 
+# Pick the more-severe of two verdicts. Order: REQUEST_CHANGES > COMMENT > APPROVE.
+# Used by the round-2 degraded branch to fail-closed when resolution status is
+# unknown — never silently downgrade a prior REQUEST_CHANGES.
+verdict_max() {
+  local a="${1:-APPROVE}"
+  local b="${2:-APPROVE}"
+  case "$a:$b" in
+    REQUEST_CHANGES:*|*:REQUEST_CHANGES) echo "REQUEST_CHANGES" ;;
+    COMMENT:*|*:COMMENT)                 echo "COMMENT" ;;
+    *)                                   echo "APPROVE" ;;
+  esac
+}
+
 echo "::group::Merge findings + build review"
 
 # Validate every reviewer's findings file in one loop. If a file is present
@@ -488,82 +501,96 @@ else
 fi
 
 # ── Round-2 verdict adjustment ──
-# When a prior state exists, blend the new-finding verdict above with the
-# resolution-checker output. Spec from the plan §3 table:
-#   - Prior REQUEST_CHANGES, no new criticals/majors, all prior blockers
-#     RESOLVED   → APPROVE.
-#   - Prior REQUEST_CHANGES, no new blockers, some prior blockers still
-#     present     → REQUEST_CHANGES.
-#   - Prior COMMENT, no new blockers → COMMENT (don't escalate to APPROVE).
-#   - Any prior verdict + ≥1 new critical/major → REQUEST_CHANGES.
-# The "no new blockers" branch is what makes this round-2 specific:
-# round-1 with no findings would default to APPROVE here, but round-2
-# preserves COMMENT/REQUEST_CHANGES until either the prior blockers are
-# resolved OR the prior verdict was already non-blocking.
-if [ -f /tmp/prior-state/review-state.json ]; then
-  PRIOR_VERDICT=$(jq -r '.verdict // "MISSING"' /tmp/prior-state/review-state.json 2>/dev/null || echo "MISSING")
-  PRIOR_BLOCKERS=$(jq -r '[.findings[]? | select(.severity == "critical" or .severity == "major")] | length' /tmp/prior-state/review-state.json 2>/dev/null || echo 0)
-  # If resolution-status.json is missing (resolution checker didn't run —
-  # since-last.diff couldn't be computed because PRIOR_HEAD_SHA wasn't in
-  # the shallow clone, or the agent crashed before writing it), we don't
-  # know whether prior blockers are resolved. Treat unknown-resolution as
-  # "all blockers still present" so we never silently downgrade
-  # REQUEST_CHANGES → APPROVE on a path that was meant to be focused.
-  RESOLUTION_KNOWN=true
-  if [ ! -f /tmp/resolution-status.json ]; then
-    RESOLUTION_KNOWN=false
+# Validate prior state and resolution status by parsing, not by file
+# existence. A file that's present but malformed used to satisfy the gate
+# and silently let REQUEST_CHANGES → APPROVE downgrades through.
+#
+#   ROUND2_VALID=true     prior state file parses + has the expected shape
+#                         AND the workflow signalled PRIOR_STATE_AVAILABLE.
+#   RESOLUTION_VALID=true /tmp/resolution-status.json parses as a JSON array
+#                         (matches the resolution-checker output contract).
+#
+# When ROUND2_VALID + RESOLUTION_VALID are both true, run the case statement
+# (the same spec as before). When ROUND2_VALID alone is true, we're in
+# degraded round-2: pin VERDICT = max(PRIOR_VERDICT, current VERDICT) so we
+# never silently downgrade. New blockers still escalate via the per-PR
+# ladder above (HAS_BLOCKING=true → VERDICT=REQUEST_CHANGES already).
+ROUND2_VALID=false
+if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ] \
+   && jq -e 'type == "object" and has("verdict") and has("findings")' \
+        /tmp/prior-state/review-state.json >/dev/null 2>&1; then
+  ROUND2_VALID=true
+fi
+
+RESOLUTION_VALID=false
+if jq -e 'type == "array"' /tmp/resolution-status.json >/dev/null 2>&1; then
+  RESOLUTION_VALID=true
+fi
+
+if [ "$ROUND2_VALID" = "true" ]; then
+  PRIOR_VERDICT=$(jq -r '.verdict // "MISSING"' /tmp/prior-state/review-state.json)
+  PRIOR_BLOCKERS=$(jq -r '[.findings[]? | select(.severity == "critical" or .severity == "major")] | length' /tmp/prior-state/review-state.json)
+
+  if [ "$RESOLUTION_VALID" = "true" ]; then
+    # Derive the still-present blocker count by id-joining STILL_PRESENT
+    # entries against prior-state.findings, instead of trusting the
+    # resolution checker's `prior_severity` field. The verdict gate must
+    # not ride on LLM compliance: if the agent forgets or mistypes
+    # `prior_severity`, an approve-via-zero-blockers slips through.
+    STILL_PRESENT_BLOCKERS=$(jq -n \
+      --slurpfile state /tmp/prior-state/review-state.json \
+      --argjson still "$STILL_PRESENT_LIST" \
+      '($still | map(.id)) as $ids
+       | ($state[0].findings // [])
+       | map(select((.id as $id | $ids | index($id)) and (.severity == "critical" or .severity == "major")))
+       | length')
+    echo "Round-2 verdict input: prior_verdict=$PRIOR_VERDICT prior_blockers=$PRIOR_BLOCKERS still_present_blockers=$STILL_PRESENT_BLOCKERS new_blocking=$HAS_BLOCKING current_verdict=$VERDICT"
+    case "$PRIOR_VERDICT" in
+      REQUEST_CHANGES)
+        if [ "$HAS_BLOCKING" = "true" ]; then
+          VERDICT="REQUEST_CHANGES"
+        elif [ "$STILL_PRESENT_BLOCKERS" -gt 0 ]; then
+          VERDICT="REQUEST_CHANGES"
+          echo "::notice::Round-2: $STILL_PRESENT_BLOCKERS prior blocking finding(s) still present — keeping REQUEST_CHANGES."
+        else
+          # No new blockers and all prior blockers resolved (or there
+          # never were any). Locked decision: per-PR ladder unconditionally
+          # — APPROVE if no new findings, COMMENT if any minor remain.
+          echo "::notice::Round-2: prior REQUEST_CHANGES, all blockers resolved (still_present=0, prior_blockers=$PRIOR_BLOCKERS) — using per-PR verdict '$VERDICT'."
+        fi
+        ;;
+      COMMENT)
+        if [ "$HAS_BLOCKING" = "true" ]; then
+          VERDICT="REQUEST_CHANGES"
+        elif [ "$VERDICT" = "APPROVE" ]; then
+          # Don't escalate to APPROVE on a pure follow-up — prior verdict
+          # was non-blocking but the user hadn't approved yet.
+          VERDICT="COMMENT"
+        fi
+        ;;
+      APPROVE)
+        if [ "$HAS_BLOCKING" = "true" ]; then
+          VERDICT="REQUEST_CHANGES"
+        fi
+        ;;
+      *)
+        # Unrecognized verdict (state file parses as object with `.verdict`
+        # but the value is not a known enum). Fail closed via verdict_max.
+        echo "::warning::Round-2: unrecognized prior_verdict='$PRIOR_VERDICT'. Pinning to max(prior,current)."
+        VERDICT=$(verdict_max "$PRIOR_VERDICT" "$VERDICT")
+        ;;
+    esac
+  else
+    # Degraded round-2: prior state is valid but resolution-status is
+    # missing or malformed (resolution checker didn't run, since-last.diff
+    # couldn't be computed, or the agent crashed). Pin VERDICT to the
+    # more-severe of (PRIOR_VERDICT, current per-PR VERDICT) — never
+    # silently downgrade REQUEST_CHANGES.
+    DEGRADED_REASON="missing"
+    [ -f /tmp/resolution-status.json ] && DEGRADED_REASON="malformed"
+    VERDICT=$(verdict_max "$PRIOR_VERDICT" "$VERDICT")
+    echo "::warning::Round-2 degraded: resolution-status.json $DEGRADED_REASON — pinned verdict to max(prior=$PRIOR_VERDICT, current=$VERDICT)=$VERDICT."
   fi
-  # Derive the still-present blocker count by id-joining STILL_PRESENT
-  # entries against prior-state.findings, instead of trusting the
-  # resolution checker's `prior_severity` field. The verdict gate must
-  # not ride on LLM compliance: if the agent forgets or mistypes
-  # `prior_severity`, an approve-via-zero-blockers slips through.
-  STILL_PRESENT_BLOCKERS=$(jq -n \
-    --slurpfile state /tmp/prior-state/review-state.json \
-    --argjson still "$STILL_PRESENT_LIST" \
-    '($still | map(.id)) as $ids
-     | ($state[0].findings // [])
-     | map(select((.id as $id | $ids | index($id)) and (.severity == "critical" or .severity == "major")))
-     | length')
-  echo "Round-2 verdict input: prior_verdict=$PRIOR_VERDICT prior_blockers=$PRIOR_BLOCKERS still_present_blockers=$STILL_PRESENT_BLOCKERS resolution_known=$RESOLUTION_KNOWN new_blocking=$HAS_BLOCKING current_verdict=$VERDICT"
-  case "$PRIOR_VERDICT" in
-    REQUEST_CHANGES)
-      if [ "$HAS_BLOCKING" = "true" ]; then
-        VERDICT="REQUEST_CHANGES"
-      elif [ "$STILL_PRESENT_BLOCKERS" -gt 0 ]; then
-        VERDICT="REQUEST_CHANGES"
-        echo "::notice::Round-2: $STILL_PRESENT_BLOCKERS prior blocking finding(s) still present — keeping REQUEST_CHANGES."
-      elif [ "$RESOLUTION_KNOWN" = "false" ] && [ "$PRIOR_BLOCKERS" -gt 0 ]; then
-        # Prior had blockers but we couldn't run the resolution checker
-        # — preserve REQUEST_CHANGES rather than guess they're resolved.
-        VERDICT="REQUEST_CHANGES"
-        echo "::warning::Round-2 with unknown resolution status (no /tmp/resolution-status.json) and $PRIOR_BLOCKERS prior blocker(s) — preserving REQUEST_CHANGES until resolution status is computed."
-      fi
-      # else: no new blockers AND (all prior blockers resolved per the
-      # checker, OR the prior verdict was REQUEST_CHANGES with no
-      # blockers in the first place) → keep the per-PR verdict above.
-      ;;
-    COMMENT)
-      if [ "$HAS_BLOCKING" = "true" ]; then
-        VERDICT="REQUEST_CHANGES"
-      elif [ "$VERDICT" = "APPROVE" ]; then
-        # Don't escalate to APPROVE on a pure follow-up — prior verdict
-        # was non-blocking but the user hadn't approved yet.
-        VERDICT="COMMENT"
-      fi
-      ;;
-    APPROVE)
-      if [ "$HAS_BLOCKING" = "true" ]; then
-        VERDICT="REQUEST_CHANGES"
-      fi
-      ;;
-    *)
-      # Unrecognized verdict (state file present but .verdict missing /
-      # corrupted / unknown enum value) — leave the per-PR verdict alone
-      # but emit a visible warning so the operator can audit.
-      echo "::warning::Round-2 verdict adjustment skipped — unrecognized prior_verdict='$PRIOR_VERDICT'. Using per-PR verdict '$VERDICT' as-is."
-      ;;
-  esac
 fi
 
 echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, manual_spec=$MANUAL_SPEC_PRESENT, technical_change=$TECHNICAL_CHANGE, smoke_ok=$SMOKE_OK, functional=$FUNCTIONAL_OVERALL)"

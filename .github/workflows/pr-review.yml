@@ -550,13 +550,21 @@ jobs:
           BRANCH: ${{ github.head_ref }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REPO: ${{ github.repository }}
+          # Filter the runs list to THIS workflow only. The /actions/runs
+          # endpoint has no `workflow_id` query param, so we filter
+          # client-side on `.name` (workflow display name). Without this,
+          # repos with multiple workflows on the same branch can match a
+          # state artifact uploaded by an unrelated workflow.
+          WORKFLOW_NAME: ${{ github.workflow }}
         run: |
           set -uo pipefail
           ARTIFACT_NAME="claude-review-state-pr-${PR_NUMBER}"
-          # List up to 30 recent runs on this branch, then find the most
-          # recent one whose artifacts include the per-PR state artifact.
+          # List up to 30 recent runs on this branch (this workflow only),
+          # then find the most recent whose artifacts include the per-PR
+          # state artifact.
           RUN_IDS=$(gh api --paginate "repos/${REPO}/actions/runs?branch=${BRANCH}&per_page=30" \
-            --jq '.workflow_runs[].id' 2>/dev/null || echo "")
+            --jq '.workflow_runs[] | select(.name == env.WORKFLOW_NAME) | .id' 2>/dev/null || echo "")
+
           RUN_ID=""
           for id in $RUN_IDS; do
             HAS=$(gh api "repos/${REPO}/actions/runs/${id}/artifacts" \
@@ -995,13 +1003,10 @@ jobs:
             BUGBOT_BLOCK=$(printf '\n\n=== bugbot.md (project-specific review standards) ===\n\n%s' "$(cat bugbot.md)")
           fi
 
-          # Round-2 hint: when prior-state was loaded, tell the reviewers to
-          # spend their turn budget on the diff-since-last first. Empty on
-          # round 1, so it's a no-op there.
-          ROUND2_HINT=""
-          if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ]; then
-            ROUND2_HINT=$'\n\nROUND-2 FOCUS: This is a follow-up review. context.md has a `## Diff since last review` section listing the files changed since the prior review. Per-file diffs for that subset are at `/tmp/since-last-chunks/<file>.diff` (slashes replaced with `--`). Spend your turn budget on those changes first; the resolution checker covers prior findings, so do not re-flag issues already classified there.'
-          fi
+          # Round-2 inputs are advertised in context.md by the
+          # context-builder skill (see `## Round-2 inputs` and the
+          # round-2-scoped per-file diff index). Reviewers read context.md
+          # and the round-2 paths it lists; no out-of-band hint needed.
 
           echo "::group::Launch parallel reviewers + test runner"
           set -x   # trace launches so any abort points at its own line
@@ -1069,10 +1074,10 @@ jobs:
           }
 
           launch_agent core review-core "${{ inputs.model_high }}" 15 \
-            "You are the core reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output files it specifies.${ROUND2_HINT}"
+            "You are the core reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output files it specifies."
 
           launch_agent sweep review-sweep "${{ inputs.model_standard }}" 10 \
-            "You are the sweep reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output file it specifies.${ROUND2_HINT}"
+            "You are the sweep reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output file it specifies."
 
           # Round-1 only: a second independent pass of core + sweep. Same
           # skills, independent LLM sampling — the union catches misses.
@@ -1125,7 +1130,7 @@ jobs:
           if [ -s /tmp/prd-content.md ]; then
             echo "Running spec-compliance reviewer (PRD detected)..."
             launch_agent spec review-spec-compliance "${{ inputs.model_standard }}" 10 \
-              "You are the spec-compliance reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the spec sources (/tmp/prd-content.md, /tmp/external-issue.md, /tmp/issue.json) and the diff chunks it points at, per the Turn 1 instructions in the skill above. Follow the skill above exactly, including writing the JSON output file it specifies.${ROUND2_HINT}"
+              "You are the spec-compliance reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the spec sources (/tmp/prd-content.md, /tmp/external-issue.md, /tmp/issue.json) and the diff chunks it points at, per the Turn 1 instructions in the skill above. Follow the skill above exactly, including writing the JSON output file it specifies."
           else
             echo "Spec-compliance reviewer skipped — no PRD detected"
           fi
