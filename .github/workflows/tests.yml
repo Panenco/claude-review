@@ -22,5 +22,8 @@ jobs:
       - name: Run dedup_test.sh
         run: bash tests/dedup_test.sh
 
+      - name: Run dev_env_secrets_test.sh
+        run: bash tests/dev_env_secrets_test.sh
+
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh

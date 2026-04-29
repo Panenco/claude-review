@@ -59,6 +59,9 @@ on:
       TRACKER_SECRETS:
         required: false
         description: "Optional. Newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/fetch-issue.sh. Populated from the caller repo's secret of the same name via `secrets: inherit`."
+      DEV_ENV_SECRETS:
+        required: false
+        description: "Optional. Newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/dev-start.sh (and the legacy review-config.md bash blocks + Auth eval). Populated from the caller repo's secret of the same name via `secrets: inherit`."
 
 jobs:
   review:
@@ -795,6 +798,7 @@ jobs:
         shell: bash
         env:
           PKG_MANAGER: ${{ steps.pkg.outputs.manager }}
+          DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
         run: |
           set -uo pipefail
           mkdir -p /tmp/dev-env
@@ -918,6 +922,7 @@ jobs:
         env:
           PKG_MANAGER: ${{ steps.pkg.outputs.manager }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
+          DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
         run: |
           set -uo pipefail
           source .review-scripts/phase-timing.sh

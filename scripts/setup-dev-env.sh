@@ -27,6 +27,14 @@ set -uo pipefail
 # Required env vars:
 #   GITHUB_OUTPUT   — path to GitHub Actions output file
 #
+# Optional env vars:
+#   DEV_ENV_SECRETS — newline-separated KEY=VALUE pairs forwarded as env vars
+#                     to dev-start.sh (and to legacy review-config.md bash
+#                     blocks + Auth eval). Mirrors TRACKER_SECRETS for the
+#                     fetch-issue.sh hook. Blank lines and `# comments` are
+#                     skipped; everything after the first `=` is preserved
+#                     verbatim so tokens containing `=` survive.
+#
 # Outputs (written to $GITHUB_OUTPUT):
 #   api_ready   — true/false
 #   api_url     — URL of the running API (possibly adjusted via health-path fallback)
@@ -38,6 +46,20 @@ DEV_SCRIPT=".github/claude-review/dev-start.sh"
 CONFIG=".github/review-config.md"
 HAS_CONFIG=false
 [ -f "$CONFIG" ] && HAS_CONFIG=true
+
+# Expose each KEY=VALUE line of DEV_ENV_SECRETS as an env var. Done once
+# at script scope so dev-start.sh, the legacy review-config.md bash blocks,
+# and the Auth eval all see the same names. The parser mirrors the
+# TRACKER_SECRETS handler in pr-review.yml verbatim.
+export_dev_env_secrets() {
+  [ -z "${DEV_ENV_SECRETS:-}" ] && return 0
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    [[ "$line" != *=* ]] && continue
+    export "${line%%=*}=${line#*=}"
+  done <<< "$DEV_ENV_SECRETS"
+}
+export_dev_env_secrets
 
 # Extract bash blocks from a section of review-config.md, heading-level-aware.
 # ## matches a level-2 section and includes its ### subsections; ### stops at
