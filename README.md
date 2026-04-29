@@ -248,6 +248,19 @@ Rules:
 
 If the project has nothing to start (pure-docs, lib-only), do **not** create this file. Its absence is the signal for degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step.
 
+##### Passing secrets to `dev-start.sh`
+
+If bring-up needs credentials (private registry token, S3 keys for seeding, third-party API key), put them in a repo secret named `DEV_ENV_SECRETS` as `KEY=VALUE` lines. The pipeline exports each line as an env var before running the script. Blank lines and `# comments` are skipped; everything after the first `=` is preserved verbatim so tokens containing `=` survive.
+
+```
+NPM_TOKEN=npm_xxxxx
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+# values are exposed verbatim — do not wrap in quotes
+```
+
+Same wiring as `TRACKER_SECRETS` for `fetch-issue.sh`: the caller's `secrets: inherit` forwards it, and the env vars are visible to `dev-start.sh`, the legacy `## Functional validation` bash blocks, and the `### Auth` eval. Pick any names that make sense for your stack.
+
 #### `### Auth`
 
 Authentication for functional testing:
