@@ -15,14 +15,24 @@ The PRD is the source of truth. The developer may have misread it, abbreviated a
 
 ## Efficiency
 
-Target: **<=6 turns**. Turn 1: Read inputs. Turns 2-4: Compare. Turn 5-6: Write output.
+Target: **≤8 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of PRD + external issue + spec/core/multi diff chunks. Turns 3-5: compare. Turn 6-7: write outputs. Turn 8: buffer.
 
-Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, or Grep.
+Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read inputs
+## Turn 1: Read context.md (single Read tool call)
 
-1. Read `context.md` at the repo root — contains the diff, file contents, AND the PRD content (under `## PRD` section).
-2. If context.md has no PRD section or it says "No PRD linked", write `[]` to `/tmp/spec-findings.json` and `{}` to `/tmp/spec-meta.json` and stop — nothing to compare against.
+Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+If context.md's `## Spec sources` lists the PRD as empty AND no external issue is listed, write `[]` to `/tmp/spec-findings.json` and `{}` to `/tmp/spec-meta.json` and stop — nothing to compare against.
+
+Otherwise, issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT spread them across turns:
+
+- `/tmp/prd-content.md` (the PRD)
+- `/tmp/external-issue.md` (when context.md lists it as non-empty — adds criteria the PRD doesn't cover)
+- `/tmp/issue.json` (when context.md lists it as non-empty)
+- Every chunk path tagged `spec`, `core`, or `multi` from context.md's `## Per-file diff index` — you need actual code to compare against the PRD. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`). You do NOT also read the original `/tmp/diff-chunks/` set — that was covered in round 1.
 
 ## What to compare
 

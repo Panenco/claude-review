@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'skills/**'
+      - 'tests/**'
+      - '.github/workflows/tests.yml'
+
+jobs:
+  shell:
+    name: Shell tests + lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install jq + shellcheck
+        run: sudo apt-get install -y --no-install-recommends jq shellcheck
+
+      - name: Run dedup_test.sh
+        run: bash tests/dedup_test.sh
+
+      - name: Shellcheck scripts (error-level only)
+        run: shellcheck --severity=error scripts/*.sh tests/*.sh

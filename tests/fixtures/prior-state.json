@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "prior_head_sha": "abc123",
+  "prior_base_sha": "def456",
+  "round": 1,
+  "findings": [
+    {
+      "id": "c1",
+      "severity": "major",
+      "type": "bug",
+      "path": "src/auth.ts",
+      "line_start": 42,
+      "title": "Missing await on async db call",
+      "evidence": "userRepo.create(...) — promise discarded"
+    },
+    {
+      "id": "c2",
+      "severity": "minor",
+      "type": "wrong-impl",
+      "path": "src/api.ts",
+      "line_start": 100,
+      "title": "Returns 200 on validation error",
+      "evidence": "no status code set"
+    },
+    {
+      "id": "s1",
+      "severity": "minor",
+      "type": "consistency",
+      "path": "src/utils.ts",
+      "line_start": 17,
+      "title": "Inconsistent return type",
+      "evidence": "siblings return Result<T>; this returns T | null"
+    }
+  ],
+  "verdict": "REQUEST_CHANGES",
+  "reviewed_at": "2026-04-27T10:00:00Z"
+}

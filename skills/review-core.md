@@ -9,14 +9,24 @@ You are one of two parallel reviewers. You focus on **correctness and spec compl
 
 ## Efficiency
 
-Target: **≤8 turns**. Turn 1: Read inputs. Turns 2-5: analyze. Turn 6-7: Write output files.
+Target: **≤10 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every chunk + spec source. Turns 3-7: analyze. Turn 8-9: Write findings + meta. Turn 10: buffer.
 
-Use only Read and Write. Everything is in context.md — do NOT use Bash, Glob, or Grep.
+Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
-## Turn 1: Read inputs
+## Turn 1: Read context.md (single Read tool call)
 
-1. Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool.
-2. Read `context.md` at the repo root — full diff, file contents, issue, conventions, build output. This is the only file you need to Read.
+Project-specific review standards from `bugbot.md` (if the project has one) are already embedded in the prompt above — do NOT re-read `bugbot.md` with the Read tool. Read `context.md` at the repo root.
+
+## Turn 2: ONE batched parallel Read — issue every Read in a SINGLE response
+
+This is the single most important efficiency rule in this skill. Issue **all** of the following Reads in **one assistant response** with multiple Read tool calls. Do NOT issue them across multiple turns. Doing one Read per turn will burn your turn budget before you reach the analysis phase, and the runner will kill you with `Reached max turns`.
+
+In this single response, Read all of:
+- Every `chunk` path tagged `core`, `spec`, or `multi` from context.md's `## Per-file diff index`. Skip `sweep` / `functional` chunks — that's not your scope. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`). You do NOT also read the original `/tmp/diff-chunks/` set — that was covered in round 1, and the resolution checker is classifying any prior findings against the new commits in parallel.
+- From `## Spec sources`: `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` — only the ones context.md lists as non-empty.
+- The convention rule files listed under `## Convention files` that apply to your changed paths.
+
+If a finding candidate later references a specific library/export/component, you may issue a follow-up Read of `package.json` / source file in turn 3 or later — but do not let that case become an excuse to drip-Read in Turn 2.
 
 ### Honor bugbot's acceptance sections
 
@@ -78,9 +88,34 @@ Before finalizing ANY finding, verify all five:
 2. **Refutation test** — Could the author dismiss this in one sentence? If yes → too weak → drop it.
 3. **Senior-engineer test** — Would an experienced engineer agree this is objectively wrong — not just "could be different"?
 4. **Exact reference** — For spec-mismatch, quote the exact rule/criterion. For bugs, show the failure path. "Generally bad practice" is not evidence.
-5. **Artifact exists** — If the finding references a specific library, component, or export (e.g. "use X from shared-ui", "import Y from some-lib"), look in the `# Repo capabilities snapshot` section of context.md and confirm the artifact is actually exported/installed. If it isn't, drop the finding — "use X" isn't actionable when X doesn't exist. Similarly, if there's an entry in `# User replies on prior findings` rebutting the same issue as a false positive, do not re-flag unless you have new counter-evidence.
+5. **Artifact exists** — If the finding references a specific library, component, or export (e.g. "use X from shared-ui", "import Y from some-lib"), Read the relevant file to confirm the artifact is actually exported/installed: `package.json` for installed deps, the package's `index.ts` / `exports` field for re-exports, or the source file that should contain the symbol. The core reviewer's tool list is Read+Write only — no Grep — so verify by Read. If you cannot verify by reading, drop the finding — "use X" isn't actionable when X doesn't exist. Also Read `/tmp/user-replies-on-ours.json` (path is in context.md when non-empty): if a maintainer already rebutted the same issue as a false positive, don't re-flag unless you have new counter-evidence.
 
 **A clean `[]` is a confident, valuable review.** False positives waste more team time than a missed minor issue. When in doubt, drop the finding — or move it to `uncertain_observations[]` in core-meta.json.
+
+### When `uncertain_observations` is the WRONG bucket
+
+`uncertain_observations` is for "I genuinely don't know if this is a bug" — e.g. you saw a `??` operator and aren't sure of the surrounding type, or a function call where you can't tell whether the implementation is buggy without reading code outside the diff.
+
+If you can **clearly describe the bug shape from the diff alone** but only the runtime condition is unverified (e.g. "X gets deleted unconditionally on every code path that hits this handler — verify whether the FE always re-sends the existing value"), that is a **finding**, not an observation. Use `severity=major` (or `minor` if the impact is contained), and write `expected:` as "Verify <runtime condition>; if it does not hold, <fix>". The reviewer reading your output is a human; flagging static-clear bugs with a verification ask is more useful than burying them in observations the human won't read.
+
+Symptoms that mean it's a finding, not an observation:
+- "Static analysis shows X = bug, IF runtime condition Y holds." → finding (the IF goes in `expected`)
+- "I can quote the exact lines AND name the failure scenario." → finding
+- "A reviewer's only response would be 'yes, that's a bug — let me check Y.'" → finding
+
+Symptoms that mean it really is an observation:
+- "I can't tell from the diff alone whether this is a bug or not." → observation
+- "Behavior depends on a class/method I haven't seen the source of." → observation (or do a targeted Read in turn 3+ to disambiguate, then re-classify)
+
+### Cross-check prior bot comments (active corroboration, not just dedup)
+
+If `/tmp/other-bot-comments.json` is non-empty (path in context.md under `## Prior bot comments`), Read it. For every bot finding tagged HIGH/CRITICAL severity, decide one of three:
+
+1. **Corroborate** — you independently see the bug or, after a focused Read of the cited file/lines, you agree. Emit a finding with the same severity (or lower if you have a softer take) and add `(corroborated by <bot>)` to `reasoning`. Corroboration with a second independent tool is concrete evidence — it clears the false-positive self-check on its own.
+2. **Refute** — you read the cited code and disagree (e.g. the bot misread the control flow, or a guard exists the bot missed). Add a one-line entry to `uncertain_observations` like `"Refuted <bot> finding on <path>:<line>: <reason>"` so the audit trail is preserved.
+3. **Skip** — the finding is out of your scope (style/design-smell territory, sweep handles those) or low severity. Do nothing.
+
+Corroborate-or-refute applies to HIGH/CRITICAL bot findings only. Do not feel obligated to opine on every aikido nesting/extract-helper note — those are sweep / style-tooling territory.
 
 ## Classification
 
@@ -98,7 +133,11 @@ Do NOT set it for:
 
 ## Output: Write TWO files
 
-**`/tmp/core-findings.json`** — array:
+You MUST write both files before exiting. After completing analysis, STOP and write — do not open new investigations.
+
+The launching workflow may set output paths via the prompt (e.g. `OUTPUT_FINDINGS=/tmp/core-findings-2.json` for the second pass of the same skill). When the prompt does NOT specify paths, use the defaults below.
+
+**Findings file** (default `/tmp/core-findings.json`, override via `OUTPUT_FINDINGS` in the prompt) — array:
 
 ```json
 [
@@ -117,7 +156,7 @@ Do NOT set it for:
 ]
 ```
 
-**`/tmp/core-meta.json`**:
+**Meta file** (default `/tmp/core-meta.json`, override via `OUTPUT_META` in the prompt):
 
 ```json
 {
@@ -129,6 +168,7 @@ Do NOT set it for:
   "build_unavailable": false,
   "manual_spec_present": true,
   "spec_compliance": "Brief statement of spec alignment (1-2 sentences).",
+  "verdict_summary": "What the PR does (1 sentence) + verdict reasoning (2-3 sentences).",
   "spec_sources": {
     "linked_issue": 42,
     "external_issue": "ABC-123",
@@ -138,9 +178,28 @@ Do NOT set it for:
 }
 ```
 
-- `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when context.md contains ANY of: a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, OR a manually-written PR-body section (substantive prose written by a human, not a Cursor/Bugbot/CodeRabbit/Gemini/Claude Code summary of the diff). `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements". Use judgement on AI-generated content: explicit markers (`<!-- CURSOR_SUMMARY -->`, `<!-- gemini-code-assist -->`, `Generated with [Claude Code]`, `Reviewed by [Cursor Bugbot]`, etc.) are obvious signals, but prose that reads like a diff changelog is also AI-style even without a marker.
-- `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec. When `manual_spec_present` is `false`, set this to `"No manual spec — cannot validate against requirements."` instead of judging compliance against an AI-written diff summary.
-- `spec_sources` extracts the linked issue number, external tracker identifier, PRD path, and which convention rules applied — read these from context.md. Use `null` for missing values.
-- `external_issue` is the tracker identifier (e.g. `ABC-123`, `ENG-214`, `MON-1234`) surfaced by the consumer's optional `.github/claude-review/fetch-issue.sh` hook. Parse it from the heading at the top of the `## Linked external issue` section in context.md — the hook convention is `## Linked <tracker> issue: <IDENTIFIER>` as its first line. If the section is absent or no identifier can be parsed, set to `null`.
+- `manual_spec_present` — your judgement on whether a human-authored requirement source is available for this PR. `true` when ANY of these is non-empty: the linked GitHub issue body (Read `/tmp/issue.json`), a PRD (Read `/tmp/prd-content.md`), an external-tracker spec (Read `/tmp/external-issue.md`), OR a manually-written PR-body section.
 
-Write `[]` for empty findings. ALWAYS write both files.
+  **PR-body bodies are usually MIXED.** Don't reject a body just because it contains a bot footer or Cursor Bugbot block — strip the AI-generated portions and re-evaluate the remainder. Strip these before judging:
+  - `<!-- CURSOR_SUMMARY -->` / `<!-- CURSOR_AGENT_PR_BODY_BEGIN -->` / `<!-- gemini-code-assist -->` blocks
+  - `> [!NOTE]` (or `[!IMPORTANT]` / `[!TIP]`) blockquote-alert blocks whose content contains "Reviewed by Cursor Bugbot", "Reviewed by [CodeRabbit]", or similar bot signatures
+  - Trailing blocks below a `---` horizontal rule that end in one of those signatures
+  - Trailing `🤖 Generated with [Claude Code]` and `Co-Authored-By: Claude` lines
+
+  After stripping, if ≥1 paragraph of substantive human-written prose remains (explaining the WHY, scope, goal, testing instructions, acceptance criteria, or behaviour expectations), `manual_spec_present` is `true` and that prose is your spec for compliance review. If only a one-line title, a generated-style changelog, or a bare checklist remains, `manual_spec_present` is `false`.
+
+  `false` otherwise. The verdict gate downgrades APPROVE → COMMENT when `false`, because spec-less reviews can't validate "code matches requirements".
+- `spec_compliance` is ALWAYS filled in — even when there are findings. Summarizes what the PR does right or wrong vs the spec. When `manual_spec_present` is `false`, set this to `"No manual spec — cannot validate against requirements."` instead of judging compliance against an AI-written diff summary.
+- `verdict_summary` is the **human-assist field** — the human reviewer reads ONLY the PR description + this summary + the inline comments to decide the merge. Aim for 3-4 sentences max:
+  1. **What the PR does** in plain English (1 sentence). Not "modifies 24 files" — instead, "Adds a personalized RSVP communication editor and backend service" or "Refactors authentication middleware to use the new session adapter".
+  2. **Verdict driver** (1-2 sentences). For each verdict:
+     - `APPROVE`: name what makes it safe — "typecheck/lint clean, no risky areas touched, follows existing X pattern, smoke test passed Y golden path".
+     - `REQUEST_CHANGES`: name the top 1-2 blockers — "Blocked by `c1` (handleCommunicationUpdate deletes data unconditionally) and `s2-1` (21 missing translation keys)".
+     - `COMMENT` due to no spec: state what code-quality coverage we DID provide AND the hypothetical verdict — "Reviewed for correctness, security, consistency. **Would otherwise APPROVE** — no blockers found." OR "Reviewed for correctness, security, consistency. **Would otherwise REQUEST_CHANGES** — `c1` and `s2-1` are blockers regardless of spec."
+     - `COMMENT` due to technical-change-no-smoke: "Refactor with no behavior change claimed; smoke test couldn't run (dev-start.sh missing). Would otherwise APPROVE on smoke pass."
+  3. **What unlocks the next state** (when applicable): "To enable APPROVE, link the GitHub issue, paste acceptance criteria into the PR body, or wire up the external tracker." Don't repeat this on round 2 if it was already said on round 1.
+
+  Write `verdict_summary` even when there are zero findings — that's the case where the human most needs to know "you can hit merge". When `manual_spec_present` is `false`, set the hypothetical-verdict explicitly so the human knows whether to fast-track or fix.
+- `spec_sources` extracts the linked issue number (from `/tmp/issue.json`), external tracker identifier (first line of `/tmp/external-issue.md` follows the hook convention `## Linked <tracker> issue: <IDENTIFIER>`), PRD path (`/tmp/prd-files.txt`), and which convention rules applied. Use `null` for missing values.
+
+Write `[]` for empty findings. ALWAYS write both files. ALWAYS use the paths from `OUTPUT_FINDINGS` / `OUTPUT_META` if the prompt sets them; only fall back to defaults if the prompt is silent.

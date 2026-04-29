@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 # post-review.sh — Post review results to the PR.
 #
@@ -159,6 +159,24 @@ if [ ! -f /tmp/review-comments.json ]; then
 fi
 jq -e 'type == "array"' /tmp/review-comments.json > /dev/null || echo '[]' > /tmp/review-comments.json
 
+# Append a phase-timing footer if any timing was captured.
+# Format: *Pipeline: context Xs, dev-env Ys, analyze Zs, dedup Ws, total Ts*
+if [ -s /tmp/phase-summary.txt ]; then
+  TOTAL=0
+  PARTS=""
+  while IFS='=' read -r name dur; do
+    [ -z "$name" ] && continue
+    secs="${dur%s}"
+    case "$secs" in *[!0-9]*|"") continue ;; esac
+    TOTAL=$(( TOTAL + secs ))
+    [ -n "$PARTS" ] && PARTS="$PARTS, "
+    PARTS="$PARTS$name ${secs}s"
+  done < /tmp/phase-summary.txt
+  if [ -n "$PARTS" ]; then
+    printf '\n\n---\n*Pipeline: %s, total %ss*\n' "$PARTS" "$TOTAL" >> /tmp/review-body.md
+  fi
+fi
+
 # Build and POST atomic review
 VERDICT=$(jq -r '.verdict' review-result.json)
 jq -n \
@@ -176,3 +194,178 @@ if ! gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input /tmp/review-pa
   fi
 fi
 echo "::endgroup::"
+
+# ── Round-2: resolve threads for findings the resolution checker classified
+#    as RESOLVED. Closes the loop so the PR UI shows fixed issues as resolved
+#    instead of leaving every prior thread open forever.
+#
+# Inputs: /tmp/resolution-status.json (round-2 only, classifier output) +
+#         /tmp/prior-state/review-state.json (round-1 findings with path/line).
+# For each RESOLVED entry, find our own bot's review thread at that path+line
+# and call GraphQL `resolveReviewThread` after a short reply for the audit
+# trail. Best-effort: any GraphQL failure is logged but does not abort the
+# poster — the review itself is already committed at this point.
+if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json ]; then
+  echo "::group::Post review — resolve fixed threads (round-2)"
+  RESOLVED_IDS=$(jq -r '[.[] | select(.status == "RESOLVED") | .id] | .[]' /tmp/resolution-status.json 2>/dev/null || true)
+  if [ -z "$RESOLVED_IDS" ]; then
+    echo "No RESOLVED prior findings — nothing to resolve."
+  else
+    OWNER="${REPO%%/*}"
+    NAME="${REPO##*/}"
+    HEAD_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "current")
+    # Page through review threads. 100/page is typically enough; if a PR
+    # accumulates more we'd need cursor-based pagination, but at that point
+    # the review-thread sprawl is already a separate problem.
+    THREADS_JSON=$(gh api graphql -f query='
+      query($owner:String!, $repo:String!, $pr:Int!) {
+        repository(owner:$owner, name:$repo) {
+          pullRequest(number:$pr) {
+            reviewThreads(first:100) {
+              nodes {
+                id
+                isResolved
+                path
+                line
+                originalLine
+                comments(first:1) { nodes { author { login } body } }
+              }
+            }
+          }
+        }
+      }' -f owner="$OWNER" -f repo="$NAME" -F pr="$PR" --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null || echo "[]")
+    if [ "$(echo "$THREADS_JSON" | jq 'length')" = "0" ]; then
+      echo "::warning::Could not fetch review threads via GraphQL — skipping resolution."
+    else
+      RESOLVED_COUNT=0
+      SKIPPED_COUNT=0
+      while IFS= read -r rid; do
+        [ -z "$rid" ] && continue
+        # Look up the prior finding's path + line_start by id.
+        FINDING=$(jq -c --arg id "$rid" '.findings[]? | select(.id == $id)' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+        if [ -z "$FINDING" ]; then
+          echo "  $rid: prior finding not found in review-state.json, skipping"
+          continue
+        fi
+        FPATH=$(echo "$FINDING" | jq -r '.path')
+        FLINE_END=$(echo "$FINDING" | jq -r '.line_end // .line_start')
+        # Match thread by path + line (line OR originalLine — GitHub reports
+        # the comment's line on the latest commit OR the original commit
+        # depending on whether the line still exists). Author must be us.
+        # `|| true` on the head pipe: under pipefail, multiple matches close
+        # the pipe early and SIGPIPE jq, returning a non-zero pipeline exit.
+        # We only want the first match — closing the producer is fine.
+        THREAD=$(echo "$THREADS_JSON" | jq -c --arg path "$FPATH" --argjson line "$FLINE_END" --arg bot "$BOT_USER" '
+          .[] | select(
+            .path == $path
+            and ((.line == $line) or (.originalLine == $line))
+            and (.comments.nodes[0].author.login == $bot)
+            and (.isResolved == false)
+          )' | head -n1 || true)
+        if [ -z "$THREAD" ]; then
+          SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+          continue
+        fi
+        TID=$(echo "$THREAD" | jq -r '.id')
+        # Add a reply for the audit trail (visible in the thread), then
+        # resolve. Two GraphQL calls; failure of either is non-fatal.
+        gh api graphql -f query='
+          mutation($threadId:ID!, $body:String!) {
+            addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}) {
+              comment { id }
+            }
+          }' -f threadId="$TID" -f body="✅ Resolved as of \`$HEAD_SHA\` (Claude review round-2 classifier confirmed the flagged issue is no longer present in the diff)." >/dev/null 2>&1 \
+          || echo "  $rid: reply post failed (continuing to resolve)"
+        if gh api graphql -f query='
+          mutation($threadId:ID!) {
+            resolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
+          }' -f threadId="$TID" >/dev/null 2>&1; then
+          RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
+          echo "  $rid: resolved thread on $FPATH:$FLINE_END"
+        else
+          echo "::warning::  $rid: resolveReviewThread mutation failed for $FPATH:$FLINE_END"
+        fi
+      done <<< "$RESOLVED_IDS"
+      echo "Resolved $RESOLVED_COUNT thread(s); skipped $SKIPPED_COUNT (no matching open thread)."
+    fi
+  fi
+  echo "::endgroup::"
+fi
+
+# ── Round-2: resolve OTHER-bot threads (cursor, aikido, etc.) that the
+#    bot-comment resolver classified as RESOLVED. Mirror of own-thread
+#    resolution above, but matches by comment_id (not path+author) because
+#    the resolver outputs the GitHub REST id directly. We re-fetch threads
+#    via GraphQL and find the one whose first comment's databaseId matches.
+if [ -f /tmp/bot-resolution-status.json ]; then
+  echo "::group::Post review — resolve fixed other-bot threads (round-2)"
+  RESOLVED_BOT=$(jq -c '[.[] | select(.status == "RESOLVED")]' /tmp/bot-resolution-status.json 2>/dev/null || echo "[]")
+  RESOLVED_BOT_N=$(echo "$RESOLVED_BOT" | jq 'length' 2>/dev/null || echo 0)
+  if [ "$RESOLVED_BOT_N" = "0" ]; then
+    echo "No RESOLVED other-bot comments — nothing to acknowledge."
+  else
+    OWNER="${REPO%%/*}"
+    NAME="${REPO##*/}"
+    HEAD_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "current")
+    # databaseId on a comment is the REST `id`; we use it to map
+    # resolver output (which carries REST ids) to GraphQL thread nodes.
+    THREADS_JSON=$(gh api graphql -f query='
+      query($owner:String!, $repo:String!, $pr:Int!) {
+        repository(owner:$owner, name:$repo) {
+          pullRequest(number:$pr) {
+            reviewThreads(first:100) {
+              nodes {
+                id
+                isResolved
+                comments(first:1) { nodes { databaseId author { login } } }
+              }
+            }
+          }
+        }
+      }' -f owner="$OWNER" -f repo="$NAME" -F pr="$PR" --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null || echo "[]")
+    if [ "$(echo "$THREADS_JSON" | jq 'length')" = "0" ]; then
+      echo "::warning::Could not fetch review threads via GraphQL — skipping other-bot resolution."
+    else
+      RESOLVED_COUNT=0
+      SKIPPED_COUNT=0
+      # Process substitution rather than `| while`: the latter runs the loop
+      # in a subshell, so RESOLVED_COUNT / SKIPPED_COUNT increments are lost
+      # by the time the summary line below runs (always reports 0).
+      while IFS= read -r entry; do
+        CID=$(echo "$entry" | jq -r '.comment_id')
+        BOT=$(echo "$entry" | jq -r '.bot_user')
+        FPATH=$(echo "$entry" | jq -r '.path')
+        FLINE=$(echo "$entry" | jq -r '.line')
+        EVIDENCE=$(echo "$entry" | jq -r '.evidence // ""' | head -c 400)
+        # Match thread whose first comment's databaseId == CID AND not already resolved.
+        THREAD=$(echo "$THREADS_JSON" | jq -c --argjson cid "$CID" '
+          .[] | select(.comments.nodes[0].databaseId == $cid and .isResolved == false)' | head -n1 || true)
+        if [ -z "$THREAD" ]; then
+          SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+          continue
+        fi
+        TID=$(echo "$THREAD" | jq -r '.id')
+        REPLY_BODY="✅ Resolved as of \`$HEAD_SHA\` per Claude review round-2 classifier"
+        [ -n "$EVIDENCE" ] && REPLY_BODY="$REPLY_BODY"$'\n\n'"$EVIDENCE"
+        gh api graphql -f query='
+          mutation($threadId:ID!, $body:String!) {
+            addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}) {
+              comment { id }
+            }
+          }' -f threadId="$TID" -f body="$REPLY_BODY" >/dev/null 2>&1 \
+          || echo "  $BOT $CID: reply post failed (continuing to resolve)"
+        if gh api graphql -f query='
+          mutation($threadId:ID!) {
+            resolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
+          }' -f threadId="$TID" >/dev/null 2>&1; then
+          RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
+          echo "  $BOT $CID: resolved thread on $FPATH:$FLINE"
+        else
+          echo "::warning::  $BOT $CID: resolveReviewThread mutation failed for $FPATH:$FLINE"
+        fi
+      done < <(echo "$RESOLVED_BOT" | jq -c '.[]')
+      echo "Resolved $RESOLVED_COUNT other-bot thread(s); skipped $SKIPPED_COUNT (already resolved or thread not found)."
+    fi
+  fi
+  echo "::endgroup::"
+fi

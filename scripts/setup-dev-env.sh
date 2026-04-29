@@ -63,12 +63,29 @@ extract_section_code() {
 # ("Invalid format '<url>'"). Exit awk after the first row matches.
 extract_port_url() {
   local service="$1" file="$2"
-  awk -v svc="$service" '
-    /^\| / && tolower($0) ~ tolower(svc) {
-      match($0, /https?:\/\/[^ |]+/)
-      if (RSTART > 0) { print substr($0, RSTART, RLENGTH); exit }
-    }
-  ' "$file"
+  # Synonym fallback: callers pass canonical names ("Web", "API"), but
+  # consumer review-configs sometimes label the row by the project's
+  # own naming ("Frontend (Vite dev server)", "SPA", "UI"). For "Web"
+  # we try the canonical term first, then common synonyms; the first
+  # row containing any of those terms (case-insensitive) wins.
+  # API stays single-term: it's near-universal and adding synonyms
+  # like "backend" would mis-match on rows that document services
+  # called "Backend Worker" / "Backend storage".
+  local terms
+  case "$(printf '%s' "$service" | tr '[:upper:]' '[:lower:]')" in
+    web) terms="web frontend ui spa vite next client" ;;
+    *)   terms="$service" ;;
+  esac
+  local term url
+  for term in $terms; do
+    url=$(awk -v svc="$term" '
+      /^\| / && tolower($0) ~ tolower(svc) {
+        match($0, /https?:\/\/[^ |]+/)
+        if (RSTART > 0) { print substr($0, RSTART, RLENGTH); exit }
+      }
+    ' "$file")
+    [ -n "$url" ] && { printf '%s\n' "$url"; return 0; }
+  done
 }
 
 echo "::group::Pre-start dev environment"

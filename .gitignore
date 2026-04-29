@@ -1,0 +1,4 @@
+
+# Local Claude Code state — never commit
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
