@@ -92,6 +92,31 @@ Before finalizing ANY finding, verify all five:
 
 **A clean `[]` is a confident, valuable review.** False positives waste more team time than a missed minor issue. When in doubt, drop the finding — or move it to `uncertain_observations[]` in core-meta.json.
 
+### When `uncertain_observations` is the WRONG bucket
+
+`uncertain_observations` is for "I genuinely don't know if this is a bug" — e.g. you saw a `??` operator and aren't sure of the surrounding type, or a function call where you can't tell whether the implementation is buggy without reading code outside the diff.
+
+If you can **clearly describe the bug shape from the diff alone** but only the runtime condition is unverified (e.g. "X gets deleted unconditionally on every code path that hits this handler — verify whether the FE always re-sends the existing value"), that is a **finding**, not an observation. Use `severity=major` (or `minor` if the impact is contained), and write `expected:` as "Verify <runtime condition>; if it does not hold, <fix>". The reviewer reading your output is a human; flagging static-clear bugs with a verification ask is more useful than burying them in observations the human won't read.
+
+Symptoms that mean it's a finding, not an observation:
+- "Static analysis shows X = bug, IF runtime condition Y holds." → finding (the IF goes in `expected`)
+- "I can quote the exact lines AND name the failure scenario." → finding
+- "A reviewer's only response would be 'yes, that's a bug — let me check Y.'" → finding
+
+Symptoms that mean it really is an observation:
+- "I can't tell from the diff alone whether this is a bug or not." → observation
+- "Behavior depends on a class/method I haven't seen the source of." → observation (or do a targeted Read in turn 3+ to disambiguate, then re-classify)
+
+### Cross-check prior bot comments (active corroboration, not just dedup)
+
+If `/tmp/other-bot-comments.json` is non-empty (path in context.md under `## Prior bot comments`), Read it. For every bot finding tagged HIGH/CRITICAL severity, decide one of three:
+
+1. **Corroborate** — you independently see the bug or, after a focused Read of the cited file/lines, you agree. Emit a finding with the same severity (or lower if you have a softer take) and add `(corroborated by <bot>)` to `reasoning`. Corroboration with a second independent tool is concrete evidence — it clears the false-positive self-check on its own.
+2. **Refute** — you read the cited code and disagree (e.g. the bot misread the control flow, or a guard exists the bot missed). Add a one-line entry to `uncertain_observations` like `"Refuted <bot> finding on <path>:<line>: <reason>"` so the audit trail is preserved.
+3. **Skip** — the finding is out of your scope (style/design-smell territory, sweep handles those) or low severity. Do nothing.
+
+Corroborate-or-refute applies to HIGH/CRITICAL bot findings only. Do not feel obligated to opine on every aikido nesting/extract-helper note — those are sweep / style-tooling territory.
+
 ## Classification
 
 Set `requires_human_review: true` ONLY when the reviewer genuinely cannot determine the correct behavior — situations requiring human judgment:

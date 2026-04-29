@@ -88,6 +88,16 @@ If you can't provide this evidence, drop the finding. **A clean `[]` is a confid
 
 **Verify the referenced artifact exists.** If a consistency finding references a specific library, component, or export, Read the relevant `package.json` or sibling source file to confirm it's actually installed/exported. If it isn't, DROP the finding — suggesting a replacement that doesn't exist is worse than flagging nothing. Also Read `/tmp/user-replies-on-ours.json` if context.md's `## User replies on prior findings` section lists it: if a maintainer already rebutted the same issue as a false positive, don't re-flag.
 
+### Cross-check prior bot comments (in-scope corroboration only)
+
+If `/tmp/other-bot-comments.json` is non-empty, Read it. For every HIGH/CRITICAL bot finding **that falls in your scope** (consistency, performance, weak-test, missing-test, design-smell, overcomplicated), decide:
+
+1. **Corroborate** — you agree after a focused Read. Emit a finding with `(corroborated by <bot>)` in `reasoning`.
+2. **Refute** — you disagree after a focused Read. Skip silently (core handles refutation logging).
+3. **Skip** — bot finding is out of your scope (logic bugs / spec → core; Java compile checks → core).
+
+**Do not** mirror the firehose of low-severity nesting/extract-helper notes from aikido — those are style-tooling territory and the user already gets them in line. Only opine on HIGH/CRITICAL.
+
 ## Output: Write ONE file
 
 You MUST write the file before exiting. After completing analysis, STOP and write — do not open new investigations.
