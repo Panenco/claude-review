@@ -315,7 +315,9 @@ TOTAL=$(jq 'length' /tmp/all-findings-merged.json)
 
 run_haiku_dedup() {
   local out="$1"
-  : > /tmp/dedup-output.txt
+  local log="${2:-/tmp/dedup-output.txt}"
+  # Per-attempt log path so retry doesn't wipe attempt-1's diagnostics.
+  : > "$log"
   rm -f "$out"
   ~/.local/bin/claude -p "=== review-dedup skill (follow exactly) ===
 
@@ -327,7 +329,7 @@ You are the dedup reviewer. Read /tmp/all-findings-merged.json (the full reviewe
     --setting-sources user \
     --allowedTools Read,Write \
     --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
-    --max-turns 4 > /tmp/dedup-output.txt 2>&1
+    --max-turns 4 > "$log" 2>&1
 }
 
 # Validate dedup output: must be a JSON array; every element must be an
@@ -379,16 +381,17 @@ else
   DEDUP_OK=false
   for attempt in 1 2; do
     echo "Haiku dedup attempt $attempt/2..."
-    if run_haiku_dedup /tmp/deduped-findings.json && validate_dedup_output /tmp/deduped-findings.json; then
+    LOG="/tmp/dedup-output-${attempt}.txt"
+    if run_haiku_dedup /tmp/deduped-findings.json "$LOG" && validate_dedup_output /tmp/deduped-findings.json; then
       DEDUP_OK=true
       break
     fi
-    echo "::warning::Haiku dedup attempt $attempt failed (invalid output or non-zero exit). See /tmp/dedup-output.txt"
+    echo "::warning::Haiku dedup attempt $attempt failed (invalid output or non-zero exit). See $LOG"
   done
   if [ "$DEDUP_OK" = "true" ]; then
     ALL_FINDINGS=$(cat /tmp/deduped-findings.json)
   else
-    echo "::error::Haiku dedup failed twice; posting raw findings (may include duplicates). Investigate /tmp/dedup-output.txt and /tmp/all-findings-merged.json."
+    echo "::error::Haiku dedup failed twice; posting raw findings (may include duplicates). Investigate /tmp/dedup-output-1.txt, /tmp/dedup-output-2.txt, and /tmp/all-findings-merged.json."
     ALL_FINDINGS=$(cat /tmp/all-findings-merged.json)
   fi
 fi
@@ -530,7 +533,14 @@ if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ] \
 fi
 
 RESOLUTION_VALID=false
-if jq -e 'type == "array"' /tmp/resolution-status.json >/dev/null 2>&1; then
+# Validate shape: must be a JSON array AND every entry must have the .id
+# and .status fields the verdict gate's id-join needs. A `type == "array"`
+# check alone allowed entries missing .id to silently slip through —
+# `map(.id)` would yield [null,null,...], `index($id)` would never match,
+# and STILL_PRESENT_BLOCKERS would be 0 even when prior blockers persisted,
+# letting REQUEST_CHANGES → APPROVE through the gate.
+if jq -e 'type == "array" and all(type == "object" and has("id") and has("status"))' \
+     /tmp/resolution-status.json >/dev/null 2>&1; then
   RESOLUTION_VALID=true
 fi
 

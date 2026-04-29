@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: 'v1'
+      dev_env_timeout_seconds:
+        description: 'How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. Heavy stacks (Java + Node + Docker compose) can need 5-6 minutes on a cold runner. Default 360.'
+        required: false
+        type: number
+        default: 360
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -559,10 +564,13 @@ jobs:
         run: |
           set -uo pipefail
           ARTIFACT_NAME="claude-review-state-pr-${PR_NUMBER}"
-          # List up to 30 recent runs on this branch (this workflow only),
-          # then find the most recent whose artifacts include the per-PR
-          # state artifact.
-          RUN_IDS=$(gh api --paginate "repos/${REPO}/actions/runs?branch=${BRANCH}&per_page=30" \
+          # List the 30 most recent runs on this branch (this workflow
+          # only), then find the most recent whose artifacts include the
+          # per-PR state artifact. NO --paginate: GitHub returns runs in
+          # reverse-chronological order, so the first page is the newest.
+          # Paginating would walk every run on a busy branch and trigger
+          # one artifact API call per run found.
+          RUN_IDS=$(gh api "repos/${REPO}/actions/runs?branch=${BRANCH}&per_page=30" \
             --jq '.workflow_runs[] | select(.name == env.WORKFLOW_NAME) | .id' 2>/dev/null || echo "")
 
           RUN_ID=""
@@ -908,6 +916,7 @@ jobs:
         shell: bash
         env:
           PKG_MANAGER: ${{ steps.pkg.outputs.manager }}
+          DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
         run: |
           set -uo pipefail
           source .review-scripts/phase-timing.sh
@@ -922,10 +931,11 @@ jobs:
             exit $RC
           fi
           PID=$(cat /tmp/dev-env/pid)
-          DEADLINE=$(( $(date +%s) + 180 ))
+          TIMEOUT="${DEV_ENV_TIMEOUT_SECONDS:-360}"
+          DEADLINE=$(( $(date +%s) + TIMEOUT ))
           while kill -0 "$PID" 2>/dev/null; do
             if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-              echo "::error::Background dev-env timed out after 180s; killing process group -$PID"
+              echo "::error::Background dev-env timed out after ${TIMEOUT}s; killing process group -$PID"
               kill -- -"$PID" 2>/dev/null || true
               [ -f /tmp/dev-env/log ] && tail -200 /tmp/dev-env/log
               phase_end dev-env
@@ -969,7 +979,6 @@ jobs:
           WEB_READY: ${{ steps.dev_env.outputs.web_ready || 'false' }}
           WEB_URL: ${{ steps.dev_env.outputs.web_url || '' }}
           AUTH_READY: ${{ steps.dev_env.outputs.auth_ready || 'false' }}
-          IS_FIRST_REVIEW: ${{ steps.first_review.outputs.is_first }}
           PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
           PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha || '' }}
         run: |
