@@ -1169,11 +1169,23 @@ jobs:
             # a 60s timeout and the loop is bounded to tests/*.sh (no
             # recursion, no other extensions) so consumer repos with large
             # test trees don't blow up the review pipeline.
-            echo "::group::Pipeline self-test — running tests/*.sh"
-            PASS=0; FAIL=0; FAILED_LIST=""
+            #
+            # Filename convention: *_test.sh = headless fixture test (run
+            # in CI), *smoke* = live-API smoke test (local-only, requires
+            # secrets like CLAUDE_CODE_OAUTH_TOKEN, would always fail in
+            # CI). We exclude smoke tests by name match.
+            echo "::group::Pipeline self-test — running tests/*.sh (excluding *smoke*)"
+            PASS=0; FAIL=0; SKIPPED=0; FAILED_LIST=""
             shopt -s nullglob
             for t in tests/*.sh; do
               [ -f "$t" ] || continue
+              case "$(basename "$t")" in
+                *smoke*)
+                  echo "Skipping $t (live-API smoke; documented as not-for-CI)"
+                  SKIPPED=$((SKIPPED + 1))
+                  continue
+                  ;;
+              esac
               echo "::group::$t"
               if timeout 60 bash "$t" 2>&1; then
                 PASS=$((PASS + 1))
@@ -1186,12 +1198,17 @@ jobs:
             done
             shopt -u nullglob
             TOTAL=$((PASS + FAIL))
-            if [ "$FAIL" -gt 0 ]; then OVERALL=FAIL; else OVERALL=PASS; fi
-            # Build the meta file. summary mentions the failing files (if any)
-            # so the review body shows them inline — that's the "evidence"
-            # for non-UI functional verification.
-            SUMMARY="Ran ${TOTAL} test script(s) from tests/*.sh: ${PASS} passed, ${FAIL} failed."
-            [ "$FAIL" -gt 0 ] && SUMMARY="${SUMMARY} Failed: ${FAILED_LIST}"
+            if [ "$TOTAL" -eq 0 ]; then
+              OVERALL=WARN
+              SUMMARY="No eligible tests/*.sh found (skipped ${SKIPPED} smoke test(s)). Add a *_test.sh fixture test that doesn't require a live API to enable pipeline-self-test verification."
+            elif [ "$FAIL" -gt 0 ]; then
+              OVERALL=FAIL
+              SUMMARY="Ran ${TOTAL} test script(s) from tests/*.sh: ${PASS} passed, ${FAIL} failed. Failed: ${FAILED_LIST}"
+            else
+              OVERALL=PASS
+              SUMMARY="Ran ${TOTAL} test script(s) from tests/*.sh: ${PASS} passed, ${FAIL} failed."
+            fi
+            [ "$SKIPPED" -gt 0 ] && SUMMARY="${SUMMARY} Skipped ${SKIPPED} smoke test(s) (live-API only)."
             jq -n \
               --arg overall "$OVERALL" \
               --argjson pass "$PASS" \
