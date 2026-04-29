@@ -1099,20 +1099,24 @@ jobs:
             launch_agent resolution review-resolution-checker "${{ inputs.model_standard }}" 10 \
               "You are the resolution checker for PR #$PR_NUMBER. /tmp/prior-state/review-state.json contains the previous review's findings. /tmp/since-last.diff contains the changes since that review. Classify every prior finding as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/resolution-status.json. If — and only if — you spot a high-severity (critical/major) net-new issue in the diff that the prior reviewers clearly missed, append it to /tmp/resolution-findings.json (otherwise write []). Follow the skill above exactly." \
               false
-            # Round-2: also classify open OTHER-bot inline comments (cursor,
-            # aikido, etc.) against the new diff. RESOLVED entries get a
-            # `✅ Resolved as of <sha>` reply + a resolveReviewThread mutation
-            # in post-review.sh. Skipped on round 1 (no since-last.diff and
-            # no prior threads worth re-evaluating). Only runs when there are
-            # other-bot top-level comments — cheap to launch but pointless to
-            # spawn against an empty input.
-            if [ -s /tmp/other-bot-comments.json ] && [ "$(jq 'length' /tmp/other-bot-comments.json 2>/dev/null || echo 0)" -gt 0 ]; then
-              echo "Round-2: launching bot-comment resolver (Sonnet, parallel)"
+            # Round-2: classify open inline comment threads against the new
+            # diff — both our own prior bot-reviewer's comments AND other
+            # bots' (cursor, aikido). RESOLVED entries get a `✅ Resolved
+            # as of <sha>` reply + a resolveReviewThread mutation in
+            # post-review.sh. Catches our own ORPHANED threads — comments
+            # from rounds whose state-artifact has expired or whose findings
+            # got dropped from the latest state.json (the resolution-checker
+            # only sees what's still in the artifact). Round-1 runs skip
+            # (no since-last.diff). Skip launch if both inputs are empty.
+            OTHER_N=$(jq 'length' /tmp/other-bot-comments.json 2>/dev/null || echo 0)
+            OWN_N=$(jq 'length' /tmp/prior-bot-comments.json 2>/dev/null || echo 0)
+            if [ "$OTHER_N" -gt 0 ] || [ "$OWN_N" -gt 0 ]; then
+              echo "Round-2: launching bot-comment resolver (Sonnet, parallel) — own=$OWN_N other=$OTHER_N"
               launch_agent bot-resolver review-bot-comment-resolver "${{ inputs.model_standard }}" 8 \
-                "You are the bot-comment resolver for PR #$PR_NUMBER. /tmp/other-bot-comments.json lists open inline comments from non-Claude bots. /tmp/since-last.diff is the diff since the prior review. Classify each in-scope comment as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/bot-resolution-status.json. Only RESOLVED entries trigger reply + thread close in the poster — silence is correct for STILL_PRESENT and skipped comments. Follow the skill above exactly." \
+                "You are the bot-comment resolver for PR #$PR_NUMBER. /tmp/prior-bot-comments.json lists open inline comments from our own bot-reviewer (catch-all for orphans not in the resolution-checker's state.json input). /tmp/other-bot-comments.json lists open inline comments from non-Claude bots. /tmp/since-last.diff is the diff since the prior review. Classify each in-scope comment from BOTH files as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/bot-resolution-status.json. Only RESOLVED entries trigger reply + thread close in the poster — silence is correct for STILL_PRESENT and skipped comments. Follow the skill above exactly." \
                 false
             else
-              echo "Round-2: bot-comment resolver skipped (no other-bot comments to classify)"
+              echo "Round-2: bot-comment resolver skipped (no open inline threads to classify)"
             fi
           fi
 

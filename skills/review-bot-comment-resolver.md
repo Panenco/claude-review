@@ -1,13 +1,17 @@
 ---
 name: review-bot-comment-resolver
-description: Round-2 only. Classifies open inline comments left by OTHER review bots (cursor, aikido, etc.) against the new diff. For each, decides RESOLVED / STILL_PRESENT / NEW_CONTEXT. The post-review step uses RESOLVED entries to reply + close the thread, so the PR UI reflects what the new commits actually fixed.
+description: Round-2 only. Classifies open inline comments on the PR — both our own prior bot-reviewer comments and OTHER review bots' (cursor, aikido) comments — against the new diff. For each, decides RESOLVED / STILL_PRESENT / NEW_CONTEXT. The post-review step uses RESOLVED entries to reply + close the thread, so the PR UI reflects what the new commits actually fixed.
 ---
 
 # Bot Comment Resolver (round 2 only)
 
-You run alongside the resolution checker on follow-up reviews. Where the resolution checker classifies **our own** prior findings, you classify **other bots'** (cursor, aikido, dependabot, etc.) inline comments — the threads that accumulate on every PR and never close themselves.
+You run alongside the resolution checker on follow-up reviews. The resolution checker classifies entries from the prior review's **state artifact** (structured input — drives verdict adjustment). You classify **open inline comment threads** on the PR — the messy, accumulating UI that doesn't get closed by anyone.
 
-Your output drives `post-review.sh`'s thread-resolution step. RESOLVED entries get a `✅ Resolved as of <sha>` reply on the bot's thread and a GraphQL `resolveReviewThread` mutation. STILL_PRESENT and NEW_CONTEXT entries get nothing — silence is the default, action is the exception.
+Two input streams, same classification work:
+- Our own prior bot-reviewer's inline comments (`/tmp/prior-bot-comments.json`). The resolution checker only sees findings still tracked in the latest state artifact; comments from older rounds (artifact retention expired, finding dropped from state, etc.) are orphaned in the GitHub UI. You catch those.
+- Other bots' inline comments (`/tmp/other-bot-comments.json`) — cursor, aikido, dependabot, sonarcloud, etc. No one else closes their threads when the underlying issue gets fixed.
+
+Your output drives `post-review.sh`'s thread-resolution step. RESOLVED entries get a `✅ Resolved as of <sha>` reply and a GraphQL `resolveReviewThread` mutation. STILL_PRESENT and NEW_CONTEXT entries get nothing — silence is the default, action is the exception.
 
 ## Efficiency
 
@@ -21,15 +25,17 @@ The vast majority of runs produce a small number of RESOLVED entries (or zero). 
 
 ## Turn 1: Read inputs
 
-1. `/tmp/other-bot-comments.json` — array of open top-level inline comments from non-Claude bots. Each entry has `id` (numeric GitHub comment id), `node_id`, `user` (e.g. `cursor[bot]`, `aikido-pr-checks[bot]`), `path`, `line`, `body` (truncated to ~500 chars). **You must read this fully.**
-2. `/tmp/since-last.diff` — the diff between the prior review's HEAD and the current HEAD. Defines the scope of what could have been fixed since the bot last looked. **You must read this fully.**
-3. `context.md` at the repo root — the full diff index lives at `## Per-file diff index`. When you need to inspect a specific file at a specific line, Read the chunk path the index points to (under `/tmp/diff-chunks/<file>.diff` or `/tmp/since-last-chunks/<file>.diff`).
+1. `/tmp/prior-bot-comments.json` — array of open top-level inline comments from our own bot-reviewer (path is in context.md under `## Prior bot comments`). Each entry has `id` (numeric GitHub REST id), `node_id`, `path`, `line`, `body`. May be empty if this is the first review on the PR. **Read fully when present.**
+2. `/tmp/other-bot-comments.json` — array of open top-level inline comments from non-Claude bots. Each entry has `id`, `node_id`, `user` (e.g. `cursor[bot]`, `aikido-pr-checks[bot]`), `path`, `line`, `body` (truncated to ~500 chars). **Read fully when present.**
+3. `/tmp/since-last.diff` — the diff between the prior review's HEAD and the current HEAD. Defines the scope of what could have been fixed since the bot last looked. **You must read this fully.**
+4. `context.md` at the repo root — the full diff index lives at `## Per-file diff index`. When you need to inspect a specific file at a specific line, Read the chunk path the index points to (under `/tmp/diff-chunks/<file>.diff` or `/tmp/since-last-chunks/<file>.diff`).
 
-If `/tmp/other-bot-comments.json` is missing or empty (`[]`), or `/tmp/since-last.diff` is missing, write `[]` to `/tmp/bot-resolution-status.json` and exit. Round-1 runs and rounds with no prior bot comments hit this path — that's normal.
+If both comment files are missing or empty (`[]`), or `/tmp/since-last.diff` is missing, write `[]` to `/tmp/bot-resolution-status.json` and exit. Round-1 runs and PRs with no prior bot comments hit this path — that's normal.
 
 ## What to classify, what to skip
 
 **In scope (classify):**
+- Our own bot-reviewer's prior inline comments (every one — they're our previous findings, all worth a yes/no on whether the new diff fixed them).
 - `cursor[bot]` structured findings (recognizable by `### <title>` followed by `**<Severity>**`).
 - Other code-review bots' substantive findings: bugbot, deepcode, sonarcloud, snyk-bot, etc.
 - `aikido-pr-checks[bot]` HIGH/CRITICAL severity findings.
@@ -41,6 +47,10 @@ If `/tmp/other-bot-comments.json` is missing or empty (`[]`), or `/tmp/since-las
 - Comments older than the prior review's HEAD when the file or line range was rewritten before round 1 — out of round-2 scope.
 
 If a comment's body is too truncated to understand the finding, classify as `NEW_CONTEXT` (you can't tell). Don't guess.
+
+### Avoid double-resolution conflicts
+
+The resolution checker (running in parallel) ALSO classifies findings from the prior state artifact, and the poster may resolve our own threads from THAT signal first. That's fine — its lookups are by path+line+author and use a different gate. If a thread is already resolved by the time the poster reaches your output, the GraphQL mutation no-ops. **Don't try to coordinate** — classify independently, let the poster sort out the apply order.
 
 ## Classification
 
@@ -100,6 +110,14 @@ Array, one entry per in-scope comment that you actively classified:
   },
   {
     "comment_id": 2178401522,
+    "bot_user": "panenco-claude-reviewer[bot]",
+    "path": "scripts/build-review.sh",
+    "line": 305,
+    "status": "RESOLVED",
+    "evidence": "since-last.diff +315 now wraps the SKILLS_DIR fallback in an explicit -f check before sourcing — addresses the missing-file race the prior c2 finding flagged"
+  },
+  {
+    "comment_id": 2178401533,
     "bot_user": "cursor[bot]",
     "path": "backend/java/core/domain/src/main/java/com/seaters/domain/core/fangroup/WaitingListInvitationCommunicationTranslation.java",
     "line": 41,
@@ -108,6 +126,8 @@ Array, one entry per in-scope comment that you actively classified:
   }
 ]
 ```
+
+`bot_user` carries through verbatim from the input — used by the poster's diagnostics, distinguishes our own bot from cursor / aikido / others.
 
 Write `[]` when there are no in-scope comments to classify (or when every in-scope comment is STILL_PRESENT and you choose to omit them — STILL_PRESENT entries are optional, RESOLVED entries are mandatory). Write the file even on partial failure — the poster reads it best-effort.
 
