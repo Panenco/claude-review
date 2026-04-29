@@ -567,9 +567,12 @@ jobs:
 
           RUN_ID=""
           for id in $RUN_IDS; do
+            # `|| true` on head: GitHub Actions runs `bash -eo pipefail`,
+            # so a SIGPIPE on the producer (when artifacts list is large)
+            # would abort the step. We only want the first match.
             HAS=$(gh api "repos/${REPO}/actions/runs/${id}/artifacts" \
               --jq ".artifacts[] | select(.name==\"${ARTIFACT_NAME}\") | .id" \
-              2>/dev/null | head -1)
+              2>/dev/null | head -1 || true)
             if [ -n "$HAS" ]; then
               RUN_ID="$id"
               break
@@ -1150,10 +1153,66 @@ jobs:
           # Separate launch (different MCP config + tool list) — not driven
           # by launch_agent. Skips when the planner said skip, the web
           # service didn't come up, or there's no prompt to drive it.
-          if [ "$NEEDS_BUILD" = "true" ] && [ "$WEB_READY" = "true" ] && [ -f test-plan.md ] && [ -s /tmp/functional-prompt.txt ]; then
-            # `|| true` guards against missing '## Strategy:' line: grep's
-            # non-zero exit would otherwise abort the step under set -e.
+          # Strategy resolution. `|| true` guards against missing
+          # '## Strategy:' line: grep's non-zero exit would otherwise
+          # abort the step under GitHub Actions' default bash -eo pipefail.
+          STRATEGY=""
+          if [ -f test-plan.md ]; then
             STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md 2>/dev/null | sed -E 's/.*Strategy:[[:space:]]*//' | tr -d '[:space:]' || true)
+          fi
+
+          if [ "$STRATEGY" = "pipeline-self-test" ] && [ -d tests ]; then
+            # Pipeline self-test branch: the planner picked this when the
+            # repo has tests/*.sh but no application surface (typical for
+            # reviewer-self-modifying PRs and CI-tooling repos). Run the
+            # bash test scripts directly — no agent needed. Each test gets
+            # a 60s timeout and the loop is bounded to tests/*.sh (no
+            # recursion, no other extensions) so consumer repos with large
+            # test trees don't blow up the review pipeline.
+            echo "::group::Pipeline self-test — running tests/*.sh"
+            PASS=0; FAIL=0; FAILED_LIST=""
+            shopt -s nullglob
+            for t in tests/*.sh; do
+              [ -f "$t" ] || continue
+              echo "::group::$t"
+              if timeout 60 bash "$t" 2>&1; then
+                PASS=$((PASS + 1))
+              else
+                rc=$?
+                FAIL=$((FAIL + 1))
+                FAILED_LIST="${FAILED_LIST}${t} (exit ${rc}) "
+              fi
+              echo "::endgroup::"
+            done
+            shopt -u nullglob
+            TOTAL=$((PASS + FAIL))
+            if [ "$FAIL" -gt 0 ]; then OVERALL=FAIL; else OVERALL=PASS; fi
+            # Build the meta file. summary mentions the failing files (if any)
+            # so the review body shows them inline — that's the "evidence"
+            # for non-UI functional verification.
+            SUMMARY="Ran ${TOTAL} test script(s) from tests/*.sh: ${PASS} passed, ${FAIL} failed."
+            [ "$FAIL" -gt 0 ] && SUMMARY="${SUMMARY} Failed: ${FAILED_LIST}"
+            jq -n \
+              --arg overall "$OVERALL" \
+              --argjson pass "$PASS" \
+              --argjson fail "$FAIL" \
+              --argjson total "$TOTAL" \
+              --arg summary "$SUMMARY" \
+              '{
+                strategy: "pipeline-self-test",
+                overall: $overall,
+                areas_tested: ["pipeline-self-test"],
+                screenshots: [],
+                pass: $pass,
+                fail: $fail,
+                total: $total,
+                summary: $summary,
+                uncertain_observations: []
+              }' > /tmp/functional-meta.json
+            echo '[]' > /tmp/functional-findings.json
+            echo "Pipeline self-test: $PASS/$TOTAL passed (overall=$OVERALL)"
+            echo "::endgroup::"
+          elif [ "$NEEDS_BUILD" = "true" ] && [ "$WEB_READY" = "true" ] && [ -f test-plan.md ] && [ -s /tmp/functional-prompt.txt ]; then
             if [ "$STRATEGY" != "skip" ]; then
               echo "Running functional tester (Playwright + Bash) — strategy: ${STRATEGY:-unknown}..."
               mkdir -p /tmp/screenshots

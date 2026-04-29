@@ -127,7 +127,10 @@ assert_eq "verdict_max(COMMENT, APPROVE)" "COMMENT"        "$(verdict_max COMMEN
 assert_eq "verdict_max(APPROVE, COMMENT)" "COMMENT"        "$(verdict_max APPROVE COMMENT)"
 assert_eq "verdict_max(COMMENT, COMMENT)" "COMMENT"        "$(verdict_max COMMENT COMMENT)"
 assert_eq "verdict_max(APPROVE, APPROVE)" "APPROVE"        "$(verdict_max APPROVE APPROVE)"
-assert_eq "verdict_max(unknown, COMMENT)" "COMMENT"        "$(verdict_max UNKNOWN_ENUM COMMENT)"
+assert_eq "verdict_max(unknown, COMMENT)"  "REQUEST_CHANGES" "$(verdict_max UNKNOWN_ENUM COMMENT)"
+assert_eq "verdict_max(unknown, APPROVE)"  "REQUEST_CHANGES" "$(verdict_max UNKNOWN_ENUM APPROVE)"
+assert_eq "verdict_max(APPROVE, unknown)"  "REQUEST_CHANGES" "$(verdict_max APPROVE UNKNOWN_ENUM)"
+assert_eq "verdict_max(empty, empty)"      "REQUEST_CHANGES" "$(verdict_max '' '')"
 
 # 4b. ROUND2_VALID parsed-validity. Setup: write three temp state files —
 #     one valid, one malformed JSON, one missing required keys.

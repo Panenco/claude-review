@@ -325,7 +325,9 @@ Choose one of:
 
 | PR type | Strategy | What the agent does |
 |---------|----------|---------------------|
-| Docs-only, CI-only, config-only, pipeline changes | `skip` | Nothing |
+| Docs-only, lint/format-only, README-only | `skip` | Nothing |
+| Reviewer-self-modifying PR (scripts/, skills/, workflows/, bugbot.md) AND repo has `tests/*.sh` | `pipeline-self-test` | Workflow runs `tests/*.sh` directly (no agent) and surfaces pass/fail in the review body |
+| Pipeline / CI change with no `tests/*.sh` harness | `skip` | Nothing (note the gap in the plan body) |
 | <30 LoC trivial change | `quick` | One smoke check (page loads / endpoint responds) |
 | Anything with real feature changes (API, UI, or both) | `functional` | Full end-to-end: UI flows first, API via browser fetch, curl only as last resort |
 

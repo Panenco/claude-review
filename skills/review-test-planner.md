@@ -41,11 +41,22 @@ Map to a strategy:
 
 | Condition | Strategy | What runs |
 |-----------|----------|-----------|
-| Docs-only, CI-only, review-pipeline changes | `skip` | Nothing |
-| Lint/format-only diffs, README, CI-only YAML that doesn't deploy or build the deliverable | `skip` | Nothing |
+| Docs-only diffs, README-only, lint/format-only YAML that doesn't deploy or build the deliverable | `skip` | Nothing |
+| **Pipeline-self-test** — `## Flags: reviewer_self_modification: true` in context.md AND repo has executable `tests/*.sh` | `pipeline-self-test` | Workflow runs `tests/*.sh` directly (no agent), captures pass/fail counts as functional evidence |
+| **CI-only / pipeline change with NO `tests/*.sh`** — workflow YAML or build scripts that change behaviour but the repo has no bash test harness | `skip` (regrettably) | Nothing — note this gap in the plan body so the reviewer downgrades verdict appropriately |
 | Trivial single-file rename, type-only edits, patch-level lockfile churn | `quick` | One smoke check |
 | **Technical change** — any PR whose stated intent is "no user-visible behavior change", but that touches non-trivial runtime code (see "Technical change detection" below) | `functional` + `Technical change: true` | Smoke scenario (see "Technical-change smoke scenario") |
 | Real feature changes | `functional` | Functional tester agent (Playwright + Bash) |
+
+#### When to pick `pipeline-self-test`
+
+Pick this strategy whenever:
+1. `context.md`'s `## Flags` section has `reviewer_self_modification: true` (the change touches `scripts/`, `skills/`, `.github/workflows/`, `bugbot.md`, or `.github/review-config.md` of the reviewer pipeline itself), **AND**
+2. The repo has at least one executable `tests/*.sh` script (typically a fixture-driven bash test like `tests/dedup_test.sh`).
+
+Don't write any `## Scenarios` for this strategy — the workflow shells out to the test scripts directly. The `## Strategy: pipeline-self-test` line is the entire signal. Optionally add a one-paragraph explanation under `## Setup hints` describing what the test scripts cover.
+
+This closes a real gap: heavily-functional reviewer-self-modifying PRs (verdict-gate changes, dedup logic, workflow plumbing) used to fall to `skip` because there's no app to click. Their actual functional verification is the bash test harness — `pipeline-self-test` makes that visible in the review body alongside any UI-functional results.
 
 #### Technical change detection
 

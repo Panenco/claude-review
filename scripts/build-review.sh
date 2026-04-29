@@ -33,9 +33,16 @@ set -euo pipefail
 # Pick the more-severe of two verdicts. Order: REQUEST_CHANGES > COMMENT > APPROVE.
 # Used by the round-2 degraded branch to fail-closed when resolution status is
 # unknown — never silently downgrade a prior REQUEST_CHANGES.
+#
+# Both inputs must be in {REQUEST_CHANGES, COMMENT, APPROVE}. Anything else
+# (typo, corrupted prior-state, future enum we don't know about) is treated
+# as REQUEST_CHANGES — fail-closed. The previous default of APPROVE was
+# fail-open: a corrupted PRIOR_VERDICT would silently downgrade.
 verdict_max() {
-  local a="${1:-APPROVE}"
-  local b="${2:-APPROVE}"
+  local a="${1:-REQUEST_CHANGES}"
+  local b="${2:-REQUEST_CHANGES}"
+  case "$a" in REQUEST_CHANGES|COMMENT|APPROVE) ;; *) a="REQUEST_CHANGES" ;; esac
+  case "$b" in REQUEST_CHANGES|COMMENT|APPROVE) ;; *) b="REQUEST_CHANGES" ;; esac
   case "$a:$b" in
     REQUEST_CHANGES:*|*:REQUEST_CHANGES) echo "REQUEST_CHANGES" ;;
     COMMENT:*|*:COMMENT)                 echo "COMMENT" ;;
@@ -588,8 +595,12 @@ if [ "$ROUND2_VALID" = "true" ]; then
     # silently downgrade REQUEST_CHANGES.
     DEGRADED_REASON="missing"
     [ -f /tmp/resolution-status.json ] && DEGRADED_REASON="malformed"
-    VERDICT=$(verdict_max "$PRIOR_VERDICT" "$VERDICT")
-    echo "::warning::Round-2 degraded: resolution-status.json $DEGRADED_REASON — pinned verdict to max(prior=$PRIOR_VERDICT, current=$VERDICT)=$VERDICT."
+    # Capture the per-PR ladder's verdict BEFORE pinning so the warning
+    # log shows both inputs to verdict_max — otherwise `current=$VERDICT`
+    # would print the post-pin value (always equal to the result).
+    PRE_PIN_VERDICT="$VERDICT"
+    VERDICT=$(verdict_max "$PRIOR_VERDICT" "$PRE_PIN_VERDICT")
+    echo "::warning::Round-2 degraded: resolution-status.json $DEGRADED_REASON — pinned verdict to max(prior=$PRIOR_VERDICT, current=$PRE_PIN_VERDICT)=$VERDICT."
   fi
 fi
 
@@ -751,10 +762,19 @@ FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // [])
 FUNCTIONAL_OK="${FUNCTIONAL_OK:-1}"
 if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
   EMOJI="✅"; [ "$FUNCTIONAL_OVERALL" = "FAIL" ] && EMOJI="❌"; [ "$FUNCTIONAL_OVERALL" = "WARN" ] && EMOJI="⚠️"
+  # Label depends on strategy: pipeline-self-test runs bash scripts (no
+  # screenshots), Playwright runs are "Functional Validation" with shots.
+  if [ "$FUNCTIONAL_STRATEGY" = "pipeline-self-test" ]; then
+    PASS_COUNT=$(echo "$FUNCTIONAL_META" | jq -r '.pass // 0')
+    TOTAL_COUNT=$(echo "$FUNCTIONAL_META" | jq -r '.total // 0')
+    SECTION_HEADER="$EMOJI <b>Pipeline Self-Test — $FUNCTIONAL_OVERALL</b> (${PASS_COUNT}/${TOTAL_COUNT} bash test script(s) passed)"
+  else
+    SECTION_HEADER="$EMOJI <b>Functional Validation — $FUNCTIONAL_OVERALL</b> ($FUNCTIONAL_SCREENSHOT_COUNT screenshots)"
+  fi
   {
     echo ""
     echo "<details>"
-    echo "<summary>$EMOJI <b>Functional Validation — $FUNCTIONAL_OVERALL</b> ($FUNCTIONAL_SCREENSHOT_COUNT screenshots)</summary>"
+    echo "<summary>$SECTION_HEADER</summary>"
     echo ""
     if [ -n "$FUNCTIONAL_SUMMARY_TEXT" ] && [ "$FUNCTIONAL_SUMMARY_TEXT" != "null" ]; then
       echo "#### Summary"
