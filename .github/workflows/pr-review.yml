@@ -37,6 +37,11 @@ on:
         required: false
         type: number
         default: 25
+      functional_max_turns:
+        description: 'Max turns for the functional tester (Sonnet + Playwright MCP + Bash). 80 is tight when the test plan has ≥5 UI scenarios — agent often crashes mid-scenario with "Reached max turns" and produces partial output. 120 gives headroom for navigate + snapshot + screenshot + interact + verify + axe-audit per scenario across a 5-6 scenario plan.'
+        required: false
+        type: number
+        default: 120
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -1295,7 +1300,7 @@ jobs:
                 --mcp-config /tmp/mcp-playwright.json \
                 --permission-mode dontAsk \
                 --allowedTools "Bash,Read,Write,ToolSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_close,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_type,mcp__playwright__browser_hover,mcp__playwright__browser_resize,mcp__playwright__browser_tabs,mcp__playwright__browser_navigate_back,mcp__playwright__browser_evaluate" \
-                --max-turns 80 > "${LOGS[functional]}" 2>&1 &
+                --max-turns "${{ inputs.functional_max_turns }}" > "${LOGS[functional]}" 2>&1 &
               PIDS[functional]=$!
             else
               echo "Functional tester skipped — strategy: skip"
