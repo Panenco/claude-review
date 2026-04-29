@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: 'claude-haiku-4-5'
+      model_functional:
+        description: 'Model for the functional tester (Playwright MCP + Bash). Defaults to Haiku because the upstream test-planner (Sonnet) writes concrete scenarios with explicit Expected values and the context-builder (Sonnet) compiles spec sources — the functional tester executes the plan and compares observed-vs-expected on concrete strings/numbers, which Haiku handles well. Override to model_standard if your test-planner outputs vague scenarios that need on-the-fly inference.'
+        required: false
+        type: string
+        default: 'claude-haiku-4-5'
       pipeline_ref:
         description: 'Ref of panenco/claude-review to install skills/scripts from. Default v1 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo.'
         required: false
@@ -1296,7 +1301,7 @@ jobs:
               echo "Running functional tester (Playwright + Bash) — strategy: ${STRATEGY:-unknown}..."
               mkdir -p /tmp/screenshots
               ~/.local/bin/claude -p "$(cat /tmp/functional-prompt.txt)" \
-                --model ${{ inputs.model_standard }} \
+                --model ${{ inputs.model_functional }} \
                 --mcp-config /tmp/mcp-playwright.json \
                 --permission-mode dontAsk \
                 --allowedTools "Bash,Read,Write,ToolSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_close,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_type,mcp__playwright__browser_hover,mcp__playwright__browser_resize,mcp__playwright__browser_tabs,mcp__playwright__browser_navigate_back,mcp__playwright__browser_evaluate" \
