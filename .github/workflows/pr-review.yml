@@ -1017,6 +1017,7 @@ jobs:
             [core-pass2]=/tmp/core-output-2.txt
             [sweep-pass2]=/tmp/sweep-output-2.txt
             [resolution]=/tmp/resolution-output.txt
+            [bot-resolver]=/tmp/bot-resolver-output.txt
           )
 
           # Reap any agents still alive on early exit so their output files
@@ -1098,6 +1099,21 @@ jobs:
             launch_agent resolution review-resolution-checker "${{ inputs.model_standard }}" 10 \
               "You are the resolution checker for PR #$PR_NUMBER. /tmp/prior-state/review-state.json contains the previous review's findings. /tmp/since-last.diff contains the changes since that review. Classify every prior finding as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/resolution-status.json. If — and only if — you spot a high-severity (critical/major) net-new issue in the diff that the prior reviewers clearly missed, append it to /tmp/resolution-findings.json (otherwise write []). Follow the skill above exactly." \
               false
+            # Round-2: also classify open OTHER-bot inline comments (cursor,
+            # aikido, etc.) against the new diff. RESOLVED entries get a
+            # `✅ Resolved as of <sha>` reply + a resolveReviewThread mutation
+            # in post-review.sh. Skipped on round 1 (no since-last.diff and
+            # no prior threads worth re-evaluating). Only runs when there are
+            # other-bot top-level comments — cheap to launch but pointless to
+            # spawn against an empty input.
+            if [ -s /tmp/other-bot-comments.json ] && [ "$(jq 'length' /tmp/other-bot-comments.json 2>/dev/null || echo 0)" -gt 0 ]; then
+              echo "Round-2: launching bot-comment resolver (Sonnet, parallel)"
+              launch_agent bot-resolver review-bot-comment-resolver "${{ inputs.model_standard }}" 8 \
+                "You are the bot-comment resolver for PR #$PR_NUMBER. /tmp/other-bot-comments.json lists open inline comments from non-Claude bots. /tmp/since-last.diff is the diff since the prior review. Classify each in-scope comment as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/bot-resolution-status.json. Only RESOLVED entries trigger reply + thread close in the poster — silence is correct for STILL_PRESENT and skipped comments. Follow the skill above exactly." \
+                false
+            else
+              echo "Round-2: bot-comment resolver skipped (no other-bot comments to classify)"
+            fi
           fi
 
           # Spec-compliance: PRD-vs-code comparison; runs only when a PRD was
@@ -1155,7 +1171,7 @@ jobs:
           # "not launched" so the summary line doesn't show FAILED on
           # legitimately-skipped roles. ROLES is the single source of truth
           # for which agents go through the wait/status/log loops below.
-          ROLES=(core sweep spec functional core-pass2 sweep-pass2 resolution)
+          ROLES=(core sweep spec functional core-pass2 sweep-pass2 resolution bot-resolver)
           declare -A AGENT_OK=()
           for role in "${ROLES[@]}"; do
             if [ -z "${PIDS[$role]:-}" ]; then
