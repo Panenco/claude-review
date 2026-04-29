@@ -918,12 +918,28 @@ jobs:
           # Without this, Playwright MCP defaults to os.tmpdir()/playwright-mcp-output/<sessionId>/...
           # which our upload step never finds.
           mkdir -p /tmp/screenshots
+
+          # Pre-warm the @playwright/mcp install before the Claude CLI
+          # spawns it. Without this the first npx invocation downloads +
+          # extracts the package on the runner's hot path, and the Claude
+          # CLI's MCP-startup handshake times out before tools register.
+          # Symptom on the Seaters dogfood (run 25101256179): functional
+          # agent's `ToolSearch select:mcp__playwright__browser_navigate`
+          # returned "No matching deferred tools found" across 6 retries
+          # → 0 screenshots, every UI scenario marked untestable. Cache
+          # is per-runner so this is a once-per-cold-runner cost (~10-20s),
+          # but the failure mode it prevents is silent and total.
+          # `--yes` is also passed in the MCP config so npx never prompts.
+          echo "Pre-warming @playwright/mcp@latest..."
+          npx --yes @playwright/mcp@latest --version 2>&1 | head -5 || \
+            echo "::warning::@playwright/mcp@latest pre-warm failed — functional tester may still hit MCP startup timeout. See log above for npx output."
+
           cat > /tmp/mcp-playwright.json << 'MCPEOF'
           {
             "mcpServers": {
               "playwright": {
                 "command": "npx",
-                "args": ["@playwright/mcp@latest", "--headless", "--output-dir", "/tmp/screenshots"]
+                "args": ["--yes", "@playwright/mcp@latest", "--headless", "--output-dir", "/tmp/screenshots"]
               }
             }
           }
