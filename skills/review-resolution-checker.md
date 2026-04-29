@@ -64,7 +64,7 @@ The diff substantially rewrites the area to the point that the original finding 
 - **Classification is your primary output.** You must produce one entry per prior finding, in input order — no merging, splitting, or reordering of the prior set.
 - **New findings are optional and rare.** Surface them only when severity ≥ `major` and the evidence is concrete (specific diff lines, not speculation). If you wouldn't bet a coffee on it being a real issue, drop it.
 - **Match by `id`.** The classification output's `id` must equal the input finding's `id` verbatim.
-- **`evidence` is mandatory** in every classification. Cite the diff line(s) you based the call on (or `"path unchanged in diff"` for `STILL_PRESENT` when the file isn't touched).
+- **`evidence` is mandatory** in every classification, but keep it terse (≤140 chars). State **what changed**, not the diff syntax: write `"line 42 now wraps the call in try/catch"` instead of `"diff @@ -40,3 +40,7 @@: line 42 now wraps the call in try/catch"`. For `STILL_PRESENT` when the file isn't touched, just write `"path unchanged in diff"`. The body summary (and the auto-resolve thread reply) prefer human-readable evidence over diff-hunk dumps — if the reader needs the precise hunk, they can open the source thread.
 
 ## Output: TWO files
 
@@ -77,7 +77,7 @@ Array, exactly one entry per input finding:
   {
     "id": "c3",
     "status": "RESOLVED",
-    "evidence": "Line 42 of services/auth.ts now wraps the call in try/catch (diff @@ -40,3 +40,7 @@)",
+    "evidence": "services/auth.ts:42 now wraps the call in try/catch",
     "prior_severity": "major"
   },
   {

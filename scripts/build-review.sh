@@ -736,19 +736,43 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
     echo ""
   fi
   # Round-2 only: surface what the resolution checker found.
+  # The body lists each prior finding by id + its original title so the
+  # reader can recognise the issue at a glance. The full evidence (and
+  # diff-hunk references) lives on the auto-resolved source thread, not
+  # here — keeps the body scannable instead of pasting diff syntax.
   RESOLVED_N=$(echo "$RESOLVED_LIST" | jq 'length')
   STILL_N=$(echo "$STILL_PRESENT_LIST" | jq 'length')
   if [ "$RESOLVED_N" -gt 0 ] || [ "$STILL_N" -gt 0 ]; then
+    PRIOR_FINDINGS_JSON='[]'
+    [ -f /tmp/prior-state/review-state.json ] \
+      && PRIOR_FINDINGS_JSON=$(jq '.findings // []' /tmp/prior-state/review-state.json 2>/dev/null || echo '[]')
     echo "### Since previous review"
     echo ""
+    # Helper jq: join an entry against prior findings on .id, return the
+    # prior title (or fall back to a 100-char clipped evidence if the
+    # title is missing). Defensive against malformed prior state.
+    JOIN_TITLE='
+      . as $entry
+      | ($prior // []) as $p
+      | ($p | map(select(.id == $entry.id)) | .[0]) as $f
+      | ($f.title // ($entry.evidence // ""))
+      | (if length > 120 then .[:117] + "..." else . end)
+    '
     if [ "$RESOLVED_N" -gt 0 ]; then
       echo "**Resolved (${RESOLVED_N}):**"
-      echo "$RESOLVED_LIST" | jq -r '.[] | "- `\(.id)` — \(.evidence)"'
+      echo "$RESOLVED_LIST" | jq -r --argjson prior "$PRIOR_FINDINGS_JSON" \
+        '.[] | "- `\(.id)` — " + ('"$JOIN_TITLE"')'
       echo ""
     fi
     if [ "$STILL_N" -gt 0 ]; then
       echo "**Still present (${STILL_N}):**"
-      echo "$STILL_PRESENT_LIST" | jq -r '.[] | "- `\(.id)` (\(.prior_severity // "?")) — \(.evidence)"'
+      echo "$STILL_PRESENT_LIST" | jq -r --argjson prior "$PRIOR_FINDINGS_JSON" \
+        '.[] as $e
+         | ($prior | map(select(.id == $e.id)) | .[0]) as $f
+         | "- `\($e.id)` (\($e.prior_severity // ($f.severity // "?"))) — " + (
+             ($f.title // ($e.evidence // ""))
+             | (if length > 120 then .[:117] + "..." else . end)
+           )'
       echo ""
     fi
   fi
