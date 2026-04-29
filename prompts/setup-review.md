@@ -238,6 +238,21 @@ Rules:
 
 If the project has no services to start (pure-docs repo, lib-only package), do **not** create this file. Its absence triggers degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step — either commit a real one or don't commit one at all.
 
+### Secrets for dev-start.sh
+
+If bring-up needs credentials that aren't checked-in defaults (private registry token, S3 keys for seeding, third-party API key the dev server requires at boot), do not hardcode them. Instead emit a to-do for the user:
+
+> "**Add a repo secret named `DEV_ENV_SECRETS`** with newline-separated `KEY=VALUE` pairs. The pipeline exports each line as an env var to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Pick names that match what your script reads. Example:
+> ```
+> NPM_TOKEN=npm_xxxxx
+> AWS_ACCESS_KEY_ID=AKIA...
+> AWS_SECRET_ACCESS_KEY=...
+> # values are exposed verbatim — do not wrap in quotes
+> ```
+> Without this, lines in `dev-start.sh` that reference these env vars will see them as empty and the script will fail at the first command that needs them — same fail-hard semantics as any other dev-start error."
+
+Detect this need passively: grep the `dev-start.sh` you just drafted for `$VAR` references that aren't shell built-ins or values you already set inside the script. If any look like they should come from outside (registry creds, cloud SDK keys, anything ending in `_TOKEN` / `_KEY` / `_SECRET`), surface the to-do. If `dev-start.sh` is self-contained (compose-defined creds, no external API), skip this step.
+
 ## Step 4.6: External issue tracker (optional)
 
 The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can opt into an extra hook that fetches the external spec and includes it in the reviewer's context. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
@@ -420,6 +435,10 @@ It is common to fix one and miss the other on a first setup; the installation pa
 ### `TRACKER_SECRETS` (optional, for Step 4.6 opt-in)
 
 Single multiline secret with newline-separated `KEY=VALUE` pairs that your `fetch-issue.sh` reads as env vars. Without it, the hook runs but every referenced env var is empty — the Actions log will show a `::warning::` from `fetch-issue.sh`, and the review completes without external-spec context.
+
+### `DEV_ENV_SECRETS` (optional, for Step 4.5 when dev-start.sh needs creds)
+
+Single multiline secret with newline-separated `KEY=VALUE` pairs exposed as env vars to `.github/claude-review/dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot. Without it, references in `dev-start.sh` to these env vars are empty — the script will fail hard at the first command that depends on them, and the whole review stops (same fail-hard semantics as any other `dev-start.sh` error). Skip if your bring-up is self-contained.
 
 ## Step 7: Test
 
