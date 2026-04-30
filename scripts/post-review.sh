@@ -179,6 +179,25 @@ fi
 
 # Build and POST atomic review
 VERDICT=$(jq -r '.verdict' review-result.json)
+
+# GitHub policy blocks `github-actions[bot]` from posting APPROVE reviews
+# (422 Unprocessable Entity: "GitHub Actions is not permitted to approve
+# pull requests"). When the App-token path falls back to github-actions
+# (e.g. CLAUDE_REVIEW_APP_CLIENT_ID secret missing or renamed), an APPROVE
+# verdict goes through a 422 + retry + final ::warning::, leaving the PR
+# without any visible review at all. Detect this combo before the POST,
+# downgrade to COMMENT, and prepend a banner so the user knows why the
+# verdict was attenuated and how to restore APPROVE capability.
+if [ "$VERDICT" = "APPROVE" ] && [ "${BOT_USER:-}" = "github-actions[bot]" ]; then
+  echo "::warning::Verdict APPROVE downgraded to COMMENT — github-actions[bot] cannot post APPROVE reviews. Configure CLAUDE_REVIEW_APP_CLIENT_ID + CLAUDE_REVIEW_APP_PRIVATE_KEY + CLAUDE_REVIEW_APP_SLUG repo secrets and install the App on this repo to restore APPROVE capability (see prompts/setup-review.md)."
+  VERDICT=COMMENT
+  BANNER="> :information_source: **Verdict downgraded APPROVE → COMMENT** — \`github-actions[bot]\` cannot post APPROVE reviews per GitHub policy. The pipeline determined APPROVE on merit; configure a custom GitHub App (\`CLAUDE_REVIEW_APP_CLIENT_ID\` / \`_PRIVATE_KEY\` / \`_SLUG\` repo secrets + App installed on this repo) to restore APPROVE capability. See [setup guide](https://github.com/Panenco/claude-review/blob/main/prompts/setup-review.md#step-6-verify-secrets-and-app-install)."
+  printf '%s\n\n%s' "$BANNER" "$(cat /tmp/review-body.md)" > /tmp/review-body.md.new && mv /tmp/review-body.md.new /tmp/review-body.md
+  # Also write the downgrade flag into review-result.json so verdict-gate
+  # and downstream artifact consumers can see it.
+  jq '.posting_downgrade = "APPROVE→COMMENT (github-actions identity)"' review-result.json > /tmp/r.json && mv /tmp/r.json review-result.json
+fi
+
 jq -n \
   --arg event "$VERDICT" \
   --rawfile body /tmp/review-body.md \
