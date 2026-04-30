@@ -265,16 +265,51 @@ jobs:
             echo "Pure docs PR — skipping build setup."
           fi
 
-      # Detect package manager from lockfile.
+      # Detect package manager from lockfile. Looks at the repo root first
+      # (preserves single-app behavior), then falls back to common monorepo
+      # locations (`apps/*`, `packages/*`). Emits `dir` and `lockfile`
+      # outputs so downstream steps can install in the right place and
+      # point setup-node's cache at the correct lockfile. Prefers pnpm >
+      # yarn > npm; first hit wins.
       - name: Detect package manager
         id: pkg
         if: steps.code_check.outputs.needs_build == 'true'
         shell: bash
         run: |
-          if [ -f pnpm-lock.yaml ]; then echo "manager=pnpm" >> "$GITHUB_OUTPUT"
-          elif [ -f yarn.lock ]; then echo "manager=yarn" >> "$GITHUB_OUTPUT"
-          elif [ -f package-lock.json ]; then echo "manager=npm" >> "$GITHUB_OUTPUT"
-          else echo "manager=none" >> "$GITHUB_OUTPUT"; fi
+          set -uo pipefail
+          MANAGER=none
+          DIR=""
+          LOCK=""
+          # Build the candidate list: root first (so single-app repos behave
+          # exactly as before), then alphabetically-sorted apps/* and
+          # packages/* entries. Each candidate dir is checked for any of
+          # the three lockfile names in the pnpm > yarn > npm preference.
+          CANDIDATE_DIRS=(".")
+          while IFS= read -r d; do CANDIDATE_DIRS+=("$d"); done < <(
+            find apps packages -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort
+          )
+          for d in "${CANDIDATE_DIRS[@]}"; do
+            for f in pnpm-lock.yaml yarn.lock package-lock.json; do
+              if [ -f "$d/$f" ]; then
+                DIR="$d"
+                LOCK="$d/$f"
+                case "$f" in
+                  pnpm-lock.yaml)    MANAGER=pnpm ;;
+                  yarn.lock)         MANAGER=yarn ;;
+                  package-lock.json) MANAGER=npm ;;
+                esac
+                break 2
+              fi
+            done
+          done
+          if [ "$MANAGER" = "none" ]; then
+            echo "No JS lockfile found at root or in apps/*, packages/* — JS install + analyzers will be skipped."
+          else
+            echo "Detected $MANAGER lockfile at $LOCK"
+          fi
+          echo "manager=$MANAGER" >> "$GITHUB_OUTPUT"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "lockfile=$LOCK" >> "$GITHUB_OUTPUT"
 
       - name: Set up pnpm
         if: steps.pkg.outputs.manager == 'pnpm'
@@ -296,12 +331,24 @@ jobs:
           node-version-file: ${{ steps.node_version.outputs.file || '' }}
           node-version: ${{ steps.node_version.outputs.file == '' && 'lts/*' || '' }}
           cache: ${{ steps.pkg.outputs.manager }}
+          # Point the cache at the actual lockfile so monorepo layouts
+          # (lockfile under apps/*/ or packages/*/) cache correctly. When
+          # the lockfile is at root the path resolves to ./pnpm-lock.yaml
+          # which matches setup-node's default behavior.
+          cache-dependency-path: ${{ steps.pkg.outputs.lockfile }}
 
       # Soft-fail: degraded review is better than no review.
+      # `working-directory` cd's into the lockfile's dir (`.` for single-app
+      # repos, `apps/<name>` or `packages/<name>` for monorepos). Downstream
+      # analyzers that exec `pnpm/yarn/npm` are responsible for finding
+      # node_modules — the Playwright browser-install step already auto-
+      # discovers its dir, and the context-builder agent runs commands at
+      # repo root and uses relative paths.
       - name: Install dependencies
         id: install
         if: steps.code_check.outputs.needs_build == 'true' && steps.pkg.outputs.manager != 'none'
         shell: bash
+        working-directory: ${{ steps.pkg.outputs.dir }}
         env:
           PKG_MANAGER: ${{ steps.pkg.outputs.manager }}
         run: |
