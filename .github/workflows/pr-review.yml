@@ -323,9 +323,19 @@ jobs:
       # parameter; this is purely for ~/.cache/ms-playwright so we don't
       # re-download chromium every run. Key on lock-file hash so a PR that
       # bumps @playwright/test invalidates the cache.
-      - name: Cache Playwright browsers
+      #
+      # Split into restore + save (instead of the unified `actions/cache`)
+      # so the post-step doesn't re-evaluate `hashFiles(...)`. The unified
+      # action's post step recomputes the key, and `hashFiles()` fails when
+      # the workspace has been cleaned by an earlier post step in the same
+      # job — surfacing as a noisy red `Post Cache Playwright browsers`:
+      # "Fail to hash files under directory '/home/runner/work/<repo>'".
+      # The split form captures the primary key once at restore time and
+      # reuses it on save, so post-step hashFiles is never called.
+      - name: Cache Playwright browsers (restore)
+        id: pw_cache
         if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-ms-playwright-${{ hashFiles('**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock') }}
@@ -333,7 +343,7 @@ jobs:
             ${{ runner.os }}-ms-playwright-
 
       # Install Playwright browser for smoke tests (browser-based validation).
-      # Becomes a no-op restore on cache hit.
+      # Becomes a no-op when the cache restored a complete browser tree.
       - name: Install Playwright browsers
         if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true'
         shell: bash
@@ -350,6 +360,17 @@ jobs:
           else
             echo "No Playwright config found — skipping browser install"
           fi
+
+      # Save the Playwright cache only on a miss (cache-hit != 'true').
+      # Reuses cache-primary-key from the restore step so post-step
+      # hashFiles is never called. `if: always()` so we still save even
+      # when a downstream step (smoke-test) fails on a fresh-cache run.
+      - name: Cache Playwright browsers (save)
+        if: always() && steps.pw_cache.outputs.cache-hit != 'true' && steps.pw_cache.outputs.cache-primary-key != ''
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw_cache.outputs.cache-primary-key }}
 
       # Optional: GitHub App token for a custom review identity.
       # Requires all three secrets: APP_CLIENT_ID + APP_PRIVATE_KEY + APP_SLUG.
