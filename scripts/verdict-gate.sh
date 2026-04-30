@@ -25,10 +25,35 @@ if [ "$ANALYZER_OUTCOME" = "success" ] && [ "$POSTER_OUTCOME" != "success" ]; th
 fi
 
 if [ ! -f review-result.json ]; then
-  if [ "$ANALYZER_OUTCOME" = "failure" ]; then
+  # Detect Claude OAuth-quota exhaustion in any of the agent JSONL streams.
+  # Two failure modes both surface here:
+  #   1. Build-context hit quota → context.md missing → analyze step
+  #      exit-1'd before launching reviewers. The signal lives in the
+  #      claude-code-action's execution_file, which the workflow copies
+  #      to /tmp/build-context-execution.jsonl (best-effort).
+  #   2. Reviewers hit quota → /tmp/<role>-output.txt files contain
+  #      `"error": "rate_limit"` + a `"text": "You've hit your limit · resets …"`
+  #      message. build-review.sh has the same scan when reachable; we
+  #      duplicate here because it isn't reachable in mode (1).
+  RESET_PHRASE=""
+  for f in /tmp/build-context-execution.jsonl \
+           /tmp/core-output.txt /tmp/sweep-output.txt /tmp/spec-output.txt \
+           /tmp/functional-output.txt /tmp/core-output-2.txt /tmp/sweep-output-2.txt \
+           /tmp/resolution-output.txt /tmp/bot-resolver-output.txt; do
+    [ -f "$f" ] || continue
+    if grep -qE 'hit your limit · resets|"error": *"rate_limit"' "$f" 2>/dev/null; then
+      RESET_PHRASE=$(grep -oE 'resets [^"\\]+' "$f" 2>/dev/null | head -1 || true)
+      break
+    fi
+  done
+
+  if [ -n "$RESET_PHRASE" ]; then
+    echo "::error::Claude OAuth quota exhausted ($RESET_PHRASE) — review agent returned rate_limit before producing output."
+    echo "::error::Re-run after the quota resets, or rotate CLAUDE_CODE_OAUTH_TOKEN to a token with available quota."
+  elif [ "$ANALYZER_OUTCOME" = "failure" ]; then
     echo "::error::Analyzer agent crashed before completing the review."
     echo "::error::Check the 'Review: analyze code' step log — common causes:"
-    echo "::error::OAuth token expired, network failure, max-turns limit hit, runner OOM."
+    echo "::error::OAuth quota exhausted, OAuth token expired, network failure, max-turns limit hit, runner OOM."
   else
     echo "::error::review-result.json not found — analyzer did not write output."
   fi
@@ -36,12 +61,20 @@ if [ ! -f review-result.json ]; then
   # Post a visible comment to the PR so the author knows the review
   # didn't happen (Actions log alone is easy to miss).
   if [ -n "$PR_NUMBER" ]; then
-    CRASH_MSG="> **Claude Review — incomplete** :warning:"
-    CRASH_MSG+=$'\n'">"
-    CRASH_MSG+=$'\n'"> The automated review agent crashed before producing results."
-    CRASH_MSG+=$'\n'"> Common causes: OAuth token expiry, max-turns budget exhausted, runner OOM."
-    CRASH_MSG+=$'\n'">"
-    CRASH_MSG+=$'\n'"> **Action required:** a human reviewer should check this PR. Re-running the workflow may also help if the cause was transient."
+    if [ -n "$RESET_PHRASE" ]; then
+      CRASH_MSG="> **Claude Review — quota exhausted** :hourglass:"
+      CRASH_MSG+=$'\n'">"
+      CRASH_MSG+=$'\n'"> The Claude OAuth token hit its limit ($RESET_PHRASE)."
+      CRASH_MSG+=$'\n'">"
+      CRASH_MSG+=$'\n'"> **Action required:** re-run the workflow after the quota resets, or rotate \`CLAUDE_CODE_OAUTH_TOKEN\` to a token with available quota. No code review was produced for this push."
+    else
+      CRASH_MSG="> **Claude Review — incomplete** :warning:"
+      CRASH_MSG+=$'\n'">"
+      CRASH_MSG+=$'\n'"> The automated review agent crashed before producing results."
+      CRASH_MSG+=$'\n'"> Common causes: OAuth quota exhausted, max-turns budget exhausted, runner OOM."
+      CRASH_MSG+=$'\n'">"
+      CRASH_MSG+=$'\n'"> **Action required:** a human reviewer should check this PR. Re-running the workflow may also help if the cause was transient."
+    fi
     gh pr comment "$PR_NUMBER" --body "$CRASH_MSG" || echo "::warning::Failed to post crash notification comment"
   fi
   exit 1

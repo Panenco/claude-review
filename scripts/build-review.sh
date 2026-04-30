@@ -123,8 +123,29 @@ for mf in /tmp/core-meta.json /tmp/core-meta-2.json /tmp/functional-meta.json; d
 done
 
 if [ "$CORE_ANY_OUTPUT" = "false" ] && [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
-  echo "::error::All code reviewers failed to produce output (core+sweep, both passes if boost ran) — cannot generate a verdict."
-  echo "::error::Check rate limits and OAuth token."
+  # Distinguish OAuth-quota exhaustion from a generic agent crash so the
+  # error annotation says what actually happened. When the OAuth token's
+  # daily quota is hit, every reviewer's JSONL stream contains
+  # `"error":"rate_limit"` plus a `"text":"You've hit your limit · resets …"`
+  # message and zero turns are produced — the existing "check rate limits"
+  # message buries this signal under a generic catch-all.
+  RESET_PHRASE=""
+  for f in /tmp/core-output.txt /tmp/sweep-output.txt /tmp/spec-output.txt \
+           /tmp/functional-output.txt /tmp/core-output-2.txt /tmp/sweep-output-2.txt \
+           /tmp/resolution-output.txt /tmp/bot-resolver-output.txt; do
+    [ -f "$f" ] || continue
+    if grep -qE 'hit your limit · resets|"error": *"rate_limit"' "$f" 2>/dev/null; then
+      RESET_PHRASE=$(grep -oE 'resets [^"\\]+' "$f" 2>/dev/null | head -1 || true)
+      break
+    fi
+  done
+  if [ -n "$RESET_PHRASE" ]; then
+    echo "::error::All code reviewers failed: Claude OAuth quota exhausted ($RESET_PHRASE)."
+    echo "::error::Re-run after the quota resets, or rotate CLAUDE_CODE_OAUTH_TOKEN to a token with available quota."
+  else
+    echo "::error::All code reviewers failed to produce output (core+sweep, both passes if boost ran) — cannot generate a verdict."
+    echo "::error::Check rate limits and OAuth token."
+  fi
   exit 1
 fi
 
