@@ -813,8 +813,16 @@ jobs:
       # up alongside the context-builder + Playwright MCP setup, instead of
       # blocking the analyzer fan. The wait step further down reaps the PID
       # and replays captured outputs / exit code into the real $GITHUB_OUTPUT.
+      #
+      # Gate fires when either (a) root deps installed cleanly, or (b) a
+      # consumer-owned dev-start.sh exists. Case (b) covers polyglot /
+      # subfolder repos (PHP + Node in apps/, monorepos with the lockfile
+      # under a workspace dir, etc.) where there is no root lockfile so the
+      # earlier `Install dependencies` step is skipped — but dev-start.sh
+      # is fully self-contained (typically Docker-based) and doesn't need
+      # anything installed on the host beyond docker/curl/bash.
       - name: Pre-start dev environment (background)
-        if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true'
+        if: steps.code_check.outputs.needs_build == 'true' && (steps.install.outputs.install_ok == 'true' || hashFiles('.github/claude-review/dev-start.sh') != '')
         id: dev_env_bg
         shell: bash
         env:
@@ -953,7 +961,7 @@ jobs:
       # honors the script's exit code (a failed dev-start.sh still aborts
       # the workflow, same as the previous synchronous step).
       - name: Wait for background dev-env
-        if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true' && steps.check_context.outputs.exists == 'true'
+        if: steps.code_check.outputs.needs_build == 'true' && (steps.install.outputs.install_ok == 'true' || hashFiles('.github/claude-review/dev-start.sh') != '') && steps.check_context.outputs.exists == 'true'
         id: dev_env
         shell: bash
         env:
