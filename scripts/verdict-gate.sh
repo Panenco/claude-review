@@ -35,6 +35,11 @@ if [ ! -f review-result.json ]; then
   #      `"error": "rate_limit"` + a `"text": "You've hit your limit · resets …"`
   #      message. build-review.sh has the same scan when reachable; we
   #      duplicate here because it isn't reachable in mode (1).
+  # Track QUOTA_HIT independently from RESET_PHRASE so a rate_limit
+  # without an accompanying `resets …` phrase (older agent versions,
+  # truncated logs, future format changes) still emits the quota-specific
+  # message instead of silently falling back to the generic catch-all.
+  QUOTA_HIT=false
   RESET_PHRASE=""
   for f in /tmp/build-context-execution.jsonl \
            /tmp/core-output.txt /tmp/sweep-output.txt /tmp/spec-output.txt \
@@ -42,13 +47,18 @@ if [ ! -f review-result.json ]; then
            /tmp/resolution-output.txt /tmp/bot-resolver-output.txt; do
     [ -f "$f" ] || continue
     if grep -qE 'hit your limit · resets|"error": *"rate_limit"' "$f" 2>/dev/null; then
+      QUOTA_HIT=true
       RESET_PHRASE=$(grep -oE 'resets [^"\\]+' "$f" 2>/dev/null | head -1 || true)
       break
     fi
   done
 
-  if [ -n "$RESET_PHRASE" ]; then
-    echo "::error::Claude OAuth quota exhausted ($RESET_PHRASE) — review agent returned rate_limit before producing output."
+  if [ "$QUOTA_HIT" = "true" ]; then
+    if [ -n "$RESET_PHRASE" ]; then
+      echo "::error::Claude OAuth quota exhausted ($RESET_PHRASE) — review agent returned rate_limit before producing output."
+    else
+      echo "::error::Claude OAuth quota exhausted (rate_limit returned, no reset window in the agent log) — review agent could not produce output."
+    fi
     echo "::error::Re-run after the quota resets, or rotate CLAUDE_CODE_OAUTH_TOKEN to a token with available quota."
   elif [ "$ANALYZER_OUTCOME" = "failure" ]; then
     echo "::error::Analyzer agent crashed before completing the review."
@@ -61,10 +71,14 @@ if [ ! -f review-result.json ]; then
   # Post a visible comment to the PR so the author knows the review
   # didn't happen (Actions log alone is easy to miss).
   if [ -n "$PR_NUMBER" ]; then
-    if [ -n "$RESET_PHRASE" ]; then
+    if [ "$QUOTA_HIT" = "true" ]; then
       CRASH_MSG="> **Claude Review — quota exhausted** :hourglass:"
       CRASH_MSG+=$'\n'">"
-      CRASH_MSG+=$'\n'"> The Claude OAuth token hit its limit ($RESET_PHRASE)."
+      if [ -n "$RESET_PHRASE" ]; then
+        CRASH_MSG+=$'\n'"> The Claude OAuth token hit its limit ($RESET_PHRASE)."
+      else
+        CRASH_MSG+=$'\n'"> The Claude OAuth token returned rate_limit (the agent log did not include a reset window)."
+      fi
       CRASH_MSG+=$'\n'">"
       CRASH_MSG+=$'\n'"> **Action required:** re-run the workflow after the quota resets, or rotate \`CLAUDE_CODE_OAUTH_TOKEN\` to a token with available quota. No code review was produced for this push."
     else
