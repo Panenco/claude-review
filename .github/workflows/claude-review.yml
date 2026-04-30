@@ -43,6 +43,7 @@ jobs:
                        # Omitting this triggers startup_failure (caller perms
                        # cap the called workflow's perms — and the called
                        # workflow declares actions: read at job level).
+      packages: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       # Self-dogfood pin: install skills + scripts from THIS PR's head

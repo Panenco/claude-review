@@ -73,6 +73,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read    # needed for actions/download-artifact with run-id (round-2 state)
+      packages: read  # needed for fetching from private registries when the consumer repo uses them
 
     steps:
       - name: Check OAuth token is configured
@@ -837,6 +838,7 @@ jobs:
         shell: bash
         env:
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           mkdir -p /tmp/dev-env
@@ -976,6 +978,7 @@ jobs:
         env:
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           source .review-scripts/phase-timing.sh
