@@ -276,13 +276,18 @@ jobs:
           elif [ -f package-lock.json ]; then echo "manager=npm" >> "$GITHUB_OUTPUT"
           else echo "manager=none" >> "$GITHUB_OUTPUT"; fi
 
+      # Node + Playwright are installed unconditionally (see below) so the
+      # review pipeline's own npx-based tooling works on any repo. pnpm
+      # stays gated on manager=='pnpm' because pnpm/action-setup@v5 fails
+      # when there's no pnpm-lock.yaml or `packageManager` field, and
+      # nothing review-side shells out to pnpm directly.
       - name: Set up pnpm
         if: steps.pkg.outputs.manager == 'pnpm'
         uses: pnpm/action-setup@b307475762933b98ed359c036b0e51f26b63b74b # v5.0.0
 
       - name: Detect Node version file
         id: node_version
-        if: steps.code_check.outputs.needs_build == 'true' && steps.pkg.outputs.manager != 'none'
+        if: steps.code_check.outputs.needs_build == 'true'
         shell: bash
         run: |
           if [ -f .node-version ]; then echo "file=.node-version" >> "$GITHUB_OUTPUT"
@@ -290,12 +295,14 @@ jobs:
           else echo "file=" >> "$GITHUB_OUTPUT"; fi
 
       - name: Set up Node
-        if: steps.code_check.outputs.needs_build == 'true' && steps.pkg.outputs.manager != 'none'
+        if: steps.code_check.outputs.needs_build == 'true'
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: ${{ steps.node_version.outputs.file || '' }}
           node-version: ${{ steps.node_version.outputs.file == '' && 'lts/*' || '' }}
-          cache: ${{ steps.pkg.outputs.manager }}
+          # Only enable the package-store cache when a root lockfile was
+          # detected — passing `cache: none` makes setup-node error out.
+          cache: ${{ steps.pkg.outputs.manager != 'none' && steps.pkg.outputs.manager || '' }}
 
       # Soft-fail: degraded review is better than no review.
       - name: Install dependencies
@@ -334,7 +341,7 @@ jobs:
       # reuses it on save, so post-step hashFiles is never called.
       - name: Cache Playwright browsers (restore)
         id: pw_cache
-        if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true'
+        if: steps.code_check.outputs.needs_build == 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/ms-playwright
@@ -342,24 +349,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ms-playwright-
 
-      # Install Playwright browser for smoke tests (browser-based validation).
-      # Becomes a no-op when the cache restored a complete browser tree.
+      # Always install Chromium so `npx @playwright/mcp@latest` (used by the
+      # functional tester) and any consumer-side smoke test have a browser
+      # available, even when the repo has no root lockfile. If the consumer
+      # vendors @playwright/test we install via that workspace so versions
+      # line up; otherwise we fall back to a plain `npx playwright install`.
       - name: Install Playwright browsers
-        if: steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true'
+        if: steps.code_check.outputs.needs_build == 'true'
         shell: bash
         run: |
-          # Auto-discover Playwright directory
           PW_DIR=$(find . -name 'playwright.config.*' -not -path '*/node_modules/*' -not -path '*/.review-pipeline/*' -not -path '*/.review-scripts/*' -exec dirname {} \; 2>/dev/null | head -1)
           if [ -z "$PW_DIR" ]; then
             PW_DIR=$(find . -maxdepth 3 -name 'package.json' -not -path '*/node_modules/*' -exec grep -l '"@playwright/test"' {} \; 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
           fi
-          if [ -n "$PW_DIR" ]; then
-            echo "Found Playwright in $PW_DIR"
+          if [ -n "$PW_DIR" ] && [ -d "$PW_DIR/node_modules" ]; then
+            echo "Found Playwright workspace in $PW_DIR — installing via local @playwright/test"
             cd "$PW_DIR" && npx playwright install chromium --with-deps 2>&1 | tail -5
-            echo "Playwright chromium installed"
           else
-            echo "No Playwright config found — skipping browser install"
+            echo "No vendored Playwright workspace found — installing chromium via npx playwright@latest"
+            npx --yes playwright@latest install chromium --with-deps 2>&1 | tail -5
           fi
+          echo "Playwright chromium installed"
 
       # Save the Playwright cache only on a miss (cache-hit != 'true').
       # Reuses cache-primary-key from the restore step so post-step
@@ -826,7 +836,6 @@ jobs:
         id: dev_env_bg
         shell: bash
         env:
-          PKG_MANAGER: ${{ steps.pkg.outputs.manager }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
         run: |
           set -uo pipefail
@@ -965,7 +974,6 @@ jobs:
         id: dev_env
         shell: bash
         env:
-          PKG_MANAGER: ${{ steps.pkg.outputs.manager }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
         run: |
