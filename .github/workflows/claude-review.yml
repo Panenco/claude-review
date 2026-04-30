@@ -47,9 +47,4 @@ jobs:
                        # workflow declares actions: read at job level).
     with:
       pr_number: ${{ inputs.pr_number || '' }}
-      # TEMP: pin pipeline_ref to this PR branch so the in-PR dogfood
-      # exercises the patched scripts/build-review.sh + verdict-gate.sh
-      # instead of the @v2 floating tag (which still points at the old
-      # scripts). Revert before merge — same pattern as commit 15cf516.
-      pipeline_ref: fix/quota-exhaustion-detection
     secrets: inherit
