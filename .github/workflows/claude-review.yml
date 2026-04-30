@@ -31,10 +31,8 @@ jobs:
     #      `prompts/setup-review.md` Step 2.
     #   2. The local path exercises the in-PR copy of pr-review.yml, which
     #      is a stronger dogfood: orchestration changes in a PR get tested
-    #      on that PR's own review run. (Skills + scripts still come from
-    #      @v2 because pr-review.yml's install step defaults pipeline_ref
-    #      to 'v2' — so consumer-visible behavior around skills/scripts is
-    #      unchanged.)
+    #      on that PR's own review run. We extend that dogfood to skills
+    #      + scripts via the `pipeline_ref:` input below.
     uses: ./.github/workflows/pr-review.yml
     permissions:
       contents: write
@@ -47,4 +45,13 @@ jobs:
                        # workflow declares actions: read at job level).
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      # Self-dogfood pin: install skills + scripts from THIS PR's head
+      # commit, not from @v2. Without this, every PR on panenco/claude-review
+      # tests its own pr-review.yml orchestration (because we use the local
+      # path above) but installs skills/scripts from the last released v2 —
+      # so script-level changes never get exercised until after merge. With
+      # the pin, any change to scripts/ or skills/ is dogfooded on the very
+      # PR introducing it. `head.sha` covers pull_request events; `github.sha`
+      # is the fallback for `workflow_dispatch` (where head.sha is empty).
+      pipeline_ref: ${{ github.event.pull_request.head.sha || github.sha }}
     secrets: inherit

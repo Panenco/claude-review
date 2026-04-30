@@ -859,13 +859,29 @@ jobs:
       - name: Check context.md exists
         id: check_context
         shell: bash
+        env:
+          # Path to the claude-code-action's JSONL conversation log. Stash
+          # it under /tmp/ so verdict-gate.sh can grep it for `rate_limit`
+          # if context.md is missing — without this hand-off the quota
+          # signal is buried in the Actions log only and the gate's PR
+          # comment falls back to a generic "agent crashed" message.
+          CONTEXT_BUILDER_EXEC: ${{ steps.context_builder.outputs.execution_file }}
         run: |
           if [ -f context.md ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "context.md present ($(wc -l < context.md) lines) — continuing to analyzer"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::error::context.md was not written by the context builder. Check the 'Review: build context' step log — max-turns is the most common cause. Skipping analyzer; reaping background dev-env."
+            # Best-effort copy so the downstream verdict-gate.sh has the
+            # build-context agent's JSONL stream available for quota
+            # detection. Failure here (output missing, file missing, copy
+            # error) is non-fatal — the gate falls back to its generic
+            # crash message in that case.
+            if [ -n "${CONTEXT_BUILDER_EXEC:-}" ] && [ -f "$CONTEXT_BUILDER_EXEC" ]; then
+              cp "$CONTEXT_BUILDER_EXEC" /tmp/build-context-execution.jsonl 2>/dev/null \
+                || echo "::warning::Could not copy context-builder execution log to /tmp/build-context-execution.jsonl — verdict-gate.sh will fall back to generic crash messaging."
+            fi
+            echo "::error::context.md was not written by the context builder. Check the 'Review: build context' step log — max-turns and OAuth-quota exhaustion are the two common causes. Skipping analyzer; reaping background dev-env."
             # Reap the background dev-env's whole process group (the
             # setsid-detached launcher + the dev server it spawned).
             # `kill -- -PID` signals the group; the leading -- is mandatory
@@ -1402,6 +1418,7 @@ jobs:
             /tmp/resolution-output.txt
             /tmp/resolution-status.json
             /tmp/resolution-findings.json
+            /tmp/build-context-execution.jsonl
             /tmp/*-findings.invalid.json
             /tmp/*-meta.invalid.json
           if-no-files-found: ignore
