@@ -29,13 +29,33 @@ Target: **≤6 turns**. Read files in parallel, think, write the plan. That's it
 
 ## Procedure
 
+### Step 0: Round-2 scope reduction (REQUIRED when `/tmp/since-last.diff` exists and is non-empty)
+
+On a follow-up review the planner's input is **`/tmp/since-last.diff`** + per-file chunks at `/tmp/since-last-chunks/<file>.diff`, NOT the full PR diff. Round 1 already validated the rest of the feature; re-running the original plan against unchanged code burns turn budget without adding signal.
+
+**Zero scenarios is a valid round-2 outcome.** If since-last has no user-observable surface — comments, log strings, type-only edits, internal helpers, dev tooling, test/fixture-only changes, doc/config changes — pick `skip`. The smoke gate (`build-review.sh`) inherits the prior round's `functional_overall` for technical-change PRs, so you do NOT need to emit a placeholder `quick` just to keep the gate alive. Pick `quick`/`functional` only when since-last actually changes something a user would notice.
+
+Treat the since-last subset as "what changed" for Step 1. Apply Step 1's strategy table to the since-last diff:
+
+- since-last empty, docs-only, config-only, comments-only, types-only, internal-only — anything not visible to a user → `skip` (zero scenarios).
+- since-last is a trivial single-area observable edit (<30 LoC) → `quick`, one scenario over the touched area.
+- since-last has real user-observable changes → `functional`, scenarios scoped to the changed files only.
+
+`## Technical change:` is derived from PR title/body and persists across rounds — emit it whenever the original signal still holds, regardless of since-last size.
+
+**Retest rule (optional, judgement).** If `/tmp/prior-state/review-state.json` lists a prior `critical` or `major` *functional* finding (`type` ∈ `spec-mismatch | ui-regression | endpoint-failure | smoke-failure`) whose `path` is in `/tmp/since-last-chunks/` AND the since-last edit plausibly attempts to fix it (touches the same lines or function), add one scenario re-verifying that area. If since-last touches the file but in an unrelated area, skip the retest — the resolution checker + dedup re-evaluate prior findings independently.
+
+Do NOT plan scenarios for files outside `/tmp/since-last-chunks/`. The fallback case (`PRIOR_HEAD_SHA` set but the prior commit is outside the shallow clone, so `/tmp/since-last.diff` is absent) reverts to round-1 full-diff scoping — see context.md's "Diff since last review" section for the fallback note.
+
+Round-2 plans typically need 0–2 scenarios, not the round-1 max of 6.
+
 ### Step 1: Classify the PR
 
 From context.md, determine:
 
-1. **What changed** — files, endpoints, pages, components
+1. **What changed** — files, endpoints, pages, components (round 2: from `/tmp/since-last-chunks/` only)
 2. **What the spec says** — acceptance criteria, issue description, PR body
-3. **Change magnitude** — additions + deletions, number of files
+3. **Change magnitude** — additions + deletions, number of files (round 2: of the since-last diff)
 
 Map to a strategy:
 

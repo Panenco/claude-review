@@ -174,6 +174,19 @@ FUNCTIONAL_STRATEGY=$(echo "$FUNCTIONAL_META" | jq -r '.strategy // "skip"')
 FUNCTIONAL_OVERALL=$(echo "$FUNCTIONAL_META" | jq -r '.overall // "N/A"')
 echo "Functional tester: strategy=$FUNCTIONAL_STRATEGY, overall=$FUNCTIONAL_OVERALL"
 
+# Prior round's smoke result (round 2+ only). When the round-2 planner picks
+# strategy=skip because since-last has no user-observable surface, the
+# Technical-change smoke gate below inherits PRIOR_FUNCTIONAL_OVERALL so a
+# small follow-up commit doesn't drop APPROVE → COMMENT just because the
+# tester didn't re-run. Inheritance only kicks in for PASS/WARN — a prior
+# FAIL or N/A doesn't satisfy the gate.
+PRIOR_FUNCTIONAL_OVERALL=""
+PRIOR_FUNCTIONAL_STRATEGY=""
+if [ -f /tmp/prior-state/review-state.json ]; then
+  PRIOR_FUNCTIONAL_OVERALL=$(jq -r '.functional_overall // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+  PRIOR_FUNCTIONAL_STRATEGY=$(jq -r '.functional_strategy // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+fi
+
 # ── Screenshot collection and upload ──
 # Playwright MCP saves screenshots to its CWD when the agent passes a
 # plain filename (e.g. "01-name.png") — that resolves to the repo root
@@ -496,6 +509,22 @@ if [ -f test-plan.md ] && grep -qiE '^## *Technical change: *true *$' test-plan.
   TECHNICAL_CHANGE=true
 fi
 
+# Planner's intended strategy, read directly from test-plan.md so the
+# inheritance branch below can distinguish "planner deliberately chose
+# skip" (round-2 since-last is non-user-observable) from "planner wanted a
+# smoke but the workflow couldn't launch one" (degraded mode: no
+# dev-start.sh, web not ready, no functional-prompt). Both end up with
+# the same synthetic `{strategy:"skip",overall:"PASS"}` placeholder in
+# functional-meta.json, so FUNCTIONAL_STRATEGY alone can't tell them
+# apart. The same parser as in pr-review.yml's strategy resolution.
+PLANNED_STRATEGY=""
+if [ -f test-plan.md ]; then
+  PLANNED_STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md 2>/dev/null \
+    | sed -E 's/.*Strategy:[[:space:]]*//' \
+    | sed -E 's/[^a-zA-Z-]//g' \
+    | tr '[:upper:]' '[:lower:]' || true)
+fi
+
 # Did the smoke test actually pass? Three failure modes to disqualify:
 #
 #   1. Tester crashed (FUNCTIONAL_OK != 1).
@@ -510,11 +539,28 @@ fi
 # Without (2), a technical PR in a repo without dev-start.sh would silently
 # bypass the gate via the synthetic PASS placeholder — exactly the case
 # Cursor flagged on the previous commit.
+#
+# Round-2 inheritance: when the planner deliberately picks strategy=skip
+# because since-last has no user-observable surface (comments / log strings /
+# types / internal helpers), the prior round's PASS/WARN smoke result still
+# applies — observable behavior didn't change. We inherit it so a one-line
+# follow-up doesn't drop APPROVE → COMMENT just to re-prove the same flow.
+# Inheritance only kicks in when the PLANNER chose skip (PLANNED_STRATEGY
+# from test-plan.md), AND on prior PASS/WARN. Degraded-mode runs (planner
+# wanted functional, workflow couldn't launch) fall through to no inherit
+# even when prior is PASS/WARN — those have no current smoke evidence.
 SMOKE_OK=false
+SMOKE_INHERITED=false
 if [ "${FUNCTIONAL_OK:-1}" -ne 1 ]; then
   :  # tester crashed
 elif [ "$FUNCTIONAL_STRATEGY" = "skip" ]; then
-  :  # tester never launched (degraded mode) or planner skipped — no smoke evidence either way
+  if [ "$PLANNED_STRATEGY" = "skip" ] && { [ "$PRIOR_FUNCTIONAL_OVERALL" = "PASS" ] || [ "$PRIOR_FUNCTIONAL_OVERALL" = "WARN" ]; }; then
+    SMOKE_OK=true
+    SMOKE_INHERITED=true
+    echo "::notice::Smoke gate inherited from prior round (functional_overall=$PRIOR_FUNCTIONAL_OVERALL, strategy=$PRIOR_FUNCTIONAL_STRATEGY) — current planner chose strategy=skip because since-last has no user-observable surface."
+  fi
+  # else: tester never launched (degraded mode), planner wanted a smoke but couldn't get one,
+  # OR no prior to inherit — no smoke evidence either way.
 elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; then
   SMOKE_OK=true
 fi
@@ -997,6 +1043,30 @@ if [ -f /tmp/prior-state/review-state.json ]; then
 fi
 NEXT_ROUND=$((PRIOR_ROUND + 1))
 [ -z "$PRIOR_HEAD_SHA_FROM_STATE" ] && NEXT_ROUND=1
+
+# Decide what to persist for the NEXT round's inheritance check. Three cases:
+#
+#   1. SMOKE_INHERITED=true (planner picked skip + prior PASS/WARN inherited)
+#      → carry the inherited values forward so a chain of internal-only
+#        follow-ups keeps the smoke signal alive.
+#   2. Tester actually ran (FUNCTIONAL_OK=1 AND FUNCTIONAL_STRATEGY != "skip")
+#      → persist the real result.
+#   3. Anything else (crashed, degraded mode, planner-chose-skip with no prior)
+#      → persist empty so the next round CAN'T inherit. The synthetic
+#        `{strategy:"skip",overall:"PASS"}` placeholder used by the workflow
+#        when the tester didn't run would otherwise look like a legitimate
+#        pass to the next round's inheritance check (Cursor #26 + Aikido
+#        flagged this exact leak).
+PERSISTED_FUNCTIONAL_OVERALL=""
+PERSISTED_FUNCTIONAL_STRATEGY=""
+if [ "$SMOKE_INHERITED" = "true" ]; then
+  PERSISTED_FUNCTIONAL_OVERALL="$PRIOR_FUNCTIONAL_OVERALL"
+  PERSISTED_FUNCTIONAL_STRATEGY="$PRIOR_FUNCTIONAL_STRATEGY"
+elif [ "${FUNCTIONAL_OK:-1}" -eq 1 ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
+  PERSISTED_FUNCTIONAL_OVERALL="$FUNCTIONAL_OVERALL"
+  PERSISTED_FUNCTIONAL_STRATEGY="$FUNCTIONAL_STRATEGY"
+fi
+
 jq -n \
   --arg head "$CURRENT_HEAD_SHA" \
   --arg base "$CURRENT_BASE_SHA" \
@@ -1004,6 +1074,8 @@ jq -n \
   --argjson findings "$ALL_FINDINGS" \
   --arg verdict "$VERDICT" \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg functional_overall "$PERSISTED_FUNCTIONAL_OVERALL" \
+  --arg functional_strategy "$PERSISTED_FUNCTIONAL_STRATEGY" \
   '{
     schema_version: 1,
     prior_head_sha: $head,
@@ -1011,7 +1083,11 @@ jq -n \
     round: $round,
     findings: $findings,
     verdict: $verdict,
+    functional_overall: $functional_overall,
+    functional_strategy: $functional_strategy,
     reviewed_at: $ts
   }' > /tmp/review-state.json
-echo "review-state.json: head=$CURRENT_HEAD_SHA round=$NEXT_ROUND findings=$(echo "$ALL_FINDINGS" | jq 'length')"
+INHERITED_TAG=""
+[ "$SMOKE_INHERITED" = "true" ] && INHERITED_TAG=" (inherited)"
+echo "review-state.json: head=$CURRENT_HEAD_SHA round=$NEXT_ROUND findings=$(echo "$ALL_FINDINGS" | jq 'length') functional=$PERSISTED_FUNCTIONAL_OVERALL/$PERSISTED_FUNCTIONAL_STRATEGY${INHERITED_TAG}"
 echo "::endgroup::"
