@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# smoke_inherit_test.sh — fixture test for round-2 smoke-gate inheritance
+# round2_inherit_test.sh — fixture test for round-2 smoke-gate inheritance
 # in build-review.sh. Mirrors the inline SMOKE_OK + persistence logic with
 # the same shape, then asserts behavior across the cases Cursor + Aikido
 # flagged on PR #26:
