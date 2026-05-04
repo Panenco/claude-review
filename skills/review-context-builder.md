@@ -359,6 +359,24 @@ Choose one of:
 
 Document the strategy in test-plan.md so the agent knows what to do.
 
+### Round-2 scope reduction (REQUIRED when `/tmp/since-last.diff` exists and is non-empty)
+
+On a follow-up review the planner's input is **`/tmp/since-last.diff`** (per-file chunks at `/tmp/since-last-chunks/<file>.diff`), NOT the full PR diff. The first round already validated the rest of the feature; re-running the original plan against unchanged code burns turn budget without adding signal.
+
+**Zero scenarios is a valid round-2 outcome.** If since-last has no user-observable surface — comments, log strings, type-only edits, internal helpers, dev tooling, test/fixture-only changes, doc/config changes — pick `skip`. The smoke gate (`build-review.sh`) inherits the prior round's `functional_overall` for technical-change PRs, so you do NOT need to emit a placeholder `quick` to keep APPROVE alive. Pick `quick`/`functional` only when since-last actually changes something a user would notice.
+
+Apply the strategy table above to the since-last subset:
+
+- since-last empty, docs-only, config-only, comments-only, types-only, internal-only — anything not visible to a user → `skip` (zero scenarios).
+- since-last is a trivial single-area observable edit (<30 LoC) → `quick`, one scenario over the touched area.
+- since-last has real user-observable changes → `functional`, scenarios scoped to the changed files only.
+
+`## Technical change:` is derived from PR title/body and persists across rounds — keep emitting it whenever the original signal still holds, regardless of since-last size.
+
+**Retest rule (optional, judgement).** If `/tmp/prior-state/review-state.json` lists a prior `critical` or `major` *functional* finding (`type` ∈ `spec-mismatch | ui-regression | endpoint-failure | smoke-failure`) whose `path` is in `/tmp/since-last-chunks/` AND the since-last edit plausibly attempts to fix it (touches the same lines or the same function), add one scenario re-verifying that area. If since-last touches the file but in an unrelated area, skip the retest — the prior finding will be re-evaluated by the resolution checker via dedup.
+
+Do NOT include scenarios for files outside `/tmp/since-last-chunks/`. Round 1 covered them. The fallback case (`PRIOR_HEAD_SHA` outside the shallow clone, since-last absent) reverts to round-1 full-diff scoping — see "Diff since last review" above.
+
 ### Scenarios
 
 Write scenarios in test-plan.md following `.claude/skills/review-test-planner.md` format. For each scenario, state:
@@ -366,4 +384,4 @@ Write scenarios in test-plan.md following `.claude/skills/review-test-planner.md
 - Which acceptance criterion it maps to
 - Expected result (status code, UI state, screenshot)
 
-**Max 6 scenarios total** across both UI and API. The agent prefers UI when a page exists; API-only scenarios are for no-UI changes.
+**Max 6 scenarios total** across both UI and API. Round-2 plans typically need 0–2 scenarios — zero is fine when since-last has no user-observable surface (see "Round-2 scope reduction" above). The agent prefers UI when a page exists; API-only scenarios are for no-UI changes.

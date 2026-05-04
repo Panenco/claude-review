@@ -119,6 +119,8 @@ The pipeline persists a small state artifact (`/tmp/review-state.json`) on every
 
 Round-1 is otherwise identical to the legacy single-pass review with the recall boost (double-pass + critic) layered on. If the prior state artifact is missing (retention expired, prior run failed before upload), round 2 degrades to a clean full re-review with a `::notice::` explaining why.
 
+On round 2 the test planner also rescopes the functional run: scenarios are planned against `/tmp/since-last.diff` rather than the full PR diff, and **zero scenarios is a valid outcome**. A small follow-up commit drops to `quick` (one scenario over the touched area) when since-last has user-observable surface, or `skip` (no scenarios) when since-last is comments / log strings / type-only / internal-helper / docs / config / dev-tooling — anything a user wouldn't notice. The smoke gate inherits the prior round's `functional_overall` for technical-change PRs, so a `skip` on round 2 doesn't drop APPROVE → COMMENT (inheritance kicks in only for prior PASS/WARN; a prior FAIL still blocks). Prior `critical`/`major` functional findings whose path is in since-last AND is plausibly the area being fixed get one targeted retest scenario; otherwise the resolution-checker + dedup re-evaluate them independently.
+
 ---
 
 ## Per-Project Configuration
