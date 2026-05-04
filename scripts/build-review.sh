@@ -509,6 +509,22 @@ if [ -f test-plan.md ] && grep -qiE '^## *Technical change: *true *$' test-plan.
   TECHNICAL_CHANGE=true
 fi
 
+# Planner's intended strategy, read directly from test-plan.md so the
+# inheritance branch below can distinguish "planner deliberately chose
+# skip" (round-2 since-last is non-user-observable) from "planner wanted a
+# smoke but the workflow couldn't launch one" (degraded mode: no
+# dev-start.sh, web not ready, no functional-prompt). Both end up with
+# the same synthetic `{strategy:"skip",overall:"PASS"}` placeholder in
+# functional-meta.json, so FUNCTIONAL_STRATEGY alone can't tell them
+# apart. The same parser as in pr-review.yml's strategy resolution.
+PLANNED_STRATEGY=""
+if [ -f test-plan.md ]; then
+  PLANNED_STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md 2>/dev/null \
+    | sed -E 's/.*Strategy:[[:space:]]*//' \
+    | sed -E 's/[^a-zA-Z-]//g' \
+    | tr '[:upper:]' '[:lower:]' || true)
+fi
+
 # Did the smoke test actually pass? Three failure modes to disqualify:
 #
 #   1. Tester crashed (FUNCTIONAL_OK != 1).
@@ -529,19 +545,22 @@ fi
 # types / internal helpers), the prior round's PASS/WARN smoke result still
 # applies — observable behavior didn't change. We inherit it so a one-line
 # follow-up doesn't drop APPROVE → COMMENT just to re-prove the same flow.
-# Inheritance only kicks in on PASS/WARN: a prior FAIL or N/A leaves
-# SMOKE_OK=false and the gate fires as before.
+# Inheritance only kicks in when the PLANNER chose skip (PLANNED_STRATEGY
+# from test-plan.md), AND on prior PASS/WARN. Degraded-mode runs (planner
+# wanted functional, workflow couldn't launch) fall through to no inherit
+# even when prior is PASS/WARN — those have no current smoke evidence.
 SMOKE_OK=false
 SMOKE_INHERITED=false
 if [ "${FUNCTIONAL_OK:-1}" -ne 1 ]; then
   :  # tester crashed
 elif [ "$FUNCTIONAL_STRATEGY" = "skip" ]; then
-  if [ "$PRIOR_FUNCTIONAL_OVERALL" = "PASS" ] || [ "$PRIOR_FUNCTIONAL_OVERALL" = "WARN" ]; then
+  if [ "$PLANNED_STRATEGY" = "skip" ] && { [ "$PRIOR_FUNCTIONAL_OVERALL" = "PASS" ] || [ "$PRIOR_FUNCTIONAL_OVERALL" = "WARN" ]; }; then
     SMOKE_OK=true
     SMOKE_INHERITED=true
     echo "::notice::Smoke gate inherited from prior round (functional_overall=$PRIOR_FUNCTIONAL_OVERALL, strategy=$PRIOR_FUNCTIONAL_STRATEGY) — current planner chose strategy=skip because since-last has no user-observable surface."
   fi
-  # else: tester never launched (degraded mode) AND no prior to inherit — no smoke evidence
+  # else: tester never launched (degraded mode), planner wanted a smoke but couldn't get one,
+  # OR no prior to inherit — no smoke evidence either way.
 elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; then
   SMOKE_OK=true
 fi
@@ -1025,16 +1044,27 @@ fi
 NEXT_ROUND=$((PRIOR_ROUND + 1))
 [ -z "$PRIOR_HEAD_SHA_FROM_STATE" ] && NEXT_ROUND=1
 
-# When this round inherited the smoke result (planner picked skip on a
-# non-user-observable since-last), persist the inherited PASS/WARN so the
-# next round can keep inheriting until something user-observable forces a
-# fresh smoke run. Without this, a chain of internal-only follow-ups would
-# lose the smoke signal at round 3 and APPROVE would drop unnecessarily.
-PERSISTED_FUNCTIONAL_OVERALL="$FUNCTIONAL_OVERALL"
-PERSISTED_FUNCTIONAL_STRATEGY="$FUNCTIONAL_STRATEGY"
+# Decide what to persist for the NEXT round's inheritance check. Three cases:
+#
+#   1. SMOKE_INHERITED=true (planner picked skip + prior PASS/WARN inherited)
+#      → carry the inherited values forward so a chain of internal-only
+#        follow-ups keeps the smoke signal alive.
+#   2. Tester actually ran (FUNCTIONAL_OK=1 AND FUNCTIONAL_STRATEGY != "skip")
+#      → persist the real result.
+#   3. Anything else (crashed, degraded mode, planner-chose-skip with no prior)
+#      → persist empty so the next round CAN'T inherit. The synthetic
+#        `{strategy:"skip",overall:"PASS"}` placeholder used by the workflow
+#        when the tester didn't run would otherwise look like a legitimate
+#        pass to the next round's inheritance check (Cursor #26 + Aikido
+#        flagged this exact leak).
+PERSISTED_FUNCTIONAL_OVERALL=""
+PERSISTED_FUNCTIONAL_STRATEGY=""
 if [ "$SMOKE_INHERITED" = "true" ]; then
   PERSISTED_FUNCTIONAL_OVERALL="$PRIOR_FUNCTIONAL_OVERALL"
   PERSISTED_FUNCTIONAL_STRATEGY="$PRIOR_FUNCTIONAL_STRATEGY"
+elif [ "${FUNCTIONAL_OK:-1}" -eq 1 ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
+  PERSISTED_FUNCTIONAL_OVERALL="$FUNCTIONAL_OVERALL"
+  PERSISTED_FUNCTIONAL_STRATEGY="$FUNCTIONAL_STRATEGY"
 fi
 
 jq -n \
