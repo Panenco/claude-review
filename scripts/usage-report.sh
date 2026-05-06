@@ -36,12 +36,25 @@ print_help() {
   sed -n '1,/^set -uo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
+# Tiny helper: error if a value-taking flag was passed as the last arg
+# without an actual value (e.g. `--since` with nothing after it). Without
+# this check we'd silently accept an empty value and the script would
+# carry on with SINCE="", producing confusing output instead of telling
+# the user they forgot the value.
+require_value() {
+  local flag="$1" value="${2:-}"
+  if [ -z "$value" ]; then
+    echo "::error::$flag requires a value (e.g. $flag 30d)" >&2
+    exit 2
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --since)            SINCE="${2:-}"; shift 2 ;;
-    --repos)            REPOS="${2:-}"; shift 2 ;;
-    --owner)            OWNER="${2:-}"; shift 2 ;;
-    --write)            WRITE_PATH="${2:-}"; shift 2 ;;
+    --since)            require_value --since "${2:-}"; SINCE="$2"; shift 2 ;;
+    --repos)            require_value --repos "${2:-}"; REPOS="$2"; shift 2 ;;
+    --owner)            require_value --owner "${2:-}"; OWNER="$2"; shift 2 ;;
+    --write)            require_value --write "${2:-}"; WRITE_PATH="$2"; shift 2 ;;
     --json)             EMIT_JSON=true; shift ;;
     -h|--help)          print_help; exit 0 ;;
     *) echo "Unknown flag: $1" >&2; echo "Run with --help for usage." >&2; exit 2 ;;
