@@ -1042,14 +1042,13 @@ jobs:
             cp "$ORCHESTRATOR_EXEC" /tmp/orchestrator-output.txt 2>/dev/null \
               || echo "::warning::Could not copy orchestrator execution log to /tmp/orchestrator-output.txt — quota-specific error messaging will be unavailable."
           fi
-          # The orchestrator step exited successfully iff /tmp/all-findings.json
-          # parses; build-review.sh enforces that and exits 1 with a quota- or
-          # crash-specific error otherwise. FUNCTIONAL_OK is read from
-          # /tmp/review-meta.json's judge_health (the orchestrator records it
-          # there alongside the judge statuses).
-          ORCHESTRATOR_OK=1
-          [ "${{ steps.claude_run.outcome }}" = "success" ] || ORCHESTRATOR_OK=0
-          export ORCHESTRATOR_OK
+          # build-review.sh gates on the artifact (/tmp/all-findings.json
+          # parses as an array) rather than the orchestrator step's outcome
+          # — a max-turns-killed orchestrator that still wrote partial output
+          # is honest signal worth posting. A missing/malformed file is what
+          # triggers the quota-specific error path inside build-review.sh.
+          # FUNCTIONAL_OK is read from /tmp/review-meta.json's judge_health
+          # (the orchestrator records it there alongside the judge statuses).
           FUNCTIONAL_OK=1
           if [ -f /tmp/review-meta.json ] \
               && [ "$(jq -r '.judge_health.functional_failed // false' /tmp/review-meta.json 2>/dev/null)" = "true" ]; then

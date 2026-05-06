@@ -25,26 +25,26 @@ if [ "$ANALYZER_OUTCOME" = "success" ] && [ "$POSTER_OUTCOME" != "success" ]; th
 fi
 
 if [ ! -f review-result.json ]; then
-  # Detect Claude OAuth-quota exhaustion in any of the agent JSONL streams.
-  # Two failure modes both surface here:
-  #   1. Build-context hit quota → context.md missing → analyze step
-  #      exit-1'd before launching reviewers. The signal lives in the
-  #      claude-code-action's execution_file, which the workflow copies
-  #      to /tmp/build-context-execution.jsonl (best-effort).
-  #   2. Reviewers hit quota → /tmp/<role>-output.txt files contain
-  #      `"error": "rate_limit"` + a `"text": "You've hit your limit · resets …"`
-  #      message. build-review.sh has the same scan when reachable; we
-  #      duplicate here because it isn't reachable in mode (1).
-  # Track QUOTA_HIT independently from RESET_PHRASE so a rate_limit
-  # without an accompanying `resets …` phrase (older agent versions,
-  # truncated logs, future format changes) still emits the quota-specific
-  # message instead of silently falling back to the generic catch-all.
+  # Detect Claude OAuth-quota exhaustion in the orchestrator's JSONL stream.
+  # The single-orchestrator architecture writes one execution_file per run
+  # (claude-code-action's --output-file), copied by the workflow to
+  # /tmp/orchestrator-output.txt. /tmp/functional-output.txt may also exist
+  # if a separate functional dispatch was wired in legacy form, so we still
+  # scan it when present. build-review.sh has the same scan when reachable;
+  # this duplicate covers the path where the orchestrator hits quota before
+  # writing /tmp/all-findings.json — build-review.sh is never invoked then,
+  # so this gate is the only place the quota signal can surface.
+  #
+  # Track QUOTA_HIT independently from RESET_PHRASE so a rate_limit without
+  # an accompanying `resets …` phrase (older agent versions, truncated
+  # logs, future format changes) still emits the quota-specific message
+  # instead of silently falling back to the generic catch-all.
   QUOTA_HIT=false
   RESET_PHRASE=""
-  for f in /tmp/build-context-execution.jsonl \
-           /tmp/core-output.txt /tmp/sweep-output.txt /tmp/spec-output.txt \
-           /tmp/functional-output.txt /tmp/core-output-2.txt /tmp/sweep-output-2.txt \
-           /tmp/resolution-output.txt /tmp/bot-resolver-output.txt; do
+  for f in /tmp/orchestrator-output.txt \
+           /tmp/functional-output.txt \
+           /tmp/thread-classifier-output.txt \
+           /tmp/build-context-execution.jsonl; do
     [ -f "$f" ] || continue
     if grep -qE 'hit your limit · resets|"error": *"rate_limit"' "$f" 2>/dev/null; then
       QUOTA_HIT=true

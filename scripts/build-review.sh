@@ -17,7 +17,11 @@ set -euo pipefail
 #   GITHUB_RUN_ID       — Actions run ID (for logs link)
 #   PR_NUMBER           — pull request number
 #   FUNCTIONAL_OK       — 1 if the functional tester succeeded (or was correctly skipped)
-#   ORCHESTRATOR_OK     — 1 if the orchestrator step exited 0
+#
+# Orchestrator-step outcome is intentionally NOT plumbed in as a flag.
+# We gate on the artifact (`/tmp/all-findings.json` parses as an array)
+# instead, so a max-turns-killed orchestrator that still wrote partial
+# output gets used; only a missing/malformed file fails the build step.
 #
 # Expected files (from agents):
 #   /tmp/all-findings.json        — orchestrator's final findings (REQUIRED)
@@ -128,8 +132,21 @@ if [ -f /tmp/functional-meta.json ] && ! jq -e 'type == "object"' /tmp/functiona
   cp /tmp/functional-meta.json /tmp/functional-meta.invalid.json 2>/dev/null || true
   echo '{}' > /tmp/functional-meta.json
 fi
+# Distinguish "tester ran and crashed" from "tester correctly skipped".
+# Docs-only / no-dev-env / round-2 since-last-with-no-user-surface PRs
+# legitimately skip functional dispatch — the orchestrator writes a
+# synthetic /tmp/functional-meta.json with strategy="skip" and never emits
+# /tmp/functional-findings.json in some paths, which would otherwise fire
+# the "failed" warning every time. Read the meta's strategy first; only
+# flag "failed" when the planner asked for a smoke run that never landed.
 if [ "$FUNCTIONAL_HAS_OUTPUT" = "false" ]; then
-  echo "::warning::Functional tester failed — no functional validation results."
+  FUNCTIONAL_STRATEGY_TMP="skip"
+  if [ -f /tmp/functional-meta.json ]; then
+    FUNCTIONAL_STRATEGY_TMP=$(jq -r '.strategy // "skip"' /tmp/functional-meta.json 2>/dev/null || echo "skip")
+  fi
+  if [ "$FUNCTIONAL_STRATEGY_TMP" != "skip" ]; then
+    echo "::warning::Functional tester failed — strategy=$FUNCTIONAL_STRATEGY_TMP but no findings file produced."
+  fi
 fi
 
 # Load functional test metadata (strategy, screenshots, overall verdict)
