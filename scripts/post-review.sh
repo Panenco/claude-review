@@ -273,9 +273,19 @@ fi
 # fetch the prior review's GitHub state (e.g. detect author dismissal).
 # Best-effort: missing review id just means round-2 falls back to current
 # behaviour.
+#
+# IMPORTANT: do NOT use `$rnid | select(length > 0)` for the node-id field.
+# When $rnid is empty, `select` returns an empty stream; placed inside an
+# object literal that makes the entire `. + {...}` expression produce zero
+# outputs, and the redirect below writes an empty file — destroying the
+# whole round-state artifact (cursor#bugbot caught this on PR #28). Use an
+# `if/then/else` so empty input maps to a literal null instead.
 if [ -n "$REVIEW_ID" ] && [ -f /tmp/review-state.json ]; then
   jq --arg rid "$REVIEW_ID" --arg rnid "$REVIEW_NODE_ID" \
-    '. + {review_id: ($rid | tonumber? // null), review_node_id: ($rnid | select(length > 0))}' \
+    '. + {
+       review_id: ($rid | tonumber? // null),
+       review_node_id: (if ($rnid | length) > 0 then $rnid else null end)
+     }' \
     /tmp/review-state.json > /tmp/r.json && mv /tmp/r.json /tmp/review-state.json
 fi
 echo "::endgroup::"

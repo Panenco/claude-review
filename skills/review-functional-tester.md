@@ -66,7 +66,7 @@ Check the **ENVIRONMENT STATUS** section appended to your prompt for authenticat
 
 ## Efficiency
 
-The runtime ceiling is **120 turns**. Hitting it crashes the run mid-scenario and produces a partial review (observed on Panenco/seaters#464). The ceiling is non-negotiable and won't be raised — runs that need it have already exceeded it. Stay well below by structure, not optimism.
+The runtime ceiling is **200 turns** (configurable via `functional_max_turns`; raised from 120 after seaters#464 hit it). Hitting it crashes the run mid-scenario and produces a partial review. The headroom is recall insurance, **not utilization budget** — the STOP-and-write anchors below stay tight even with 200 turns available, because runs that drift toward the ceiling are usually thrashing, not productively investigating. Stay well below by structure, not optimism.
 
 Budget sketch (a typical 4-scenario plan):
 

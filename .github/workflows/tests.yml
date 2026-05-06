@@ -37,5 +37,8 @@ jobs:
       - name: Run diff_hunk_validation_test.sh
         run: bash tests/diff_hunk_validation_test.sh
 
+      - name: Run round_state_amend_test.sh
+        run: bash tests/round_state_amend_test.sh
+
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh

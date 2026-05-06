@@ -11,7 +11,7 @@ You are one of two parallel reviewers. You focus on **correctness and spec compl
 
 Target: **≤10 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every chunk + spec source. Turns 3-7: analyze. Turn 8-9: Write findings + meta. Turn 10: buffer.
 
-The runtime ceiling is 25 turns (configurable via `core_max_turns`). Hitting it kills the run with `Reached max turns` and produces no findings — silently invisible on round 2 where there is no pass-2 redundancy.
+The runtime ceiling is **40 turns** (configurable via `core_max_turns`; raised from 25 after observed crashes on heavy diffs). Hitting it kills the run with `Reached max turns` and produces no findings — silently invisible on round 2 where there is no pass-2 redundancy. The headroom is recall insurance, not utilization budget; stay near the ≤10 target.
 
 **STOP-and-write anchor (mandatory).** By **turn 18**, write `/tmp/core-findings.json` and `/tmp/core-meta.json` with whatever findings you have, even if analysis is incomplete. After turn 18 you may continue investigating only specific findings you've already drafted — do not start new exploration. The ladder treats partial output as honest signal; the ladder treats a max-turns crash as no signal at all (and on round 2 your verdict gets pinned via the degraded path).
 
