@@ -182,9 +182,16 @@ echo "Functional tester: strategy=$FUNCTIONAL_STRATEGY, overall=$FUNCTIONAL_OVER
 # FAIL or N/A doesn't satisfy the gate.
 PRIOR_FUNCTIONAL_OVERALL=""
 PRIOR_FUNCTIONAL_STRATEGY=""
+PRIOR_DISMISSED=false
 if [ -f /tmp/prior-state/review-state.json ]; then
   PRIOR_FUNCTIONAL_OVERALL=$(jq -r '.functional_overall // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
   PRIOR_FUNCTIONAL_STRATEGY=$(jq -r '.functional_strategy // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+  # jq's `//` treats explicit `false` as missing — `false // <default>`
+  # always returns the default, regardless of intent. Coincidentally
+  # correct here because the field's default IS false, but if the
+  # default ever changes the bug becomes real. Use the project's
+  # `if has() then ... else default end` pattern (see line ~485).
+  PRIOR_DISMISSED=$(jq -r 'if (type == "object" and has("dismissed_by_author")) then .dismissed_by_author else false end' /tmp/prior-state/review-state.json 2>/dev/null || echo "false")
 fi
 
 # ── Screenshot collection and upload ──
@@ -612,6 +619,15 @@ if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ]; then
   fi
 fi
 
+# Capture the per-PR ladder's verdict BEFORE any round-2 logic touches it
+# so we can detect ladder overrides below and surface a one-line rationale
+# in the review body. Without this the body's narrative ("Would APPROVE on
+# this round") can disagree with the header — exactly the contradiction
+# observed on Panenco/qiv#292. Initialised here (above the malformed-state
+# branch) so EVERY round-2 path uses the same baseline.
+PER_PR_VERDICT="$VERDICT"
+LADDER_OVERRIDE_REASON=""
+
 # When the workflow signalled prior state is present but the file fails
 # the schema check (truncated upload, schema drift, agent crashed
 # mid-write), treat it as fail-closed degraded round-2: pin via
@@ -621,9 +637,11 @@ fi
 # downgrade to APPROVE just because the state file was corrupt.
 if [ "$ROUND2_PRESENT" = "true" ] && [ "$ROUND2_VALID" = "false" ]; then
   BEST_EFFORT_PRIOR=$(jq -r '.verdict // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
-  PRE_PIN_VERDICT="$VERDICT"
-  VERDICT=$(verdict_max "${BEST_EFFORT_PRIOR:-REQUEST_CHANGES}" "$PRE_PIN_VERDICT")
-  echo "::warning::Round-2 state file failed schema check (prior_state_available=true but jq parse rejected /tmp/prior-state/review-state.json) — pinning verdict to max(best_effort_prior='${BEST_EFFORT_PRIOR:-REQUEST_CHANGES}', current=$PRE_PIN_VERDICT)=$VERDICT. Investigate the upload step + state-artifact integrity."
+  VERDICT=$(verdict_max "${BEST_EFFORT_PRIOR:-REQUEST_CHANGES}" "$PER_PR_VERDICT")
+  echo "::warning::Round-2 state file failed schema check (prior_state_available=true but jq parse rejected /tmp/prior-state/review-state.json) — pinning verdict to max(best_effort_prior='${BEST_EFFORT_PRIOR:-REQUEST_CHANGES}', current=$PER_PR_VERDICT)=$VERDICT. Investigate the upload step + state-artifact integrity."
+  if [ "$VERDICT" != "$PER_PR_VERDICT" ]; then
+    LADDER_OVERRIDE_REASON="prior state file failed schema check; pinned to the more severe of (best-effort prior='${BEST_EFFORT_PRIOR:-REQUEST_CHANGES}', per-PR='$PER_PR_VERDICT')"
+  fi
 fi
 
 RESOLUTION_VALID=false
@@ -675,11 +693,16 @@ if [ "$ROUND2_VALID" = "true" ]; then
     echo "Round-2 verdict input: prior_verdict=$PRIOR_VERDICT prior_blockers=$PRIOR_BLOCKERS still_present_blockers=$STILL_PRESENT_BLOCKERS new_blocking=$HAS_BLOCKING current_verdict=$VERDICT"
     case "$PRIOR_VERDICT" in
       REQUEST_CHANGES)
-        if [ "$HAS_BLOCKING" = "true" ]; then
-          VERDICT="REQUEST_CHANGES"
-        elif [ "$STILL_PRESENT_BLOCKERS" -gt 0 ]; then
+        if [ "$STILL_PRESENT_BLOCKERS" -gt 0 ]; then
           VERDICT="REQUEST_CHANGES"
           echo "::notice::Round-2: $STILL_PRESENT_BLOCKERS prior blocking finding(s) still present — keeping REQUEST_CHANGES."
+          # Only call this an override if the per-PR ladder hadn't
+          # already landed on REQUEST_CHANGES — otherwise it's a
+          # confirmation, not an override, and the body shouldn't
+          # narrate it as one.
+          if [ "$PER_PR_VERDICT" != "REQUEST_CHANGES" ]; then
+            LADDER_OVERRIDE_REASON="$STILL_PRESENT_BLOCKERS prior blocking finding(s) from the previous review are still present in the diff"
+          fi
         else
           # No new blockers and all prior blockers resolved (or there
           # never were any). Locked decision: per-PR ladder unconditionally
@@ -688,24 +711,28 @@ if [ "$ROUND2_VALID" = "true" ]; then
         fi
         ;;
       COMMENT)
-        if [ "$HAS_BLOCKING" = "true" ]; then
-          VERDICT="REQUEST_CHANGES"
-        elif [ "$VERDICT" = "APPROVE" ]; then
-          # Don't escalate to APPROVE on a pure follow-up — prior verdict
-          # was non-blocking but the user hadn't approved yet.
-          VERDICT="COMMENT"
-        fi
+        # Anti-downgrade is moot here: prior=COMMENT had no blockers to
+        # preserve. The per-PR verdict stands. If the LLM keeps flagging
+        # the same minor finding it stays COMMENT; if it stops, APPROVE.
+        # The previous behavior pinned APPROVE → COMMENT to avoid "auto-
+        # approving on a follow-up", but the bot's verdict has no notion
+        # of human approval — pinning was the source of the contradiction
+        # observed on Panenco/qiv#292.
+        :
         ;;
       APPROVE)
-        if [ "$HAS_BLOCKING" = "true" ]; then
-          VERDICT="REQUEST_CHANGES"
-        fi
+        # Per-PR verdict already escalates to REQUEST_CHANGES via the
+        # primary ladder when HAS_BLOCKING=true, so no override is needed.
+        :
         ;;
       *)
         # Unrecognized verdict (state file parses as object with `.verdict`
         # but the value is not a known enum). Fail closed via verdict_max.
         echo "::warning::Round-2: unrecognized prior_verdict='$PRIOR_VERDICT'. Pinning to max(prior,current)."
         VERDICT=$(verdict_max "$PRIOR_VERDICT" "$VERDICT")
+        if [ "$VERDICT" != "$PER_PR_VERDICT" ]; then
+          LADDER_OVERRIDE_REASON="prior verdict '$PRIOR_VERDICT' was not a recognized value; failed closed to the more severe of (prior, per-PR)"
+        fi
         ;;
     esac
   else
@@ -716,12 +743,11 @@ if [ "$ROUND2_VALID" = "true" ]; then
     # silently downgrade REQUEST_CHANGES.
     DEGRADED_REASON="missing"
     [ -f /tmp/resolution-status.json ] && DEGRADED_REASON="malformed"
-    # Capture the per-PR ladder's verdict BEFORE pinning so the warning
-    # log shows both inputs to verdict_max — otherwise `current=$VERDICT`
-    # would print the post-pin value (always equal to the result).
-    PRE_PIN_VERDICT="$VERDICT"
-    VERDICT=$(verdict_max "$PRIOR_VERDICT" "$PRE_PIN_VERDICT")
-    echo "::warning::Round-2 degraded: resolution-status.json $DEGRADED_REASON — pinned verdict to max(prior=$PRIOR_VERDICT, current=$PRE_PIN_VERDICT)=$VERDICT."
+    VERDICT=$(verdict_max "$PRIOR_VERDICT" "$PER_PR_VERDICT")
+    echo "::warning::Round-2 degraded: resolution-status.json $DEGRADED_REASON — pinned verdict to max(prior=$PRIOR_VERDICT, current=$PER_PR_VERDICT)=$VERDICT."
+    if [ "$VERDICT" != "$PER_PR_VERDICT" ]; then
+      LADDER_OVERRIDE_REASON="prior verdict was $PRIOR_VERDICT and the round-2 resolution-status was $DEGRADED_REASON; pinned to the more severe of (prior, per-PR) so we never silently downgrade"
+    fi
   fi
 fi
 
@@ -832,6 +858,19 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
     echo ""
   fi
   # Single-line state banners — the verdict_summary above carries the why.
+  # Round-2 ladder override (when set): explain why the verdict differs
+  # from the bot's per-PR judgement so body and header never disagree.
+  if [ -n "$LADDER_OVERRIDE_REASON" ] && [ "$VERDICT" != "$PER_PR_VERDICT" ]; then
+    echo "> :information_source: **Verdict pinned to \`$VERDICT\`** by the round-2 ladder (per-PR judgement was \`$PER_PR_VERDICT\`; $LADDER_OVERRIDE_REASON)."
+    echo ""
+  fi
+  # Dismissal acknowledgement: the prior round's review was dismissed by
+  # the author, so the round-2 ladder is treating prior=APPROVE. Surface
+  # this so the reader knows the bot saw the dismissal.
+  if [ "$PRIOR_DISMISSED" = "true" ]; then
+    echo "> :wave: **Prior review dismissed by author** — treating earlier findings as accepted/false-positive for ladder purposes. New findings on this round are evaluated independently."
+    echo ""
+  fi
   if [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
     echo "> :no_entry: **APPROVE withheld — no spec.** Link an issue, paste acceptance criteria into the PR body, or wire up the external tracker."
     echo ""
@@ -1010,17 +1049,23 @@ jq --slurpfile urls /tmp/screenshot-urls.json '[.[] |
   (if $shot then ($shot | split("/") | last) else null end) as $basename |
   (if $basename then ($url_map[$basename] // null) else null end) as $shot_url |
   (((.line_end // .line_start // 0) - (.line_start // 0)) <= 10 and .line_start != .line_end) as $use_range |
+  # Default to RIGHT (the new file). Reviewer skills set side:"LEFT" for
+  # findings on deleted lines so the comment can anchor on the LEFT-side
+  # of the diff hunk; without this, deleted-line findings get dropped at
+  # the post-review.sh hunk-validation step.
+  ((.side // "RIGHT") | ascii_upcase) as $side |
+  (if $side == "LEFT" or $side == "RIGHT" then $side else "RIGHT" end) as $side |
   {
     path: .path,
     line: (.line_end // .line_start // 1),
-    side: "RIGHT",
+    side: $side,
     body: (
       "**[\((.type // "finding") | ascii_upcase)]** \(.title // "Untitled")\n\n\(.reasoning // "")\n\n_Expected:_ \(.expected // "")"
       + (if .prd_quote then "\n\n_PRD:_ \(.prd_quote)" else "" end)
       + (if $shot_url then "\n\n![screenshot](\($shot_url))" else "" end)
       | if length > 65000 then .[:64997] + "..." else . end
     )
-  } + (if $use_range then {start_line: .line_start, start_side: "RIGHT"} else {} end)
+  } + (if $use_range then {start_line: .line_start, start_side: $side} else {} end)
 ]' /tmp/all-findings.json > /tmp/review-comments.json
 
 # Also write findings.draft.json for artifact upload

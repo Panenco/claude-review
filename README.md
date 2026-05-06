@@ -112,12 +112,21 @@ Verdict: APPROVE / COMMENT / REQUEST_CHANGES
 
 ### Round 1 vs round 2
 
-The pipeline persists a small state artifact (`/tmp/review-state.json`) on every successful run — the deduped findings, verdict, and head SHA reviewed. On the next push to the same PR, the next run downloads it, computes the diff since that SHA, and runs the round-2 fan above. The verdict ladder gains a round-2 layer:
+The pipeline persists a small state artifact (`/tmp/review-state.json`) on every successful run — the deduped findings, verdict, head SHA reviewed, and the posted review's GitHub id. On the next push to the same PR, the next run downloads it, computes the diff since that SHA, and runs the round-2 fan above. The verdict ladder gains a round-2 layer that's strictly **anti-downgrade**:
 
-- Prior `REQUEST_CHANGES`, no new criticals/majors, all prior blockers `RESOLVED` → `APPROVE`.
-- Prior `REQUEST_CHANGES`, no new blockers, some prior blockers `STILL_PRESENT` → keep `REQUEST_CHANGES`.
-- Prior `COMMENT`, no new blockers → keep `COMMENT` (don't auto-promote on a pure follow-up).
-- Any prior verdict + ≥1 new critical/major → `REQUEST_CHANGES`.
+- Prior `REQUEST_CHANGES`, no new criticals/majors, all prior blockers `RESOLVED` → per-PR verdict (APPROVE if no new findings, COMMENT otherwise).
+- Prior `REQUEST_CHANGES`, some prior blockers `STILL_PRESENT` → keep `REQUEST_CHANGES`.
+- Prior `COMMENT`, no new blockers → per-PR verdict (APPROVE when the per-PR judgement is APPROVE, COMMENT when minor findings remain). The ladder no longer pins prior=COMMENT to COMMENT — that ratchet was the source of "bot says Would APPROVE but verdict says COMMENT" contradictions.
+- Any prior verdict + ≥1 new critical/major → `REQUEST_CHANGES` (handled by the per-PR ladder upstream).
+- Prior review **dismissed by the author** → treat prior verdict as APPROVE for ladder purposes (the dismissal is the strongest signal a human gives the bot; we don't re-enforce findings the author has rejected). Surfaced as a banner in the review body.
+
+When the round-2 ladder overrides the bot's per-PR judgement (e.g. STILL_PRESENT blockers force REQUEST_CHANGES on a clean re-review), the body prepends a one-line "Verdict pinned to X by the round-2 ladder" rationale so the body's narrative never contradicts the header.
+
+**Severity grading:** the bot uses four levels — `critical` and `major` block (REQUEST_CHANGES); `minor` and `note` post inline but never gate APPROVE. Doc nits / identifier typos / "you might consider …" observations land at `note` so a single one-word fix doesn't hold a PR at COMMENT. The reviewer skills enforce a "demonstrate the failure mode" rule for blocking severities — if a critical/major finding can't show the path that produces a real outcome, it's downgraded.
+
+**Findings outside diff hunks:** comments whose `path:line:side` falls outside any diff hunk (deleted-line findings without `side: "LEFT"`, or near-but-imprecise line targets) are appended to the review body under "Findings outside diff hunks" rather than silently dropped. Setting `side: "LEFT"` for deleted-line findings keeps them inline.
+
+**Crash-banner cleanup:** when a run crashes before posting a review (OAuth quota, max-turns, runner OOM), the workflow posts a single review carrying the `<!-- claude-review-crash -->` HTML marker. The next successful run finds that review and edits its body to a "_Superseded by …_" form so the misleading red banner doesn't survive every retry.
 
 Round-1 is otherwise identical to the legacy single-pass review with the recall boost (double-pass + critic) layered on. If the prior state artifact is missing (retention expired, prior run failed before upload), round 2 degrades to a clean full re-review with a `::notice::` explaining why.
 
@@ -447,7 +456,7 @@ Both gates compose with each other: `APPROVE` is granted only when *something* s
 ### 3. New optional knobs (defaults preserve v1 behaviour)
 
 - `DEV_ENV_SECRETS` repo secret — newline-separated `KEY=VALUE` env exposed to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Mirrors `TRACKER_SECRETS`. Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot.
-- New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `core_max_turns` (25), `functional_max_turns` (120), `model_fast` (Haiku for dedup), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding).
+- New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `core_max_turns` (40, was 25), `functional_max_turns` (200, was 120), `model_fast` (Haiku for dedup), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding). The `*_max_turns` defaults were raised to give the prompt-side STOP-and-write anchors room to land output before the framework enforces a ceiling — generous headroom is recall insurance, especially on round 2 where there is no pass-2 redundancy.
 
 ### 4. Already in `@v1`, called out for sub-tag pinners
 

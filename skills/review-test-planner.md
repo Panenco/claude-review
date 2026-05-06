@@ -114,11 +114,15 @@ For each testable change in the diff, write a scenario. Think about:
 
 **Priority order:** acceptance criteria > happy path > error handling > edge cases.
 
-**Max 6 scenarios total.** Prefer UI scenarios when a page exists; API-only scenarios are for changes that have no UI (webhooks, cron jobs, raw endpoints). Mark each scenario `Type: ui | api` so the agent picks the right tool.
+**Max 4 scenarios total** for default `functional` strategy (round 1, full review). The runtime ceiling is 120 turns and the tester needs ~6 turns per scenario plus auth and output-write overhead — 4 is a safe budget. Round-2 typically needs 0-2 (see "Round-2 scope" above). Only exceed 4 when the diff genuinely touches more than 4 distinct user surfaces, and never above 6.
 
-- Group related checks into one scenario (CRUD flow = 1 scenario — the agent chains the steps)
-- Skip validation edge cases the test suite already covers (DTO validation, 404)
-- Typical plan: 1 UI happy path + 1 UI filter/interaction + 1 UI validation error + 1 API edge case = 4 scenarios
+Prefer UI scenarios when a page exists; API-only scenarios are for changes that have no UI (webhooks, cron jobs, raw endpoints). Mark each scenario `Type: ui | api` so the agent picks the right tool.
+
+- Group related checks into one scenario (CRUD flow = 1 scenario — the agent chains the steps).
+- Skip validation edge cases the test suite already covers (DTO validation, 404).
+- Typical plan: 1 UI happy path + 1 UI filter/interaction + 1 UI validation error + 1 API edge case = 4 scenarios.
+
+**Accessibility opt-in.** Add `a11y: true` to the plan front-matter only when the diff touches a11y-relevant surface: form/label markup, ARIA attributes, semantic-element changes, color contrast, keyboard handlers, focus management. For routine UI changes (copy, layout shifts, new components that reuse existing primitives), leave `a11y` unset and the tester skips the audit. Per-scenario axe-core audits on every page is the single biggest budget waste in the functional fan.
 
 ### Step 3: Write test-plan.md
 

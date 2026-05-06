@@ -38,15 +38,15 @@ on:
         type: number
         default: 360
       core_max_turns:
-        description: 'Max turns for the core (Opus) reviewer. 15 is tight on large PRs (≥10k diff lines / ≥50 chunks) — pass-1 hits the ceiling and produces zero findings. Pass-2 redundancy mitigates only on round-1; on round-2 there is no pass-2 and a max-turns failure means a silently empty review. 25 gives Opus headroom for batched Reads + analysis on heavy diffs without unbounded cost.'
+        description: 'Max turns for the core (Opus) reviewer. The skill targets ≤10 with a STOP-and-write anchor at 18; 40 is the runtime ceiling — generous headroom over any well-behaved run, with the prompt-side anchor doing the actual budgeting. Bumped from 25 after observed crashes on large PRs (≥10k diff lines / ≥50 chunks). On round 2 there is no pass-2 redundancy, so a max-turns crash silently kills the verdict — the wider ceiling is recall insurance.'
         required: false
         type: number
-        default: 25
+        default: 40
       functional_max_turns:
-        description: 'Max turns for the functional tester (Sonnet + Playwright MCP + Bash). 80 is tight when the test plan has ≥5 UI scenarios — agent often crashes mid-scenario with "Reached max turns" and produces partial output. 120 gives headroom for navigate + snapshot + screenshot + interact + verify + axe-audit per scenario across a 5-6 scenario plan.'
+        description: 'Max turns for the functional tester (Sonnet + Playwright MCP + Bash). The skill targets ≤30 with STOP-and-write anchors at 60/80/100; 200 is the runtime ceiling — generous headroom over the planner-capped 4 scenarios × ~6 turns/scenario + auth + output budget. Bumped from 120 after observed crashes on PRs with bigger UI surfaces (e.g. seaters#464 crashed at 120 with 12 captured screenshots). The prompt-side anchors keep cost bounded; this ceiling is so the framework rarely has to enforce one.'
         required: false
         type: number
-        default: 120
+        default: 200
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         # No longer strictly required: callers can supply CLAUDE_CODE_OAUTH_TOKENS
@@ -647,12 +647,35 @@ jobs:
         if: steps.prior_run.outputs.run_id != ''
         id: prior_state
         shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           if [ -f /tmp/prior-state/review-state.json ]; then
             PRIOR_HEAD_SHA=$(jq -r '.prior_head_sha // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
             if [ -n "$PRIOR_HEAD_SHA" ]; then
-              echo "Prior state loaded: head=$PRIOR_HEAD_SHA, findings=$(jq '.findings | length' /tmp/prior-state/review-state.json), verdict=$(jq -r '.verdict' /tmp/prior-state/review-state.json)"
+              # Dismissal awareness: when post-review.sh recorded the
+              # prior review's REST id, fetch its current GitHub state.
+              # If the author dismissed it, downgrade the prior verdict
+              # to APPROVE so the round-2 ladder doesn't keep enforcing
+              # findings the author has explicitly rejected. The dismissal
+              # signal is the strongest one a human gives us; previous
+              # behaviour ignored it entirely.
+              PRIOR_REVIEW_ID=$(jq -r '.review_id // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+              if [ -n "$PRIOR_REVIEW_ID" ]; then
+                PRIOR_REVIEW_STATE=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${PRIOR_REVIEW_ID}" --jq '.state' 2>/dev/null || echo "")
+                if [ "$PRIOR_REVIEW_STATE" = "DISMISSED" ]; then
+                  echo "::notice::Prior review #${PRIOR_REVIEW_ID} was dismissed by the author — treating prior verdict as APPROVE for ladder purposes."
+                  jq '.verdict = "APPROVE" | .dismissed_by_author = true' /tmp/prior-state/review-state.json > /tmp/r.json && mv /tmp/r.json /tmp/prior-state/review-state.json
+                fi
+              fi
+              # Use the has()-guarded read here too — `// false` would
+              # silently swap an explicit `false` for the default; the
+              # actual round-state file uses the same guarded pattern at
+              # build-review.sh:185 so the values stay in sync.
+              echo "Prior state loaded: head=$PRIOR_HEAD_SHA, findings=$(jq '.findings | length' /tmp/prior-state/review-state.json), verdict=$(jq -r '.verdict' /tmp/prior-state/review-state.json), dismissed=$(jq -r 'if (type == "object" and has("dismissed_by_author")) then .dismissed_by_author else false end' /tmp/prior-state/review-state.json)"
               echo "prior_head_sha=$PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
               echo "available=true" >> "$GITHUB_OUTPUT"
             else
@@ -911,7 +934,7 @@ jobs:
             --setting-sources user
             --allowedTools Bash,Read,Glob,Grep,Write
             --disallowedTools Edit,WebFetch,WebSearch
-            --max-turns 60
+            --max-turns 90
           show_full_output: 'true'
 
       # Fail-fast gate: if the context builder didn't leave a context.md on
@@ -1176,7 +1199,7 @@ jobs:
           launch_agent core review-core "${{ inputs.model_high }}" "${{ inputs.core_max_turns }}" \
             "You are the core reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output files it specifies."
 
-          launch_agent sweep review-sweep "${{ inputs.model_standard }}" 10 \
+          launch_agent sweep review-sweep "${{ inputs.model_standard }}" 20 \
             "You are the sweep reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output file it specifies."
 
           # Round-1 only: a second independent pass of core + sweep. Same
@@ -1191,7 +1214,7 @@ jobs:
             echo "Round-1 redundancy: launching core + sweep pass-2 in parallel"
             launch_agent core-pass2 review-core "${{ inputs.model_high }}" "${{ inputs.core_max_turns }}" \
               "You are the core reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). OUTPUT_FINDINGS=/tmp/core-findings-2.json OUTPUT_META=/tmp/core-meta-2.json — write to these paths so pass-1 is not clobbered. Follow the skill above exactly, including writing the JSON output files it specifies."
-            launch_agent sweep-pass2 review-sweep "${{ inputs.model_standard }}" 10 \
+            launch_agent sweep-pass2 review-sweep "${{ inputs.model_standard }}" 20 \
               "You are the sweep reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). OUTPUT_FINDINGS=/tmp/sweep-findings-2.json — write to this path so pass-1 is not clobbered. Follow the skill above exactly, including writing the JSON output file it specifies."
           fi
 
@@ -1201,7 +1224,7 @@ jobs:
           # the verdict-table adjustment downstream.
           if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ] && [ -f /tmp/prior-state/review-state.json ] && [ -f /tmp/since-last.diff ]; then
             echo "Round-2: launching resolution checker (Sonnet, parallel)"
-            launch_agent resolution review-resolution-checker "${{ inputs.model_standard }}" 10 \
+            launch_agent resolution review-resolution-checker "${{ inputs.model_standard }}" 18 \
               "You are the resolution checker for PR #$PR_NUMBER. /tmp/prior-state/review-state.json contains the previous review's findings. /tmp/since-last.diff contains the changes since that review. Classify every prior finding as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/resolution-status.json. If — and only if — you spot a high-severity (critical/major) net-new issue in the diff that the prior reviewers clearly missed, append it to /tmp/resolution-findings.json (otherwise write []). Follow the skill above exactly." \
               false
             # Round-2: classify open inline comment threads against the new
@@ -1217,7 +1240,7 @@ jobs:
             OWN_N=$(jq 'length' /tmp/prior-bot-comments.json 2>/dev/null || echo 0)
             if [ "$OTHER_N" -gt 0 ] || [ "$OWN_N" -gt 0 ]; then
               echo "Round-2: launching bot-comment resolver (Sonnet, parallel) — own=$OWN_N other=$OTHER_N"
-              launch_agent bot-resolver review-bot-comment-resolver "${{ inputs.model_standard }}" 8 \
+              launch_agent bot-resolver review-bot-comment-resolver "${{ inputs.model_standard }}" 15 \
                 "You are the bot-comment resolver for PR #$PR_NUMBER. /tmp/prior-bot-comments.json lists open inline comments from our own bot-reviewer (catch-all for orphans not in the resolution-checker's state.json input). /tmp/other-bot-comments.json lists open inline comments from non-Claude bots. /tmp/since-last.diff is the diff since the prior review. Classify each in-scope comment from BOTH files as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/bot-resolution-status.json. Only RESOLVED entries trigger reply + thread close in the poster — silence is correct for STILL_PRESENT and skipped comments. Follow the skill above exactly." \
                 false
             else
@@ -1229,7 +1252,7 @@ jobs:
           # detected (otherwise no spec to compare against).
           if [ -s /tmp/prd-content.md ]; then
             echo "Running spec-compliance reviewer (PRD detected)..."
-            launch_agent spec review-spec-compliance "${{ inputs.model_standard }}" 10 \
+            launch_agent spec review-spec-compliance "${{ inputs.model_standard }}" 18 \
               "You are the spec-compliance reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the spec sources (/tmp/prd-content.md, /tmp/external-issue.md, /tmp/issue.json) and the diff chunks it points at, per the Turn 1 instructions in the skill above. Follow the skill above exactly, including writing the JSON output file it specifies."
           else
             echo "Spec-compliance reviewer skipped — no PRD detected"

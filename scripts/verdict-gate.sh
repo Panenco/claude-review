@@ -68,11 +68,17 @@ if [ ! -f review-result.json ]; then
     echo "::error::review-result.json not found — analyzer did not write output."
   fi
 
-  # Post a visible comment to the PR so the author knows the review
+  # Post a visible notice to the PR so the author knows the review
   # didn't happen (Actions log alone is easy to miss).
-  if [ -n "$PR_NUMBER" ]; then
+  #
+  # Posted as a *review* (not an issue comment) carrying a stable HTML
+  # marker so the next successful run can find and supersede it via
+  # post-review.sh's PUT /reviews/{id} step. Without supersession the red
+  # banner survives every retry — observed on Panenco/qiv#292.
+  if [ -n "$PR_NUMBER" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
     if [ "$QUOTA_HIT" = "true" ]; then
-      CRASH_MSG="> **Claude Review — quota exhausted** :hourglass:"
+      CRASH_MSG="<!-- claude-review-crash -->"
+      CRASH_MSG+=$'\n\n'"> **Claude Review — quota exhausted** :hourglass:"
       CRASH_MSG+=$'\n'">"
       if [ -n "$RESET_PHRASE" ]; then
         CRASH_MSG+=$'\n'"> The Claude OAuth token hit its limit ($RESET_PHRASE)."
@@ -82,14 +88,22 @@ if [ ! -f review-result.json ]; then
       CRASH_MSG+=$'\n'">"
       CRASH_MSG+=$'\n'"> **Action required:** re-run the workflow after the quota resets, or rotate \`CLAUDE_CODE_OAUTH_TOKEN\` to a token with available quota. No code review was produced for this push."
     else
-      CRASH_MSG="> **Claude Review — incomplete** :warning:"
+      CRASH_MSG="<!-- claude-review-crash -->"
+      CRASH_MSG+=$'\n\n'"> **Claude Review — incomplete** :warning:"
       CRASH_MSG+=$'\n'">"
       CRASH_MSG+=$'\n'"> The automated review agent crashed before producing results."
       CRASH_MSG+=$'\n'"> Common causes: OAuth quota exhausted, max-turns budget exhausted, runner OOM."
       CRASH_MSG+=$'\n'">"
       CRASH_MSG+=$'\n'"> **Action required:** a human reviewer should check this PR. Re-running the workflow may also help if the cause was transient."
     fi
-    gh pr comment "$PR_NUMBER" --body "$CRASH_MSG" || echo "::warning::Failed to post crash notification comment"
+    # event=COMMENT keeps the notice non-blocking (we already exit 1 below
+    # to fail the workflow). Using a review instead of an issue comment
+    # gives us a single editable surface that the next successful run can
+    # supersede in post-review.sh.
+    CRASH_PAYLOAD=$(jq -n --arg body "$CRASH_MSG" '{event: "COMMENT", body: $body}')
+    if ! gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" --input - <<<"$CRASH_PAYLOAD" >/dev/null; then
+      echo "::warning::Failed to post crash notification review"
+    fi
   fi
   exit 1
 fi
