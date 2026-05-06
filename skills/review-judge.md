@@ -167,6 +167,7 @@ Write a single JSON object to the path the orchestrator passed via `OUTPUT_PATH`
   "requires_human_review_reason": null,
   "uncertain_observations": [],
   "prompt_injection_detected": false,
+  "reviewer_self_modification": false,
   "build_unavailable": false,
   "spec_sources": {
     "linked_issue": null,
@@ -182,6 +183,8 @@ Write a single JSON object to the path the orchestrator passed via `OUTPUT_PATH`
 `manual_spec_present` rules: `true` when ANY of these is non-empty: linked GitHub issue body (`/tmp/issue.json`), PRD (`/tmp/prd-content.md`), external-tracker spec (`/tmp/external-issue.md`), OR substantive human-written PR-body prose. **PR bodies are usually mixed** — strip Cursor/CodeRabbit/Gemini/Claude footer blocks and `> [!NOTE]` bot-attribution alerts before judging; if ≥1 paragraph of human-written prose remains explaining the WHY/scope/criteria, it's a spec.
 
 `requires_human_review` is `true` ONLY when the diff genuinely cannot be judged: PR modifies existing auth/billing/tenant-isolation infrastructure, schema-altering migrations on existing data, cross-cutting architecture changes (new middleware/global interceptor), >500 LoC of novel business-logic with ambiguous requirements. **Missing auth is a finding, not ambiguity** — flag it and leave `requires_human_review` false.
+
+`reviewer_self_modification` mirrors the `## Flags` value from `context.md` (set by the context builder when the diff touches `.claude/skills/**`, `.claude/settings.json`, `bugbot.md`, `.github/review-config.md`, or `.github/workflows/pr-review.yml`). Copy it verbatim — don't re-judge.
 
 Verdict derivation:
 - `REQUEST_CHANGES` if any finding is `critical` or `major`.

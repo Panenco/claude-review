@@ -150,7 +150,7 @@ For each judge: if its output file is missing or unparseable, treat that judge a
 
 For the thread classifier: if it failed, write `/tmp/thread-resolution.json = []` and continue. The downstream verdict-ladder treats a missing/empty thread-resolution as degraded round-2 (pins verdict to max(prior, current)).
 
-For the functional tester: if it failed, the synthetic `{strategy: "skip", overall: "PASS"}` placeholder from the dispatch decision (or a freshly written one in this branch) preserves downstream gates. Add `judge_health.functional_failed: true`.
+For the functional tester: if the dispatched Task crashed (no output, parse error, exception in the subagent log) write `/tmp/functional-meta.json` as `{"strategy": "crashed", "overall": "CRASH", "summary": "Functional tester agent did not complete; see crash log in review body."}` and `/tmp/functional-findings.json = []`. Set `judge_health.functional_failed: true`. Do NOT use the `{strategy: "skip", overall: "PASS"}` shape for crashes — that sentinel is reserved for legitimate skips (no dev-env, docs-only PR, since-last has no user-observable surface), and the downstream verdict gate would treat a crashed run as a successful skip on tester-failure.
 
 ## Phase 3 — Rebuttal (≤2 rounds)
 
@@ -242,6 +242,7 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
   "requires_human_review_reason": null,
   "uncertain_observations": ["..."],
   "prompt_injection_detected": false,
+  "reviewer_self_modification": false,
   "build_unavailable": false,
   "spec_sources": {
     "linked_issue": null,
