@@ -458,3 +458,15 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
 - All three reviewers (core, sweep, functional) produce output
 - **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
+
+## Verdict ladder (round 2)
+
+When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. Verdict rules:
+
+- New `critical` or `major` finding → `REQUEST_CHANGES`.
+- Prior `REQUEST_CHANGES` blocker still present → `REQUEST_CHANGES` (keeps until you actually fix it).
+- Prior `REQUEST_CHANGES` resolved + no new blockers → per-PR verdict (APPROVE if clean, COMMENT if minor findings remain).
+- Prior `COMMENT` + per-PR verdict APPROVE → `APPROVE`. The bot does NOT pin a follow-up to COMMENT just because the prior round was COMMENT — fixing the one issue the bot flagged should land you on green.
+- You dismissed the prior review → the bot treats it as if you'd accepted that round and evaluates the new commits independently.
+
+Severities matter: `critical` and `major` block; `minor` and `note` post inline but never gate APPROVE. A doc-only nit (typo, wrong package name in a paragraph) is `note` — it shows up in the review but won't hold the PR at COMMENT. If the bot grades a doc nit as `minor` or higher, that's a calibration bug worth flagging in feedback.

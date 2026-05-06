@@ -72,6 +72,24 @@ Cosmetic/formatting, speculative extensibility.
 | `minor` | Design smell, overcomplicated, consistency divergence, weak/missing test | No |
 | `note` | Observation worth mentioning, not actionable | No |
 
+### Severity calibration (mandatory)
+
+- **`major` requires a user-reachable hot path.** An N+1 on a cold admin endpoint that runs once per day is `minor`. An N+1 on the listing endpoint a logged-in user hits per session is `major`. Locate the caller before grading.
+- **Consistency findings are `minor` unless the divergence breaks a guarantee** (e.g. the new code skips an audit-log call that every sibling makes). Pure-style divergence is `note` — let the linter own that.
+- **Doc/comment/identifier nits** (typos, wrong-but-harmless names in docs, off-by-one comments) are `note`. They post inline so the developer sees them but don't block.
+- **`weak-test`** is `minor` when the SUT is mocked and the test would still pass after the SUT is deleted. Lower-grade weak-test patterns (incomplete assertion coverage, missing edge case) are `note`.
+
+Don't downgrade real bugs to `note` to look agreeable. Calibrate honestly: blocking severities are a budget; spending them on small things teaches authors to dismiss the bot.
+
+## Pointing at the right line
+
+Inline comments anchor on (`path`, `line`, `side`) — RIGHT for added/modified lines, LEFT for deleted lines. Comments outside diff hunks land in the review body's "Findings outside diff hunks" section instead of being silently dropped, but inline annotations are denser, so aim to anchor inside hunks.
+
+1. **Set `side: "LEFT"` for findings on a deleted line** (a `-` line in the diff). The default is RIGHT, which will cause LEFT-line comments to fall outside the hunk window.
+2. **For findings on unchanged code** (e.g. a sibling pattern in an untouched file), point at the closest in-hunk line in the changed file and explain in `reasoning` that the divergence is from `path/sibling.ts:N`. Do not invent line numbers.
+3. **For test-coverage findings** (`missing-test`), anchor on the topmost added line of the source file the test should cover.
+4. **Multi-line ranges** with `line_start`/`line_end` are encouraged when the finding spans logic; the build script caps at 10 lines.
+
 ## Confidence threshold (MANDATORY)
 
 Before reporting ANY finding, verify:

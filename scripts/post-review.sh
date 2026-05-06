@@ -102,8 +102,9 @@ if [ -f /tmp/review-comments.json ]; then
         SHOT_URL=$(echo "$reply" | jq -r '.body' | grep -oE '!\[screenshot\]\([^)]+\)' | head -1 || true)
         REPLY_BODY="✅ Confirmed by Claude review — same finding: $TITLE"
         [ -n "$SHOT_URL" ] && REPLY_BODY="$REPLY_BODY"$'\n\n'"$SHOT_URL"
-        gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" \
-          -f body="$REPLY_BODY" 2>/dev/null || true
+        REPLY_OUT=$(gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" \
+          -f body="$REPLY_BODY" 2>&1) \
+          || echo "::warning::Cross-bot reply on comment $CID failed — $(echo "$REPLY_OUT" | head -c 400)"
       done
       echo "Posted $REPLIES reply confirmations"
     fi
@@ -116,33 +117,70 @@ echo "::endgroup::"
 echo "::group::Post review — validate comment lines against diff"
 # Filter out comments targeting lines outside PR diff hunks.
 # GitHub returns 422 if any comment has an unresolvable line.
+# Comments that fall outside hunks get appended to the review body's
+# "Findings outside diff hunks" section instead of being silently dropped
+# — observed on Panenco/qiv#292 as "comments went to general section."
 gh pr diff "$PR" > /tmp/pr.diff 2>/dev/null || true
 if [ -f /tmp/pr.diff ] && [ -f /tmp/review-comments.json ]; then
-  # Build a map of valid line ranges per file from diff hunk headers
+  # Build a map of valid (path, line, side) tuples from diff hunk headers.
+  # Hunk headers carry both `-old_start,old_count` (LEFT, deleted lines)
+  # and `+new_start,new_count` (RIGHT, added/modified lines). We track
+  # both so reviewers can comment on a deleted line by setting side="LEFT"
+  # in the finding — without the LEFT axis the validation step silently
+  # dropped every deleted-line comment.
+  # Portable awk (works with BSD awk + gawk). Hunk header shape:
+  #   @@ -lstart[,lcount] +rstart[,rcount] @@ ...
+  # Field 2 is "-lstart,lcount"; field 3 is "+rstart,rcount". When the
+  # `,count` part is omitted GitHub means "1 line"; when count is 0 the
+  # range is empty (e.g. pure-addition hunks have `-0,0`).
   awk '
     /^--- a\// { next }
-    /^\+\+\+ b\// { file=substr($0,7) }
+    /^\+\+\+ b\// { file=substr($0,7); next }
     /^@@ / {
-      # Parse "+start,count" from hunk header
-      match($0, /\+([0-9]+)(,([0-9]+))?/, m)
-      start = m[1]+0
-      count = m[3]+0
-      if (count == 0) count = 1
-      for (i = start; i < start + count; i++)
-        print file ":" i
+      lspec = $2; rspec = $3
+      sub(/^-/, "", lspec); sub(/^\+/, "", rspec)
+      n = split(lspec, lp, ",")
+      lstart = lp[1] + 0
+      lcount = (n >= 2 ? lp[2] + 0 : 1)
+      n = split(rspec, rp, ",")
+      rstart = rp[1] + 0
+      rcount = (n >= 2 ? rp[2] + 0 : 1)
+      for (i = lstart; i < lstart + lcount; i++) print file ":" i ":LEFT"
+      for (i = rstart; i < rstart + rcount; i++) print file ":" i ":RIGHT"
     }
   ' /tmp/pr.diff | sort -u > /tmp/valid-lines.txt
 
   BEFORE=$(jq 'length' /tmp/review-comments.json)
+  # Split into kept (matching a valid hunk line) and dropped (outside).
+  # Bind each comment to $c first — inside `any(...)` the `.` rebinds to
+  # the array element, so `.path` would dereference a string.
   jq --rawfile valid /tmp/valid-lines.txt '
     ($valid | split("\n") | map(select(length > 0))) as $lines |
-    [.[] | select((.path + ":" + (.line | tostring)) as $key | $lines | any(. == $key))]
-  ' /tmp/review-comments.json > /tmp/review-comments-validated.json
-  AFTER=$(jq 'length' /tmp/review-comments-validated.json)
-  if [ "$AFTER" -lt "$BEFORE" ]; then
-    echo "Filtered $((BEFORE - AFTER)) comments with lines outside diff hunks ($BEFORE -> $AFTER)"
+    [.[] | . as $c | ($c.path + ":" + ($c.line | tostring) + ":" + ($c.side // "RIGHT")) as $key |
+      $c + {_in_diff: ($lines | any(. == $key))}
+    ] as $tagged |
+    {
+      kept:    [$tagged[] | select(._in_diff) | del(._in_diff)],
+      dropped: [$tagged[] | select(._in_diff | not) | del(._in_diff)]
+    }
+  ' /tmp/review-comments.json > /tmp/review-comments-split.json
+  jq '.kept' /tmp/review-comments-split.json > /tmp/review-comments.json
+  jq '.dropped' /tmp/review-comments-split.json > /tmp/dropped-comments.json
+  AFTER=$(jq 'length' /tmp/review-comments.json)
+  DROPPED=$(jq 'length' /tmp/dropped-comments.json)
+  if [ "$DROPPED" -gt 0 ]; then
+    echo "Moved $DROPPED comment(s) outside diff hunks to the review body's \"Findings outside diff hunks\" section ($BEFORE -> $AFTER inline)"
+    {
+      printf '\n### Findings outside diff hunks (%s)\n\n' "$DROPPED"
+      printf '_These findings reference lines outside the PR'"'"'s diff hunks (often deleted lines, context just outside the change window, or near-but-imprecise line targets). Inline comments cannot anchor here — surfacing them in the body so they aren'"'"'t lost._\n\n'
+      jq -r '.[] |
+        "- **`" + .path + ":" + (.line | tostring) + "` (" + (.side // "RIGHT") + ")** — " +
+        # First line of body is the bold "[TYPE] Title" header, which is
+        # the most useful summary; trim the rest to keep the body scannable.
+        (.body | split("\n") | .[0])' /tmp/dropped-comments.json
+      printf '\n'
+    } >> /tmp/review-body.md
   fi
-  mv /tmp/review-comments-validated.json /tmp/review-comments.json
 fi
 echo "::endgroup::"
 
@@ -186,14 +224,87 @@ jq -n \
   '{event: $event, body: $body, comments: $comments[0]}' \
   > /tmp/review-payload.json
 
-echo "Posting $VERDICT review with $(jq '.comments | length' /tmp/review-payload.json) inline comments"
-if ! gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input /tmp/review-payload.json; then
-  sleep 2
-  if ! gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input /tmp/review-payload.json; then
-    jq '.posting_error = "POST failed after 1 retry"' review-result.json > /tmp/r.json && mv /tmp/r.json review-result.json
+# Idempotency guard: if the bot already posted a substantive review on
+# this commit, don't post a second one. Two scenarios this protects:
+#   1. A run gets manually re-triggered on the same SHA.
+#   2. The previous retry-on-failure loop double-posted when the original
+#      POST actually succeeded but its response was misinterpreted as
+#      failure. We drop the retry below; this guard belt-and-braces against
+#      a similar future regression.
+# Crash-banner reviews carry the <!-- claude-review-crash --> marker and
+# don't count as substantive — those are the ones we supersede later.
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+EXISTING_REVIEW_ID=""
+EXISTING_REVIEW_NODE_ID=""
+if [ -n "$HEAD_SHA" ]; then
+  EXISTING_REVIEW=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+    --jq "[.[] | select(.user.login == \"$BOT_USER\" and .commit_id == \"$HEAD_SHA\" and (.body | contains(\"<!-- claude-review-crash -->\") | not))] | .[0] // empty" \
+    2>/dev/null || echo "")
+  if [ -n "$EXISTING_REVIEW" ]; then
+    EXISTING_REVIEW_ID=$(echo "$EXISTING_REVIEW" | jq -r '.id // empty')
+    EXISTING_REVIEW_NODE_ID=$(echo "$EXISTING_REVIEW" | jq -r '.node_id // empty')
+    echo "::notice::Bot already posted a substantive review on $HEAD_SHA (review_id=$EXISTING_REVIEW_ID); skipping duplicate POST."
   fi
 fi
+
+REVIEW_ID=""
+REVIEW_NODE_ID=""
+if [ -n "$EXISTING_REVIEW_ID" ]; then
+  REVIEW_ID="$EXISTING_REVIEW_ID"
+  REVIEW_NODE_ID="$EXISTING_REVIEW_NODE_ID"
+else
+  echo "Posting $VERDICT review with $(jq '.comments | length' /tmp/review-payload.json) inline comments"
+  # Single POST. The previous retry-on-failure loop traded a real-failure
+  # signal for a duplicate-post risk; the gate now reports posting_error
+  # cleanly and humans can re-run the workflow.
+  if POST_RESPONSE=$(gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input /tmp/review-payload.json 2>&1); then
+    REVIEW_ID=$(echo "$POST_RESPONSE" | jq -r '.id // empty' 2>/dev/null || echo "")
+    REVIEW_NODE_ID=$(echo "$POST_RESPONSE" | jq -r '.node_id // empty' 2>/dev/null || echo "")
+    if [ -z "$REVIEW_ID" ]; then
+      echo "::warning::Review POST succeeded but response did not include a review id — round-2 dismissal lookup will degrade to path-line matching."
+    fi
+  else
+    echo "::error::Review POST failed: $POST_RESPONSE"
+    jq '.posting_error = "POST failed (see workflow log for response body)"' review-result.json > /tmp/r.json && mv /tmp/r.json review-result.json
+  fi
+fi
+
+# Persist the review id back into review-state.json so the next round can
+# fetch the prior review's GitHub state (e.g. detect author dismissal).
+# Best-effort: missing review id just means round-2 falls back to current
+# behaviour.
+if [ -n "$REVIEW_ID" ] && [ -f /tmp/review-state.json ]; then
+  jq --arg rid "$REVIEW_ID" --arg rnid "$REVIEW_NODE_ID" \
+    '. + {review_id: ($rid | tonumber? // null), review_node_id: ($rnid | select(length > 0))}' \
+    /tmp/review-state.json > /tmp/r.json && mv /tmp/r.json /tmp/review-state.json
+fi
 echo "::endgroup::"
+
+# After a successful POST: supersede any prior crash-banner reviews on this
+# PR so the misleading red banner doesn't linger after the next push.
+# Crash banners can't be deleted (no review-delete API) — we PATCH the body
+# to a benign superseded form. Marker-based detection so this is safe even
+# across many rounds.
+if [ -n "$REVIEW_ID" ]; then
+  echo "::group::Post review — supersede prior crash banners"
+  CRASH_REVIEWS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+    --jq "[.[] | select(.user.login == \"$BOT_USER\" and (.body | contains(\"<!-- claude-review-crash -->\")) and (.id != $REVIEW_ID)) | .id] | .[]" \
+    2>/dev/null || true)
+  if [ -n "$CRASH_REVIEWS" ]; then
+    SUPERSEDE_BODY=$'<!-- claude-review-crash superseded -->\n\n_Superseded by a successful review run on `'"$HEAD_SHA"$'`._'
+    while IFS= read -r CRID; do
+      [ -z "$CRID" ] && continue
+      if gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$CRID" -f body="$SUPERSEDE_BODY" >/dev/null 2>&1; then
+        echo "Superseded prior crash review #$CRID"
+      else
+        echo "::warning::Could not supersede crash review #$CRID (PATCH failed)"
+      fi
+    done <<< "$CRASH_REVIEWS"
+  else
+    echo "No prior crash banners to supersede."
+  fi
+  echo "::endgroup::"
+fi
 
 # ── Round-2: resolve threads for findings the resolution checker classified
 #    as RESOLVED. Closes the loop so the PR UI shows fixed issues as resolved
@@ -217,7 +328,10 @@ if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json
     # Page through review threads. 100/page is typically enough; if a PR
     # accumulates more we'd need cursor-based pagination, but at that point
     # the review-thread sprawl is already a separate problem.
-    THREADS_JSON=$(gh api graphql -f query='
+    # `databaseId` is selected so we can post audit replies via the REST
+    # `/replies` endpoint instead of GraphQL `addPullRequestReviewThreadReply`,
+    # which auto-creates a new (empty) review container per call.
+    THREADS_RAW=$(gh api graphql -f query='
       query($owner:String!, $repo:String!, $pr:Int!) {
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$pr) {
@@ -228,14 +342,20 @@ if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json
                 path
                 line
                 originalLine
-                comments(first:1) { nodes { author { login } body } }
+                comments(first:1) { nodes { databaseId author { login } } }
               }
             }
           }
         }
-      }' -f owner="$OWNER" -f repo="$NAME" -F pr="$PR" --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null || echo "[]")
+      }' -f owner="$OWNER" -f repo="$NAME" -F pr="$PR" --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>&1 || true)
+    if ! echo "$THREADS_RAW" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      echo "::warning::Could not fetch review threads via GraphQL — skipping resolution. API response: $(echo "$THREADS_RAW" | head -c 400)"
+      THREADS_JSON='[]'
+    else
+      THREADS_JSON="$THREADS_RAW"
+    fi
     if [ "$(echo "$THREADS_JSON" | jq 'length')" = "0" ]; then
-      echo "::warning::Could not fetch review threads via GraphQL — skipping resolution."
+      :  # Already warned above; nothing to resolve.
     else
       RESOLVED_COUNT=0
       SKIPPED_COUNT=0
@@ -267,23 +387,29 @@ if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json
           continue
         fi
         TID=$(echo "$THREAD" | jq -r '.id')
-        # Add a reply for the audit trail (visible in the thread), then
-        # resolve. Two GraphQL calls; failure of either is non-fatal.
-        gh api graphql -f query='
-          mutation($threadId:ID!, $body:String!) {
-            addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}) {
-              comment { id }
-            }
-          }' -f threadId="$TID" -f body="✅ Resolved as of \`$HEAD_SHA\` (Claude review round-2 classifier confirmed the flagged issue is no longer present in the diff)." >/dev/null 2>&1 \
-          || echo "  $rid: reply post failed (continuing to resolve)"
-        if gh api graphql -f query='
+        PARENT_CID=$(echo "$THREAD" | jq -r '.comments.nodes[0].databaseId // empty')
+        # Audit reply via REST `/replies`. The previous implementation used
+        # GraphQL `addPullRequestReviewThreadReply`, which silently creates
+        # a new (empty) review container when the bot has no pending review
+        # — observed on Panenco/qiv#292 as a 0-byte review posted seconds
+        # after the substantive one.
+        if [ -n "$PARENT_CID" ]; then
+          REPLY_OUT=$(gh api --method POST "repos/$REPO/pulls/$PR/comments/$PARENT_CID/replies" \
+            -f body="✅ Resolved as of \`$HEAD_SHA\` (Claude review round-2 classifier confirmed the flagged issue is no longer present in the diff)." 2>&1) \
+            || echo "::warning::  $rid: reply post failed for $FPATH:$FLINE_END — $(echo "$REPLY_OUT" | head -c 400)"
+        else
+          echo "::warning::  $rid: thread had no databaseId on its first comment — skipping audit reply (still resolving)."
+        fi
+        # Resolve the thread. Mutation failure here is non-fatal but
+        # diagnostically important — surface the error body.
+        if RESOLVE_OUT=$(gh api graphql -f query='
           mutation($threadId:ID!) {
             resolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
-          }' -f threadId="$TID" >/dev/null 2>&1; then
+          }' -f threadId="$TID" 2>&1); then
           RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
           echo "  $rid: resolved thread on $FPATH:$FLINE_END"
         else
-          echo "::warning::  $rid: resolveReviewThread mutation failed for $FPATH:$FLINE_END"
+          echo "::warning::  $rid: resolveReviewThread mutation failed for $FPATH:$FLINE_END — $(echo "$RESOLVE_OUT" | head -c 400)"
         fi
       done <<< "$RESOLVED_IDS"
       echo "Resolved $RESOLVED_COUNT thread(s); skipped $SKIPPED_COUNT (no matching open thread)."
@@ -309,7 +435,7 @@ if [ -f /tmp/bot-resolution-status.json ]; then
     HEAD_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "current")
     # databaseId on a comment is the REST `id`; we use it to map
     # resolver output (which carries REST ids) to GraphQL thread nodes.
-    THREADS_JSON=$(gh api graphql -f query='
+    THREADS_RAW=$(gh api graphql -f query='
       query($owner:String!, $repo:String!, $pr:Int!) {
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$pr) {
@@ -322,9 +448,15 @@ if [ -f /tmp/bot-resolution-status.json ]; then
             }
           }
         }
-      }' -f owner="$OWNER" -f repo="$NAME" -F pr="$PR" --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>/dev/null || echo "[]")
+      }' -f owner="$OWNER" -f repo="$NAME" -F pr="$PR" --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>&1 || true)
+    if ! echo "$THREADS_RAW" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      echo "::warning::Could not fetch review threads via GraphQL — skipping other-bot resolution. API response: $(echo "$THREADS_RAW" | head -c 400)"
+      THREADS_JSON='[]'
+    else
+      THREADS_JSON="$THREADS_RAW"
+    fi
     if [ "$(echo "$THREADS_JSON" | jq 'length')" = "0" ]; then
-      echo "::warning::Could not fetch review threads via GraphQL — skipping other-bot resolution."
+      :  # Already warned above; nothing to resolve.
     else
       RESOLVED_COUNT=0
       SKIPPED_COUNT=0
@@ -347,21 +479,20 @@ if [ -f /tmp/bot-resolution-status.json ]; then
         TID=$(echo "$THREAD" | jq -r '.id')
         REPLY_BODY="✅ Resolved as of \`$HEAD_SHA\` per Claude review round-2 classifier"
         [ -n "$EVIDENCE" ] && REPLY_BODY="$REPLY_BODY"$'\n\n'"$EVIDENCE"
-        gh api graphql -f query='
-          mutation($threadId:ID!, $body:String!) {
-            addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId, body:$body}) {
-              comment { id }
-            }
-          }' -f threadId="$TID" -f body="$REPLY_BODY" >/dev/null 2>&1 \
-          || echo "  $BOT $CID: reply post failed (continuing to resolve)"
-        if gh api graphql -f query='
+        # Audit reply via REST `/replies`. CID here is already the parent
+        # comment's databaseId (from the resolver's input), so no extra
+        # GraphQL roundtrip is needed.
+        REPLY_OUT=$(gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" \
+          -f body="$REPLY_BODY" 2>&1) \
+          || echo "::warning::  $BOT $CID: reply post failed for $FPATH:$FLINE — $(echo "$REPLY_OUT" | head -c 400)"
+        if RESOLVE_OUT=$(gh api graphql -f query='
           mutation($threadId:ID!) {
             resolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
-          }' -f threadId="$TID" >/dev/null 2>&1; then
+          }' -f threadId="$TID" 2>&1); then
           RESOLVED_COUNT=$((RESOLVED_COUNT + 1))
           echo "  $BOT $CID: resolved thread on $FPATH:$FLINE"
         else
-          echo "::warning::  $BOT $CID: resolveReviewThread mutation failed for $FPATH:$FLINE"
+          echo "::warning::  $BOT $CID: resolveReviewThread mutation failed for $FPATH:$FLINE — $(echo "$RESOLVE_OUT" | head -c 400)"
         fi
       done < <(echo "$RESOLVED_BOT" | jq -c '.[]')
       echo "Resolved $RESOLVED_COUNT other-bot thread(s); skipped $SKIPPED_COUNT (already resolved or thread not found)."

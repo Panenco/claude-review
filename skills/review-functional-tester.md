@@ -66,31 +66,49 @@ Check the **ENVIRONMENT STATUS** section appended to your prompt for authenticat
 
 ## Efficiency
 
-Target: **≤30 turns**. Budget:
+The runtime ceiling is **120 turns**. Hitting it crashes the run mid-scenario and produces a partial review (observed on Panenco/seaters#464). The ceiling is non-negotiable and won't be raised — runs that need it have already exceeded it. Stay well below by structure, not optimism.
 
-- Turn 1: ToolSearch for Playwright MCP tools + Read `test-plan.md` + Read `context.md` (all in parallel)
+Budget sketch (a typical 4-scenario plan):
+
+- Turn 1: ToolSearch for Playwright MCP tools + Read `test-plan.md` + Read `context.md` (all in parallel — single response)
 - Turn 2: Navigate to the app + authenticate (batched)
-- Turns 3–25: Execute scenarios
-- Turns 26–28: Write output files
-- Turns 29–30: Buffer
+- Turns 3–8: Scenario 1 (typical: navigate, batched snapshot+screenshot+console, interact, verify)
+- Turns 9–14: Scenario 2
+- Turns 15–20: Scenario 3
+- Turns 21–26: Scenario 4
+- Turns 27–30: Targeted re-screenshots for findings + write output
 
-**Batch tool calls in a single turn when possible** (e.g., navigate + screenshot + snapshot + console check). Use `browser_snapshot` for fast DOM assertions; screenshots are for evidence only.
+**STOP-and-write anchors (mandatory).** The agent does not get to decide when to stop:
 
-If at turn 25 and output not written: **write it now with whatever you have**.
+- **Turn 60**: write a draft `/tmp/functional-meta.json` and `/tmp/functional-findings.json` with whatever scenarios you have completed so far. You can refine later.
+- **Turn 80**: write the final versions of both files. After turn 80, only continue scenarios that materially raise the verdict's confidence — skip optional cross-cutting checks.
+- **Turn 100 (HARD)**: do NOT start any new scenario or `browser_evaluate` after this point. If files aren't written, write them with whatever you have. The next 20 turns are buffer for the framework to flush, not for more testing.
+
+**Batch tool calls in a single turn when possible** (e.g., `browser_snapshot` + `browser_take_screenshot` + `browser_console_messages` in one parallel response). Use `browser_snapshot` for fast DOM assertions; screenshots are for evidence only.
+
+**If you find yourself doing `browser_evaluate` for fine-grained DOM probing across many calls, STOP.** That pattern burns turns without proportional signal. Prefer a single `browser_snapshot` to read the DOM tree.
+
+**One screenshot per scenario step is enough.** A wider snapshot beats five tightly-cropped ones. The tester on seaters#464 captured 12 images including incidental assets (`barcode.png`, `wl_logo.png`) — those came from `<img>` tags rendered on the page, not from intentional captures. Pass *explicit* paths under `/tmp/screenshots/` for every targeted shot.
 
 ## Per-scenario workflow
 
+Aim for **≤6 turns per scenario**. The structure below batches what can be batched.
+
 For each scenario in `test-plan.md`:
 
-1. **Navigate** to the relevant URL via `browser_navigate`
-2. **Assert DOM** via `browser_snapshot` — fast, programmatic. Check that required elements, text, columns, buttons exist.
-3. **Screenshot** via `browser_take_screenshot` — pass `filename` as an **absolute path** under `/tmp/screenshots/` (e.g. `/tmp/screenshots/01-list-page.png`). The workflow scans `/tmp/screenshots/` to upload these inline into the PR review. Plain filenames end up in the agent's CWD where they may be missed.
-4. **Check console** via `browser_console_messages` — any errors during load/interaction?
-5. **Interact** if the scenario requires: `browser_click`, `browser_fill_form`, `browser_select_option`, `browser_press_key`. After interaction, re-snapshot and re-screenshot.
-6. **Verify result** against the acceptance criterion. Compare what you see to what the spec says.
-7. **Accessibility check** — after the final state of each page, run an axe-core a11y audit via `browser_evaluate`. See "Accessibility checks" below.
+1. **Navigate + capture** (one parallel turn): `browser_navigate` to the URL, then in the SAME response issue `browser_snapshot` + `browser_take_screenshot` (absolute path under `/tmp/screenshots/`, e.g. `/tmp/screenshots/01-list-page.png`) + `browser_console_messages`. The framework runs the snapshot/screenshot/console-read in parallel after the navigate completes.
+2. **Verify against acceptance criterion**: read the snapshot output. Does the page show what the spec says? If yes and no interaction required, move to the next scenario.
+3. **Interact** (only if the scenario requires): `browser_click`, `browser_fill_form`, `browser_select_option`, `browser_press_key`. After the interaction, batch one more snapshot + screenshot + console-check turn.
+4. **Verify post-interaction state**. Compare to the acceptance criterion. If a mismatch is found, take ONE targeted screenshot (don't re-screenshot the whole page) and record the finding.
+
+**Never run `browser_evaluate` "to inspect the DOM."** `browser_snapshot` already returns the DOM tree. `browser_evaluate` is for synthesising HTTP-exchange views (see "Subtle spec-mismatch detection" below) and not much else.
 
 For non-UI scenarios (API-only), use `browser_evaluate` with `fetch` first, fall back to `curl` via Bash. Record the HTTP status, any response shape mismatches, etc.
+
+**Stop conditions for a scenario:**
+- Acceptance criterion verified (pass) → move on, no extra checks.
+- Mismatch found → record finding with one targeted screenshot, move on. Don't keep poking.
+- Network/console error blocking the page → smoke-failure, record, move on.
 
 ### What to check
 
@@ -180,7 +198,9 @@ Overall: FAIL if any critical/major, WARN if any minor, PASS otherwise.
 
 ## Accessibility checks
 
-After testing each distinct page (not after every interaction — once per page in its final tested state), run an axe-core WCAG 2.1 AA audit using `browser_evaluate`:
+A11y audits are **opt-in per plan**, not per scenario. The test planner marks the plan with `a11y: true` when the diff touches a11y-relevant surface (form labels, semantic markup, color/contrast, keyboard handlers). When the plan does not set `a11y: true`, **skip this section entirely** — running axe-core on every page burns turns without proportional signal on routine PRs.
+
+When a11y IS in scope, run **one** axe-core WCAG 2.1 AA audit on the **single most a11y-relevant page** (typically the page whose markup actually changed in the diff), not one per scenario. Use `browser_evaluate`:
 
 ```js
 async () => {

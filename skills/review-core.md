@@ -11,6 +11,10 @@ You are one of two parallel reviewers. You focus on **correctness and spec compl
 
 Target: **≤10 turns**. Turn 1: Read context.md. Turn 2: ONE batched parallel Read of every chunk + spec source. Turns 3-7: analyze. Turn 8-9: Write findings + meta. Turn 10: buffer.
 
+The runtime ceiling is 25 turns (configurable via `core_max_turns`). Hitting it kills the run with `Reached max turns` and produces no findings — silently invisible on round 2 where there is no pass-2 redundancy.
+
+**STOP-and-write anchor (mandatory).** By **turn 18**, write `/tmp/core-findings.json` and `/tmp/core-meta.json` with whatever findings you have, even if analysis is incomplete. After turn 18 you may continue investigating only specific findings you've already drafted — do not start new exploration. The ladder treats partial output as honest signal; the ladder treats a max-turns crash as no signal at all (and on round 2 your verdict gets pinned via the degraded path).
+
 Use only Read and Write — no Bash, Glob, or Grep. **`context.md` is now an INDEX, not a content dump:** it lists paths, you Read what you need.
 
 ## Turn 1: Read context.md (single Read tool call)
@@ -60,6 +64,31 @@ Cosmetic/formatting (linter territory), missing tests (sweep reviewer handles `m
 | `major` | Logic bug, spec violation, race condition | Yes |
 | `minor` | Wrong-impl, spec-mismatch that doesn't block correctness | No |
 | `note` | Observation worth mentioning, not actionable | No |
+
+### Severity calibration (mandatory)
+
+A blocking severity claim is a budget the reviewer spends. Mis-spending it teaches authors to dismiss reviews on sight.
+
+- **`critical` requires a demonstrated failure mode.** "This *could* corrupt data" is not enough — show the call sequence, the input, the resulting state. If you can't write the repro in one sentence, downgrade to `major` or below.
+- **`major` requires a user-reachable code path.** A latent issue in a code path no caller exercises is `minor` at most. Identify the caller before claiming `major`.
+- **Defensive-scripting suggestions are `minor` or `note`.** Patterns like "this `mapfile <(gh ...)` could swallow an exit code" are reasonable observations, but unless you demonstrate the path that produces the bad outcome, they don't earn a blocking severity. The surrounding script may already handle the failure case.
+- **Doc/comment/identifier accuracy** is `note`. A wrong package name in a doc paragraph (`@qiv/api-client` vs `@qiv/api-sdk`) is worth mentioning so the developer fixes it, but not blocking. The author can fix a one-word typo without re-running review.
+- **Notes never block.** The verdict ladder treats note-only PRs as APPROVE-eligible. Don't downgrade real bugs to `note` — that's worse than over-grading. Calibrate honestly.
+
+If you're unsure, write down the failure trigger and ask "would this cause a real user-visible problem?" If the answer involves an additional precondition you can't show, drop one severity level.
+
+## Pointing at the right line
+
+Inline comments anchor on (`path`, `line`, `side`) tuples that must exist in the PR's diff hunks — RIGHT for added/modified lines (`+`), LEFT for deleted lines (`-`). Comments outside the hunk window are surfaced in the review body's "Findings outside diff hunks" section, but inline annotations are denser and more useful, so aim to keep them inline.
+
+Rules:
+
+1. **Cite a line that exists in the diff hunks.** For added or modified code, leave `side` unset (defaults to `RIGHT`) or set `side: "RIGHT"`. For findings on a deleted line — set `side: "LEFT"`. Without `side: "LEFT"` the comment will land outside the validated hunk window and end up in the body.
+2. **For findings on unchanged code that the diff *contextualises*, point at the closest in-hunk line and explain in `reasoning` that the bug lives at line N in the unchanged region.** Do not invent line numbers; use the nearest line you can see in the hunk.
+3. **For structural findings** (e.g. "this new module has no tests"), point at the topmost added line of the module — never line 1 of an unrelated file.
+4. **Multi-line ranges** are preferred when the finding spans logic. Set both `line_start` and `line_end`. The build script caps the range at 10 lines.
+
+Findings that produce a body-only entry (because the line genuinely isn't in any hunk) still count toward the verdict like any other finding — but they don't anchor visually, so a precise `path:line` in the title matters even more.
 
 ## Build output usage
 
