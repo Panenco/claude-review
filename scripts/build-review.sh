@@ -186,7 +186,12 @@ PRIOR_DISMISSED=false
 if [ -f /tmp/prior-state/review-state.json ]; then
   PRIOR_FUNCTIONAL_OVERALL=$(jq -r '.functional_overall // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
   PRIOR_FUNCTIONAL_STRATEGY=$(jq -r '.functional_strategy // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
-  PRIOR_DISMISSED=$(jq -r '.dismissed_by_author // false' /tmp/prior-state/review-state.json 2>/dev/null || echo "false")
+  # jq's `//` treats explicit `false` as missing — `false // <default>`
+  # always returns the default, regardless of intent. Coincidentally
+  # correct here because the field's default IS false, but if the
+  # default ever changes the bug becomes real. Use the project's
+  # `if has() then ... else default end` pattern (see line ~485).
+  PRIOR_DISMISSED=$(jq -r 'if (type == "object" and has("dismissed_by_author")) then .dismissed_by_author else false end' /tmp/prior-state/review-state.json 2>/dev/null || echo "false")
 fi
 
 # ── Screenshot collection and upload ──
