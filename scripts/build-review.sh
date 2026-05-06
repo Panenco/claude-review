@@ -627,22 +627,14 @@ fi
 echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, manual_spec=$MANUAL_SPEC_PRESENT, technical_change=$TECHNICAL_CHANGE, smoke_ok=$SMOKE_OK, functional=$FUNCTIONAL_OVERALL)"
 
 # ── Build review-result.json ──
-# Crash-aware functional_meta view, used ONLY for the JSON artifact. If
-# the tester exited non-zero without writing /tmp/functional-meta.json,
-# the workflow wrote a synthetic {strategy:"skip",overall:"PASS"} so
-# downstream jq never sees a missing file. That placeholder is
-# indistinguishable from an intentional skip — anyone reading
-# review-result.json would see "skip / PASS" while the review body
-# clearly renders a CRASHED section (that path reads FUNCTIONAL_OK
-# directly). Override here so the JSON reflects the crash too. The
-# FUNCTIONAL_STRATEGY / FUNCTIONAL_OVERALL shell vars that drive body
-# rendering are deliberately left untouched — the existing
-# `elif FUNCTIONAL_OK == 0` branch below still fires as before.
+# The previous architecture wrote a synthetic `{strategy:"skip",overall:"PASS"}`
+# placeholder when the functional tester crashed without writing meta,
+# and an override here flipped that to `strategy:"crashed",overall:"CRASH"`
+# for the JSON artifact. The single-orchestrator architecture writes the
+# crashed sentinel directly (see review-orchestrator.md "Per-subagent
+# failure handling"), so the override branch is no longer reachable.
+# Cursor flagged it as dead code on PR #29 commit 8ffb593.
 JSON_FUNCTIONAL_META="$FUNCTIONAL_META"
-if [ "${FUNCTIONAL_OK:-1}" -eq 0 ] && [ "$FUNCTIONAL_STRATEGY" = "skip" ] && [ "$FUNCTIONAL_OVERALL" = "PASS" ]; then
-  echo "::notice::functional tester exited non-zero without writing meta — review-result.json will record strategy=crashed"
-  JSON_FUNCTIONAL_META=$(echo "$FUNCTIONAL_META" | jq '. + {strategy: "crashed", overall: "CRASH", summary: "Functional tester agent did not complete; see crash log in review body."}')
-fi
 
 SPEC_COMPLIANCE=$(echo "$CORE_META" | jq -r '.spec_compliance // ""')
 VERDICT_SUMMARY=$(echo "$CORE_META" | jq -r '.verdict_summary // ""')
