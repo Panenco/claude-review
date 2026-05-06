@@ -90,27 +90,20 @@ if [ -f /tmp/review-comments.json ]; then
 
     AFTER=$(jq 'length' /tmp/review-comments-deduped.json)
     REPLIES=$(jq 'length' /tmp/reply-comments.json)
-    echo "Cross-bot dedup: $AFTER_SELF -> $AFTER new, $REPLIES will reply to existing"
+    echo "Cross-bot dedup: $AFTER_SELF -> $AFTER new, $REPLIES will reply to existing (replies posted after submit)"
     mv /tmp/review-comments-deduped.json /tmp/review-comments.json
-
-    # Post replies to other bots' comments we agree with.
-    if [ "$REPLIES" -gt 0 ]; then
-      jq -c '.[]' /tmp/reply-comments.json | while read -r reply; do
-        CID=$(echo "$reply" | jq -r '.comment_id')
-        TITLE=$(echo "$reply" | jq -r '.body' | head -n 1 | head -c 200)
-        # Extract screenshot URL from body if present
-        SHOT_URL=$(echo "$reply" | jq -r '.body' | grep -oE '!\[screenshot\]\([^)]+\)' | head -1 || true)
-        REPLY_BODY="✅ Confirmed by Claude review — same finding: $TITLE"
-        [ -n "$SHOT_URL" ] && REPLY_BODY="$REPLY_BODY"$'\n\n'"$SHOT_URL"
-        REPLY_OUT=$(gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" \
-          -f body="$REPLY_BODY" 2>&1) \
-          || echo "::warning::Cross-bot reply on comment $CID failed — $(echo "$REPLY_OUT" | head -c 400)"
-      done
-      echo "Posted $REPLIES reply confirmations"
-    fi
+    # Reply POSTing is intentionally deferred until AFTER the substantive
+    # review is submitted (see "Post review — submit" below). The REST
+    # `/comments/<id>/replies` endpoint silently auto-creates an empty
+    # COMMENTED review wrapper when the bot has no review on this SHA;
+    # if we posted replies first, the substantive POST's idempotency
+    # guard would mistake that empty wrapper for a prior substantive
+    # review and skip the real POST. Observed on Panenco/seaters#470
+    # (run 25456226383) — verdict was REQUEST_CHANGES with 4 findings,
+    # but only the empty reply wrapper landed on the PR.
   fi
 
-  echo "Final inline comments: $(jq 'length' /tmp/review-comments.json) (from $BEFORE)"
+  echo "Pre-submit inline comments: $(jq 'length' /tmp/review-comments.json) (from $BEFORE; $REPLIES queued as replies)"
 fi
 echo "::endgroup::"
 
@@ -242,16 +235,27 @@ if [ -n "$HEAD_SHA" ]; then
   # that breaks downstream `jq -r '.id'` parsing. Slurp all pages into a
   # single array first, then apply the filter once. (cursor#bugbot, PR #28.)
   #
-  # The filter excludes anything carrying either crash-banner marker so
-  # neither a fresh `<!-- claude-review-crash -->` nor an already-superseded
-  # `<!-- claude-review-superseded -->` is mistaken for a substantive review
-  # on the same SHA.
+  # The filter excludes:
+  #   - crash-banner reviews (`<!-- claude-review-crash -->`) — those are
+  #     placeholder banners that should be superseded, not treated as
+  #     "already reviewed".
+  #   - already-superseded crash banners (`<!-- claude-review-superseded -->`).
+  #   - **empty-body reviews** — when GitHub auto-creates a review wrapper
+  #     to host a `/comments/<id>/replies` POST (we use this to confirm
+  #     other-bot findings via cross-bot dedup), the wrapper has body=""
+  #     and state=COMMENTED. Without the empty-body filter, a cross-bot
+  #     reply posted in the same run would create a wrapper that this
+  #     guard then mistook for "we already reviewed", silently skipping
+  #     the substantive POST. (Observed on Panenco/seaters#470.) The
+  #     reply-post is now deferred until AFTER submit, but the guard
+  #     keeps this filter as defense-in-depth.
   EXISTING_REVIEW=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
     | jq -s --arg bot "$BOT_USER" --arg sha "$HEAD_SHA" '
         (add // [])
         | [.[] | select(
             .user.login == $bot
             and .commit_id == $sha
+            and ((.body // "") | length > 0)
             and (
               (
                 (.body | contains("<!-- claude-review-crash -->"))
@@ -310,6 +314,35 @@ if [ -n "$REVIEW_ID" ] && [ -f /tmp/review-state.json ]; then
     /tmp/review-state.json > /tmp/r.json && mv /tmp/r.json /tmp/review-state.json
 fi
 echo "::endgroup::"
+
+# Cross-bot reply confirmations — deferred from the dedup step above.
+# `/comments/<id>/replies` auto-creates a COMMENTED review wrapper when
+# our bot doesn't already have a review on this SHA; we post these AFTER
+# the substantive POST so the wrapper attaches to (or stacks alongside)
+# our real review instead of pre-empting it. Fully best-effort — a
+# wrapper-creation error doesn't roll back anything.
+if [ -f /tmp/reply-comments.json ]; then
+  REPLY_COUNT=$(jq 'length' /tmp/reply-comments.json 2>/dev/null || echo 0)
+  if [ "$REPLY_COUNT" -gt 0 ]; then
+    echo "::group::Post review — confirm other-bot findings (cross-bot replies)"
+    POSTED_REPLIES=0
+    while IFS= read -r reply; do
+      CID=$(echo "$reply" | jq -r '.comment_id')
+      TITLE=$(echo "$reply" | jq -r '.body' | head -n 1 | head -c 200)
+      SHOT_URL=$(echo "$reply" | jq -r '.body' | grep -oE '!\[screenshot\]\([^)]+\)' | head -1 || true)
+      REPLY_BODY="✅ Confirmed by Claude review — same finding: $TITLE"
+      [ -n "$SHOT_URL" ] && REPLY_BODY="$REPLY_BODY"$'\n\n'"$SHOT_URL"
+      if REPLY_OUT=$(gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" \
+        -f body="$REPLY_BODY" 2>&1); then
+        POSTED_REPLIES=$((POSTED_REPLIES + 1))
+      else
+        echo "::warning::Cross-bot reply on comment $CID failed — $(echo "$REPLY_OUT" | head -c 400)"
+      fi
+    done < <(jq -c '.[]' /tmp/reply-comments.json)
+    echo "Posted $POSTED_REPLIES/$REPLY_COUNT cross-bot reply confirmations."
+    echo "::endgroup::"
+  fi
+fi
 
 # After a successful POST: supersede any prior crash-banner reviews on this
 # PR so the misleading red banner doesn't linger after the next push.
