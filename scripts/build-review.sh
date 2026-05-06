@@ -423,10 +423,29 @@ elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; t
   SMOKE_OK=true
 fi
 
+# Judge-health safety gate. The orchestrator's degraded paths (both
+# judges crashed, or context-builder crashed) write `/tmp/all-findings.json
+# = []` and a meta with `judge_health.{opus,haiku,cb}` set to "failed"
+# / `*_failed: true`. With an empty findings array, the per-PR ladder
+# below would otherwise reach APPROVE — contradicting the "Both judges
+# failed" banner the body renders. Force COMMENT here so the verdict
+# matches the banner. Single-judge failure is NOT downgraded — the
+# orchestrator already proceeded with the surviving judge's output, and
+# that's a legitimate review.
+JUDGES_BOTH_FAILED=$(echo "$CORE_META" | jq -r '
+  if (type == "object" and (.judge_health // {} | type == "object")) then
+    ((.judge_health.both_failed // false)
+     or ((.judge_health.opus // "ok") == "failed" and (.judge_health.haiku // "ok") == "failed")
+     or (.judge_health.cb_failed // false))
+  else false end')
+
 if [ "$HAS_BLOCKING" = "true" ]; then
   VERDICT="REQUEST_CHANGES"
 elif [ "$HUMAN_REVIEW" = "true" ]; then
   VERDICT="COMMENT"
+elif [ "$JUDGES_BOTH_FAILED" = "true" ]; then
+  VERDICT="COMMENT"
+  echo "::warning::Both judges (or context builder) failed — downgrading APPROVE to COMMENT. Body banner explains."
 elif [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
   VERDICT="COMMENT"
   echo "::warning::No manual spec available — downgrading APPROVE to COMMENT (core reviewer set manual_spec_present=false)"
