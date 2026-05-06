@@ -116,6 +116,28 @@ fi
 
 ALL_FINDINGS=$(cat /tmp/all-findings.json)
 CORE_META=$(cat /tmp/review-meta.json)
+
+# Defensive merge of round-2 net-new findings from the thread classifier.
+# The orchestrator skill (Phase 4) instructs the LLM to fold
+# `/tmp/resolution-findings.json` into `/tmp/all-findings.json` before
+# exiting; this safety net catches the rare case where the LLM forgot or
+# crashed mid-write, ensuring a major/critical net-new from the
+# classifier still lands in the verdict gate. Dedup by id so an entry
+# already merged by the orchestrator isn't double-counted.
+if [ -f /tmp/resolution-findings.json ] && jq -e 'type == "array" and length > 0' /tmp/resolution-findings.json >/dev/null 2>&1; then
+  RESOLUTION_FINDINGS=$(cat /tmp/resolution-findings.json)
+  MERGED=$(jq -s '
+    (.[0] // []) as $primary |
+    ($primary | map(.id)) as $seen |
+    $primary + ((.[1] // []) | map(select(.id as $id | $seen | index($id) | not)))
+  ' /tmp/all-findings.json /tmp/resolution-findings.json)
+  ADDED=$(( $(echo "$MERGED" | jq 'length') - $(echo "$ALL_FINDINGS" | jq 'length') ))
+  if [ "$ADDED" -gt 0 ]; then
+    echo "::notice::Defensive-merged $ADDED resolution-finding(s) the orchestrator hadn't already folded into /tmp/all-findings.json."
+  fi
+  ALL_FINDINGS="$MERGED"
+fi
+
 TOTAL=$(echo "$ALL_FINDINGS" | jq 'length')
 echo "Orchestrator findings: total=$TOTAL (judge_health: $(echo "$CORE_META" | jq -c '.judge_health // {}'))"
 

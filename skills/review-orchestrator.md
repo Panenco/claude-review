@@ -208,9 +208,14 @@ Always include in `/tmp/review-meta.json`:
   "opus": "ok|failed",
   "haiku": "ok|failed",
   "rebuttal_rounds": 0,
-  "agreed_at": "initial|rebuttal-1|rebuttal-2|none|trivial"
+  "agreed_at": "initial|rebuttal-1|rebuttal-2|none|trivial",
+  "cb_failed": false,
+  "functional_failed": false,
+  "trivial_skip": false
 }
 ```
+
+`cb_failed`, `functional_failed`, `trivial_skip` are all booleans defaulting to `false`. Set the relevant one to `true` whenever the corresponding subagent failed or the run short-circuited at Phase 1 — the workflow reads `functional_failed` to decide `FUNCTIONAL_OK`, and the build step reads `cb_failed`/`trivial_skip` to render the right body banner.
 
 `agreed_at: "none"` means both rebuttal rounds finished without convergence — Phase 4 took union + most-severe verdict.
 `agreed_at: "trivial"` means Phase 1 short-circuited before any judge dispatched.
