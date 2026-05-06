@@ -433,10 +433,19 @@ fi
 # orchestrator already proceeded with the surviving judge's output, and
 # that's a legitimate review.
 JUDGES_BOTH_FAILED=$(echo "$CORE_META" | jq -r '
-  if (type == "object" and (.judge_health // {} | type == "object")) then
-    ((.judge_health.both_failed // false)
-     or ((.judge_health.opus // "ok") == "failed" and (.judge_health.haiku // "ok") == "failed")
-     or (.judge_health.cb_failed // false))
+  # Strict-equality predicates throughout. jq treats any non-false/non-null
+  # value as truthy in `or`, so an LLM emitting `"both_failed": "false"`
+  # (string instead of boolean) under `// false` would resolve to the
+  # truthy string and false-trigger the gate. Compare against the literal
+  # boolean / string instead.
+  def is_failed_str(field): if has(field) then (.[field] == "failed") else false end;
+  def is_true_bool(field): if has(field) then (.[field] == true) else false end;
+  if (type == "object" and (.judge_health // null | type == "object")) then
+    (.judge_health |
+      is_true_bool("both_failed")
+      or is_true_bool("cb_failed")
+      or (is_failed_str("opus") and is_failed_str("haiku"))
+    )
   else false end')
 
 if [ "$HAS_BLOCKING" = "true" ]; then
