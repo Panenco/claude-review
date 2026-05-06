@@ -342,15 +342,18 @@ fi
 #    as RESOLVED. Closes the loop so the PR UI shows fixed issues as resolved
 #    instead of leaving every prior thread open forever.
 #
-# Inputs: /tmp/resolution-status.json (round-2 only, classifier output) +
+# Inputs: /tmp/thread-resolution.json (round-2 only, classifier output —
+#         filtered to source=prior_finding for this block) +
 #         /tmp/prior-state/review-state.json (round-1 findings with path/line).
-# For each RESOLVED entry, find our own bot's review thread at that path+line
-# and call GraphQL `resolveReviewThread` after a short reply for the audit
-# trail. Best-effort: any GraphQL failure is logged but does not abort the
-# poster — the review itself is already committed at this point.
-if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json ]; then
-  echo "::group::Post review — resolve fixed threads (round-2)"
-  RESOLVED_IDS=$(jq -r '[.[] | select(.status == "RESOLVED") | .id] | .[]' /tmp/resolution-status.json 2>/dev/null || true)
+# For each RESOLVED prior-finding entry, find our own bot's review thread at
+# that path+line and call GraphQL `resolveReviewThread` after a short reply
+# for the audit trail. The other sources (own_bot/other_bot/human) are
+# handled by the comment_id-keyed block further down. Best-effort: any
+# GraphQL failure is logged but does not abort the poster — the review
+# itself is already committed at this point.
+if [ -f /tmp/thread-resolution.json ] && [ -f /tmp/prior-state/review-state.json ]; then
+  echo "::group::Post review — resolve fixed prior-finding threads (round-2)"
+  RESOLVED_IDS=$(jq -r '[.[] | select(.source == "prior_finding" and .status == "RESOLVED") | .id] | .[]' /tmp/thread-resolution.json 2>/dev/null || true)
   if [ -z "$RESOLVED_IDS" ]; then
     echo "No RESOLVED prior findings — nothing to resolve."
   else
@@ -450,17 +453,19 @@ if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json
   echo "::endgroup::"
 fi
 
-# ── Round-2: resolve OTHER-bot threads (cursor, aikido, etc.) that the
-#    bot-comment resolver classified as RESOLVED. Mirror of own-thread
-#    resolution above, but matches by comment_id (not path+author) because
-#    the resolver outputs the GitHub REST id directly. We re-fetch threads
-#    via GraphQL and find the one whose first comment's databaseId matches.
-if [ -f /tmp/bot-resolution-status.json ]; then
-  echo "::group::Post review — resolve fixed other-bot threads (round-2)"
-  RESOLVED_BOT=$(jq -c '[.[] | select(.status == "RESOLVED")]' /tmp/bot-resolution-status.json 2>/dev/null || echo "[]")
+# ── Round-2: resolve INLINE-COMMENT threads (own bot, other bots, humans)
+#    that the thread classifier marked RESOLVED. Mirror of the prior-finding
+#    block above, but matches by comment_id (not path+author) because each
+#    entry's `id` is the GitHub REST comment id directly. Covers all three
+#    inline-comment streams in one pass — `bot_user` is null for humans,
+#    "panenco-claude-reviewer[bot]" (or similar) for own_bot, "cursor[bot]" /
+#    "aikido-pr-checks[bot]" / etc. for other_bot.
+if [ -f /tmp/thread-resolution.json ]; then
+  echo "::group::Post review — resolve fixed inline-comment threads (round-2)"
+  RESOLVED_BOT=$(jq -c '[.[] | select((.source == "own_bot" or .source == "other_bot" or .source == "human") and .status == "RESOLVED")]' /tmp/thread-resolution.json 2>/dev/null || echo "[]")
   RESOLVED_BOT_N=$(echo "$RESOLVED_BOT" | jq 'length' 2>/dev/null || echo 0)
   if [ "$RESOLVED_BOT_N" = "0" ]; then
-    echo "No RESOLVED other-bot comments — nothing to acknowledge."
+    echo "No RESOLVED inline-comment threads — nothing to acknowledge."
   else
     OWNER="${REPO%%/*}"
     NAME="${REPO##*/}"
@@ -496,10 +501,16 @@ if [ -f /tmp/bot-resolution-status.json ]; then
       # in a subshell, so RESOLVED_COUNT / SKIPPED_COUNT increments are lost
       # by the time the summary line below runs (always reports 0).
       while IFS= read -r entry; do
-        CID=$(echo "$entry" | jq -r '.comment_id')
-        BOT=$(echo "$entry" | jq -r '.bot_user')
-        FPATH=$(echo "$entry" | jq -r '.path')
-        FLINE=$(echo "$entry" | jq -r '.line')
+        # In the unified thread-resolution.json schema, `id` is the numeric
+        # GitHub REST comment id for inline-comment sources (own_bot /
+        # other_bot / human). `path` and `line` mirror the comment.
+        # `bot_user` is null for humans.
+        CID=$(echo "$entry" | jq -r '.id')
+        SRC=$(echo "$entry" | jq -r '.source')
+        BOT=$(echo "$entry" | jq -r '.bot_user // empty')
+        [ -z "$BOT" ] && BOT="$SRC"
+        FPATH=$(echo "$entry" | jq -r '.path // empty')
+        FLINE=$(echo "$entry" | jq -r '.line // empty')
         EVIDENCE=$(echo "$entry" | jq -r '.evidence // ""' | head -c 400)
         # Match thread whose first comment's databaseId == CID AND not already resolved.
         THREAD=$(echo "$THREADS_JSON" | jq -c --argjson cid "$CID" '

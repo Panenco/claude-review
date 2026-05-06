@@ -8,17 +8,17 @@ on:
         required: false
         type: string
       model_high:
-        description: 'Model for deep-reasoning tasks (core reviewer)'
+        description: 'Deep-reasoning model — used by the Opus judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Opus tier in its Task dispatch); kept as a workflow input for forward-compatibility when the orchestrator parametrises judge models.'
         required: false
         type: string
         default: 'claude-opus-4-7'
       model_standard:
-        description: 'Model for standard tasks (context builder, sweep, functional tester)'
+        description: 'Standard-tier model — used for the context builder, the orchestrator itself, the round-2 thread classifier, and the functional tester (unless overridden by model_functional).'
         required: false
         type: string
         default: 'claude-sonnet-4-6'
       model_fast:
-        description: 'Cheap-tier model for mechanical roles (dedup only at present)'
+        description: 'Cheap-tier model — used by the Haiku judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Haiku tier in its Task dispatch); kept as a workflow input for forward-compatibility.'
         required: false
         type: string
         default: 'claude-haiku-4-5'
@@ -38,7 +38,7 @@ on:
         type: number
         default: 360
       core_max_turns:
-        description: 'Max turns for the core (Opus) reviewer. The skill targets ≤10 with a STOP-and-write anchor at 18; 40 is the runtime ceiling — generous headroom over any well-behaved run, with the prompt-side anchor doing the actual budgeting. Bumped from 25 after observed crashes on large PRs (≥10k diff lines / ≥50 chunks). On round 2 there is no pass-2 redundancy, so a max-turns crash silently kills the verdict — the wider ceiling is recall insurance.'
+        description: 'Legacy alias retained for consumer compatibility. Previously gated the standalone core/core-pass2 reviewers; those have been replaced by the orchestrator-driven judge debate, whose ceiling is set inside the workflow at `--max-turns 80` for the orchestrator and is otherwise governed by the prompt-side STOP-and-write anchors in review-judge.md / review-orchestrator.md. Adjusting this input has no effect today; consumer workflows that pass it continue to work without breakage.'
         required: false
         type: number
         default: 40
@@ -905,81 +905,12 @@ jobs:
           echo "$PID" > /tmp/dev-env/pid
           echo "Background dev-env launched: PID=$PID (process group leader)"
 
-      - name: 'Review: build context'
-        id: context_builder
-        # Don't fail the job if the action returns non-zero (e.g. max-turns).
-        # context.md and test-plan.md may have been written in final turns;
-        # the next step's `[ ! -f context.md ]` guard catches genuine failures.
-        continue-on-error: true
-        uses: anthropics/claude-code-action@b47fd721da662d48c5680e154ad16a73ed74d2e0 # v1
-        env:
-          REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
-          REVIEW_BUILD_AVAILABLE: ${{ (steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true') && 'true' || 'false' }}
-          # Round-2 only: SHA the previous review covered. The skill uses
-          # this to compute /tmp/since-last.diff and emit a "Diff since
-          # last review" section in context.md. Empty/unset on round 1.
-          PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
-        with:
-          # Picked by the `Pick Claude OAuth token` step earlier in the job
-          # (env.CLAUDE_CODE_OAUTH_TOKEN, NOT secrets.…). When a pool is
-          # configured the chosen token has been probe-confirmed to have
-          # 5-hour-window capacity; single-token setups pass through unchanged.
-          claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.review_identity.outputs.token }}
-          prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-context-builder.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. When done, context.md AND test-plan.md must exist at the repo root. Write both BEFORE running out of turns — partial output beats no output.
-          claude_args: |
-            --model ${{ inputs.model_standard }}
-            --permission-mode dontAsk
-            --setting-sources user
-            --allowedTools Bash,Read,Glob,Grep,Write
-            --disallowedTools Edit,WebFetch,WebSearch
-            --max-turns 90
-          show_full_output: 'true'
-
-      # Fail-fast gate: if the context builder didn't leave a context.md on
-      # disk (usually because it hit --max-turns), skip the analyzer fan and
-      # reap the background dev-env so it doesn't keep running. The analyzer
-      # step below would abort the job anyway. We keep `continue-on-error:
-      # true` on the builder itself because a partial context.md written
-      # just before the turn limit is still better than no context.
-      - name: Check context.md exists
-        id: check_context
-        shell: bash
-        env:
-          # Path to the claude-code-action's JSONL conversation log. Stash
-          # it under /tmp/ so verdict-gate.sh can grep it for `rate_limit`
-          # if context.md is missing — without this hand-off the quota
-          # signal is buried in the Actions log only and the gate's PR
-          # comment falls back to a generic "agent crashed" message.
-          CONTEXT_BUILDER_EXEC: ${{ steps.context_builder.outputs.execution_file }}
-        run: |
-          if [ -f context.md ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "context.md present ($(wc -l < context.md) lines) — continuing to analyzer"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            # Best-effort copy so the downstream verdict-gate.sh has the
-            # build-context agent's JSONL stream available for quota
-            # detection. Failure here (output missing, file missing, copy
-            # error) is non-fatal — the gate falls back to its generic
-            # crash message in that case.
-            if [ -n "${CONTEXT_BUILDER_EXEC:-}" ] && [ -f "$CONTEXT_BUILDER_EXEC" ]; then
-              cp "$CONTEXT_BUILDER_EXEC" /tmp/build-context-execution.jsonl 2>/dev/null \
-                || echo "::warning::Could not copy context-builder execution log to /tmp/build-context-execution.jsonl — verdict-gate.sh will fall back to generic crash messaging."
-            fi
-            echo "::error::context.md was not written by the context builder. Check the 'Review: build context' step log — max-turns and OAuth-quota exhaustion are the two common causes. Skipping analyzer; reaping background dev-env."
-            # Reap the background dev-env's whole process group (the
-            # setsid-detached launcher + the dev server it spawned).
-            # `kill -- -PID` signals the group; the leading -- is mandatory
-            # so the negative PID isn't parsed as an option.
-            if [ -f /tmp/dev-env/pid ]; then
-              kill -- -"$(cat /tmp/dev-env/pid)" 2>/dev/null || true
-            fi
-          fi
-
-      - name: Setup Playwright MCP for test runner
-        if: steps.code_check.outputs.needs_build == 'true' && steps.check_context.outputs.exists == 'true'
+      - name: Setup Playwright MCP config
+        # Unconditional. The orchestrator step always passes --mcp-config to
+        # the claude CLI; the file must exist even for docs-only PRs (the
+        # MCP server spawns lazily — only when an mcp__playwright__ tool is
+        # called by a functional-tester subagent — so listing it on every
+        # run is free).
         shell: bash
         run: |
           # Force --output-dir so screenshots land in a known location.
@@ -988,19 +919,23 @@ jobs:
           mkdir -p /tmp/screenshots
 
           # Pre-warm the @playwright/mcp install before the Claude CLI
-          # spawns it. Without this the first npx invocation downloads +
-          # extracts the package on the runner's hot path, and the Claude
-          # CLI's MCP-startup handshake times out before tools register.
-          # Symptom on the Seaters dogfood (run 25101256179): functional
-          # agent's `ToolSearch select:mcp__playwright__browser_navigate`
-          # returned "No matching deferred tools found" across 6 retries
-          # → 0 screenshots, every UI scenario marked untestable. Cache
-          # is per-runner so this is a once-per-cold-runner cost (~10-20s),
-          # but the failure mode it prevents is silent and total.
-          # `--yes` is also passed in the MCP config so npx never prompts.
-          echo "Pre-warming @playwright/mcp@latest..."
-          npx --yes @playwright/mcp@latest --version 2>&1 | head -5 || \
-            echo "::warning::@playwright/mcp@latest pre-warm failed — functional tester may still hit MCP startup timeout. See log above for npx output."
+          # spawns it (only when a functional run is plausible — i.e. the
+          # repo has Node + npx on PATH). Without this the first npx
+          # invocation downloads + extracts the package on the runner's
+          # hot path, and the Claude CLI's MCP-startup handshake times out
+          # before tools register. Cache is per-runner so this is a
+          # once-per-cold-runner cost (~10-20s); the failure mode it
+          # prevents (silently 0 screenshots, every UI scenario untestable)
+          # is total. Skip silently when npx is unavailable — docs-only
+          # repos legitimately have no Node and the orchestrator never
+          # dispatches the functional subagent there anyway.
+          if command -v npx >/dev/null 2>&1; then
+            echo "Pre-warming @playwright/mcp@latest..."
+            npx --yes @playwright/mcp@latest --version 2>&1 | head -5 || \
+              echo "::warning::@playwright/mcp@latest pre-warm failed — functional tester may still hit MCP startup timeout. See log above for npx output."
+          else
+            echo "npx not on PATH — skipping Playwright MCP pre-warm (no functional run expected)."
+          fi
 
           cat > /tmp/mcp-playwright.json << 'MCPEOF'
           {
@@ -1014,431 +949,122 @@ jobs:
           MCPEOF
           sed -i 's/^[[:space:]]*//' /tmp/mcp-playwright.json
 
-      # Wait for the background dev-env that was launched alongside the
-      # context-builder. Replays captured outputs into $GITHUB_OUTPUT and
-      # honors the script's exit code (a failed dev-start.sh still aborts
-      # the workflow, same as the previous synchronous step).
-      - name: Wait for background dev-env
-        if: steps.code_check.outputs.needs_build == 'true' && (steps.install.outputs.install_ok == 'true' || hashFiles('.github/claude-review/dev-start.sh') != '') && steps.check_context.outputs.exists == 'true'
-        id: dev_env
-        shell: bash
+      # Single top-level Claude Code agent. The orchestrator skill drives:
+      #   Phase 0   — Task-dispatches the context-builder subagent, which writes
+      #               context.md + test-plan.md.
+      #   Phase 0.5 — Polls /tmp/dev-env/rc for the background dev-env launched
+      #               by the `Pre-start dev environment` step. Sources
+      #               /tmp/dev-env/outputs to get API_URL/WEB_URL/etc.
+      #   Phase 1   — Early-exits docs-only / trivial PRs (zero non-doc chunks
+      #               + no spec source) without dispatching any judges.
+      #   Phase 2   — Parallel Task fan: judge-Opus + judge-Haiku (always),
+      #               thread classifier (round 2 only when there's anything to
+      #               classify), functional tester (when STRATEGY ∈ {quick,
+      #               functional} and WEB_READY=true). Pipeline-self-test runs
+      #               via Bash directly in this phase (deterministic, no LLM).
+      #   Phase 3   — Up to 2 rebuttal rounds when judges disagree.
+      #   Phase 4   — Consolidates findings + verdict, writes /tmp/all-findings.json
+      #               + /tmp/review-meta.json.
+      #
+      # All parallelism happens via the Task tool inside this single
+      # claude-code-action invocation. The wrapper gives us native rate-limit
+      # fast-fail (the bare `claude -p` CLI hangs on quota walls; the SDK
+      # surfaces the error in <1s). Subagents inherit `--mcp-config` /
+      # `--allowedTools` from this parent — the functional subagent uses
+      # Playwright MCP, the others ignore it.
+      - name: 'Review: orchestrate'
+        id: claude_run
+        # Don't fail the job if the orchestrator returns non-zero (e.g.
+        # max-turns hit at the STOP-and-write anchor). /tmp/all-findings.json
+        # and /tmp/review-meta.json may still have been written; the
+        # downstream verdict-gate step reads them and posts an honest
+        # crash banner if they're missing.
+        continue-on-error: true
+        uses: anthropics/claude-code-action@b47fd721da662d48c5680e154ad16a73ed74d2e0 # v1
         env:
+          REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
+          REVIEW_BUILD_AVAILABLE: ${{ (steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true') && 'true' || 'false' }}
+          PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
+          PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
+          NEEDS_BUILD: ${{ steps.code_check.outputs.needs_build || 'true' }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -uo pipefail
-          source .review-scripts/phase-timing.sh
-          phase_start dev-env
-          # Degraded path: if the background launcher never ran (e.g. a
-          # condition skipped it), bring up the dev-env synchronously now.
-          if [ ! -f /tmp/dev-env/pid ]; then
-            echo "::warning::Background dev-env was not started — running setup-dev-env.sh synchronously"
-            .review-scripts/setup-dev-env.sh
-            RC=$?
-            phase_end dev-env
-            exit $RC
-          fi
-          PID=$(cat /tmp/dev-env/pid)
-          TIMEOUT="${DEV_ENV_TIMEOUT_SECONDS:-360}"
-          DEADLINE=$(( $(date +%s) + TIMEOUT ))
-          while kill -0 "$PID" 2>/dev/null; do
-            if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-              echo "::error::Background dev-env timed out after ${TIMEOUT}s; killing process group -$PID"
-              kill -- -"$PID" 2>/dev/null || true
-              [ -f /tmp/dev-env/log ] && tail -200 /tmp/dev-env/log
-              phase_end dev-env
-              exit 1
-            fi
-            sleep 1
-          done
-          # Replay log + outputs.
-          [ -f /tmp/dev-env/log ] && cat /tmp/dev-env/log
-          if [ -s /tmp/dev-env/outputs ]; then
-            cat /tmp/dev-env/outputs >> "$GITHUB_OUTPUT"
-          fi
-          phase_end dev-env
-          # Honor the inner script's exit code: non-zero means dev-start.sh
-          # failed and we must abort the workflow (same as the previous
-          # synchronous step's `exit 1` path inside setup-dev-env.sh).
-          # Missing rc means the bg shell died before writing it (signal,
-          # OOM, runner cleanup) — fail loudly rather than silently
-          # succeeding with WEB_READY=false.
-          if [ -f /tmp/dev-env/rc ]; then
-            RC=$(cat /tmp/dev-env/rc)
-            exit "$RC"
-          fi
-          echo "::error::Background dev-env exited without writing /tmp/dev-env/rc — bring-up did not complete. Treating as failure."
-          exit 1
+          # Separate token for writing to the review-assets branch (custom
+          # GitHub App token may lack `contents: write`).
+          GITHUB_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Models & ceilings flow through env so the orchestrator skill can
+          # honour the consumer's overrides without re-reading `inputs`.
+          MODEL_HIGH: ${{ inputs.model_high }}
+          MODEL_STANDARD: ${{ inputs.model_standard }}
+          MODEL_FAST: ${{ inputs.model_fast }}
+          MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
+          FUNCTIONAL_MAX_TURNS: ${{ inputs.functional_max_turns }}
+        with:
+          claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.review_identity.outputs.token }}
+          prompt: |
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review — dispatch the context builder, the two judges, the round-2 thread classifier, and the functional tester via the Task tool per the skill above. Write /tmp/all-findings.json + /tmp/review-meta.json before exiting.
+          claude_args: |
+            --model ${{ inputs.model_standard }}
+            --permission-mode dontAsk
+            --setting-sources user
+            --mcp-config /tmp/mcp-playwright.json
+            --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_close,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_type,mcp__playwright__browser_hover,mcp__playwright__browser_resize,mcp__playwright__browser_tabs,mcp__playwright__browser_navigate_back,mcp__playwright__browser_evaluate
+            --disallowedTools Edit,WebFetch,WebSearch
+            --max-turns 100
+          show_full_output: 'true'
 
-      - name: 'Review: analyze code + test (parallel core + sweep + test runner)'
-        id: claude_run
+      # Build the review body + comments + screenshot upload from the
+      # orchestrator's outputs. No agents launched here — pure post-processing.
+      - name: 'Review: build artifacts'
+        id: review_builder
+        if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
         shell: bash
         env:
-          # Picked by the `Pick Claude OAuth token` step earlier in the job —
-          # see comment on `claude_code_oauth_token:` above for rationale.
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ steps.review_identity.outputs.token }}
-          # Separate token for writing to the review-assets branch: the custom
-          # GitHub App token may lack `contents: write`, but the job's
-          # GITHUB_TOKEN always has it (see `permissions:` at job level).
           GITHUB_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          NEEDS_BUILD: ${{ steps.code_check.outputs.needs_build || 'true' }}
-          API_READY: ${{ steps.dev_env.outputs.api_ready || 'false' }}
-          API_URL: ${{ steps.dev_env.outputs.api_url || '' }}
-          WEB_READY: ${{ steps.dev_env.outputs.web_ready || 'false' }}
-          WEB_URL: ${{ steps.dev_env.outputs.web_url || '' }}
-          AUTH_READY: ${{ steps.dev_env.outputs.auth_ready || 'false' }}
           PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
-          PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha || '' }}
+          # claude-code-action's JSONL conversation log. build-review.sh greps
+          # it for `"error":"rate_limit"` / `hit your limit · resets …` so the
+          # quota-specific error annotation fires (instead of a generic crash
+          # message) when the orchestrator hit a quota wall mid-run.
+          ORCHESTRATOR_EXEC: ${{ steps.claude_run.outputs.execution_file }}
         run: |
-          set -euo pipefail
-
-          if [ ! -f context.md ]; then
-            echo "::error::context.md not found -- context builder failed"
-            exit 1
+          set -uo pipefail
+          # Hand off the orchestrator's conversation log under the path
+          # build-review.sh expects. Best-effort — a missing/empty
+          # execution_file just means the quota-specific branch in
+          # build-review.sh's error path falls back to its generic message.
+          if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then
+            cp "$ORCHESTRATOR_EXEC" /tmp/orchestrator-output.txt 2>/dev/null \
+              || echo "::warning::Could not copy orchestrator execution log to /tmp/orchestrator-output.txt — quota-specific error messaging will be unavailable."
           fi
-
-          # Pre-load skill files into the prompt instead of asking the agent to
-          # Read them. Reviewer agents have only Read+Write tools (no Bash/Glob)
-          # and have shown they sometimes fail to resolve relative paths under
-          # the hidden `.claude/` directory at runtime. We also can't rely on
-          # `.claude/skills/` existing at this point: anthropics/claude-code-action
-          # restores `.claude/` from origin/main for "untrusted" PR heads, so any
-          # files the composite action placed there have already been wiped.
-          # Instead we read from CLAUDE_REVIEW_PIPELINE_DIR (exported by the
-          # install action), which points at the action's own directory under
-          # /home/runner/work/_actions/... — outside the workspace and not
-          # touched by claude-code-action's restore.
-          SKILLS_DIR="${CLAUDE_REVIEW_PIPELINE_DIR:-}/skills"
-          for skill in review-core review-sweep; do
-            if [ ! -f "$SKILLS_DIR/${skill}.md" ]; then
-              echo "::error::${skill}.md not found at $SKILLS_DIR — composite action install failed (CLAUDE_REVIEW_PIPELINE_DIR=${CLAUDE_REVIEW_PIPELINE_DIR:-unset})"
-              exit 1
-            fi
-          done
-
-          # bugbot.md is optional, project-specific. Inline it when present.
-          # printf %s preserves the blank-line header spacing.
-          BUGBOT_BLOCK=""
-          if [ -f bugbot.md ]; then
-            BUGBOT_BLOCK=$(printf '\n\n=== bugbot.md (project-specific review standards) ===\n\n%s' "$(cat bugbot.md)")
+          # The orchestrator step exited successfully iff /tmp/all-findings.json
+          # parses; build-review.sh enforces that and exits 1 with a quota- or
+          # crash-specific error otherwise. FUNCTIONAL_OK is read from
+          # /tmp/review-meta.json's judge_health (the orchestrator records it
+          # there alongside the judge statuses).
+          ORCHESTRATOR_OK=1
+          [ "${{ steps.claude_run.outcome }}" = "success" ] || ORCHESTRATOR_OK=0
+          export ORCHESTRATOR_OK
+          FUNCTIONAL_OK=1
+          if [ -f /tmp/review-meta.json ] \
+              && [ "$(jq -r '.judge_health.functional_failed // false' /tmp/review-meta.json 2>/dev/null)" = "true" ]; then
+            FUNCTIONAL_OK=0
           fi
-
-          # Round-2 inputs are advertised in context.md by the
-          # context-builder skill (see `## Round-2 inputs` and the
-          # round-2-scoped per-file diff index). Reviewers read context.md
-          # and the round-2 paths it lists; no out-of-band hint needed.
-
-          echo "::group::Launch parallel reviewers + test runner"
-          set -x   # trace launches so any abort points at its own line
-
-          # PID + log-path map indexed by role. The wait + status + log
-          # blocks below iterate it once instead of duplicating per role.
-          declare -A PIDS=()
-          declare -A LOGS=(
-            [core]=/tmp/core-output.txt
-            [sweep]=/tmp/sweep-output.txt
-            [spec]=/tmp/spec-output.txt
-            [functional]=/tmp/functional-output.txt
-            [core-pass2]=/tmp/core-output-2.txt
-            [sweep-pass2]=/tmp/sweep-output-2.txt
-            [resolution]=/tmp/resolution-output.txt
-            [bot-resolver]=/tmp/bot-resolver-output.txt
-          )
-
-          # Reap any agents still alive on early exit so their output files
-          # survive (the runner SIGTERMs background children otherwise).
-          reap_on_exit() {
-            local rc=$?
-            set +x
-            for pid in "${PIDS[@]}"; do
-              [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && wait "$pid" 2>/dev/null || true
-            done
-            exit "$rc"
-          }
-          trap reap_on_exit EXIT
-
-          # launch_agent — background a single read-only reviewer.
-          # Prompt order: <skill> + <bugbot> + <PR-specific framing> so the
-          # constant prefix maximises (model, prefix) cache hits across PRs.
-          # Args: ROLE SKILL_NAME MODEL MAX_TURNS FRAMING [INCLUDE_BUGBOT=true]
-          # Sets PIDS[$role].
-          # INCLUDE_BUGBOT=false skips the project's bugbot.md block. Use
-          # for purely-mechanical agents (resolution checker) where bugbot's
-          # "do not flag X" / "accepted trade-off" rules would create
-          # ambient pressure to mis-classify findings — e.g. the resolution
-          # checker decides RESOLVED based on *code evidence*, not on
-          # whether policy now accepts the issue.
-          launch_agent() {
-            local role="$1" skill="$2" model="$3" max_turns="$4" framing="$5"
-            local include_bugbot="${6:-true}"
-            local skill_path="$SKILLS_DIR/${skill}.md"
-            if [ ! -f "$skill_path" ]; then
-              echo "::error::${skill}.md not found at $SKILLS_DIR — composite action install failed"
-              exit 1
-            fi
-            local skill_text bugbot=""
-            skill_text=$(cat "$skill_path")
-            [ "$include_bugbot" = "true" ] && bugbot="$BUGBOT_BLOCK"
-            ~/.local/bin/claude -p "=== ${skill} skill (follow exactly) ===
-
-          ${skill_text}${bugbot}
-
-          ${framing}" \
-              --model "$model" \
-              --permission-mode dontAsk \
-              --setting-sources user \
-              --allowedTools Read,Write \
-              --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
-              --max-turns "$max_turns" > "${LOGS[$role]}" 2>&1 &
-            PIDS[$role]=$!
-          }
-
-          launch_agent core review-core "${{ inputs.model_high }}" "${{ inputs.core_max_turns }}" \
-            "You are the core reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output files it specifies."
-
-          launch_agent sweep review-sweep "${{ inputs.model_standard }}" 20 \
-            "You are the sweep reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). Follow the skill above exactly, including writing the JSON output file it specifies."
-
-          # Round-1 only: a second independent pass of core + sweep. Same
-          # skills, independent LLM sampling — the union catches misses.
-          # Pass-2 writes to *-findings-2.json so pass-1 verdict-critical
-          # meta is not clobbered.
-          # Gate is "no prior state artifact" — i.e. this is the first
-          # attempt at this PR with no usable history. On round 2+ the
-          # resolution checker + focused diff replace the boost; running
-          # it again would re-flag everything we already classified.
-          if [ "${PRIOR_STATE_AVAILABLE:-false}" != "true" ]; then
-            echo "Round-1 redundancy: launching core + sweep pass-2 in parallel"
-            launch_agent core-pass2 review-core "${{ inputs.model_high }}" "${{ inputs.core_max_turns }}" \
-              "You are the core reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root is an INDEX — Read it, then Read the diff chunks and spec sources it points at (per the Turn 1 instructions in the skill above). OUTPUT_FINDINGS=/tmp/core-findings-2.json OUTPUT_META=/tmp/core-meta-2.json — write to these paths so pass-1 is not clobbered. Follow the skill above exactly, including writing the JSON output files it specifies."
-            launch_agent sweep-pass2 review-sweep "${{ inputs.model_standard }}" 20 \
-              "You are the sweep reviewer for PR #$PR_NUMBER (PASS 2 — independent re-review). context.md at the repo root is an INDEX — Read it, then Read the diff chunks it points at (per the Turn 1 instructions in the skill above). OUTPUT_FINDINGS=/tmp/sweep-findings-2.json — write to this path so pass-1 is not clobbered. Follow the skill above exactly, including writing the JSON output file it specifies."
-          fi
-
-          # Round-2 only: classify every prior finding as RESOLVED /
-          # STILL_PRESENT / NEW_CONTEXT against the diff-since-last. Output
-          # at /tmp/resolution-status.json drives both the body section and
-          # the verdict-table adjustment downstream.
-          if [ "${PRIOR_STATE_AVAILABLE:-false}" = "true" ] && [ -f /tmp/prior-state/review-state.json ] && [ -f /tmp/since-last.diff ]; then
-            echo "Round-2: launching resolution checker (Sonnet, parallel)"
-            launch_agent resolution review-resolution-checker "${{ inputs.model_standard }}" 18 \
-              "You are the resolution checker for PR #$PR_NUMBER. /tmp/prior-state/review-state.json contains the previous review's findings. /tmp/since-last.diff contains the changes since that review. Classify every prior finding as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/resolution-status.json. If — and only if — you spot a high-severity (critical/major) net-new issue in the diff that the prior reviewers clearly missed, append it to /tmp/resolution-findings.json (otherwise write []). Follow the skill above exactly." \
-              false
-            # Round-2: classify open inline comment threads against the new
-            # diff — both our own prior bot-reviewer's comments AND other
-            # bots' (cursor, aikido). RESOLVED entries get a `✅ Resolved
-            # as of <sha>` reply + a resolveReviewThread mutation in
-            # post-review.sh. Catches our own ORPHANED threads — comments
-            # from rounds whose state-artifact has expired or whose findings
-            # got dropped from the latest state.json (the resolution-checker
-            # only sees what's still in the artifact). Round-1 runs skip
-            # (no since-last.diff). Skip launch if both inputs are empty.
-            OTHER_N=$(jq 'length' /tmp/other-bot-comments.json 2>/dev/null || echo 0)
-            OWN_N=$(jq 'length' /tmp/prior-bot-comments.json 2>/dev/null || echo 0)
-            if [ "$OTHER_N" -gt 0 ] || [ "$OWN_N" -gt 0 ]; then
-              echo "Round-2: launching bot-comment resolver (Sonnet, parallel) — own=$OWN_N other=$OTHER_N"
-              launch_agent bot-resolver review-bot-comment-resolver "${{ inputs.model_standard }}" 15 \
-                "You are the bot-comment resolver for PR #$PR_NUMBER. /tmp/prior-bot-comments.json lists open inline comments from our own bot-reviewer (catch-all for orphans not in the resolution-checker's state.json input). /tmp/other-bot-comments.json lists open inline comments from non-Claude bots. /tmp/since-last.diff is the diff since the prior review. Classify each in-scope comment from BOTH files as RESOLVED / STILL_PRESENT / NEW_CONTEXT and write /tmp/bot-resolution-status.json. Only RESOLVED entries trigger reply + thread close in the poster — silence is correct for STILL_PRESENT and skipped comments. Follow the skill above exactly." \
-                false
-            else
-              echo "Round-2: bot-comment resolver skipped (no open inline threads to classify)"
-            fi
-          fi
-
-          # Spec-compliance: PRD-vs-code comparison; runs only when a PRD was
-          # detected (otherwise no spec to compare against).
-          if [ -s /tmp/prd-content.md ]; then
-            echo "Running spec-compliance reviewer (PRD detected)..."
-            launch_agent spec review-spec-compliance "${{ inputs.model_standard }}" 18 \
-              "You are the spec-compliance reviewer for PR #$PR_NUMBER. context.md at the repo root is an INDEX — Read it, then Read the spec sources (/tmp/prd-content.md, /tmp/external-issue.md, /tmp/issue.json) and the diff chunks it points at, per the Turn 1 instructions in the skill above. Follow the skill above exactly, including writing the JSON output file it specifies."
-          else
-            echo "Spec-compliance reviewer skipped — no PRD detected"
-          fi
-
-          # Generate functional prompt from template.
-          # Never let helper-script failure kill the whole step — by now the
-          # core/sweep reviewers (and any pass-2 / spec / resolution agents)
-          # have been launched into PIDS[], and errexit here would trip
-          # before `wait`, orphaning them and producing an "analyzer
-          # crashed" outcome with zero-byte output files. Functional
-          # testing is best-effort: if the prompt can't be built we warn
-          # and skip the tester, then still wait on the rest.
-          .review-scripts/generate-functional-prompt.sh \
-            || echo "::warning::generate-functional-prompt.sh failed — functional tester will be skipped (core + sweep continue)"
-
-          # Functional tester: single AI agent with Playwright MCP + Bash.
-          # Separate launch (different MCP config + tool list) — not driven
-          # by launch_agent. Skips when the planner said skip, the web
-          # service didn't come up, or there's no prompt to drive it.
-          # Strategy resolution. `|| true` guards against missing
-          # '## Strategy:' line: grep's non-zero exit would otherwise
-          # abort the step under GitHub Actions' default bash -eo pipefail.
-          # The whitelist filter strips markdown emphasis (`backticks`,
-          # *italic*, **bold**, "quotes") — agents sometimes wrap the
-          # value, e.g. write `## Strategy: \`pipeline-self-test\`` instead
-          # of `## Strategy: pipeline-self-test`. Whitelisting [a-zA-Z-]
-          # is robust to all of those without enumerating every wrapper.
-          STRATEGY=""
-          if [ -f test-plan.md ]; then
-            STRATEGY=$(grep -m1 -iE '^## Strategy:' test-plan.md 2>/dev/null \
-              | sed -E 's/.*Strategy:[[:space:]]*//' \
-              | sed -E 's/[^a-zA-Z-]//g' \
-              | tr '[:upper:]' '[:lower:]' || true)
-          fi
-
-          if [ "$STRATEGY" = "pipeline-self-test" ] && [ -d tests ]; then
-            # Pipeline self-test branch: the planner picked this when the
-            # repo has tests/*.sh but no application surface (typical for
-            # reviewer-self-modifying PRs and CI-tooling repos). Run the
-            # bash test scripts directly — no agent needed. Each test gets
-            # a 60s timeout and the loop is bounded to tests/*.sh (no
-            # recursion, no other extensions) so consumer repos with large
-            # test trees don't blow up the review pipeline.
-            #
-            # Filename convention: *_test.sh = headless fixture test (run
-            # in CI), *smoke* = live-API smoke test (local-only, requires
-            # secrets like CLAUDE_CODE_OAUTH_TOKEN, would always fail in
-            # CI). We exclude smoke tests by name match.
-            echo "::group::Pipeline self-test — running tests/*.sh (excluding *smoke*)"
-            PASS=0; FAIL=0; SKIPPED=0; FAILED_LIST=""
-            shopt -s nullglob
-            for t in tests/*.sh; do
-              [ -f "$t" ] || continue
-              case "$(basename "$t")" in
-                *smoke*)
-                  echo "Skipping $t (live-API smoke; documented as not-for-CI)"
-                  SKIPPED=$((SKIPPED + 1))
-                  continue
-                  ;;
-              esac
-              echo "::group::$t"
-              if timeout 60 bash "$t" 2>&1; then
-                PASS=$((PASS + 1))
-              else
-                rc=$?
-                FAIL=$((FAIL + 1))
-                FAILED_LIST="${FAILED_LIST}${t} (exit ${rc}) "
-              fi
-              echo "::endgroup::"
-            done
-            shopt -u nullglob
-            TOTAL=$((PASS + FAIL))
-            if [ "$TOTAL" -eq 0 ]; then
-              OVERALL=WARN
-              SUMMARY="No eligible tests/*.sh found (skipped ${SKIPPED} smoke test(s)). Add a *_test.sh fixture test that doesn't require a live API to enable pipeline-self-test verification."
-            elif [ "$FAIL" -gt 0 ]; then
-              OVERALL=FAIL
-              SUMMARY="Ran ${TOTAL} test script(s) from tests/*.sh: ${PASS} passed, ${FAIL} failed. Failed: ${FAILED_LIST}"
-            else
-              OVERALL=PASS
-              SUMMARY="Ran ${TOTAL} test script(s) from tests/*.sh: ${PASS} passed, ${FAIL} failed."
-            fi
-            [ "$SKIPPED" -gt 0 ] && SUMMARY="${SUMMARY} Skipped ${SKIPPED} smoke test(s) (live-API only)."
-            jq -n \
-              --arg overall "$OVERALL" \
-              --argjson pass "$PASS" \
-              --argjson fail "$FAIL" \
-              --argjson total "$TOTAL" \
-              --arg summary "$SUMMARY" \
-              '{
-                strategy: "pipeline-self-test",
-                overall: $overall,
-                areas_tested: ["pipeline-self-test"],
-                screenshots: [],
-                pass: $pass,
-                fail: $fail,
-                total: $total,
-                summary: $summary,
-                uncertain_observations: []
-              }' > /tmp/functional-meta.json
-            echo '[]' > /tmp/functional-findings.json
-            echo "Pipeline self-test: $PASS/$TOTAL passed (overall=$OVERALL)"
-            echo "::endgroup::"
-          elif [ "$NEEDS_BUILD" = "true" ] && [ "$WEB_READY" = "true" ] && [ -f test-plan.md ] && [ -s /tmp/functional-prompt.txt ]; then
-            if [ "$STRATEGY" != "skip" ]; then
-              echo "Running functional tester (Playwright + Bash) — strategy: ${STRATEGY:-unknown}..."
-              mkdir -p /tmp/screenshots
-              ~/.local/bin/claude -p "$(cat /tmp/functional-prompt.txt)" \
-                --model ${{ inputs.model_functional }} \
-                --mcp-config /tmp/mcp-playwright.json \
-                --permission-mode dontAsk \
-                --allowedTools "Bash,Read,Write,ToolSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_close,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_type,mcp__playwright__browser_hover,mcp__playwright__browser_resize,mcp__playwright__browser_tabs,mcp__playwright__browser_navigate_back,mcp__playwright__browser_evaluate" \
-                --max-turns "${{ inputs.functional_max_turns }}" > "${LOGS[functional]}" 2>&1 &
-              PIDS[functional]=$!
-            else
-              echo "Functional tester skipped — strategy: skip"
-            fi
-          else
-            echo "Functional tester skipped (docs-only PR, web not ready, or no test plan)"
-          fi
-
-          # Default empty output files so downstream merge always has valid JSON.
-          [ -f /tmp/functional-findings.json ] || echo '[]' > /tmp/functional-findings.json
-          [ -f /tmp/functional-meta.json ] || echo '{"strategy":"skip","areas_tested":[],"screenshots":[],"overall":"PASS","summary":"Functional testing skipped.","uncertain_observations":[]}' > /tmp/functional-meta.json
-
-          # Wait for every launched parallel agent. Status convention:
-          # 1 = launched and exited 0; 0 = launched and failed; 1 also for
-          # "not launched" so the summary line doesn't show FAILED on
-          # legitimately-skipped roles. ROLES is the single source of truth
-          # for which agents go through the wait/status/log loops below.
-          ROLES=(core sweep spec functional core-pass2 sweep-pass2 resolution bot-resolver)
-          declare -A AGENT_OK=()
-          for role in "${ROLES[@]}"; do
-            if [ -z "${PIDS[$role]:-}" ]; then
-              AGENT_OK[$role]=1; continue
-            fi
-            AGENT_OK[$role]=0
-            wait "${PIDS[$role]}" && AGENT_OK[$role]=1 || true
-          done
-          # build-review.sh's smoke gate reads FUNCTIONAL_OK directly.
-          FUNCTIONAL_OK="${AGENT_OK[functional]}"
-
-          status_parts=()
-          for role in "${ROLES[@]}"; do
-            if [ "${AGENT_OK[$role]}" -eq 1 ]; then status_parts+=("$role: OK")
-            else status_parts+=("$role: FAILED"); fi
-          done
-          ( IFS=', '; echo "${status_parts[*]}" )
-          echo "::endgroup::"
-
-          # Replay each agent's log in its own group.
-          for role in "${ROLES[@]}"; do
-            echo "::group::${role} log"
-            [ -f "${LOGS[$role]}" ] && cat "${LOGS[$role]}" || echo "(skipped or no output)"
-            echo "::endgroup::"
-          done
-
-          # Gap-finder is no longer launched. It used to run sequentially after
-          # the parallel fan as an Opus "critic" reading prior findings to
-          # hunt for what they missed. In practice it added a 9-minute tail
-          # for marginal recall: the parallel fan already runs core×2 +
-          # sweep×2 + spec, and the Haiku semantic dedup downstream collapses
-          # overlap regardless of which agent surfaced what. The cost-benefit
-          # didn't survive measurement (PR #19 dogfood: 0 net-new findings,
-          # 9m05s wall-time). We can re-add it gated on PR size if recall
-          # data later shows it worth the time.
-
-          # Export FUNCTIONAL_OK for build-review.sh (it uses it for crash section)
           export FUNCTIONAL_OK
-          # Export the variables build-review.sh needs to run the Haiku
-          # dedup step (CLAUDE_REVIEW_PIPELINE_DIR for the skill source,
-          # SKILLS_DIR as a fallback path, MODEL_FAST for the model arg,
-          # BUGBOT_PATH + BUGBOT_BLOCK for accepted-trade-off context).
-          export CLAUDE_REVIEW_PIPELINE_DIR
-          export SKILLS_DIR
-          export MODEL_FAST="${{ inputs.model_fast }}"
-          export BUGBOT_BLOCK
-
-          # Merge findings, build review artifacts
           .review-scripts/build-review.sh
 
       # Stage 3: Post review (pure Bash — dismiss stale, self-dedupe, POST).
+      # Gated on the build step (not the orchestrator) because build-review.sh
+      # is what produces review-result.json + /tmp/review-comments.json. If the
+      # orchestrator wrote partial output and build-review.sh succeeded, we
+      # post; if build-review.sh exited 1 (missing /tmp/all-findings.json), the
+      # verdict gate downstream surfaces the crash banner instead.
       - name: 'Review: post results'
         id: review_poster
-        if: always() && steps.claude_run.outcome == 'success'
+        if: always() && steps.review_builder.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.review_identity.outputs.token }}
@@ -1460,6 +1086,24 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         run: .review-scripts/verdict-gate.sh
 
+      # Best-effort usage record. Writes /tmp/usage.json from review-result.json,
+      # functional-meta.json, and phase timings; the next artifact step uploads
+      # it as `claude-review-usage`. The maintainer aggregates across consumer
+      # repos locally with scripts/usage-report.sh + their own `gh` auth — no
+      # PAT or webhook required. Fully no-op when inputs are missing; never
+      # blocks the review.
+      - name: Report usage
+        if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
+        continue-on-error: true
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          HEAD_SHA: ${{ steps.pr_sha.outputs.sha }}
+          ANALYZER_OUTCOME: ${{ steps.claude_run.outcome }}
+          POSTER_OUTCOME: ${{ steps.review_poster.outcome }}
+          PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
+        run: .review-scripts/report-usage.sh
+
       # Persist round-state for the next follow-up review on this PR.
       # Separate artifact (not bundled with claude-review-${PR_NUMBER}) so
       # the round-2 read step can download just this small file by name
@@ -1467,12 +1111,31 @@ jobs:
       # — long enough to cover stale-PR follow-ups without ballooning
       # artifact storage.
       - name: Upload review state
-        if: always() && steps.claude_run.outcome == 'success'
+        # Gated on the build step (writes /tmp/review-state.json) succeeding,
+        # not the orchestrator — partial orchestrator output is fine if
+        # build-review.sh accepted it.
+        if: always() && steps.review_builder.outcome == 'success'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: claude-review-state-pr-${{ github.event.pull_request.number || inputs.pr_number }}
           path: /tmp/review-state.json
           if-no-files-found: warn
+          retention-days: 90
+          overwrite: true
+
+      # Usage record — one tiny JSON per run, separate artifact so
+      # scripts/usage-report.sh can list+download them across consumer repos
+      # without pulling the multi-MB review payload. Name is fixed (no PR
+      # suffix) so the aggregator's filter is a single equality check.
+      # Best-effort: skip silently when /tmp/usage.json wasn't produced.
+      - name: Upload usage record
+        if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: claude-review-usage
+          path: /tmp/usage.json
+          if-no-files-found: ignore
           retention-days: 90
           overwrite: true
 
@@ -1487,26 +1150,23 @@ jobs:
             context.md
             test-plan.md
             screenshots/
-            /tmp/core-output.txt
-            /tmp/sweep-output.txt
-            /tmp/spec-output.txt
+            /tmp/orchestrator-output.txt
+            /tmp/thread-classifier-output.txt
             /tmp/functional-output.txt
             /tmp/functional-prompt.txt
             /tmp/prd-content.md
-            /tmp/core-findings.json
-            /tmp/sweep-findings.json
-            /tmp/spec-findings.json
-            /tmp/functional-findings.json
-            /tmp/core-meta.json
-            /tmp/functional-meta.json
-            /tmp/core-findings-2.json
-            /tmp/sweep-findings-2.json
-            /tmp/core-meta-2.json
-            /tmp/core-output-2.txt
-            /tmp/sweep-output-2.txt
-            /tmp/resolution-output.txt
-            /tmp/resolution-status.json
+            /tmp/all-findings.json
+            /tmp/review-meta.json
+            /tmp/judge-opus.json
+            /tmp/judge-haiku.json
+            /tmp/judge-opus-r1.json
+            /tmp/judge-haiku-r1.json
+            /tmp/judge-opus-r2.json
+            /tmp/judge-haiku-r2.json
+            /tmp/thread-resolution.json
             /tmp/resolution-findings.json
+            /tmp/functional-findings.json
+            /tmp/functional-meta.json
             /tmp/build-context-execution.jsonl
             /tmp/*-findings.invalid.json
             /tmp/*-meta.invalid.json

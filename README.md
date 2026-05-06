@@ -78,41 +78,56 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
 ```
 PR opened / updated
     |
-[Setup] Node, deps, Playwright, dev environment (launched in background
-        alongside Stage 1 to overlap bring-up with context gathering)
+[Setup] Node, deps, Playwright MCP config, dev environment
+        (launched in background — overlaps with the orchestrator's
+        context-build phase so total wall time = max(CB, dev-env)).
     |
-[Stage 1: Context Builder] (Sonnet)
-    Gathers PR metadata, diff, issue, conventions, build verification.
-    On round-2 follow-up reviews also computes /tmp/since-last.diff
-    against the prior review's HEAD.
-    Writes context.md + test-plan.md
+[One agent: Review: orchestrate]  (anthropics/claude-code-action)
+    A single Sonnet orchestrator runs end-to-end and dispatches
+    everything via the Task tool:
+      Phase 0   — Task: context builder (Sonnet) → context.md +
+                  test-plan.md (with a 5-sentence diff summary at the top
+                  of context.md).
+      Phase 0.5 — Bash: poll /tmp/dev-env/rc, source the dev-env outputs
+                  (API_URL, WEB_URL, …) for the functional subagent.
+      Phase 1   — Early-exit on docs-only / trivial PRs (zero non-doc
+                  chunks AND no spec source) without dispatching any
+                  judges. Writes APPROVE-eligible meta and exits.
+      Phase 2   — Parallel Task fan (single assistant response):
+                    Judge-Opus  (model: claude-opus-4-7)   ─┐
+                    Judge-Haiku (model: claude-haiku-4-5)  ├ all parallel
+                    Thread classifier (round 2 only)       │
+                    Functional tester (Playwright MCP)     ─┘
+                  Pipeline-self-test runs as Bash directly when
+                  STRATEGY=pipeline-self-test (deterministic, no LLM).
+      Phase 3   — Up to 2 rebuttal rounds when judges disagree (each
+                  round dispatches both judges in parallel via Task
+                  with MODE=rebuttal; each sees the other's findings).
+      Phase 4   — Consolidate + write /tmp/all-findings.json and
+                  /tmp/review-meta.json. No separate dedup step — the
+                  judge debate IS the dedup.
     |
-[Stage 2: Parallel Reviewers]
-    |-- Core (Opus): bugs, spec mismatches, security
-    |-- Sweep (Sonnet): consistency, test quality, performance
-    |-- Spec-compliance (Sonnet): PRD-vs-code (only when a PRD is detected)
-    |-- Functional (Sonnet + Playwright): E2E testing, screenshots
-    |
-    Round 1 only (first review of the PR):
-    |-- Core pass-2 (Opus): independent re-review, union-of-finding boost
-    |-- Sweep pass-2 (Sonnet): independent re-review
-    |
-    Round 2 only (subsequent pushes):
-    |-- Resolution checker (Sonnet): classifies every prior finding as
-        RESOLVED / STILL_PRESENT / NEW_CONTEXT against /tmp/since-last.diff
-    |
-[Stage 3: Merge + Dedup + Post]
-    Haiku-driven semantic dedup across every reviewer's output (groups
-    by root cause, not just path+line; on round 2 also drops new findings
-    whose root cause matches a STILL_PRESENT prior). Uploads screenshots,
-    persists round-state for the next follow-up review, posts atomic review.
+[Stage 2: Build + Post]  (pure Bash)
+    Reads /tmp/all-findings.json + /tmp/review-meta.json directly.
+    Applies the round-2 verdict ladder using thread-classifier output,
+    uploads screenshots, persists round-state, replies + closes
+    RESOLVED threads (own bot, other bots, AND humans), posts atomic
+    review.
     |
 Verdict: APPROVE / COMMENT / REQUEST_CHANGES
 ```
 
+### Why one top-level agent?
+
+Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code-action` exits in <1 s when the OAuth token hits a quota wall; the bare `claude -p` CLI silently retries and *hangs* until the 45-minute job timeout — a real bug observed on PR #309. (2) **All parallelism through the `Task` tool.** No bash background processes, no `wait`/reap traps, no sibling stdout files. One nested transcript covers the whole review.
+
+### Why two judges?
+
+A single LLM judge can have a bad sample on any given run — miss something subtle, over-grade a defensive note, mis-route a finding to the wrong file. The orchestrator runs **two independent judges with different model strengths** (Opus for deep reasoning, Haiku for cheap broad-coverage finds) and reconciles them: if they agree, the review ships immediately; if they disagree, each judge sees the other's findings and either concedes the ones they missed or defends the ones the other dropped. This catches the long tail where one judge is wrong without paying for it on every PR — most reviews converge on the first round.
+
 ### Round 1 vs round 2
 
-The pipeline persists a small state artifact (`/tmp/review-state.json`) on every successful run — the deduped findings, verdict, head SHA reviewed, and the posted review's GitHub id. On the next push to the same PR, the next run downloads it, computes the diff since that SHA, and runs the round-2 fan above. The verdict ladder gains a round-2 layer that's strictly **anti-downgrade**:
+The pipeline persists a small state artifact (`/tmp/review-state.json`) on every successful run — the deduped findings, verdict, head SHA reviewed, and the posted review's GitHub id. On the next push to the same PR, the next run downloads it, computes the diff since that SHA, and the round-2 thread classifier runs alongside the orchestrator. The verdict ladder gains a round-2 layer that's strictly **anti-downgrade**:
 
 - Prior `REQUEST_CHANGES`, no new criticals/majors, all prior blockers `RESOLVED` → per-PR verdict (APPROVE if no new findings, COMMENT otherwise).
 - Prior `REQUEST_CHANGES`, some prior blockers `STILL_PRESENT` → keep `REQUEST_CHANGES`.
@@ -122,13 +137,15 @@ The pipeline persists a small state artifact (`/tmp/review-state.json`) on every
 
 When the round-2 ladder overrides the bot's per-PR judgement (e.g. STILL_PRESENT blockers force REQUEST_CHANGES on a clean re-review), the body prepends a one-line "Verdict pinned to X by the round-2 ladder" rationale so the body's narrative never contradicts the header.
 
-**Severity grading:** the bot uses four levels — `critical` and `major` block (REQUEST_CHANGES); `minor` and `note` post inline but never gate APPROVE. Doc nits / identifier typos / "you might consider …" observations land at `note` so a single one-word fix doesn't hold a PR at COMMENT. The reviewer skills enforce a "demonstrate the failure mode" rule for blocking severities — if a critical/major finding can't show the path that produces a real outcome, it's downgraded.
+**Thread resolution covers humans too.** When the thread classifier marks a thread RESOLVED, the poster replies with `✅ Resolved as of <sha>` and calls `resolveReviewThread` — for our own past bot comments, for other bots' threads (cursor, aikido, sonarcloud), and for human reviewers' inline comments. A "this should be X" from a teammate that gets fixed in a follow-up commit closes automatically, same as a bot's finding.
+
+**Severity grading:** the bot uses four levels — `critical` and `major` block (REQUEST_CHANGES); `minor` and `note` post inline but never gate APPROVE. Doc nits / identifier typos / "you might consider …" observations land at `note` so a single one-word fix doesn't hold a PR at COMMENT. The judge skill enforces a "demonstrate the failure mode" rule for blocking severities — if a critical/major finding can't show the path that produces a real outcome, it's downgraded.
 
 **Findings outside diff hunks:** comments whose `path:line:side` falls outside any diff hunk (deleted-line findings without `side: "LEFT"`, or near-but-imprecise line targets) are appended to the review body under "Findings outside diff hunks" rather than silently dropped. Setting `side: "LEFT"` for deleted-line findings keeps them inline.
 
 **Crash-banner cleanup:** when a run crashes before posting a review (OAuth quota, max-turns, runner OOM), the workflow posts a single review carrying the `<!-- claude-review-crash -->` HTML marker. The next successful run finds that review and edits its body to a "_Superseded by …_" form so the misleading red banner doesn't survive every retry.
 
-Round-1 is otherwise identical to the legacy single-pass review with the recall boost (double-pass + critic) layered on. If the prior state artifact is missing (retention expired, prior run failed before upload), round 2 degrades to a clean full re-review with a `::notice::` explaining why.
+If the prior state artifact is missing (retention expired, prior run failed before upload), round 2 degrades to a clean full re-review with a `::notice::` explaining why.
 
 On round 2 the test planner also rescopes the functional run: scenarios are planned against `/tmp/since-last.diff` rather than the full PR diff, and **zero scenarios is a valid outcome**. A small follow-up commit drops to `quick` (one scenario over the touched area) when since-last has user-observable surface, or `skip` (no scenarios) when since-last is comments / log strings / type-only / internal-helper / docs / config / dev-tooling — anything a user wouldn't notice. The smoke gate inherits the prior round's `functional_overall` for technical-change PRs, so a `skip` on round 2 doesn't drop APPROVE → COMMENT (inheritance kicks in only for prior PASS/WARN; a prior FAIL still blocks). Prior `critical`/`major` functional findings whose path is in since-last AND is plausibly the area being fixed get one targeted retest scenario; otherwise the resolution-checker + dedup re-evaluate them independently.
 
@@ -138,7 +155,7 @@ On round 2 the test planner also rescopes the functional run: scenarios are plan
 
 ### `bugbot.md` (optional)
 
-A markdown list of project-specific review rules. Place at the repo root. Both the core and sweep reviewers read this.
+A markdown list of project-specific review rules. Place at the repo root. Both judges read this (it's inlined into the orchestrator prompt and forwarded to each judge subagent).
 
 ```markdown
 # Bugbot
@@ -418,6 +435,25 @@ The pipeline withholds `APPROVE` whenever the PR's stated intent is "no user-vis
 
 ---
 
+## Usage tracking
+
+Every review run emits a tiny `claude-review-usage` workflow artifact (one `usage.json` per run with repo, PR, run id, verdict, findings count, smoke result, round, phase timings). The step is `if: always() + continue-on-error: true`, so a tracking failure can never block a review and there is no new secret or PAT to manage.
+
+To see how reviews are being used across consumer repos, run the local aggregator from a clone of this repo:
+
+```bash
+bash scripts/usage-report.sh                        # markdown summary, last 30 days
+bash scripts/usage-report.sh --since 7d             # short window
+bash scripts/usage-report.sh --owner panenco        # scope code-search discovery
+bash scripts/usage-report.sh --repos a/b,c/d        # explicit list, skip discovery
+bash scripts/usage-report.sh --write docs/USAGE.md  # write the markdown to a file
+bash scripts/usage-report.sh --json                 # raw JSONL on stdout for piping
+```
+
+The script uses your local `gh` auth (already cross-org), discovers repos via `gh search code 'panenco/claude-review path:.github/workflows'`, lists each repo's `claude-review-usage` artifacts via the GitHub Actions API, and prints per-repo run counts, verdict mix, round-1 vs round-2 split, total findings raised, and a recent-runs feed. Token totals are not included yet — the sub-agents currently log in plain text; switching them to `stream-json` is a follow-up. Requires `gh`, `jq`, `unzip`.
+
+---
+
 ## Versioning
 
 - `@v2` — current floating tag, always points to the latest v2.x release. Use this for auto-updates.
@@ -480,8 +516,16 @@ If you have a polished config for a stack not covered here (e.g. Python/FastAPI,
 
 The pipeline consists of:
 
-- **Reusable workflow** (`.github/workflows/pr-review.yml`) — orchestration, dev env setup, agent launching, finding merge, review posting
-- **9 skill files** (`skills/`) — prompt templates defining review methodology: `review-context-builder`, `review-core`, `review-sweep`, `review-spec-compliance`, `review-functional-tester`, `review-test-planner`, `review-dedup` (Haiku semantic dedup), `review-resolution-checker` (round-2 prior-finding classifier), `review-bot-comment-resolver` (round-2 other-bot thread classifier)
+- **Reusable workflow** (`.github/workflows/pr-review.yml`) — dev-env setup, MCP config, the single `claude-code-action` invocation, post-processing, review posting
+- **6 skill files** (`skills/`) — prompt templates defining review methodology:
+  - `review-orchestrator` — the single top-level Claude Code agent; dispatches the context builder, judges, thread classifier, and functional tester via the `Task` tool, runs the debate, writes the final findings + meta
+  - `review-context-builder` — Task subagent; gathers PR metadata, diff index, spec sources, and a 5-sentence diff summary into `context.md`
+  - `review-judge` — Task subagent skill used by both the Opus and Haiku judges (correctness, security, spec, consistency, performance, tests)
+  - `review-thread-classifier` — Task subagent (round-2 only); classifies prior findings + open inline threads (own bot, other bots, **humans**) as RESOLVED / STILL_PRESENT / NEW_CONTEXT
+  - `review-functional-tester` — Task subagent; Playwright-driven UI smoke + functional tests
+  - `review-test-planner` — embedded inside the context builder skill; picks the functional strategy (skip / quick / functional / pipeline-self-test) and writes scenarios into `test-plan.md`
 - **Functional prompt template** (`scripts/functional-prompt.template.txt`) — bootstraps the functional tester with auth + env info
+
+There is **one top-level Claude Code agent** for the entire review. All parallelism happens via the orchestrator's `Task` tool calls. There is no multi-source merge or separate dedup step — the orchestrator's debate loop produces the final, deduped findings array directly, then `build-review.sh` formats it into the GitHub PR review.
 
 All project-specific configuration is read from the consuming repo's `bugbot.md` and `.github/review-config.md` by convention.

@@ -119,8 +119,23 @@ jq --arg bot "$BOT_USER" '
        | {parent_id: .in_reply_to_id, user: .user.login, body: (.body[:1000])}]
 ' /tmp/all-raw-comments.json > /tmp/user-replies-on-ours.json
 
+# Top-level human inline comments (non-bot, non-PR-author). These are the
+# "this should be X" / "consider Y" review comments humans leave on lines.
+# The round-2 thread classifier reads this file to decide whether each
+# human comment was addressed in a follow-up commit (RESOLVED → reply +
+# close), is unchanged (STILL_PRESENT → silence), or refers to area now
+# rewritten (NEW_CONTEXT → silence).
+PR_AUTHOR=$(jq -r '.user.login // empty' /tmp/pr.json 2>/dev/null \
+  || gh api "repos/$REPO/pulls/$PR" --jq '.user.login' 2>/dev/null \
+  || echo "")
+jq --arg author "$PR_AUTHOR" '
+  [.[] | select(.user.type != "Bot" and .in_reply_to_id == null and (.path != null) and .user.login != $author)
+       | {id, node_id, user: .user.login, path, line, body: (.body[:500])}]
+' /tmp/all-raw-comments.json > /tmp/human-inline-comments.json
+
 echo "Other bot comments: $(jq 'length' /tmp/other-bot-comments.json)"
 echo "User replies on our comments: $(jq 'length' /tmp/user-replies-on-ours.json)"
+echo "Human inline comments: $(jq 'length' /tmp/human-inline-comments.json)"
 
 # (Repo capabilities + test-coverage are NOT pre-computed any more.
 # Reviewers Read the specific files they need (package.json, the
@@ -253,6 +268,18 @@ Write the following sections at the repo root in `context.md`:
 ### `## PR summary`
 Title, body (truncate to ~30 lines if huge), branch, base, additions/deletions, changed-files list. Just paths, no contents.
 
+### `## Diff summary` (REQUIRED — 5 sentences max)
+Five sentences (or fewer) of plain-prose orientation that the downstream judges read first so they can plan which chunks to deep-dive. Cover, in order:
+
+1. **What this PR does** in one sentence — the user-visible / system-visible change. Not "modifies 24 files"; instead "Adds a personalised RSVP communication editor and backend service" or "Refactors authentication middleware to use the new session adapter".
+2. **The 1–3 highest-risk areas to read** — concrete file or symbol names where reviewers should focus. "Risk" means user-impact area: auth/billing/migrations/concurrency/data-loss surfaces, public API surface changes, or large new business logic.
+3. **Anything unusual about the change shape** that would mislead a reviewer if they only saw line counts (e.g. "majority of additions are generated code", "split across 3 packages but the logic lives in `core/foo.ts`", "auth-touching but only changes one helper signature, callers migrate trivially").
+4. **One sentence on round-2 scope** when on a follow-up: what the since-last diff actually changes vs the prior round (e.g. "Since-last is 12 lines fixing an off-by-one in `pagination.ts`; rest of feature unchanged.").
+
+The summary is **additive — not a replacement for reading**. Judges still Read the cited diff chunks for any finding they're considering. The summary just lets them prioritise instead of wandering. Do NOT use the summary to make verdict-relevant claims; that's the judge's job.
+
+If the diff is genuinely tiny (≤20 lines, single file) and the title already conveys it, write a **single sentence** here ("Single-line typo fix in `README.md`.") rather than padding to five.
+
 ### `## Spec sources` (single-purpose, REQUIRED)
 List which spec sources exist as paths reviewers can Read:
 - Linked GitHub issue: `/tmp/issue.json` (or "none")
@@ -309,10 +336,11 @@ When `/tmp/since-last.diff` exists, add this section as a one-line note: `Round-
 If `PRIOR_HEAD_SHA` was set but `git cat-file -e "$PRIOR_HEAD_SHA"` failed (prior HEAD outside the shallow clone), `/tmp/since-last.diff` and `/tmp/since-last-chunks/` will be absent. In that case write this section as: `Round-2 fallback — prior HEAD outside shallow clone, full diff is being reviewed. Reviewers: scope as round 1 over /tmp/diff-chunks/.` This stops reviewers chasing phantom paths.
 
 ### `## Round-2 inputs` (round 2 only — REQUIRED when prior state was loaded)
-Single-purpose section listing the round-2 input files reviewers should read alongside the diff. Write it whenever any of these exist:
-- `/tmp/prior-state/review-state.json` — the prior round's findings list. Reviewers consult `.findings[]` to recognise issues that were already flagged.
-- `/tmp/resolution-status.json` — the resolution checker's classification of each prior finding (`RESOLVED` / `STILL_PRESENT` / `NEW_CONTEXT`). Reviewers MUST NOT re-flag entries with `status: STILL_PRESENT` or `RESOLVED` — the Haiku dedup step suppresses overlap, but reviewers who re-introduce the same issue waste turn budget and inflate the body.
+Single-purpose section listing the round-2 input files the judges should read alongside the diff. Write it whenever any of these exist:
+- `/tmp/prior-state/review-state.json` — the prior round's findings list. Judges consult `.findings[]` to recognise issues already flagged so they don't re-emit them. The round-2 verdict ladder is computed downstream from the thread classifier's STILL_PRESENT classifications, not from re-flagged judge findings.
 - `/tmp/since-last.diff` (and `/tmp/since-last-chunks/<file>.diff`) — the diff narrowed to changes since the prior review. Used together with `## Per-file diff index` above.
+
+The thread classifier runs in parallel with the orchestrator and writes `/tmp/thread-resolution.json` (`RESOLVED` / `STILL_PRESENT` / `NEW_CONTEXT` per prior finding and per open inline thread). Judges do NOT need to read that file — round-2 scope reduction in the diff index already focuses them on the since-last subset.
 
 If none of these files exist, omit the section.
 
@@ -322,8 +350,13 @@ List the convention/rule file paths that apply to the changed files (derived fro
 ### `## Build results`
 Two short lines: `typecheck: PASSED|FAILED` and `lint: PASSED|FAILED`. If FAILED, include the path to the captured output (`/tmp/typecheck.out` / `/tmp/lint.out`) so the reviewer can Read the details. Do NOT paste the full output here.
 
-### `## Prior bot comments` (if any)
-Path: `/tmp/prior-bot-comments.json` and `/tmp/other-bot-comments.json`. Reviewers Read these to avoid re-flagging.
+### `## Open inline threads` (if any)
+List paths reviewers should consult to avoid re-flagging the same thing humans/bots already raised:
+- `/tmp/prior-bot-comments.json` — open inline comments from our own past bot reviewer
+- `/tmp/other-bot-comments.json` — open inline comments from non-Claude bots (cursor, aikido, sonarcloud, etc.)
+- `/tmp/human-inline-comments.json` — open inline comments from human reviewers (non-bot, non-author)
+
+The round-2 thread classifier reads all three plus `/tmp/prior-state/review-state.json` and produces `/tmp/thread-resolution.json` independently of the orchestrator.
 
 ### `## User replies on prior findings` (round 2 / repush only — if `/tmp/user-replies-on-ours.json` is non-empty)
 Path: `/tmp/user-replies-on-ours.json`. Reviewers Read this and do NOT re-flag issues a maintainer has marked as false positive (unless they have new counter-evidence).
