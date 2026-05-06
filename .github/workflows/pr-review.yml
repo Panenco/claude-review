@@ -1050,8 +1050,13 @@ jobs:
           # FUNCTIONAL_OK is read from /tmp/review-meta.json's judge_health
           # (the orchestrator records it there alongside the judge statuses).
           FUNCTIONAL_OK=1
+          # Strict-equality predicate (matches the build-review.sh
+          # JUDGES_BOTH_FAILED pattern). `// false` lets a string "false"
+          # slip through as a non-null value; `== true` only fires for
+          # the explicit boolean. has()-guarded so a missing field keeps
+          # FUNCTIONAL_OK=1.
           if [ -f /tmp/review-meta.json ] \
-              && [ "$(jq -r '.judge_health.functional_failed // false' /tmp/review-meta.json 2>/dev/null)" = "true" ]; then
+              && [ "$(jq -r 'if (type == "object" and (.judge_health // null | type == "object") and (.judge_health | has("functional_failed")) and .judge_health.functional_failed == true) then "true" else "false" end' /tmp/review-meta.json 2>/dev/null)" = "true" ]; then
             FUNCTIONAL_OK=0
           fi
           export FUNCTIONAL_OK
