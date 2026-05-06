@@ -43,7 +43,9 @@ print_help() {
 # the user they forgot the value.
 require_value() {
   local flag="$1" value="${2:-}"
-  if [ -z "$value" ]; then
+  # Reject empty AND another-flag tokens — `--since --json` should fail
+  # with a clear error, not silently set SINCE="--json" and proceed.
+  if [ -z "$value" ] || [[ "$value" == -* ]]; then
     echo "::error::$flag requires a value (e.g. $flag 30d)" >&2
     exit 2
   fi
