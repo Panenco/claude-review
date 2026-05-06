@@ -49,6 +49,10 @@ echo "Existing inline comments: $(jq 'length' /tmp/all-comments.json) total ($(j
 
 if [ -f /tmp/review-comments.json ]; then
   BEFORE=$(jq 'length' /tmp/review-comments.json)
+  # Initialise REPLIES so the post-step summary line below doesn't trip
+  # `set -u` when there's no other-bot overlap (OTHER_COUNT=0 path skips
+  # the assignment inside the cross-bot dedup block).
+  REPLIES=0
 
   # 1. Self-dedup: drop our new comments that duplicate our own previous comments (same path + line +/-5).
   OWN_COUNT=$(jq 'length' /tmp/own-comments.json)
