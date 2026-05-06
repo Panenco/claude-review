@@ -135,11 +135,18 @@ ENV_LINE=$(echo "$RESULT" | grep -oE 'env=CLAUDE_CODE_OAUTH_TOKEN=[^ ]+' || true
 assert_eq "All exhausted → does not export a token to GITHUB_ENV" "" "$ENV_LINE"
 
 # --- 7. Pool with empty/whitespace lines → ignored, doesn't inflate count ---
+# `  allowed-2  ` exercises inline trimming: if leading/trailing spaces
+# leak through, the stub's `allowed-*` arm misses, the probe returns
+# empty, and the picker classifies it as `invalid`. Asserting BOTH
+# pool_size AND healthy_count is what makes the trim coverage real —
+# pool_size alone passes whether or not trimming worked, since allowed-1
+# is a healthy candidate either way.
 INPUT=$'\n  \nallowed-1\n\n  allowed-2  \n'
 RESULT=$(unset CLAUDE_CODE_OAUTH_TOKEN
   CLAUDE_CODE_OAUTH_TOKENS="$INPUT" run_picker)
 assert_eq "Whitespace-only lines stripped → exits 0" "rc=0" "$(echo "$RESULT" | grep '^rc=')"
 assert_contains "Whitespace-only lines stripped → pool_size=2" "pool_size=2" "$RESULT"
+assert_contains "Inline whitespace trimmed → healthy_count=2" "healthy_count=2" "$RESULT"
 
 # --- 8. CLAUDE_CODE_OAUTH_TOKENS wins over CLAUDE_CODE_OAUTH_TOKEN ----------
 RESULT=$(CLAUDE_CODE_OAUTH_TOKEN=should-be-ignored \
@@ -156,6 +163,19 @@ assert_eq "Empty pool → falls back to single → exits 0" \
 assert_contains "Empty pool → uses single token" \
   "CLAUDE_CODE_OAUTH_TOKEN=allowed-fallback" "$RESULT"
 assert_contains "Empty pool → fast path (pool_size=1)" "pool_size=1" "$RESULT"
+
+# --- 9b. Duplicate tokens in pool → deduped, probed once, counted once ----
+# A user pasting the same token twice into the secret form would otherwise
+# burn an extra Haiku probe and inflate pool_size in operator-visible logs.
+# Trim/dedup runs first; equivalent forms (with vs without surrounding
+# whitespace) collapse to the same entry.
+INPUT=$'allowed-dup\nallowed-dup\n  allowed-dup  \nallowed-other'
+RESULT=$(unset CLAUDE_CODE_OAUTH_TOKEN
+  CLAUDE_CODE_OAUTH_TOKENS="$INPUT" run_picker)
+assert_eq "Duplicates deduped → exits 0" "rc=0" "$(echo "$RESULT" | grep '^rc=')"
+assert_contains "Duplicates deduped → pool_size=2 (3 dup-of-1 + 1 unique)" \
+  "pool_size=2" "$RESULT"
+assert_contains "Duplicates deduped → healthy_count=2" "healthy_count=2" "$RESULT"
 
 # --- 10. Single token with trailing newline still single (no spurious 2nd) --
 # A common foot-gun: a user pastes a token followed by ENTER into the GitHub

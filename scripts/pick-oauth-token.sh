@@ -91,12 +91,19 @@ probe_token() {
   printf '%s|%s\n' "$status" "$resets"
 }
 
-# Strip whitespace-only lines and trim each line. Used by both the pool
-# and single-token paths so a trailing newline on a single-token secret
-# (a common foot-gun when pasting into the GitHub UI) doesn't get split
-# into a valid candidate plus an empty one.
+# Trim each line, drop empties, and dedupe (preserving first-occurrence
+# order). Used by both the pool and single-token paths so a trailing
+# newline on a single-token secret (a common foot-gun when pasting into
+# the GitHub UI) doesn't get split into a valid candidate plus an empty
+# one, AND a token pasted twice into the pool doesn't probe twice
+# (wasted Haiku call + inflated pool_size in the operator log).
 trim_lines() {
-  printf '%s\n' "$1" | awk '{ gsub(/^[ \t\r]+|[ \t\r]+$/, "", $0); if (length) print }'
+  printf '%s\n' "$1" | awk '
+    {
+      gsub(/^[ \t\r]+|[ \t\r]+$/, "", $0)
+      if (length && !seen[$0]++) print
+    }
+  '
 }
 
 # Build candidate list. CLAUDE_CODE_OAUTH_TOKENS wins when it has any
