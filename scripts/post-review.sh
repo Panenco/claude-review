@@ -356,9 +356,21 @@ fi
 # accidentally re-match a review we already superseded on a previous push.
 if [ -n "$REVIEW_ID" ]; then
   echo "::group::Post review — supersede prior crash banners"
-  CRASH_REVIEWS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-    --jq "[.[] | select(.user.login == \"$BOT_USER\" and (.body | contains(\"<!-- claude-review-crash -->\")) and (.id != $REVIEW_ID)) | .id] | .[]" \
-    2>/dev/null || true)
+  # `gh api --paginate --jq` runs the filter on EACH page independently,
+  # so a crash banner on a later page would emit correctly only because
+  # the filter happens to be a flat select-and-emit. Slurp pages first
+  # so the filter sees the full review list — matches the pattern at
+  # `Post review — submit` above and prevents future breakage if the
+  # filter ever needs cross-page aggregation.
+  CRASH_REVIEWS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
+    | jq -s --arg bot "$BOT_USER" --argjson rid "$REVIEW_ID" '
+        (add // [])
+        | [.[] | select(
+            .user.login == $bot
+            and (.body | contains("<!-- claude-review-crash -->"))
+            and (.id != $rid)
+          ) | .id]
+        | .[]' 2>/dev/null || true)
   if [ -n "$CRASH_REVIEWS" ]; then
     SUPERSEDE_BODY=$'<!-- claude-review-superseded -->\n\n_Superseded by a successful review run on `'"$HEAD_SHA"$'`._'
     while IFS= read -r CRID; do
@@ -497,7 +509,12 @@ fi
 #    inline-comment streams in one pass — `bot_user` is null for humans,
 #    "panenco-claude-reviewer[bot]" (or similar) for own_bot, "cursor[bot]" /
 #    "aikido-pr-checks[bot]" / etc. for other_bot.
-if [ -f /tmp/thread-resolution.json ]; then
+# Round-2 guard: thread-resolution.json should only ever exist after a
+# successful round-2 run, but a stale filesystem artifact left on the
+# runner could otherwise let this block fire on round 1. Mirror the
+# guard on the prior-finding block above so both flows share the same
+# `prior-state present` precondition.
+if [ -f /tmp/thread-resolution.json ] && [ -f /tmp/prior-state/review-state.json ]; then
   echo "::group::Post review — resolve fixed inline-comment threads (round-2)"
   RESOLVED_BOT=$(jq -c '[.[] | select((.source == "own_bot" or .source == "other_bot" or .source == "human") and .status == "RESOLVED")]' /tmp/thread-resolution.json 2>/dev/null || echo "[]")
   RESOLVED_BOT_N=$(echo "$RESOLVED_BOT" | jq 'length' 2>/dev/null || echo 0)
