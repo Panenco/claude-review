@@ -49,6 +49,10 @@ echo "Existing inline comments: $(jq 'length' /tmp/all-comments.json) total ($(j
 
 if [ -f /tmp/review-comments.json ]; then
   BEFORE=$(jq 'length' /tmp/review-comments.json)
+  # Initialise REPLIES so the post-step summary line below doesn't trip
+  # `set -u` when there's no other-bot overlap (OTHER_COUNT=0 path skips
+  # the assignment inside the cross-bot dedup block).
+  REPLIES=0
 
   # 1. Self-dedup: drop our new comments that duplicate our own previous comments (same path + line +/-5).
   OWN_COUNT=$(jq 'length' /tmp/own-comments.json)
@@ -90,27 +94,20 @@ if [ -f /tmp/review-comments.json ]; then
 
     AFTER=$(jq 'length' /tmp/review-comments-deduped.json)
     REPLIES=$(jq 'length' /tmp/reply-comments.json)
-    echo "Cross-bot dedup: $AFTER_SELF -> $AFTER new, $REPLIES will reply to existing"
+    echo "Cross-bot dedup: $AFTER_SELF -> $AFTER new, $REPLIES will reply to existing (replies posted after submit)"
     mv /tmp/review-comments-deduped.json /tmp/review-comments.json
-
-    # Post replies to other bots' comments we agree with.
-    if [ "$REPLIES" -gt 0 ]; then
-      jq -c '.[]' /tmp/reply-comments.json | while read -r reply; do
-        CID=$(echo "$reply" | jq -r '.comment_id')
-        TITLE=$(echo "$reply" | jq -r '.body' | head -n 1 | head -c 200)
-        # Extract screenshot URL from body if present
-        SHOT_URL=$(echo "$reply" | jq -r '.body' | grep -oE '!\[screenshot\]\([^)]+\)' | head -1 || true)
-        REPLY_BODY="✅ Confirmed by Claude review — same finding: $TITLE"
-        [ -n "$SHOT_URL" ] && REPLY_BODY="$REPLY_BODY"$'\n\n'"$SHOT_URL"
-        REPLY_OUT=$(gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" \
-          -f body="$REPLY_BODY" 2>&1) \
-          || echo "::warning::Cross-bot reply on comment $CID failed — $(echo "$REPLY_OUT" | head -c 400)"
-      done
-      echo "Posted $REPLIES reply confirmations"
-    fi
+    # Reply POSTing is intentionally deferred until AFTER the substantive
+    # review is submitted (see "Post review — submit" below). The REST
+    # `/comments/<id>/replies` endpoint silently auto-creates an empty
+    # COMMENTED review wrapper when the bot has no review on this SHA;
+    # if we posted replies first, the substantive POST's idempotency
+    # guard would mistake that empty wrapper for a prior substantive
+    # review and skip the real POST. Observed on Panenco/seaters#470
+    # (run 25456226383) — verdict was REQUEST_CHANGES with 4 findings,
+    # but only the empty reply wrapper landed on the PR.
   fi
 
-  echo "Final inline comments: $(jq 'length' /tmp/review-comments.json) (from $BEFORE)"
+  echo "Pre-submit inline comments: $(jq 'length' /tmp/review-comments.json) (from $BEFORE; $REPLIES queued as replies)"
 fi
 echo "::endgroup::"
 
@@ -242,16 +239,27 @@ if [ -n "$HEAD_SHA" ]; then
   # that breaks downstream `jq -r '.id'` parsing. Slurp all pages into a
   # single array first, then apply the filter once. (cursor#bugbot, PR #28.)
   #
-  # The filter excludes anything carrying either crash-banner marker so
-  # neither a fresh `<!-- claude-review-crash -->` nor an already-superseded
-  # `<!-- claude-review-superseded -->` is mistaken for a substantive review
-  # on the same SHA.
+  # The filter excludes:
+  #   - crash-banner reviews (`<!-- claude-review-crash -->`) — those are
+  #     placeholder banners that should be superseded, not treated as
+  #     "already reviewed".
+  #   - already-superseded crash banners (`<!-- claude-review-superseded -->`).
+  #   - **empty-body reviews** — when GitHub auto-creates a review wrapper
+  #     to host a `/comments/<id>/replies` POST (we use this to confirm
+  #     other-bot findings via cross-bot dedup), the wrapper has body=""
+  #     and state=COMMENTED. Without the empty-body filter, a cross-bot
+  #     reply posted in the same run would create a wrapper that this
+  #     guard then mistook for "we already reviewed", silently skipping
+  #     the substantive POST. (Observed on Panenco/seaters#470.) The
+  #     reply-post is now deferred until AFTER submit, but the guard
+  #     keeps this filter as defense-in-depth.
   EXISTING_REVIEW=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
     | jq -s --arg bot "$BOT_USER" --arg sha "$HEAD_SHA" '
         (add // [])
         | [.[] | select(
             .user.login == $bot
             and .commit_id == $sha
+            and ((.body // "") | length > 0)
             and (
               (
                 (.body | contains("<!-- claude-review-crash -->"))
@@ -311,6 +319,35 @@ if [ -n "$REVIEW_ID" ] && [ -f /tmp/review-state.json ]; then
 fi
 echo "::endgroup::"
 
+# Cross-bot reply confirmations — deferred from the dedup step above.
+# `/comments/<id>/replies` auto-creates a COMMENTED review wrapper when
+# our bot doesn't already have a review on this SHA; we post these AFTER
+# the substantive POST so the wrapper attaches to (or stacks alongside)
+# our real review instead of pre-empting it. Fully best-effort — a
+# wrapper-creation error doesn't roll back anything.
+if [ -f /tmp/reply-comments.json ]; then
+  REPLY_COUNT=$(jq 'length' /tmp/reply-comments.json 2>/dev/null || echo 0)
+  if [ "$REPLY_COUNT" -gt 0 ]; then
+    echo "::group::Post review — confirm other-bot findings (cross-bot replies)"
+    POSTED_REPLIES=0
+    while IFS= read -r reply; do
+      CID=$(echo "$reply" | jq -r '.comment_id')
+      TITLE=$(echo "$reply" | jq -r '.body' | head -n 1 | head -c 200)
+      SHOT_URL=$(echo "$reply" | jq -r '.body' | grep -oE '!\[screenshot\]\([^)]+\)' | head -1 || true)
+      REPLY_BODY="✅ Confirmed by Claude review — same finding: $TITLE"
+      [ -n "$SHOT_URL" ] && REPLY_BODY="$REPLY_BODY"$'\n\n'"$SHOT_URL"
+      if REPLY_OUT=$(gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" \
+        -f body="$REPLY_BODY" 2>&1); then
+        POSTED_REPLIES=$((POSTED_REPLIES + 1))
+      else
+        echo "::warning::Cross-bot reply on comment $CID failed — $(echo "$REPLY_OUT" | head -c 400)"
+      fi
+    done < <(jq -c '.[]' /tmp/reply-comments.json)
+    echo "Posted $POSTED_REPLIES/$REPLY_COUNT cross-bot reply confirmations."
+    echo "::endgroup::"
+  fi
+fi
+
 # After a successful POST: supersede any prior crash-banner reviews on this
 # PR so the misleading red banner doesn't linger after the next push.
 # Crash banners can't be deleted (no review-delete API) — we PATCH the body
@@ -319,9 +356,21 @@ echo "::endgroup::"
 # accidentally re-match a review we already superseded on a previous push.
 if [ -n "$REVIEW_ID" ]; then
   echo "::group::Post review — supersede prior crash banners"
-  CRASH_REVIEWS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-    --jq "[.[] | select(.user.login == \"$BOT_USER\" and (.body | contains(\"<!-- claude-review-crash -->\")) and (.id != $REVIEW_ID)) | .id] | .[]" \
-    2>/dev/null || true)
+  # `gh api --paginate --jq` runs the filter on EACH page independently,
+  # so a crash banner on a later page would emit correctly only because
+  # the filter happens to be a flat select-and-emit. Slurp pages first
+  # so the filter sees the full review list — matches the pattern at
+  # `Post review — submit` above and prevents future breakage if the
+  # filter ever needs cross-page aggregation.
+  CRASH_REVIEWS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
+    | jq -s --arg bot "$BOT_USER" --argjson rid "$REVIEW_ID" '
+        (add // [])
+        | [.[] | select(
+            .user.login == $bot
+            and (.body | contains("<!-- claude-review-crash -->"))
+            and (.id != $rid)
+          ) | .id]
+        | .[]' 2>/dev/null || true)
   if [ -n "$CRASH_REVIEWS" ]; then
     SUPERSEDE_BODY=$'<!-- claude-review-superseded -->\n\n_Superseded by a successful review run on `'"$HEAD_SHA"$'`._'
     while IFS= read -r CRID; do
@@ -342,15 +391,18 @@ fi
 #    as RESOLVED. Closes the loop so the PR UI shows fixed issues as resolved
 #    instead of leaving every prior thread open forever.
 #
-# Inputs: /tmp/resolution-status.json (round-2 only, classifier output) +
+# Inputs: /tmp/thread-resolution.json (round-2 only, classifier output —
+#         filtered to source=prior_finding for this block) +
 #         /tmp/prior-state/review-state.json (round-1 findings with path/line).
-# For each RESOLVED entry, find our own bot's review thread at that path+line
-# and call GraphQL `resolveReviewThread` after a short reply for the audit
-# trail. Best-effort: any GraphQL failure is logged but does not abort the
-# poster — the review itself is already committed at this point.
-if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json ]; then
-  echo "::group::Post review — resolve fixed threads (round-2)"
-  RESOLVED_IDS=$(jq -r '[.[] | select(.status == "RESOLVED") | .id] | .[]' /tmp/resolution-status.json 2>/dev/null || true)
+# For each RESOLVED prior-finding entry, find our own bot's review thread at
+# that path+line and call GraphQL `resolveReviewThread` after a short reply
+# for the audit trail. The other sources (own_bot/other_bot/human) are
+# handled by the comment_id-keyed block further down. Best-effort: any
+# GraphQL failure is logged but does not abort the poster — the review
+# itself is already committed at this point.
+if [ -f /tmp/thread-resolution.json ] && [ -f /tmp/prior-state/review-state.json ]; then
+  echo "::group::Post review — resolve fixed prior-finding threads (round-2)"
+  RESOLVED_IDS=$(jq -r '[.[] | select(.source == "prior_finding" and .status == "RESOLVED") | .id] | .[]' /tmp/thread-resolution.json 2>/dev/null || true)
   if [ -z "$RESOLVED_IDS" ]; then
     echo "No RESOLVED prior findings — nothing to resolve."
   else
@@ -450,17 +502,24 @@ if [ -f /tmp/resolution-status.json ] && [ -f /tmp/prior-state/review-state.json
   echo "::endgroup::"
 fi
 
-# ── Round-2: resolve OTHER-bot threads (cursor, aikido, etc.) that the
-#    bot-comment resolver classified as RESOLVED. Mirror of own-thread
-#    resolution above, but matches by comment_id (not path+author) because
-#    the resolver outputs the GitHub REST id directly. We re-fetch threads
-#    via GraphQL and find the one whose first comment's databaseId matches.
-if [ -f /tmp/bot-resolution-status.json ]; then
-  echo "::group::Post review — resolve fixed other-bot threads (round-2)"
-  RESOLVED_BOT=$(jq -c '[.[] | select(.status == "RESOLVED")]' /tmp/bot-resolution-status.json 2>/dev/null || echo "[]")
+# ── Round-2: resolve INLINE-COMMENT threads (own bot, other bots, humans)
+#    that the thread classifier marked RESOLVED. Mirror of the prior-finding
+#    block above, but matches by comment_id (not path+author) because each
+#    entry's `id` is the GitHub REST comment id directly. Covers all three
+#    inline-comment streams in one pass — `bot_user` is null for humans,
+#    "panenco-claude-reviewer[bot]" (or similar) for own_bot, "cursor[bot]" /
+#    "aikido-pr-checks[bot]" / etc. for other_bot.
+# Round-2 guard: thread-resolution.json should only ever exist after a
+# successful round-2 run, but a stale filesystem artifact left on the
+# runner could otherwise let this block fire on round 1. Mirror the
+# guard on the prior-finding block above so both flows share the same
+# `prior-state present` precondition.
+if [ -f /tmp/thread-resolution.json ] && [ -f /tmp/prior-state/review-state.json ]; then
+  echo "::group::Post review — resolve fixed inline-comment threads (round-2)"
+  RESOLVED_BOT=$(jq -c '[.[] | select((.source == "own_bot" or .source == "other_bot" or .source == "human") and .status == "RESOLVED")]' /tmp/thread-resolution.json 2>/dev/null || echo "[]")
   RESOLVED_BOT_N=$(echo "$RESOLVED_BOT" | jq 'length' 2>/dev/null || echo 0)
   if [ "$RESOLVED_BOT_N" = "0" ]; then
-    echo "No RESOLVED other-bot comments — nothing to acknowledge."
+    echo "No RESOLVED inline-comment threads — nothing to acknowledge."
   else
     OWNER="${REPO%%/*}"
     NAME="${REPO##*/}"
@@ -496,10 +555,16 @@ if [ -f /tmp/bot-resolution-status.json ]; then
       # in a subshell, so RESOLVED_COUNT / SKIPPED_COUNT increments are lost
       # by the time the summary line below runs (always reports 0).
       while IFS= read -r entry; do
-        CID=$(echo "$entry" | jq -r '.comment_id')
-        BOT=$(echo "$entry" | jq -r '.bot_user')
-        FPATH=$(echo "$entry" | jq -r '.path')
-        FLINE=$(echo "$entry" | jq -r '.line')
+        # In the unified thread-resolution.json schema, `id` is the numeric
+        # GitHub REST comment id for inline-comment sources (own_bot /
+        # other_bot / human). `path` and `line` mirror the comment.
+        # `bot_user` is null for humans.
+        CID=$(echo "$entry" | jq -r '.id')
+        SRC=$(echo "$entry" | jq -r '.source')
+        BOT=$(echo "$entry" | jq -r '.bot_user // empty')
+        [ -z "$BOT" ] && BOT="$SRC"
+        FPATH=$(echo "$entry" | jq -r '.path // empty')
+        FLINE=$(echo "$entry" | jq -r '.line // empty')
         EVIDENCE=$(echo "$entry" | jq -r '.evidence // ""' | head -c 400)
         # Match thread whose first comment's databaseId == CID AND not already resolved.
         THREAD=$(echo "$THREADS_JSON" | jq -c --argjson cid "$CID" '

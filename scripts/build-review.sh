@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# build-review.sh — Merge findings from all agents and build review artifacts.
+# build-review.sh — Build review artifacts from the orchestrator's output.
 #
-# Runs AFTER the parallel agents (core + sweep + functional + spec) have completed.
-# Checks which agents produced output, collects screenshots, deduplicates findings,
-# determines verdict, and builds review-result.json + review body + inline comments.
+# Runs AFTER the orchestrator (and, in round 2, the thread classifier) have
+# completed. Reads the pre-deduped findings + meta the orchestrator wrote,
+# collects screenshots from the functional tester, applies the round-2
+# verdict ladder, and builds review-result.json + review body + inline
+# comments. No multi-source merge or LLM dedup runs here — the judge debate
+# inside the orchestrator already produced a single, deduped findings array.
 #
 # Required env vars:
 #   GH_TOKEN            — GitHub token for API calls (review identity)
@@ -13,16 +16,20 @@ set -euo pipefail
 #   GITHUB_REPOSITORY   — owner/repo
 #   GITHUB_RUN_ID       — Actions run ID (for logs link)
 #   PR_NUMBER           — pull request number
+#   FUNCTIONAL_OK       — 1 if the functional tester succeeded (or was correctly skipped)
+#
+# Orchestrator-step outcome is intentionally NOT plumbed in as a flag.
+# We gate on the artifact (`/tmp/all-findings.json` parses as an array)
+# instead, so a max-turns-killed orchestrator that still wrote partial
+# output gets used; only a missing/malformed file fails the build step.
 #
 # Expected files (from agents):
-#   /tmp/core-findings.json       — core reviewer findings (optional)
-#   /tmp/sweep-findings.json      — sweep reviewer findings (optional)
-#   /tmp/spec-findings.json       — spec-compliance findings (optional)
+#   /tmp/all-findings.json        — orchestrator's final findings (REQUIRED)
+#   /tmp/review-meta.json         — orchestrator's verdict + meta (REQUIRED)
 #   /tmp/functional-findings.json — functional tester findings (optional)
 #   /tmp/functional-meta.json     — functional tester metadata (optional)
-#   /tmp/core-meta.json           — core reviewer metadata (optional)
-#   /tmp/core-findings-2.json     — round-1 redundancy: core pass-2 findings (optional)
-#   /tmp/sweep-findings-2.json    — round-1 redundancy: sweep pass-2 findings (optional)
+#   /tmp/thread-resolution.json   — round-2 thread classifier output (round 2 only)
+#   /tmp/resolution-findings.json — round-2 net-new findings (round 2 only, rare)
 #
 # Output files:
 #   review-result.json            — full review result
@@ -50,121 +57,117 @@ verdict_max() {
   esac
 }
 
-echo "::group::Merge findings + build review"
+echo "::group::Build review"
 
-# Validate every reviewer's findings file in one loop. If a file is present
-# but malformed (e.g. unescaped quotes in free-text evidence), preserve it
-# under .invalid.json for the artifact upload, log the first parse error,
-# and treat that source as "no output" for the failure gate downstream.
-declare -A HAS_OUTPUT=(
-  [core]=false [sweep]=false [spec]=false [functional]=false
-  [core2]=false [sweep2]=false [resolution]=false
-)
-declare -A FINDINGS_FILE=(
-  [core]=/tmp/core-findings.json
-  [sweep]=/tmp/sweep-findings.json
-  [spec]=/tmp/spec-findings.json
-  [functional]=/tmp/functional-findings.json
-  [core2]=/tmp/core-findings-2.json
-  [sweep2]=/tmp/sweep-findings-2.json
-  # Round-2 resolution checker may surface high-severity net-new findings
-  # alongside its classification output (see review-resolution-checker.md).
-  # Most runs leave this as []; when populated, the entries flow through
-  # the same Haiku dedup as every other reviewer's output.
-  [resolution]=/tmp/resolution-findings.json
-)
-for key in "${!FINDINGS_FILE[@]}"; do
-  f="${FINDINGS_FILE[$key]}"
-  [ -f "$f" ] || continue
-  if jq -e 'type == "array"' "$f" >/dev/null 2>&1; then
-    HAS_OUTPUT[$key]=true
-  else
-    echo "::warning::${key} findings ($f) are not a valid JSON array — treating as failed."
-    cp "$f" "${f%.json}.invalid.json" 2>/dev/null \
-      || echo "::warning::Failed to preserve $f to ${f%.json}.invalid.json (filesystem permissions or disk space?). Original kept in place."
-    jq empty "$f" 2>&1 | head -3 || true
+# The orchestrator (review-orchestrator skill, run as a Claude Code agent
+# with the Task tool) ran two judges (Opus + Haiku), reconciled them via
+# a debate loop, and wrote two artifacts directly:
+#
+#   /tmp/all-findings.json — the final, deduped findings array (drop-in
+#                            replacement for the legacy multi-source merge
+#                            + Haiku dedup output).
+#   /tmp/review-meta.json  — verdict, verdict_summary, manual_spec_present,
+#                            spec_compliance, requires_human_review,
+#                            uncertain_observations, prompt_injection_detected,
+#                            build_unavailable, spec_sources, judge_health.
+#
+# Both files are required. If either is missing or malformed, the orchestrator
+# either crashed mid-run or hit a quota wall before writing its STOP-anchor
+# fallback. We bail with a clear error and let verdict-gate.sh post the
+# "Claude Review — incomplete" notification.
+
+if [ ! -f /tmp/all-findings.json ] || ! jq -e 'type == "array"' /tmp/all-findings.json >/dev/null 2>&1; then
+  # Distinguish OAuth-quota exhaustion from a generic crash so the error
+  # annotation says what actually happened. The orchestrator's stdout log
+  # (text mode, /tmp/orchestrator-output.txt) carries the same `hit your
+  # limit · resets …` / `"error":"rate_limit"` signals the legacy multi-
+  # agent fan did. Same grep, narrowed to the single log file.
+  if [ -f /tmp/all-findings.json ]; then
+    cp /tmp/all-findings.json /tmp/all-findings.invalid.json 2>/dev/null || true
   fi
-done
-
-CORE_HAS_OUTPUT="${HAS_OUTPUT[core]}"
-SWEEP_HAS_OUTPUT="${HAS_OUTPUT[sweep]}"
-SPEC_HAS_OUTPUT="${HAS_OUTPUT[spec]}"
-FUNCTIONAL_HAS_OUTPUT="${HAS_OUTPUT[functional]}"
-CORE2_HAS_OUTPUT="${HAS_OUTPUT[core2]}"
-SWEEP2_HAS_OUTPUT="${HAS_OUTPUT[sweep2]}"
-
-# Aggregate flags: pass-2 substitutes for pass-1 if pass-1 failed but pass-2
-# succeeded. Used for the failure gate, the warnings below, and the verdict
-# downgrade logic — any successful pass means we have those findings.
-# Explicit form (not `$(... && echo … || echo …)`) — the && / || precedence
-# trick produces the right truth table here but is one restructure away
-# from breaking silently.
-if [ "$CORE_HAS_OUTPUT" = "true" ] || [ "$CORE2_HAS_OUTPUT" = "true" ]; then
-  CORE_ANY_OUTPUT=true
-else
-  CORE_ANY_OUTPUT=false
-fi
-if [ "$SWEEP_HAS_OUTPUT" = "true" ] || [ "$SWEEP2_HAS_OUTPUT" = "true" ]; then
-  SWEEP_ANY_OUTPUT=true
-else
-  SWEEP_ANY_OUTPUT=false
-fi
-
-# Meta files are also agent-written JSON — coerce malformed/non-object to {}
-# so the verdict gates and meta-merge below see a stable shape.
-for mf in /tmp/core-meta.json /tmp/core-meta-2.json /tmp/functional-meta.json; do
-  [ -f "$mf" ] || continue
-  if ! jq -e 'type == "object"' "$mf" >/dev/null 2>&1; then
-    echo "::warning::${mf} is not a JSON object — falling back to {}."
-    cp "$mf" "${mf%.json}.invalid.json" 2>/dev/null \
-      || echo "::warning::Failed to preserve $mf to ${mf%.json}.invalid.json (filesystem permissions or disk space?). Coercing to {} anyway."
-    echo '{}' > "$mf"
-  fi
-done
-
-if [ "$CORE_ANY_OUTPUT" = "false" ] && [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
-  # Distinguish OAuth-quota exhaustion from a generic agent crash so the
-  # error annotation says what actually happened. When the OAuth token's
-  # daily quota is hit, every reviewer's JSONL stream contains
-  # `"error":"rate_limit"` (and usually a `"You've hit your limit · resets …"`
-  # message). Track the rate_limit signal independently from the reset
-  # phrase so a `rate_limit` without `resets …` (older agent versions,
-  # truncated logs, future format changes) still produces a quota-specific
-  # error rather than silently falling back to the generic message.
   QUOTA_HIT=false
   RESET_PHRASE=""
-  for f in /tmp/core-output.txt /tmp/sweep-output.txt /tmp/spec-output.txt \
-           /tmp/functional-output.txt /tmp/core-output-2.txt /tmp/sweep-output-2.txt \
-           /tmp/resolution-output.txt /tmp/bot-resolver-output.txt; do
-    [ -f "$f" ] || continue
-    if grep -qE 'hit your limit · resets|"error": *"rate_limit"' "$f" 2>/dev/null; then
-      QUOTA_HIT=true
-      RESET_PHRASE=$(grep -oE 'resets [^"\\]+' "$f" 2>/dev/null | head -1 || true)
-      break
-    fi
-  done
+  if [ -f /tmp/orchestrator-output.txt ] && grep -qE 'hit your limit · resets|"error": *"rate_limit"' /tmp/orchestrator-output.txt 2>/dev/null; then
+    QUOTA_HIT=true
+    RESET_PHRASE=$(grep -oE 'resets [^"\\]+' /tmp/orchestrator-output.txt 2>/dev/null | head -1 || true)
+  fi
   if [ "$QUOTA_HIT" = "true" ]; then
     if [ -n "$RESET_PHRASE" ]; then
-      echo "::error::All code reviewers failed: Claude OAuth quota exhausted ($RESET_PHRASE)."
+      echo "::error::Orchestrator failed: Claude OAuth quota exhausted ($RESET_PHRASE)."
     else
-      echo "::error::All code reviewers failed: Claude OAuth quota exhausted (rate_limit returned, no reset window in the agent log)."
+      echo "::error::Orchestrator failed: Claude OAuth quota exhausted (rate_limit returned, no reset window in the log)."
     fi
     echo "::error::Re-run after the quota resets, or rotate CLAUDE_CODE_OAUTH_TOKEN to a token with available quota."
   else
-    echo "::error::All code reviewers failed to produce output (core+sweep, both passes if boost ran) — cannot generate a verdict."
-    echo "::error::Check rate limits and OAuth token."
+    echo "::error::Orchestrator did not produce a valid /tmp/all-findings.json — cannot generate a verdict."
+    echo "::error::Investigate /tmp/orchestrator-output.txt (and /tmp/judge-opus*.json / /tmp/judge-haiku*.json if present)."
   fi
   exit 1
 fi
 
-if [ "$CORE_ANY_OUTPUT" = "false" ]; then
-  echo "::warning::Core reviewer (Opus) failed — proceeding with sweep-only findings. Correctness/spec review may be incomplete."
+if [ ! -f /tmp/review-meta.json ] || ! jq -e 'type == "object"' /tmp/review-meta.json >/dev/null 2>&1; then
+  if [ -f /tmp/review-meta.json ]; then
+    cp /tmp/review-meta.json /tmp/review-meta.invalid.json 2>/dev/null || true
+  fi
+  echo "::error::Orchestrator did not produce a valid /tmp/review-meta.json — cannot read verdict / spec_compliance."
+  echo "::error::Investigate /tmp/orchestrator-output.txt."
+  exit 1
 fi
-if [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
-  echo "::warning::Sweep reviewer (Sonnet) failed — proceeding with core-only findings. Consistency/performance review may be incomplete."
+
+ALL_FINDINGS=$(cat /tmp/all-findings.json)
+CORE_META=$(cat /tmp/review-meta.json)
+
+# Defensive merge of round-2 net-new findings from the thread classifier.
+# The orchestrator skill (Phase 4) instructs the LLM to fold
+# `/tmp/resolution-findings.json` into `/tmp/all-findings.json` before
+# exiting; this safety net catches the rare case where the LLM forgot or
+# crashed mid-write, ensuring a major/critical net-new from the
+# classifier still lands in the verdict gate. Dedup by id so an entry
+# already merged by the orchestrator isn't double-counted.
+if [ -f /tmp/resolution-findings.json ] && jq -e 'type == "array" and length > 0' /tmp/resolution-findings.json >/dev/null 2>&1; then
+  MERGED=$(jq -s '
+    (.[0] // []) as $primary |
+    ($primary | map(.id)) as $seen |
+    $primary + ((.[1] // []) | map(select(.id as $id | $seen | index($id) | not)))
+  ' /tmp/all-findings.json /tmp/resolution-findings.json)
+  ADDED=$(( $(echo "$MERGED" | jq 'length') - $(echo "$ALL_FINDINGS" | jq 'length') ))
+  if [ "$ADDED" -gt 0 ]; then
+    echo "::notice::Defensive-merged $ADDED resolution-finding(s) the orchestrator hadn't already folded into /tmp/all-findings.json."
+  fi
+  ALL_FINDINGS="$MERGED"
 fi
+
+TOTAL=$(echo "$ALL_FINDINGS" | jq 'length')
+echo "Orchestrator findings: total=$TOTAL (judge_health: $(echo "$CORE_META" | jq -c '.judge_health // {}'))"
+
+# Functional tester output is still produced by a separate agent — gate it
+# independently. Coerce malformed JSON to {}; if findings file is missing
+# default to []. Both downstream verdict gates and body builders read
+# FUNCTIONAL_HAS_OUTPUT to decide whether to render the functional section.
+FUNCTIONAL_HAS_OUTPUT=false
+if [ -f /tmp/functional-findings.json ] && jq -e 'type == "array"' /tmp/functional-findings.json >/dev/null 2>&1; then
+  FUNCTIONAL_HAS_OUTPUT=true
+fi
+if [ -f /tmp/functional-meta.json ] && ! jq -e 'type == "object"' /tmp/functional-meta.json >/dev/null 2>&1; then
+  echo "::warning::/tmp/functional-meta.json is not a JSON object — falling back to {}."
+  cp /tmp/functional-meta.json /tmp/functional-meta.invalid.json 2>/dev/null || true
+  echo '{}' > /tmp/functional-meta.json
+fi
+# Distinguish "tester ran and crashed" from "tester correctly skipped".
+# Docs-only / no-dev-env / round-2 since-last-with-no-user-surface PRs
+# legitimately skip functional dispatch — the orchestrator writes a
+# synthetic /tmp/functional-meta.json with strategy="skip" and never emits
+# /tmp/functional-findings.json in some paths, which would otherwise fire
+# the "failed" warning every time. Read the meta's strategy first; only
+# flag "failed" when the planner asked for a smoke run that never landed.
 if [ "$FUNCTIONAL_HAS_OUTPUT" = "false" ]; then
-  echo "::warning::Functional tester failed — no functional validation results."
+  FUNCTIONAL_STRATEGY_TMP="skip"
+  if [ -f /tmp/functional-meta.json ]; then
+    FUNCTIONAL_STRATEGY_TMP=$(jq -r '.strategy // "skip"' /tmp/functional-meta.json 2>/dev/null || echo "skip")
+  fi
+  if [ "$FUNCTIONAL_STRATEGY_TMP" != "skip" ]; then
+    echo "::warning::Functional tester failed — strategy=$FUNCTIONAL_STRATEGY_TMP but no findings file produced."
+  fi
 fi
 
 # Load functional test metadata (strategy, screenshots, overall verdict)
@@ -305,175 +308,23 @@ if [ -n "$SCREENSHOT_DIR" ]; then
   fi
 fi
 
-# ── Merge findings from all sources ──
-# Concatenate every valid reviewer output into a single array. The
-# HAS_OUTPUT flags above tell us which files survived validation; we
-# feed only those into jq -s 'add'. No intermediate per-source files.
-SAFE_INPUTS=()
-for key in core sweep spec functional core2 sweep2 resolution; do
-  [ "${HAS_OUTPUT[$key]}" = "true" ] && SAFE_INPUTS+=("${FINDINGS_FILE[$key]}")
-done
-# Merge pass-1 + pass-2 core meta. OR-merge safety booleans (any signal
-# wins), AND-merge `manual_spec_present` (either NO blocks APPROVE),
-# pass-1-prefer for prose. The bash loop above already coerces non-object
-# meta to {}, but the program rebinds $m1/$m2 with an in-jq type guard
-# anyway so it stays self-contained — has() crashes on non-object types
-# in jq 1.7+ (ubuntu-24.04 default), and a future refactor that drops
-# the bash coercion shouldn't be able to re-introduce that crash.
-META1='{}'; META2='{}'
-[ -f /tmp/core-meta.json ] && META1=$(cat /tmp/core-meta.json)
-[ -f /tmp/core-meta-2.json ] && META2=$(cat /tmp/core-meta-2.json)
-CORE_META=$(jq -n --argjson m1 "$META1" --argjson m2 "$META2" '
-  ($m1 | if type == "object" then . else {} end) as $m1
-  | ($m2 | if type == "object" then . else {} end) as $m2
-  | def or_bool(k): (($m1[k] // false) or ($m2[k] // false));
-    # `has()` rather than `// true`: jq treats explicit false as missing,
-    # so `false // true` is `true` — wrong direction here.
-    def and_present:
-      (if $m1 | has("manual_spec_present") then $m1.manual_spec_present else true end)
-      and
-      (if $m2 | has("manual_spec_present") then $m2.manual_spec_present else true end);
-    {
-      requires_human_review:        or_bool("requires_human_review"),
-      requires_human_review_reason: ($m1.requires_human_review_reason // $m2.requires_human_review_reason // null),
-      uncertain_observations:       (($m1.uncertain_observations // []) + ($m2.uncertain_observations // [])),
-      prompt_injection_detected:    or_bool("prompt_injection_detected"),
-      reviewer_self_modification:   or_bool("reviewer_self_modification"),
-      build_unavailable:            or_bool("build_unavailable"),
-      manual_spec_present:          and_present,
-      spec_compliance:              ($m1.spec_compliance // $m2.spec_compliance // null),
-      verdict_summary:              ($m1.verdict_summary // $m2.verdict_summary // null),
-      spec_sources:                 ($m1.spec_sources // $m2.spec_sources // null)
-    }')
-
-if [ "${#SAFE_INPUTS[@]}" -gt 0 ]; then
-  jq -s 'add' "${SAFE_INPUTS[@]}" > /tmp/all-findings-merged.json
-else
-  echo '[]' > /tmp/all-findings-merged.json
-fi
-report_count() { jq 'length' "$1" 2>/dev/null || echo 0; }
-echo "Findings: core=$(report_count /tmp/core-findings.json) sweep=$(report_count /tmp/sweep-findings.json) spec=$(report_count /tmp/spec-findings.json) functional=$(report_count /tmp/functional-findings.json) core2=$(report_count /tmp/core-findings-2.json) sweep2=$(report_count /tmp/sweep-findings-2.json) resolution=$(report_count /tmp/resolution-findings.json) — total=$(jq 'length' /tmp/all-findings-merged.json)"
-TOTAL=$(jq 'length' /tmp/all-findings-merged.json)
-
-# ── Deduplication ──
-# One Haiku call groups by root cause across every reviewer's output.
-# The previous two-pass jq dedup (path+line then path+title) missed
-# semantic duplicates with different categories on adjacent lines.
-# On Haiku failure (after one retry) we post the raw concatenated
-# input with a visible ::error:: — no second dedup path to maintain.
-
-run_haiku_dedup() {
-  local out="$1"
-  local log="${2:-/tmp/dedup-output.txt}"
-  # Per-attempt log path so retry doesn't wipe attempt-1's diagnostics.
-  : > "$log"
-  rm -f "$out"
-  ~/.local/bin/claude -p "=== review-dedup skill (follow exactly) ===
-
-${DEDUP_SKILL}${BUGBOT_BLOCK:-}
-
-You are the dedup reviewer. Read /tmp/all-findings-merged.json (the full reviewer output). When /tmp/resolution-status.json AND /tmp/prior-state/review-state.json exist, this is a round-2 follow-up — Read both and apply the STILL_PRESENT drop rule from the skill. OUTPUT_PATH=${out} — write the deduped JSON array to that exact path. Follow the skill above exactly." \
-    --model "${MODEL_FAST:-claude-haiku-4-5}" \
-    --permission-mode dontAsk \
-    --setting-sources user \
-    --allowedTools Read,Write \
-    --disallowedTools Bash,Edit,Glob,Grep,WebFetch,WebSearch \
-    --max-turns 4 > "$log" 2>&1
-}
-
-# Validate dedup output: must be a JSON array; every element must be an
-# object with severity/path/line_start/id; length must be ≤ input length;
-# every output id must appear in the input. Drop-all (out_len=0 with
-# non-empty input) is **explicitly allowed** with a `::notice::` because
-# review-dedup.md authorises it for bugbot-exempt findings and
-# STILL_PRESENT-overlap suppression in round 2 — see the if-block below.
-# Shape + id-membership are the integrity guards (the dedup LLM cannot
-# invent findings or add fields it didn't receive). The pre-95cc5ca
-# behaviour rejected drop-all and forced the fallback to re-post raw
-# concatenated findings, defeating the dedup's intent — don't reintroduce
-# that. Treat drop-all as valid; let the operator audit via the notice.
-validate_dedup_output() {
-  local out="$1"
-  [ -f "$out" ] || return 1
-  jq -e 'type == "array"' "$out" >/dev/null 2>&1 || return 1
-  jq -e 'all(type == "object" and has("severity") and has("path") and has("line_start") and has("id"))' "$out" >/dev/null 2>&1 || return 1
-  local out_len in_len
-  out_len=$(jq 'length' "$out")
-  in_len=$(jq 'length' /tmp/all-findings-merged.json)
-  [ "$out_len" -le "$in_len" ] || return 1
-  # Drop-all is allowed: review-dedup.md authorizes it when every input
-  # matches a bugbot-accepted trade-off, or (round 2) every new finding
-  # overlaps a STILL_PRESENT prior. Rejecting drop-all here used to
-  # cause a regression where the fallback re-posted the raw concatenated
-  # findings — exactly the duplicates / exempt entries the dedup is
-  # meant to filter. We log the drop-all case as a notice (so an
-  # operator can audit) but treat it as valid output.
-  if [ "$in_len" -gt 0 ] && [ "$out_len" -eq 0 ]; then
-    echo "::notice::Dedup dropped all $in_len finding(s) — accepting (matches bugbot-exempt or round-2 STILL_PRESENT-overlap rules in review-dedup.md). Audit /tmp/all-findings-merged.json + /tmp/deduped-findings.json if this looks wrong."
-  fi
-  jq --slurpfile in /tmp/all-findings-merged.json \
-     -e 'all(.id as $id | $in[0] | any(.id == $id))' \
-     "$out" >/dev/null 2>&1 || return 1
-  return 0
-}
-
-DEDUP_SKILL=""
-if [ -n "${SKILLS_DIR:-}" ] && [ -f "$SKILLS_DIR/review-dedup.md" ]; then
-  DEDUP_SKILL=$(cat "$SKILLS_DIR/review-dedup.md")
-elif [ -f "${CLAUDE_REVIEW_PIPELINE_DIR:-}/skills/review-dedup.md" ]; then
-  DEDUP_SKILL=$(cat "${CLAUDE_REVIEW_PIPELINE_DIR}/skills/review-dedup.md")
-fi
-
-ALL_FINDINGS=""
-if [ -z "$DEDUP_SKILL" ] || [ -z "${MODEL_FAST:-}" ]; then
-  echo "::warning::review-dedup.md or MODEL_FAST not available — skipping LLM dedup, posting raw concatenated findings"
-  ALL_FINDINGS=$(cat /tmp/all-findings-merged.json)
-else
-  DEDUP_OK=false
-  for attempt in 1 2; do
-    echo "Haiku dedup attempt $attempt/2..."
-    LOG="/tmp/dedup-output-${attempt}.txt"
-    if run_haiku_dedup /tmp/deduped-findings.json "$LOG" && validate_dedup_output /tmp/deduped-findings.json; then
-      DEDUP_OK=true
-      break
-    fi
-    echo "::warning::Haiku dedup attempt $attempt failed (invalid output or non-zero exit). See $LOG"
-  done
-  if [ "$DEDUP_OK" = "true" ]; then
-    ALL_FINDINGS=$(cat /tmp/deduped-findings.json)
-  else
-    echo "::error::Haiku dedup failed twice; posting raw findings (may include duplicates). Investigate /tmp/dedup-output-1.txt, /tmp/dedup-output-2.txt, and /tmp/all-findings-merged.json."
-    ALL_FINDINGS=$(cat /tmp/all-findings-merged.json)
-  fi
-fi
-
-DEDUPED_COUNT=$(echo "$ALL_FINDINGS" | jq 'length')
-if [ "$DEDUPED_COUNT" -lt "$TOTAL" ]; then
-  echo "Haiku dedup: $TOTAL -> $DEDUPED_COUNT (removed $((TOTAL - DEDUPED_COUNT)))"
-fi
-
-# Quality safeguard: dedup is allowed to merge duplicate criticals (highest
-# severity wins within a group, per the skill), but it should never zero
-# them out. Two criticals merging to one is fine; many criticals merging
-# to zero means Haiku misclassified severity. Warn loudly so the operator
-# can audit /tmp/deduped-findings.json without having to compare counts.
-IN_CRITS=$(jq '[.[] | select(.severity == "critical")] | length' /tmp/all-findings-merged.json 2>/dev/null || echo 0)
-OUT_CRITS=$(echo "$ALL_FINDINGS" | jq '[.[] | select(.severity == "critical")] | length' 2>/dev/null || echo 0)
-if [ "$IN_CRITS" -gt 0 ] && [ "$OUT_CRITS" -eq 0 ]; then
-  echo "::warning::Dedup dropped every critical finding ($IN_CRITS in -> 0 out). Audit /tmp/deduped-findings.json — possible severity misclassification."
-fi
-
 # ── Round-2 body inputs ──
-# Haiku dedup above already drops STILL_PRESENT-overlapping new findings
-# semantically (it reads /tmp/resolution-status.json + prior-state). We
-# only need the RESOLVED/STILL_PRESENT lists here so the body composition
-# below can render the "Since previous review" section.
+# The thread classifier (review-thread-classifier skill) wrote a single
+# unified file at /tmp/thread-resolution.json with entries for prior
+# findings AND open inline threads (own bot + other bots + humans),
+# distinguished by the `source` field. The body composition below renders
+# only `source: "prior_finding"` entries in the "Since previous review"
+# section — inline-thread RESOLVED entries drive the poster's per-comment
+# reply, not the body.
 RESOLVED_LIST="[]"
 STILL_PRESENT_LIST="[]"
-if [ -f /tmp/resolution-status.json ] && jq -e 'type == "array"' /tmp/resolution-status.json >/dev/null 2>&1; then
-  RESOLVED_LIST=$(jq '[.[] | select(.status == "RESOLVED")]' /tmp/resolution-status.json)
-  STILL_PRESENT_LIST=$(jq '[.[] | select(.status == "STILL_PRESENT")]' /tmp/resolution-status.json)
-  echo "Round-2 resolution status: $(echo "$RESOLVED_LIST" | jq 'length') RESOLVED, $(echo "$STILL_PRESENT_LIST" | jq 'length') STILL_PRESENT, $(jq '[.[] | select(.status == "NEW_CONTEXT")] | length' /tmp/resolution-status.json) NEW_CONTEXT"
+if [ -f /tmp/thread-resolution.json ] && jq -e 'type == "array"' /tmp/thread-resolution.json >/dev/null 2>&1; then
+  RESOLVED_LIST=$(jq '[.[] | select(.source == "prior_finding" and .status == "RESOLVED")]' /tmp/thread-resolution.json)
+  STILL_PRESENT_LIST=$(jq '[.[] | select(.source == "prior_finding" and .status == "STILL_PRESENT")]' /tmp/thread-resolution.json)
+  TOTAL_RESOLVED=$(jq '[.[] | select(.status == "RESOLVED")] | length' /tmp/thread-resolution.json)
+  TOTAL_STILL=$(jq '[.[] | select(.status == "STILL_PRESENT")] | length' /tmp/thread-resolution.json)
+  TOTAL_NEW_CTX=$(jq '[.[] | select(.status == "NEW_CONTEXT")] | length' /tmp/thread-resolution.json)
+  echo "Thread resolution: total=$TOTAL_RESOLVED RESOLVED / $TOTAL_STILL STILL_PRESENT / $TOTAL_NEW_CTX NEW_CONTEXT (prior_finding subset: $(echo "$RESOLVED_LIST" | jq 'length') / $(echo "$STILL_PRESENT_LIST" | jq 'length') / -)"
 fi
 
 # ── Determine verdict ──
@@ -572,16 +423,38 @@ elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; t
   SMOKE_OK=true
 fi
 
+# Judge-health safety gate. The orchestrator's degraded paths (both
+# judges crashed, or context-builder crashed) write `/tmp/all-findings.json
+# = []` and a meta with `judge_health.{opus,haiku,cb}` set to "failed"
+# / `*_failed: true`. With an empty findings array, the per-PR ladder
+# below would otherwise reach APPROVE — contradicting the "Both judges
+# failed" banner the body renders. Force COMMENT here so the verdict
+# matches the banner. Single-judge failure is NOT downgraded — the
+# orchestrator already proceeded with the surviving judge's output, and
+# that's a legitimate review.
+JUDGES_BOTH_FAILED=$(echo "$CORE_META" | jq -r '
+  # Strict-equality predicates throughout. jq treats any non-false/non-null
+  # value as truthy in `or`, so an LLM emitting `"both_failed": "false"`
+  # (string instead of boolean) under `// false` would resolve to the
+  # truthy string and false-trigger the gate. Compare against the literal
+  # boolean / string instead.
+  def is_failed_str(field): if has(field) then (.[field] == "failed") else false end;
+  def is_true_bool(field): if has(field) then (.[field] == true) else false end;
+  if (type == "object" and (.judge_health // null | type == "object")) then
+    (.judge_health |
+      is_true_bool("both_failed")
+      or is_true_bool("cb_failed")
+      or (is_failed_str("opus") and is_failed_str("haiku"))
+    )
+  else false end')
+
 if [ "$HAS_BLOCKING" = "true" ]; then
   VERDICT="REQUEST_CHANGES"
 elif [ "$HUMAN_REVIEW" = "true" ]; then
   VERDICT="COMMENT"
-elif [ "$CORE_ANY_OUTPUT" = "false" ]; then
-  # Core reviewer (bugs/spec) failed — can't confidently approve without it.
-  # On first reviews this means BOTH core passes failed; on re-reviews this is
-  # the single core run.
+elif [ "$JUDGES_BOTH_FAILED" = "true" ]; then
   VERDICT="COMMENT"
-  echo "::warning::Core reviewer failed — downgrading from APPROVE to COMMENT (cannot verify correctness)"
+  echo "::warning::Both judges (or context builder) failed — downgrading APPROVE to COMMENT. Body banner explains."
 elif [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
   VERDICT="COMMENT"
   echo "::warning::No manual spec available — downgrading APPROVE to COMMENT (core reviewer set manual_spec_present=false)"
@@ -601,7 +474,7 @@ fi
 #
 #   ROUND2_VALID=true     prior state file parses + has the expected shape
 #                         AND the workflow signalled PRIOR_STATE_AVAILABLE.
-#   RESOLUTION_VALID=true /tmp/resolution-status.json parses as a JSON array
+#   RESOLUTION_VALID=true /tmp/thread-resolution.json parses as a JSON array
 #                         (matches the resolution-checker output contract).
 #
 # When ROUND2_VALID + RESOLUTION_VALID are both true, run the case statement
@@ -645,31 +518,31 @@ if [ "$ROUND2_PRESENT" = "true" ] && [ "$ROUND2_VALID" = "false" ]; then
 fi
 
 RESOLUTION_VALID=false
-# Validate shape: must be a JSON array AND every entry must have the .id
-# and .status fields the verdict gate's id-join needs. A `type == "array"`
-# check alone allowed entries missing .id to silently slip through —
-# `map(.id)` would yield [null,null,...], `index($id)` would never match,
-# and STILL_PRESENT_BLOCKERS would be 0 even when prior blockers persisted,
-# letting REQUEST_CHANGES → APPROVE through the gate.
+# Validate shape: must be a JSON array AND every entry must have the .id,
+# .source, and .status fields the verdict gate's id-join needs. A
+# `type == "array"` check alone allowed entries missing .id to silently
+# slip through — `map(.id)` would yield [null,null,...], `index($id)`
+# would never match, and STILL_PRESENT_BLOCKERS would be 0 even when prior
+# blockers persisted, letting REQUEST_CHANGES → APPROVE through the gate.
 #
-# Cross-check: when prior-state.findings has N entries the resolution
-# checker MUST produce N entries (one classification per prior finding).
-# A shorter array means the agent crashed mid-write and the verdict gate
-# would treat un-listed priors as zero-still-present — fail-open. We
-# require resolution-length >= prior-findings-length OR prior had no
-# findings (length 0 is a legitimate "nothing to classify").
-# `jq -e all(...)` on an empty array returns true (vacuous truth) — so
-# a crashed `[]` write would slip past a shape-only check. The length
-# cross-check below is what catches that.
+# Cross-check: when prior-state.findings has N entries the thread classifier
+# MUST produce at least N entries with `source: "prior_finding"` (one per
+# prior finding — inline-thread entries from streams 2/3/4 are extra).
+# A shorter prior_finding subset means the agent crashed mid-write and the
+# verdict gate would treat un-listed priors as zero-still-present —
+# fail-open. We require prior_finding-subset length >= prior-findings
+# length OR prior had no findings (length 0 is a legitimate "nothing to
+# classify"). `jq -e all(...)` on an empty array returns true (vacuous
+# truth) — the length cross-check below catches a crashed `[]` write.
 if [ "$ROUND2_VALID" = "true" ] \
-   && jq -e 'type == "array" and all(type == "object" and has("id") and has("status"))' \
-        /tmp/resolution-status.json >/dev/null 2>&1; then
+   && jq -e 'type == "array" and all(type == "object" and has("id") and has("source") and has("status"))' \
+        /tmp/thread-resolution.json >/dev/null 2>&1; then
   PRIOR_FINDINGS_LEN=$(jq '.findings | length' /tmp/prior-state/review-state.json 2>/dev/null || echo 0)
-  RESOLUTION_LEN=$(jq 'length' /tmp/resolution-status.json 2>/dev/null || echo 0)
+  RESOLUTION_LEN=$(jq '[.[] | select(.source == "prior_finding")] | length' /tmp/thread-resolution.json 2>/dev/null || echo 0)
   if [ "$RESOLUTION_LEN" -ge "$PRIOR_FINDINGS_LEN" ]; then
     RESOLUTION_VALID=true
   else
-    echo "::warning::Round-2: resolution-status.json has $RESOLUTION_LEN entries but prior-state.findings has $PRIOR_FINDINGS_LEN — checker likely crashed mid-write. Treating resolution as unknown (degraded round-2)."
+    echo "::warning::Round-2: thread-resolution.json has $RESOLUTION_LEN prior_finding entries but prior-state.findings has $PRIOR_FINDINGS_LEN — classifier likely crashed mid-write. Treating resolution as unknown (degraded round-2)."
   fi
 fi
 
@@ -736,17 +609,17 @@ if [ "$ROUND2_VALID" = "true" ]; then
         ;;
     esac
   else
-    # Degraded round-2: prior state is valid but resolution-status is
-    # missing or malformed (resolution checker didn't run, since-last.diff
+    # Degraded round-2: prior state is valid but thread-resolution.json
+    # is missing or malformed (thread classifier didn't run, since-last.diff
     # couldn't be computed, or the agent crashed). Pin VERDICT to the
     # more-severe of (PRIOR_VERDICT, current per-PR VERDICT) — never
     # silently downgrade REQUEST_CHANGES.
     DEGRADED_REASON="missing"
-    [ -f /tmp/resolution-status.json ] && DEGRADED_REASON="malformed"
+    [ -f /tmp/thread-resolution.json ] && DEGRADED_REASON="malformed"
     VERDICT=$(verdict_max "$PRIOR_VERDICT" "$PER_PR_VERDICT")
-    echo "::warning::Round-2 degraded: resolution-status.json $DEGRADED_REASON — pinned verdict to max(prior=$PRIOR_VERDICT, current=$PER_PR_VERDICT)=$VERDICT."
+    echo "::warning::Round-2 degraded: thread-resolution.json $DEGRADED_REASON — pinned verdict to max(prior=$PRIOR_VERDICT, current=$PER_PR_VERDICT)=$VERDICT."
     if [ "$VERDICT" != "$PER_PR_VERDICT" ]; then
-      LADDER_OVERRIDE_REASON="prior verdict was $PRIOR_VERDICT and the round-2 resolution-status was $DEGRADED_REASON; pinned to the more severe of (prior, per-PR) so we never silently downgrade"
+      LADDER_OVERRIDE_REASON="prior verdict was $PRIOR_VERDICT and the round-2 thread-resolution was $DEGRADED_REASON; pinned to the more severe of (prior, per-PR) so we never silently downgrade"
     fi
   fi
 fi
@@ -754,22 +627,14 @@ fi
 echo "Verdict: $VERDICT (blocking=$HAS_BLOCKING, any=$HAS_ANY, human=$HUMAN_REVIEW, manual_spec=$MANUAL_SPEC_PRESENT, technical_change=$TECHNICAL_CHANGE, smoke_ok=$SMOKE_OK, functional=$FUNCTIONAL_OVERALL)"
 
 # ── Build review-result.json ──
-# Crash-aware functional_meta view, used ONLY for the JSON artifact. If
-# the tester exited non-zero without writing /tmp/functional-meta.json,
-# the workflow wrote a synthetic {strategy:"skip",overall:"PASS"} so
-# downstream jq never sees a missing file. That placeholder is
-# indistinguishable from an intentional skip — anyone reading
-# review-result.json would see "skip / PASS" while the review body
-# clearly renders a CRASHED section (that path reads FUNCTIONAL_OK
-# directly). Override here so the JSON reflects the crash too. The
-# FUNCTIONAL_STRATEGY / FUNCTIONAL_OVERALL shell vars that drive body
-# rendering are deliberately left untouched — the existing
-# `elif FUNCTIONAL_OK == 0` branch below still fires as before.
+# The previous architecture wrote a synthetic `{strategy:"skip",overall:"PASS"}`
+# placeholder when the functional tester crashed without writing meta,
+# and an override here flipped that to `strategy:"crashed",overall:"CRASH"`
+# for the JSON artifact. The single-orchestrator architecture writes the
+# crashed sentinel directly (see review-orchestrator.md "Per-subagent
+# failure handling"), so the override branch is no longer reachable.
+# Cursor flagged it as dead code on PR #29 commit 8ffb593.
 JSON_FUNCTIONAL_META="$FUNCTIONAL_META"
-if [ "${FUNCTIONAL_OK:-1}" -eq 0 ] && [ "$FUNCTIONAL_STRATEGY" = "skip" ] && [ "$FUNCTIONAL_OVERALL" = "PASS" ]; then
-  echo "::notice::functional tester exited non-zero without writing meta — review-result.json will record strategy=crashed"
-  JSON_FUNCTIONAL_META=$(echo "$FUNCTIONAL_META" | jq '. + {strategy: "crashed", overall: "CRASH", summary: "Functional tester agent did not complete; see crash log in review body."}')
-fi
 
 SPEC_COMPLIANCE=$(echo "$CORE_META" | jq -r '.spec_compliance // ""')
 VERDICT_SUMMARY=$(echo "$CORE_META" | jq -r '.verdict_summary // ""')
@@ -887,12 +752,25 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
     echo "> :gear: Build verification unavailable."
     echo ""
   fi
-  if [ "$CORE_ANY_OUTPUT" = "false" ]; then
-    echo "> :warning: **Core reviewer (Opus) failed** — correctness and spec compliance review may be incomplete."
+  # Surface judge-debate health in the body so a reader can see at a glance
+  # whether one of the two judges failed (the orchestrator proceeded with
+  # the survivor) and how many rebuttal rounds it took to converge.
+  JUDGE_HEALTH_RAW=$(echo "$CORE_META" | jq -c '.judge_health // {}' 2>/dev/null || echo '{}')
+  OPUS_OK=$(echo "$JUDGE_HEALTH_RAW" | jq -r '.opus // "unknown"')
+  HAIKU_OK=$(echo "$JUDGE_HEALTH_RAW" | jq -r '.haiku // "unknown"')
+  REBUTTAL_ROUNDS=$(echo "$JUDGE_HEALTH_RAW" | jq -r '.rebuttal_rounds // 0')
+  AGREED_AT=$(echo "$JUDGE_HEALTH_RAW" | jq -r '.agreed_at // "unknown"')
+  if [ "$OPUS_OK" = "failed" ] && [ "$HAIKU_OK" = "failed" ]; then
+    echo "> :warning: **Both judges failed** — review is empty or partial. Re-run the workflow."
     echo ""
-  fi
-  if [ "$SWEEP_ANY_OUTPUT" = "false" ]; then
-    echo "> :warning: **Sweep reviewer (Sonnet) failed** — consistency and performance review may be incomplete."
+  elif [ "$OPUS_OK" = "failed" ]; then
+    echo "> :warning: **Opus judge failed** — review consolidated from the Haiku judge alone. Recall on subtle reasoning may be incomplete."
+    echo ""
+  elif [ "$HAIKU_OK" = "failed" ]; then
+    echo "> :warning: **Haiku judge failed** — review consolidated from the Opus judge alone. Mechanical-find recall (lints, obvious misses) may be incomplete."
+    echo ""
+  elif [ "$REBUTTAL_ROUNDS" != "0" ] && [ "$AGREED_AT" = "none" ]; then
+    echo "> :scales: **Judges did not converge** after $REBUTTAL_ROUNDS rebuttal round(s) — final findings are the union, verdict is the more severe of the two."
     echo ""
   fi
   # Round-2 only: surface what the resolution checker found.
@@ -945,7 +823,16 @@ TEST_PLAN_EXISTS="false"
 FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // []) | length')
 FUNCTIONAL_OK="${FUNCTIONAL_OK:-1}"
 if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
-  EMOJI="✅"; [ "$FUNCTIONAL_OVERALL" = "FAIL" ] && EMOJI="❌"; [ "$FUNCTIONAL_OVERALL" = "WARN" ] && EMOJI="⚠️"
+  # CRASH gets the ❌ marker — the orchestrator now writes
+  # `strategy:"crashed",overall:"CRASH"` directly when the functional
+  # subagent fails (review-orchestrator.md "Per-subagent failure
+  # handling"), so this branch must render the failure clearly instead
+  # of falling through to the default ✅. Without the explicit case a
+  # crashed run got the green checkmark.
+  EMOJI="✅"
+  [ "$FUNCTIONAL_OVERALL" = "FAIL" ] && EMOJI="❌"
+  [ "$FUNCTIONAL_OVERALL" = "CRASH" ] && EMOJI="❌"
+  [ "$FUNCTIONAL_OVERALL" = "WARN" ] && EMOJI="⚠️"
   # Label depends on strategy: pipeline-self-test runs bash scripts (no
   # screenshots), Playwright runs are "Functional Validation" with shots.
   if [ "$FUNCTIONAL_STRATEGY" = "pipeline-self-test" ]; then
@@ -1077,7 +964,7 @@ echo "review-comments.json: $(jq 'length' /tmp/review-comments.json) inline comm
 # ── Persist round-state for the next follow-up review ──
 # The Upload review state workflow step packages this for cross-run pickup.
 # Schema is documented in pr-review.yml (round-2 read step) and in
-# skills/review-resolution-checker.md.
+# skills/review-thread-classifier.md.
 CURRENT_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
 CURRENT_BASE_SHA=$(git merge-base HEAD "${GITHUB_BASE_REF:+origin/$GITHUB_BASE_REF}" 2>/dev/null || echo "")
 PRIOR_HEAD_SHA_FROM_STATE=""

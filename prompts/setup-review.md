@@ -240,7 +240,7 @@ Rules:
 - **Generated code matters.** If your tests import from a generated SDK / GraphQL client / `openapi-generator` output that isn't checked in, run the generator here *before* starting the dev server — otherwise `tsc --watch` / `nest start` floods the log with TS2307 noise (or, worse, the compile never settles). valcori's `dev-start.sh` runs `pnpm run generate-sdk` before `start:dev` for exactly this reason.
 - **Test it locally.** Run `bash .github/claude-review/dev-start.sh` from a clean checkout before committing and confirm the services bind on the ports you list in `### Known service ports`. If it doesn't boot locally, it won't boot in CI — this is where circular imports, missing codegen, and misconfigured `DATABASE_URL` surface.
 
-If the project has no services to start (pure-docs repo, lib-only package), do **not** create this file. Its absence triggers degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step — either commit a real one or don't commit one at all.
+If the project has no services to start (pure-docs repo, lib-only package), do **not** create this file. Its absence triggers degraded mode (the orchestrator's two judges still run; no functional tester). An empty-but-present `dev-start.sh` will fail the step — either commit a real one or don't commit one at all.
 
 ### Secrets for dev-start.sh
 
@@ -456,7 +456,7 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 - "Validate review config" shows all six sections detected and no "references files that don't exist" warnings
 - Context builder produces `context.md` and `test-plan.md`
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
-- All three reviewers (core, sweep, functional) produce output
+- Orchestrator runs the two judges (Opus + Haiku) in parallel and (when applicable) the functional tester. The judge debate produces a single, deduped findings list — there is no separate `core` / `sweep` step.
 - **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
 
 ## Verdict ladder (round 2)
