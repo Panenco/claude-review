@@ -823,7 +823,16 @@ TEST_PLAN_EXISTS="false"
 FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // []) | length')
 FUNCTIONAL_OK="${FUNCTIONAL_OK:-1}"
 if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
-  EMOJI="✅"; [ "$FUNCTIONAL_OVERALL" = "FAIL" ] && EMOJI="❌"; [ "$FUNCTIONAL_OVERALL" = "WARN" ] && EMOJI="⚠️"
+  # CRASH gets the ❌ marker — the orchestrator now writes
+  # `strategy:"crashed",overall:"CRASH"` directly when the functional
+  # subagent fails (review-orchestrator.md "Per-subagent failure
+  # handling"), so this branch must render the failure clearly instead
+  # of falling through to the default ✅. Without the explicit case a
+  # crashed run got the green checkmark.
+  EMOJI="✅"
+  [ "$FUNCTIONAL_OVERALL" = "FAIL" ] && EMOJI="❌"
+  [ "$FUNCTIONAL_OVERALL" = "CRASH" ] && EMOJI="❌"
+  [ "$FUNCTIONAL_OVERALL" = "WARN" ] && EMOJI="⚠️"
   # Label depends on strategy: pipeline-self-test runs bash scripts (no
   # screenshots), Playwright runs are "Functional Validation" with shots.
   if [ "$FUNCTIONAL_STRATEGY" = "pipeline-self-test" ]; then
