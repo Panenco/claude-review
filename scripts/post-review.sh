@@ -237,9 +237,30 @@ HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
 EXISTING_REVIEW_ID=""
 EXISTING_REVIEW_NODE_ID=""
 if [ -n "$HEAD_SHA" ]; then
-  EXISTING_REVIEW=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-    --jq "[.[] | select(.user.login == \"$BOT_USER\" and .commit_id == \"$HEAD_SHA\" and (.body | contains(\"<!-- claude-review-crash -->\") | not))] | .[0] // empty" \
-    2>/dev/null || echo "")
+  # `gh api --paginate --jq` runs the filter on EACH page independently, so
+  # `.[0] // empty` would emit one match per page — a multi-object output
+  # that breaks downstream `jq -r '.id'` parsing. Slurp all pages into a
+  # single array first, then apply the filter once. (cursor#bugbot, PR #28.)
+  #
+  # The filter excludes anything carrying either crash-banner marker so
+  # neither a fresh `<!-- claude-review-crash -->` nor an already-superseded
+  # `<!-- claude-review-superseded -->` is mistaken for a substantive review
+  # on the same SHA.
+  EXISTING_REVIEW=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
+    | jq -s --arg bot "$BOT_USER" --arg sha "$HEAD_SHA" '
+        (add // [])
+        | [.[] | select(
+            .user.login == $bot
+            and .commit_id == $sha
+            and (
+              (
+                (.body | contains("<!-- claude-review-crash -->"))
+                or (.body | contains("<!-- claude-review-superseded -->"))
+              ) | not
+            )
+          )]
+        | .[0] // empty
+      ' 2>/dev/null || echo "")
   if [ -n "$EXISTING_REVIEW" ]; then
     EXISTING_REVIEW_ID=$(echo "$EXISTING_REVIEW" | jq -r '.id // empty')
     EXISTING_REVIEW_NODE_ID=$(echo "$EXISTING_REVIEW" | jq -r '.node_id // empty')
@@ -293,15 +314,16 @@ echo "::endgroup::"
 # After a successful POST: supersede any prior crash-banner reviews on this
 # PR so the misleading red banner doesn't linger after the next push.
 # Crash banners can't be deleted (no review-delete API) — we PATCH the body
-# to a benign superseded form. Marker-based detection so this is safe even
-# across many rounds.
+# to a benign superseded form. The superseded marker is *distinct* from the
+# crash marker (no shared substring), so the filter below cannot
+# accidentally re-match a review we already superseded on a previous push.
 if [ -n "$REVIEW_ID" ]; then
   echo "::group::Post review — supersede prior crash banners"
   CRASH_REVIEWS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
     --jq "[.[] | select(.user.login == \"$BOT_USER\" and (.body | contains(\"<!-- claude-review-crash -->\")) and (.id != $REVIEW_ID)) | .id] | .[]" \
     2>/dev/null || true)
   if [ -n "$CRASH_REVIEWS" ]; then
-    SUPERSEDE_BODY=$'<!-- claude-review-crash superseded -->\n\n_Superseded by a successful review run on `'"$HEAD_SHA"$'`._'
+    SUPERSEDE_BODY=$'<!-- claude-review-superseded -->\n\n_Superseded by a successful review run on `'"$HEAD_SHA"$'`._'
     while IFS= read -r CRID; do
       [ -z "$CRID" ] && continue
       if gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$CRID" -f body="$SUPERSEDE_BODY" >/dev/null 2>&1; then

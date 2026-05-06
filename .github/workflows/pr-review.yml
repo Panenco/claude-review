@@ -671,7 +671,11 @@ jobs:
                   jq '.verdict = "APPROVE" | .dismissed_by_author = true' /tmp/prior-state/review-state.json > /tmp/r.json && mv /tmp/r.json /tmp/prior-state/review-state.json
                 fi
               fi
-              echo "Prior state loaded: head=$PRIOR_HEAD_SHA, findings=$(jq '.findings | length' /tmp/prior-state/review-state.json), verdict=$(jq -r '.verdict' /tmp/prior-state/review-state.json), dismissed=$(jq -r '.dismissed_by_author // false' /tmp/prior-state/review-state.json)"
+              # Use the has()-guarded read here too — `// false` would
+              # silently swap an explicit `false` for the default; the
+              # actual round-state file uses the same guarded pattern at
+              # build-review.sh:185 so the values stay in sync.
+              echo "Prior state loaded: head=$PRIOR_HEAD_SHA, findings=$(jq '.findings | length' /tmp/prior-state/review-state.json), verdict=$(jq -r '.verdict' /tmp/prior-state/review-state.json), dismissed=$(jq -r 'if (type == "object" and has("dismissed_by_author")) then .dismissed_by_author else false end' /tmp/prior-state/review-state.json)"
               echo "prior_head_sha=$PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
               echo "available=true" >> "$GITHUB_OUTPUT"
             else
