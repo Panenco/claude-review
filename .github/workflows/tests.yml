@@ -25,5 +25,8 @@ jobs:
       - name: Run dev_env_secrets_test.sh
         run: bash tests/dev_env_secrets_test.sh
 
+      - name: Run pick_oauth_token_test.sh
+        run: bash tests/pick_oauth_token_test.sh
+
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh
