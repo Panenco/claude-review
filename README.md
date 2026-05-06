@@ -1,6 +1,6 @@
 # Claude PR Review Pipeline
 
-Reusable, multi-stage PR review pipeline powered by Claude Code. Runs automated code review with correctness checking (Opus), consistency/performance analysis (Sonnet), and end-to-end functional testing (Sonnet + Playwright).
+Reusable PR review pipeline powered by Claude Code. A single orchestrator agent runs two independent judges in parallel (Opus for deep reasoning, Haiku for cheap broad coverage), reconciles them through a debate loop, and dispatches an end-to-end functional tester (Sonnet + Playwright) when the diff has user-observable surface.
 
 ## Quick Start
 
@@ -492,7 +492,7 @@ Both gates compose with each other: `APPROVE` is granted only when *something* s
 ### 3. New optional knobs (defaults preserve v1 behaviour)
 
 - `DEV_ENV_SECRETS` repo secret — newline-separated `KEY=VALUE` env exposed to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Mirrors `TRACKER_SECRETS`. Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot.
-- New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `core_max_turns` (40, was 25), `functional_max_turns` (200, was 120), `model_fast` (Haiku for dedup), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding). The `*_max_turns` defaults were raised to give the prompt-side STOP-and-write anchors room to land output before the framework enforces a ceiling — generous headroom is recall insurance, especially on round 2 where there is no pass-2 redundancy.
+- New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `functional_max_turns` (200, was 120), `model_high` (Opus — drives the high-recall judge), `model_fast` (Haiku — drives the cheap broad-coverage judge), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding). The `core_max_turns` input from v1 is kept for caller compatibility but no longer has effect: the orchestrator's per-phase ceilings live inside the skill prompts and the workflow caps the orchestrator at `--max-turns 100`. The `*_max_turns` defaults were raised to give the prompt-side STOP-and-write anchors room to land output before the framework enforces a ceiling — generous headroom is recall insurance, especially on round 2 where there is no pass-2 redundancy.
 
 ### 4. Already in `@v1`, called out for sub-tag pinners
 

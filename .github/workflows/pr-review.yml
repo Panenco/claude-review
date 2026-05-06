@@ -465,14 +465,16 @@ jobs:
       # the gate (cursor finding 3159797328).
 
       # ── Review pipeline ─────────────────────────────────────────
-      # Stage 1: Context Builder (Sonnet) — gathers PR data, runs build,
-      #          writes context.md AND test-plan.md (test planning folded in)
-      # Stage 2: Parallel — Core (Opus) + Sweep (Sonnet) + Test Runner (Sonnet)
-      # Stage 3: Merge + Post (Bash) — deterministic, no LLM
+      # Stage 1: Orchestrator (single claude-code-action run, Sonnet) —
+      #          Task-dispatches the context builder, the two debating
+      #          judges (Opus + Haiku), the round-2 thread classifier,
+      #          and the functional tester. Reconciles judges via debate.
+      #          Writes /tmp/all-findings.json + /tmp/review-meta.json.
+      # Stage 2: Build + Post (Bash) — formats the orchestrator's output
+      #          into the GitHub PR review (deterministic, no LLM).
       #
-      # All Stage 2 agents run in parallel via background `claude -p`
-      # processes, sharing the same context.md + test-plan.md.
-      # Core + Sweep read code; Test Runner runs the app.
+      # All parallelism happens inside the orchestrator via the Task tool.
+      # No background `claude -p` processes, no sibling stdout files.
 
       # Write build status to a file the context-builder agent can read.
       # This is more reliable than env vars since the agent's Bash calls

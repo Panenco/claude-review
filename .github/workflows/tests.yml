@@ -19,11 +19,11 @@ jobs:
       - name: Install jq + shellcheck
         run: sudo apt-get install -y --no-install-recommends jq shellcheck
 
-      - name: Run dedup_test.sh
-        run: bash tests/dedup_test.sh
-
       - name: Run dev_env_secrets_test.sh
         run: bash tests/dev_env_secrets_test.sh
+
+      - name: Run report_usage_test.sh
+        run: bash tests/report_usage_test.sh
 
       - name: Run pick_oauth_token_test.sh
         run: bash tests/pick_oauth_token_test.sh

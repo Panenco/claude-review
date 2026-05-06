@@ -68,9 +68,9 @@ print(f'Split diff: {kept} reviewable chunks, {skipped} skipped ({total_lines} l
 "
 
 # Round-2 only: when PRIOR_HEAD_SHA is set, also emit the diff since the
-# previous review and per-file chunks for that subset. The round-2 fan
-# (focused core / sweep / spec / resolution checker) reads
-# /tmp/since-last.diff and /tmp/since-last-chunks/ to keep its scope tight.
+# previous review and per-file chunks for that subset. The two debating
+# judges read `/tmp/since-last.diff` and `/tmp/since-last-chunks/` so
+# round 2 stays narrowly scoped to changes since the last review.
 if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
   if git cat-file -e "$PRIOR_HEAD_SHA" 2>/dev/null; then
     git diff "$PRIOR_HEAD_SHA..HEAD" > /tmp/since-last.diff

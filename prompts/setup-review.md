@@ -456,7 +456,7 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 - "Validate review config" shows all six sections detected and no "references files that don't exist" warnings
 - Context builder produces `context.md` and `test-plan.md`
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
-- All three reviewers (core, sweep, functional) produce output
+- Orchestrator runs the two judges (Opus + Haiku) in parallel and (when applicable) the functional tester. The judge debate produces a single, deduped findings list — there is no separate `core` / `sweep` step.
 - **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
 
 ## Verdict ladder (round 2)
