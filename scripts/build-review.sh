@@ -125,7 +125,6 @@ CORE_META=$(cat /tmp/review-meta.json)
 # classifier still lands in the verdict gate. Dedup by id so an entry
 # already merged by the orchestrator isn't double-counted.
 if [ -f /tmp/resolution-findings.json ] && jq -e 'type == "array" and length > 0' /tmp/resolution-findings.json >/dev/null 2>&1; then
-  RESOLUTION_FINDINGS=$(cat /tmp/resolution-findings.json)
   MERGED=$(jq -s '
     (.[0] // []) as $primary |
     ($primary | map(.id)) as $seen |
