@@ -93,6 +93,10 @@ read-only `GITHUB_TOKEN` scope (see inline comment above).
 ```yaml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Optional pool — see Step 6. Either CLAUDE_CODE_OAUTH_TOKEN or
+      # CLAUDE_CODE_OAUTH_TOKENS must be set; the explicit form requires
+      # listing every secret you want forwarded.
+      CLAUDE_CODE_OAUTH_TOKENS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKENS }}
       CLAUDE_REVIEW_APP_CLIENT_ID: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
       CLAUDE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
       CLAUDE_REVIEW_APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
@@ -366,7 +370,10 @@ The OAuth token is required for every repo; the App-token path is how reviews ge
 
 ### Track A — Repos inside the Panenco org (short path)
 
-1. `CLAUDE_CODE_OAUTH_TOKEN` (required) — generate with `claude setup-token` and add as a repo or org secret. Without it the workflow fails at the first step with `::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured.`
+1. **One of these two secrets is required** — without either, the workflow's `Pick Claude OAuth token` step fails with `::error::No Claude OAuth token configured.`
+
+   - `CLAUDE_CODE_OAUTH_TOKEN` — single token. Generate with `claude setup-token` and add as a repo or org secret. The simple/default setup.
+   - `CLAUDE_CODE_OAUTH_TOKENS` — newline-separated pool. Use when one Claude.ai subscription's 5-hour rate-limit window keeps blocking reviews: run `claude setup-token` against each of several accounts and put the resulting tokens (one per line) in a single multi-line secret. The picker probes each at job start with a cheap Haiku call, filters to tokens whose 5-hour window still has capacity, and randomly picks one. The pool wins when both secrets are set.
 
 2. `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` (recommended) — these are typically already set as **Panenco org secrets** with "All repositories" visibility, so `secrets: inherit` picks them up automatically for any new repo. If they're not, ask a Panenco org owner to add them once, org-wide.
 
@@ -406,7 +413,7 @@ Create, then on the App's settings page:
 
 **Step B2 — Set the four secrets on the target repo (or external org).**
 
-- `CLAUDE_CODE_OAUTH_TOKEN` — generate with `claude setup-token`.
+- `CLAUDE_CODE_OAUTH_TOKEN` — generate with `claude setup-token`. (Or set `CLAUDE_CODE_OAUTH_TOKENS` instead — newline-separated pool of tokens, one per Claude.ai subscription. See Track A's note for when to prefer the pool form.)
 - `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, `CLAUDE_REVIEW_APP_SLUG` — from Step B1.
 
 **Step B3 — Install your App on the target repo.**
@@ -424,7 +431,8 @@ It is common to fix one and miss the other on a first setup; the installation pa
 
 | Missing / misconfigured | Failure mode |
 |---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | First step fails: `::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured.` |
+| `CLAUDE_CODE_OAUTH_TOKEN` (and no `CLAUDE_CODE_OAUTH_TOKENS`) | `Pick Claude OAuth token` step fails: `::error::No Claude OAuth token configured.` |
+| `CLAUDE_CODE_OAUTH_TOKENS` set but every token exhausted | `Pick Claude OAuth token` step fails with a per-token status table (`status=blocked` / `status=warning` / `status=invalid` plus `resetsAt`). Wait for a window to reset, or rotate one of the tokens with `claude setup-token` against a different Claude.ai account. |
 | `CLAUDE_REVIEW_APP_*` secrets | "Create GitHub App token" step is **skipped** → `github-actions[bot]` posts the review. Functionally OK, just the wrong identity. |
 | `CLAUDE_REVIEW_APP_*` secrets set, App not installed on repo | "Create GitHub App token" step **fails** with `RequestError [HttpError]: Not Found` / `Failed to create token for "<repo>": Not Found`. Fix: add the repo under the installation's Repository access. |
 | App installed but with "No repositories" | Same `Not Found` as above. Installation record exists but is empty. |

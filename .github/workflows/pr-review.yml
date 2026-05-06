@@ -49,7 +49,14 @@ on:
         default: 120
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        # No longer strictly required: callers can supply CLAUDE_CODE_OAUTH_TOKENS
+        # (a newline-separated pool) instead. The picker step accepts either —
+        # at least one MUST be set, which the picker enforces with a clear error.
+        required: false
+        description: "Single Claude OAuth token (legacy/simple setup). Either this or CLAUDE_CODE_OAUTH_TOKENS is required."
+      CLAUDE_CODE_OAUTH_TOKENS:
+        required: false
+        description: "Optional. Newline-separated pool of Claude OAuth tokens. The picker step probes each at job start (cheap Haiku call), filters to tokens whose 5-hour subscription window still allows calls, and randomly picks one. Use when a single token's 5-hour ceiling is the bottleneck — multiple Claude.ai subscriptions spread the load."
       CLAUDE_REVIEW_APP_CLIENT_ID:
         required: false
       CLAUDE_REVIEW_APP_PRIVATE_KEY:
@@ -76,27 +83,6 @@ jobs:
       packages: read  # needed for fetching from private registries when the consumer repo uses them
 
     steps:
-      - name: Check OAuth token is configured
-        shell: bash
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured."
-            echo "Run 'claude setup-token' locally against a Claude subscription"
-            echo "and add the output as a repo secret named CLAUDE_CODE_OAUTH_TOKEN."
-            exit 1
-          fi
-
-          # Log a stable fingerprint of the OAuth token so the user can tell
-          # which token (and by proxy, which Claude account's quota) is in use.
-          # SHA-256 first 12 hex chars: deterministic per token, leaks nothing.
-          # When you rotate via `claude setup-token`, this fingerprint changes —
-          # cross-check it against the value printed when you last ran setup-token.
-          FINGERPRINT=$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | shasum -a 256 | cut -c1-12)
-          echo "Claude OAuth token fingerprint: $FINGERPRINT"
-          echo "::notice title=Claude OAuth token::Token fingerprint $FINGERPRINT — if rate-limited, verify this matches the token."
-
       - name: Resolve PR head SHA
         # On `pull_request` events, github.event.pull_request.head.sha is set.
         # On `workflow_dispatch`, that field is empty and we'd otherwise fall
@@ -176,6 +162,40 @@ jobs:
       - name: Install review pipeline (downstream — at pipeline_ref)
         if: github.repository != 'panenco/claude-review'
         uses: ./__claude-review-pipeline
+
+      # The Claude CLI is normally installed implicitly when the
+      # `anthropics/claude-code-action` step runs (later in the job). The
+      # OAuth token picker below needs it earlier — to probe each candidate
+      # token before any review agent is launched. Re-running the official
+      # installer is idempotent: when the action subsequently fires and
+      # finds an existing binary, it leaves it in place.
+      - name: Install Claude CLI (for OAuth token picker)
+        shell: bash
+        run: |
+          if [ -x "$HOME/.local/bin/claude" ]; then
+            echo "Claude CLI already installed: $("$HOME/.local/bin/claude" --version)"
+          else
+            curl -fsSL https://claude.ai/install.sh | bash
+            "$HOME/.local/bin/claude" --version
+          fi
+
+      # OAuth token picker. Reads CLAUDE_CODE_OAUTH_TOKENS (newline-separated
+      # pool) and/or CLAUDE_CODE_OAUTH_TOKEN (single, legacy). When a pool is
+      # supplied, probes each candidate with a Haiku 1-turn call and inspects
+      # the `rate_limit_event` line in stream-json output — picks a token
+      # whose 5-hour window still has capacity. Single-token setups skip the
+      # probe entirely (zero overhead). Writes the chosen token to
+      # $GITHUB_ENV so downstream steps see it as `env.CLAUDE_CODE_OAUTH_TOKEN`.
+      # When every candidate is exhausted, this step exits 1 with a per-token
+      # status table — surfacing the diagnosis up-front instead of letting
+      # the context-builder hit rate_limit on its first call.
+      - name: Pick Claude OAuth token
+        id: token_picker
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKENS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKENS }}
+        run: .review-scripts/pick-oauth-token.sh
 
       # Validate review-config.md sections (warn on missing recommended sections)
       # and sanity-check that file paths it references actually exist in the repo.
@@ -877,7 +897,11 @@ jobs:
           # last review" section in context.md. Empty/unset on round 1.
           PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Picked by the `Pick Claude OAuth token` step earlier in the job
+          # (env.CLAUDE_CODE_OAUTH_TOKEN, NOT secrets.…). When a pool is
+          # configured the chosen token has been probe-confirmed to have
+          # 5-hour-window capacity; single-token setups pass through unchanged.
+          claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
           prompt: |
             Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-context-builder.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. When done, context.md AND test-plan.md must exist at the repo root. Write both BEFORE running out of turns — partial output beats no output.
@@ -1028,7 +1052,9 @@ jobs:
         id: claude_run
         shell: bash
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Picked by the `Pick Claude OAuth token` step earlier in the job —
+          # see comment on `claude_code_oauth_token:` above for rationale.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ steps.review_identity.outputs.token }}
           # Separate token for writing to the review-assets branch: the custom
           # GitHub App token may lack `contents: write`, but the job's

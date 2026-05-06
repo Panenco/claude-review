@@ -58,6 +58,8 @@ Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo or org secret. Generate it with:
 claude setup-token
 ```
 
+Optional — when one Claude.ai subscription's 5-hour rate-limit window keeps blocking reviews, run `claude setup-token` against multiple subscriptions and put all tokens (one per line) in a single secret named `CLAUDE_CODE_OAUTH_TOKENS` instead. The pipeline probes each at job start and randomly picks one with capacity available.
+
 Optional: for a custom review bot identity, also set `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, and `CLAUDE_REVIEW_APP_SLUG`.
 
 ### 3. (Optional) Add project config
