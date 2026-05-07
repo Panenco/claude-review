@@ -41,15 +41,20 @@
 # (we write to ./.claude/agents/ relative to cwd, matching Claude Code's
 # project-level subagent discovery convention).
 
-set -euo pipefail
+# `set -uo pipefail` (no -e) per .github/review-config.md + bugbot.md. The
+# explicit `|| exit 1` chains below cover the cases where -e would have
+# fired, while preserving graceful continuation on the YAML-validator
+# fallback chain (ruby → python → grep): a missing parser is not a fatal
+# error, we just degrade to the next available method.
+set -uo pipefail
 
 : "${PR_NUMBER:?PR_NUMBER must be set}"
 : "${MODEL_FUNCTIONAL:?MODEL_FUNCTIONAL must be set}"
 : "${PIPELINE_DIR:?PIPELINE_DIR must be set}"
 
-mkdir -p .claude/agents
+mkdir -p .claude/agents || { echo "::error::failed to mkdir .claude/agents (cwd=$(pwd))"; exit 1; }
 
-cat > .claude/agents/review-functional-tester.md <<EOF
+cat > .claude/agents/review-functional-tester.md <<EOF || { echo "::error::failed to write .claude/agents/review-functional-tester.md"; exit 1; }
 ---
 name: review-functional-tester
 description: QA agent that validates PR functionality end-to-end with Playwright MCP. Spawned by the review orchestrator to test user flows, take targeted screenshots tied to findings, and write /tmp/functional-meta.json + /tmp/functional-findings.json.
@@ -134,9 +139,9 @@ validate_with_grep() {
 }
 
 if command -v ruby >/dev/null 2>&1; then
-  validate_with_ruby
+  validate_with_ruby || exit 1
 elif python3 -c 'import yaml' >/dev/null 2>&1; then
-  validate_with_python
+  validate_with_python || exit 1
 else
-  validate_with_grep
+  validate_with_grep || exit 1
 fi
