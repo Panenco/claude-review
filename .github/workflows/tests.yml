@@ -43,6 +43,9 @@ jobs:
       - name: Run functional_mcp_gate_test.sh
         run: bash tests/functional_mcp_gate_test.sh
 
+      - name: Run install_functional_tester_agent_test.sh
+        run: bash tests/install_functional_tester_agent_test.sh
+
       - name: Run verdict_ladder_test.sh
         run: bash tests/verdict_ladder_test.sh
 

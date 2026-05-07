@@ -998,59 +998,14 @@ jobs:
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
           PIPELINE_DIR: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}
         run: |
-          mkdir -p .claude/agents
-          # heredoc with substitution for env vars; the YAML frontmatter
-          # fields (`mcpServers`, `tools`, etc.) are spec-compliant per
-          # Claude Code's subagent docs. The body is a one-line redirect to
-          # the full skill file so we don't duplicate the rubric.
-          cat > .claude/agents/review-functional-tester.md <<EOF
-          ---
-          name: review-functional-tester
-          description: QA agent that validates PR functionality end-to-end with Playwright MCP. Spawned by the review orchestrator to test user flows, take targeted screenshots tied to findings, and write /tmp/functional-meta.json + /tmp/functional-findings.json.
-          model: ${MODEL_FUNCTIONAL}
-          tools:
-            - Bash
-            - Read
-            - Write
-            - Glob
-            - Grep
-            - ToolSearch
-            - mcp__playwright__browser_navigate
-            - mcp__playwright__browser_take_screenshot
-            - mcp__playwright__browser_snapshot
-            - mcp__playwright__browser_console_messages
-            - mcp__playwright__browser_click
-            - mcp__playwright__browser_fill_form
-            - mcp__playwright__browser_wait_for
-            - mcp__playwright__browser_close
-            - mcp__playwright__browser_select_option
-            - mcp__playwright__browser_press_key
-            - mcp__playwright__browser_type
-            - mcp__playwright__browser_hover
-            - mcp__playwright__browser_resize
-            - mcp__playwright__browser_tabs
-            - mcp__playwright__browser_navigate_back
-            - mcp__playwright__browser_evaluate
-          mcpServers:
-            playwright:
-              type: stdio
-              command: npx
-              args:
-                - "--yes"
-                - "@playwright/mcp@latest"
-                - "--headless"
-                - "--output-dir"
-                - "/tmp/screenshots"
-          ---
-
-          Read ${PIPELINE_DIR}/skills/review-functional-tester.md and follow it exactly. The orchestrator spawned you for PR ${PR_NUMBER}. test-plan.md and context.md are at the repo root. Your first turn MUST be the MCP smoke check described in the skill — do not silently fall back to curl/psql when MCP is unavailable.
-          EOF
-          echo "Functional-tester subagent installed:"
-          ls -la .claude/agents/
-          # Verify YAML parses (best-effort — pyyaml may not be available).
-          if command -v python3 >/dev/null 2>&1; then
-            python3 -c "import sys, re; t=open('.claude/agents/review-functional-tester.md').read(); fm=re.match(r'^---\n(.*?)\n---\n', t, re.S); assert fm, 'no frontmatter'; print('frontmatter bytes:', len(fm.group(1)))" || echo "::warning::frontmatter validation failed"
-          fi
+          # Helper writes .claude/agents/review-functional-tester.md to cwd
+          # (Claude Code's project-level subagent discovery path) and
+          # validates the frontmatter against Claude Code's subagent schema.
+          # The validator catches the dict-vs-list mcpServers regression
+          # the first iteration of this PR shipped — see the helper script
+          # for the full schema rationale and reference to the canonical
+          # docs at https://code.claude.com/docs/en/sub-agents.
+          bash "${CLAUDE_REVIEW_PIPELINE_DIR}/scripts/install-functional-tester-agent.sh"
 
       - name: 'Review: orchestrate'
         id: claude_run
