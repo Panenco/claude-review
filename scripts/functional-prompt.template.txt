@@ -53,13 +53,7 @@ LAST 2 TURNS — write output:
   - /tmp/functional-findings.json — array of findings (id, title, severity, type, path, line_start, line_end, evidence, reasoning, expected, screenshot)
   - /tmp/functional-meta.json — {strategy, areas_tested, screenshots[{file, description, area}], overall, summary, uncertain_observations}
 
-ACCESSIBILITY — after testing each distinct page (once per page, not after every click), run an axe-core WCAG 2.1 AA audit via browser_evaluate:
-  async () => {
-    if (!window.axe) { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js'; document.head.appendChild(s); await new Promise((r,e)=>{s.onload=r;s.onerror=e}); }
-    const results = await axe.run(document, { runOnly: ['wcag2a','wcag2aa'] });
-    return results.violations.map(v => ({id:v.id, impact:v.impact, description:v.description, nodes:v.nodes.length, target:v.nodes.slice(0,3).map(n=>n.target.join(' > ')), help:v.helpUrl}));
-  }
-Map axe impact → finding severity: critical→major, serious→minor, moderate/minor→note. Type: a11y-violation. If axe fails to load, note it in uncertain_observations and move on.
+ACCESSIBILITY — opt-in only. SKIP THIS SECTION ENTIRELY unless test-plan.md's front-matter has `a11y: true`. The test planner sets that flag only when the diff touches a11y-relevant surface (form/label markup, ARIA, semantic elements, color contrast, keyboard handlers, focus management). For routine UI changes (copy, layout shifts, components reusing existing primitives), running axe burns turns and produces noise findings on shared components the PR didn't touch. When `a11y: true` IS set, see skills/review-functional-tester.md "Accessibility (opt-in)" section for the audit script + the rule that findings must point at files in the PR's `## Per-file diff index`.
 
 severity: critical=crash/data-loss, major=spec-mismatch/broken-flow/a11y-critical, minor=visual-glitch/a11y-serious, note=observation
 type: spec-mismatch | ui-regression | endpoint-failure | smoke-failure | a11y-violation

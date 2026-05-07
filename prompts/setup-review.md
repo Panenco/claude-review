@@ -127,6 +127,31 @@ Before reporting a finding that cites a library or component, confirm it exists:
 
 The "Accepted supply-chain trade-offs" line is what keeps the reviewer quiet about `@v2 + secrets: inherit`. Leave it in on every repo that uses `@v2`.
 
+### Optional: opt back into test-coverage / a11y emphasis
+
+By default, the shipped skills do **not** emit `missing-test`, `weak-test`, or `a11y-violation` findings — they're project-opt-in. This keeps reviews quiet on routine PRs (a sibling-spec convention from one project shouldn't fire false positives on another, and axe-core on every page surfaces violations on shared components the PR didn't touch). If your project genuinely wants these enforced, add a section to `bugbot.md` describing your project's convention:
+
+```markdown
+## Test-coverage convention
+
+Every non-trivial changed handler/hook/util/service in `src/api/**` or `src/services/**`
+must have a sibling spec at `<filename>.spec.ts` or `<filename>.test.ts`. PRs that
+add such files without a sibling spec should get a `missing-test` finding pointing
+at the topmost added line of the new module. Out of scope: tests, generated code,
+config files.
+
+## Accessibility focus
+
+Frontend changes that touch form labels, ARIA attributes, semantic markup, or
+keyboard handlers should run an axe-core WCAG 2.1 AA audit on the changed page.
+The functional tester picks this up via the test-plan's `a11y: true` flag — the
+test planner already sets it when the diff matches those triggers; no action
+needed here unless you want it ALWAYS on (in which case add: "Always treat the
+test plan as `a11y: true` regardless of diff").
+```
+
+Without these sections, the bot stays quiet about test/a11y — the perimeter is the diff, and the conventions are yours to declare.
+
 ## Step 4: Create .github/review-config.md
 
 Create `.github/review-config.md` with these sections. This is the most important file — it tells the review pipeline how to build, test, and validate your project.
