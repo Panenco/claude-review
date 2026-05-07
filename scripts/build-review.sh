@@ -137,6 +137,31 @@ if [ -f /tmp/resolution-findings.json ] && jq -e 'type == "array" and length > 0
   ALL_FINDINGS="$MERGED"
 fi
 
+# Defensive merge of functional-tester findings. Same pattern + reason
+# as the resolution-findings merge above — the orchestrator skill folds
+# `/tmp/functional-findings.json` into `/tmp/all-findings.json` so that
+# (a) the verdict gate counts UI/contract findings as blockers and
+# (b) findings carrying a `screenshot` path reach the inline-comment
+# builder at the bottom of this script (the `![screenshot](url)` embed
+# only fires for entries in $ALL_FINDINGS). Without this safety net a
+# functional finding lands only in the body's "Issues found" list and
+# the developer never sees the screenshot at the offending diff line.
+# Dedup by id is mandatory: judges sometimes re-discover the same UI
+# bug with a different id, and the orchestrator may have already folded
+# the functional entry, in which case its id wins.
+if [ -f /tmp/functional-findings.json ] && jq -e 'type == "array" and length > 0' /tmp/functional-findings.json >/dev/null 2>&1; then
+  PREV_LEN=$(echo "$ALL_FINDINGS" | jq 'length')
+  MERGED=$(jq -n --argjson primary "$ALL_FINDINGS" --slurpfile fn /tmp/functional-findings.json '
+    ($primary | map(.id)) as $seen |
+    $primary + (($fn[0] // []) | map(select(.id as $id | $seen | index($id) | not)))
+  ')
+  ADDED=$(( $(echo "$MERGED" | jq 'length') - PREV_LEN ))
+  if [ "$ADDED" -gt 0 ]; then
+    echo "::notice::Defensive-merged $ADDED functional-finding(s) the orchestrator hadn't already folded into /tmp/all-findings.json."
+  fi
+  ALL_FINDINGS="$MERGED"
+fi
+
 TOTAL=$(echo "$ALL_FINDINGS" | jq 'length')
 echo "Orchestrator findings: total=$TOTAL (judge_health: $(echo "$CORE_META" | jq -c '.judge_health // {}'))"
 
@@ -198,24 +223,61 @@ if [ -f /tmp/prior-state/review-state.json ]; then
 fi
 
 # ── Screenshot collection and upload ──
-# Playwright MCP saves screenshots to its CWD when the agent passes a
-# plain filename (e.g. "01-name.png") — that resolves to the repo root
-# in our setup. --output-dir doesn't override agent-chosen paths.
-# So we scan: agent's likely cwd (.), /tmp/screenshots (if agent used
-# an absolute path), and a few historical alternate paths.
+# We collect ONLY the basenames the functional tester named in
+# functional-meta.screenshots[].file (and functional-findings[].screenshot).
+# Earlier versions scanned the consumer repo's CWD with `find . -name '*.png'`
+# and a `-mmin -60` mtime filter, but `actions/checkout` rewrites all
+# checked-in file mtimes to ~now — so the filter cannot distinguish a
+# checked-in product asset (e.g. seaters' `screenshots/wl_logo.png`) from
+# a freshly captured tester screenshot. Cursor caught this on PR #30;
+# the only safe rule is to upload exactly what the tester says it wrote.
 SCREENSHOT_URLS='{}'
 mkdir -p /tmp/all-screenshots
-# maxdepth 2: catches files at repo root (./*.png) plus one level of
-# subdir nesting (./screenshots/*.png), without scanning node_modules.
-for src_dir in . /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp screenshots .playwright-mcp/screenshots; do
-  if [ -d "$src_dir" ]; then
-    find "$src_dir" -maxdepth 2 -name '*.png' -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
-  fi
-done
-# Final fallback: scan /tmp recursively for any PNG produced in the last hour.
-if ! ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
-  echo "No screenshots in expected paths — scanning /tmp recursively for recent PNGs..."
-  find /tmp -name '*.png' -mmin -60 -not -path '/tmp/all-screenshots/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
+# Short-circuit when the functional tester didn't run or didn't produce
+# any image-typed screenshots[] entries. This both saves the upload work
+# and guarantees a docs-only / strategy=skip review on a repo with any
+# pre-existing PNG never commits those PNGs to review-assets/pr-N/.
+EXPECTED_IMAGE_SHOTS=$(echo "$FUNCTIONAL_META" | jq '[(.screenshots // [])[] | select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i"))] | length')
+if [ "$FUNCTIONAL_STRATEGY" = "skip" ] || [ "${EXPECTED_IMAGE_SHOTS:-0}" -eq 0 ]; then
+  echo "Skipping screenshot collection + upload (strategy=$FUNCTIONAL_STRATEGY, expected_image_screenshots=${EXPECTED_IMAGE_SHOTS:-0})."
+else
+  # Build the allowlist: every `file` field across screenshots[] and
+  # findings[].screenshot. Resolve to absolute paths first (the tester
+  # is contract-bound to write under /tmp/screenshots/ but legacy
+  # plain-filename paths get expanded relative to ., the tester's CWD).
+  FN_INPUT="[]"
+  [ -f /tmp/functional-findings.json ] && jq -e 'type == "array"' /tmp/functional-findings.json >/dev/null 2>&1 \
+    && FN_INPUT=$(cat /tmp/functional-findings.json)
+  EXPECTED_FILES=$(jq -n \
+    --argjson meta "$FUNCTIONAL_META" \
+    --argjson fn "$FN_INPUT" \
+    'def img_paths: map(select(type == "string" and (test("\\.(png|jpg|jpeg|webp)$"; "i")))) | unique;
+     (($meta.screenshots // []) | map(.file // ""))
+     + (($fn // []) | map(.screenshot // ""))
+     | img_paths')
+  echo "Functional tester named $(echo "$EXPECTED_FILES" | jq 'length') screenshot path(s); resolving each."
+  while read -r expected; do
+    [ -z "$expected" ] && continue
+    base=$(basename "$expected")
+    # 1) Absolute path the tester wrote (preferred — /tmp/screenshots/...).
+    if [ -f "$expected" ]; then
+      cp -n "$expected" "/tmp/all-screenshots/$base"
+      continue
+    fi
+    # 2) Plain-filename fallback: the tester used a relative path that
+    #    Playwright MCP expanded against its CWD. Check the agent-only
+    #    output dirs first, then the repo root as a last resort —
+    #    bound to a basename match so we never pick up unrelated PNGs.
+    found=""
+    for d in /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp .playwright-mcp/screenshots screenshots .; do
+      [ -f "$d/$base" ] && { found="$d/$base"; break; }
+    done
+    if [ -n "$found" ]; then
+      cp -n "$found" "/tmp/all-screenshots/$base"
+    else
+      echo "::notice::Functional tester referenced screenshot '$expected' but the file was not produced on disk (basename '$base' not found in /tmp/screenshots, /tmp/playwright-mcp-output, .playwright-mcp{,/screenshots}, screenshots, or repo root)."
+    fi
+  done < <(echo "$EXPECTED_FILES" | jq -r '.[]')
 fi
 SCREENSHOT_DIR=""
 if ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
@@ -677,7 +739,7 @@ jq -n \
       strategy: ($functional_meta.strategy // "skip"),
       overall: ($functional_meta.overall // "N/A"),
       areas_tested: ($functional_meta.areas_tested // []),
-      screenshot_count: (($functional_meta.screenshots // []) | length)
+      screenshot_count: (($functional_meta.screenshots // []) | map(select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i"))) | length)
     }
   }' > review-result.json
 
@@ -820,7 +882,9 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
 TEST_PLAN_EXISTS="false"
 [ -f test-plan.md ] && TEST_PLAN_EXISTS="true"
 
-FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // []) | length')
+# Count only image-typed entries — see review-result.json's
+# screenshot_count above for the rationale.
+FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // []) | map(select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i"))) | length')
 FUNCTIONAL_OK="${FUNCTIONAL_OK:-1}"
 if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
   # CRASH gets the ❌ marker — the orchestrator now writes
@@ -867,9 +931,14 @@ if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; t
     if [ "$FUNCTIONAL_SCREENSHOT_COUNT" -gt 0 ]; then
       echo "#### Screenshots"
       echo ""
+      # Skip non-image entries up front: the functional tester sometimes
+      # records API-response JSON dumps as "screenshots" for API-only
+      # scenarios; we only render actual image files so the body never
+      # claims a screenshot exists when there is nothing to embed.
       echo "$FUNCTIONAL_META" | jq -r --argjson urls "$SCREENSHOT_URLS" \
         --arg repo "$GITHUB_REPOSITORY" --arg run "${GITHUB_RUN_ID:-}" '
         .screenshots[] |
+        select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i")) |
         .file as $file |
         ($file | split("/") | last) as $basename |
         ($urls[$basename] // null) as $url |
