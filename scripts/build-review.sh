@@ -203,13 +203,21 @@ fi
 # in our setup. --output-dir doesn't override agent-chosen paths.
 # So we scan: agent's likely cwd (.), /tmp/screenshots (if agent used
 # an absolute path), and a few historical alternate paths.
+#
+# CRITICAL: every find filters by `-mmin -60` (modified in the last 60
+# minutes) so we never pick up pre-existing repo content. Without this
+# filter the scan of `.` and `screenshots/` would scoop up checked-in
+# product assets — e.g. a consumer repo with `screenshots/wl_logo.png`
+# as a static UI image — and upload them as if they were review
+# screenshots. (Observed on Panenco/seaters#471 round 1: 3 product
+# logos uploaded under pr-471/, then the body's `urls[basename]`
+# lookup missed for the agent's actual files because the basenames
+# didn't match the unrelated logos.)
 SCREENSHOT_URLS='{}'
 mkdir -p /tmp/all-screenshots
-# maxdepth 2: catches files at repo root (./*.png) plus one level of
-# subdir nesting (./screenshots/*.png), without scanning node_modules.
 for src_dir in . /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp screenshots .playwright-mcp/screenshots; do
   if [ -d "$src_dir" ]; then
-    find "$src_dir" -maxdepth 2 -name '*.png' -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
+    find "$src_dir" -maxdepth 2 -name '*.png' -mmin -60 -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
   fi
 done
 # Final fallback: scan /tmp recursively for any PNG produced in the last hour.
@@ -677,7 +685,7 @@ jq -n \
       strategy: ($functional_meta.strategy // "skip"),
       overall: ($functional_meta.overall // "N/A"),
       areas_tested: ($functional_meta.areas_tested // []),
-      screenshot_count: (($functional_meta.screenshots // []) | length)
+      screenshot_count: (($functional_meta.screenshots // []) | map(select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i"))) | length)
     }
   }' > review-result.json
 
@@ -820,7 +828,9 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
 TEST_PLAN_EXISTS="false"
 [ -f test-plan.md ] && TEST_PLAN_EXISTS="true"
 
-FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // []) | length')
+# Count only image-typed entries — see review-result.json's
+# screenshot_count above for the rationale.
+FUNCTIONAL_SCREENSHOT_COUNT=$(echo "$FUNCTIONAL_META" | jq '(.screenshots // []) | map(select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i"))) | length')
 FUNCTIONAL_OK="${FUNCTIONAL_OK:-1}"
 if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; then
   # CRASH gets the ❌ marker — the orchestrator now writes
@@ -867,9 +877,14 @@ if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; t
     if [ "$FUNCTIONAL_SCREENSHOT_COUNT" -gt 0 ]; then
       echo "#### Screenshots"
       echo ""
+      # Skip non-image entries up front: the functional tester sometimes
+      # records API-response JSON dumps as "screenshots" for API-only
+      # scenarios; we only render actual image files so the body never
+      # claims a screenshot exists when there is nothing to embed.
       echo "$FUNCTIONAL_META" | jq -r --argjson urls "$SCREENSHOT_URLS" \
         --arg repo "$GITHUB_REPOSITORY" --arg run "${GITHUB_RUN_ID:-}" '
         .screenshots[] |
+        select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i")) |
         .file as $file |
         ($file | split("/") | last) as $basename |
         ($urls[$basename] // null) as $url |
