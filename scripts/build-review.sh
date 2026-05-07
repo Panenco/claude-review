@@ -137,6 +137,31 @@ if [ -f /tmp/resolution-findings.json ] && jq -e 'type == "array" and length > 0
   ALL_FINDINGS="$MERGED"
 fi
 
+# Defensive merge of functional-tester findings. Same pattern + reason
+# as the resolution-findings merge above — the orchestrator skill folds
+# `/tmp/functional-findings.json` into `/tmp/all-findings.json` so that
+# (a) the verdict gate counts UI/contract findings as blockers and
+# (b) findings carrying a `screenshot` path reach the inline-comment
+# builder at the bottom of this script (the `![screenshot](url)` embed
+# only fires for entries in $ALL_FINDINGS). Without this safety net a
+# functional finding lands only in the body's "Issues found" list and
+# the developer never sees the screenshot at the offending diff line.
+# Dedup by id is mandatory: judges sometimes re-discover the same UI
+# bug with a different id, and the orchestrator may have already folded
+# the functional entry, in which case its id wins.
+if [ -f /tmp/functional-findings.json ] && jq -e 'type == "array" and length > 0' /tmp/functional-findings.json >/dev/null 2>&1; then
+  PREV_LEN=$(echo "$ALL_FINDINGS" | jq 'length')
+  MERGED=$(jq -n --argjson primary "$ALL_FINDINGS" --slurpfile fn /tmp/functional-findings.json '
+    ($primary | map(.id)) as $seen |
+    $primary + (($fn[0] // []) | map(select(.id as $id | $seen | index($id) | not)))
+  ')
+  ADDED=$(( $(echo "$MERGED" | jq 'length') - PREV_LEN ))
+  if [ "$ADDED" -gt 0 ]; then
+    echo "::notice::Defensive-merged $ADDED functional-finding(s) the orchestrator hadn't already folded into /tmp/all-findings.json."
+  fi
+  ALL_FINDINGS="$MERGED"
+fi
+
 TOTAL=$(echo "$ALL_FINDINGS" | jq 'length')
 echo "Orchestrator findings: total=$TOTAL (judge_health: $(echo "$CORE_META" | jq -c '.judge_health // {}'))"
 
@@ -228,9 +253,8 @@ if [ "$FUNCTIONAL_STRATEGY" = "skip" ] || [ "${EXPECTED_IMAGE_SHOTS:-0}" -eq 0 ]
   echo "Skipping screenshot collection + upload (strategy=$FUNCTIONAL_STRATEGY, expected_image_screenshots=${EXPECTED_IMAGE_SHOTS:-0})."
 else
   for src_dir in . /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp screenshots .playwright-mcp/screenshots; do
-    if [ -d "$src_dir" ]; then
-      find "$src_dir" -maxdepth 2 -name '*.png' -mmin -60 -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
-    fi
+    [ -d "$src_dir" ] || continue
+    find "$src_dir" -maxdepth 2 -name '*.png' -mmin -60 -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
   done
   # Final fallback: scan /tmp recursively for any PNG produced in the last hour.
   if ! ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then

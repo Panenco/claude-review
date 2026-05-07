@@ -189,6 +189,8 @@ Use the **most recent** outputs from each judge.
 
 Net-new findings the thread classifier surfaced (`/tmp/resolution-findings.json`, when present and non-empty) flow through the same union — append them to the consolidated array with their original ids.
 
+Functional-tester findings (`/tmp/functional-findings.json`, when present and non-empty) also flow through the union — append them with their original ids. This is load-bearing: each functional finding may carry a `screenshot` field, and the inline-comment builder downstream embeds `![screenshot](url)` only for entries that reach `/tmp/all-findings.json`. Skipping this step demotes every functional issue to the body gallery and strips the at-the-line evidence from the developer's view.
+
 ### Verdict consolidation
 
 - If both judges agree on verdict → use it.
