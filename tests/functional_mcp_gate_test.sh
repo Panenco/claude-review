@@ -49,7 +49,7 @@ gate_for() {
   obs_match=$(echo "$meta" | jq -e '[(.uncertain_observations // [])[] | select(test("Playwright MCP.*not.*avail|MCP.*unavailable|fall.*back to curl|all testing was done via curl"; "i"))] | length > 0' >/dev/null 2>&1 && echo true || echo false)
   if [ "$overall" = "CRASH" ] && [ "$crash_match" = "true" ]; then
     echo "true"
-  elif [ "$strategy" = "functional" ] && [ "$obs_match" = "true" ]; then
+  elif { [ "$strategy" = "functional" ] || [ "$strategy" = "quick" ]; } && [ "$obs_match" = "true" ]; then
     echo "true"
   else
     echo "false"
@@ -143,6 +143,20 @@ META_G=$(jq -n '{
   uncertain_observations: ["MCP unavailable mid-run; switched to fetch."]
 }')
 assert_eq "G: post-launch MCP loss observation → broken=true" "true" "$(gate_for "$META_G" functional PASS)"
+
+# ── Case G2: same fallback string under strategy=quick. The orchestrator
+# dispatches the functional tester for both `functional` AND `quick`
+# strategies; an earlier version of the gate checked only `functional`
+# and would have let quick-strategy curl-fallback runs through silently. ──
+META_G2=$(jq -n '{
+  strategy: "quick",
+  overall: "PASS",
+  summary: "Quick smoke.",
+  screenshots: [],
+  areas_tested: ["smoke"],
+  uncertain_observations: ["Playwright MCP tools were not available; ran curl smoke instead."]
+}')
+assert_eq "G2: quick-strategy fallback observation → broken=true" "true" "$(gate_for "$META_G2" quick PASS)"
 
 # ── Case H: empty meta (no strategy / no overall) — must NOT crash. ──
 META_H='{}'

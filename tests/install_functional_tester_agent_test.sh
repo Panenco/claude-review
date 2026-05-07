@@ -62,15 +62,31 @@ assert_eq "file written to \$HOME/.claude/agents/review-functional-tester.md" \
   "true" \
   "$([ -f "$AGENT_FILE" ] && echo true || echo false)"
 
-# Belt-and-braces: the file must NOT also have been written to project
-# scope (./.claude/agents/) — that's the path that claude-code-action
-# wipes, and writing there would have been the bug that motivated this
-# whole PR. Run from a fresh cwd so any pre-existing project file in
-# the test runner's working directory doesn't false-positive.
-WORKDIR=$(mktemp -d)
-( cd "$WORKDIR" && [ ! -e .claude ] ) && PROJECT_SCOPE_LEAKED=false || PROJECT_SCOPE_LEAKED=true
-rm -rf "$WORKDIR"
-assert_eq "did NOT also write to project-scope ./.claude/agents/" "false" "$PROJECT_SCOPE_LEAKED"
+# Belt-and-braces: the helper must NOT also write to project scope
+# (./.claude/agents/) — that's the path claude-code-action wipes, and
+# writing there would have been the bug that motivated this whole PR.
+# Run the helper a SECOND time from a controlled cwd inside its own
+# scratch dir, then assert the cwd has no `.claude/` directory after
+# the run. This actually exercises the SUT (running the helper from
+# that cwd), unlike a tautology that just checks "fresh empty dir is
+# still empty".
+SCOPE_TEST_DIR=$(mktemp -d)
+SCOPE_TEST_HOME=$(mktemp -d)
+(
+  cd "$SCOPE_TEST_DIR" && \
+  HOME="$SCOPE_TEST_HOME" \
+  PR_NUMBER=99999 \
+  MODEL_FUNCTIONAL=claude-sonnet-4-6 \
+  PIPELINE_DIR=/tmp/test-pipeline \
+    bash "$HELPER" >/dev/null 2>&1
+)
+PROJECT_SCOPE_LEAKED=false
+[ -e "$SCOPE_TEST_DIR/.claude" ] && PROJECT_SCOPE_LEAKED=true
+USER_SCOPE_WRITTEN=false
+[ -f "$SCOPE_TEST_HOME/.claude/agents/review-functional-tester.md" ] && USER_SCOPE_WRITTEN=true
+rm -rf "$SCOPE_TEST_DIR" "$SCOPE_TEST_HOME"
+assert_eq "helper writes ONLY to user scope (not ./.claude/ in cwd)" "false" "$PROJECT_SCOPE_LEAKED"
+assert_eq "helper writes to user scope (\$HOME/.claude/agents/...)"  "true"  "$USER_SCOPE_WRITTEN"
 
 # ── YAML structure assertions via ruby+psych (always present on the
 #    Shell tests + lint runner). ──
