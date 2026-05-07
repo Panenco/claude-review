@@ -40,6 +40,9 @@ jobs:
       - name: Run screenshot_allowlist_test.sh
         run: bash tests/screenshot_allowlist_test.sh
 
+      - name: Run functional_mcp_gate_test.sh
+        run: bash tests/functional_mcp_gate_test.sh
+
       - name: Run verdict_ladder_test.sh
         run: bash tests/verdict_ladder_test.sh
 

@@ -70,13 +70,27 @@ The runtime ceiling is **200 turns** (configurable via `functional_max_turns`; r
 
 Budget sketch (a typical 4-scenario plan):
 
-- Turn 1: ToolSearch for Playwright MCP tools + Read `test-plan.md` + Read `context.md` (all in parallel — single response)
-- Turn 2: Navigate to the app + authenticate (batched)
-- Turns 3–8: Scenario 1 (typical: navigate, batched snapshot+screenshot+console, interact, verify)
-- Turns 9–14: Scenario 2
-- Turns 15–20: Scenario 3
-- Turns 21–26: Scenario 4
-- Turns 27–30: Targeted re-screenshots for findings + write output
+- **Turn 1: MCP smoke check.** Call `mcp__playwright__browser_navigate` with `url: "about:blank"` ALONE (no batching). This is the only turn that doesn't batch — it's deliberately isolated so MCP startup failures are unambiguous. If the call returns successfully, proceed to Turn 2. If the call errors with "tool not found", "MCP server unavailable", or any other MCP failure mode, **STOP and write the loud-fail outputs** described under "MCP smoke-check failure" below — DO NOT silently fall back to curl/psql.
+- Turn 2: Read `test-plan.md` + Read `context.md` (parallel)
+- Turn 3: Navigate to the app + authenticate (batched)
+- Turns 4–9: Scenario 1 (typical: navigate, batched snapshot+screenshot+console, interact, verify)
+- Turns 10–15: Scenario 2
+- Turns 16–21: Scenario 3
+- Turns 22–27: Scenario 4
+- Turns 28–30: Targeted re-screenshots for findings + write output
+
+### MCP smoke-check failure
+
+If Turn 1's `mcp__playwright__browser_navigate about:blank` errors:
+
+1. Write `/tmp/functional-meta.json`:
+   ```json
+   {"strategy": "functional", "overall": "CRASH", "summary": "Playwright MCP unavailable — UI testing skipped. Subagent's inline mcpServers definition failed to start the @playwright/mcp@latest stdio server. Check the runner has network + npx access; check `Pre-warm Playwright MCP package cache` workflow step output.", "screenshots": [], "areas_tested": [], "uncertain_observations": ["Playwright MCP smoke check failed on Turn 1 — see /tmp/functional-mcp-smoke.log if present. Falling back to curl/psql is forbidden by skill spec; the run is a CRASH so the verdict gate flags it."]}
+   ```
+2. Write `/tmp/functional-findings.json = []`.
+3. Exit immediately. Do NOT run any scenarios. Do NOT call curl. The verdict gate downstream will surface the CRASH and a human reviewer will look.
+
+This is **load-bearing**: a silent curl fallback was the bug we shipped this skill to fix. UI bugs slip through when the tester reports PASS-via-curl on a fix that needs UI verification. CRASH > false PASS.
 
 **STOP-and-write anchors (mandatory).** The agent does not get to decide when to stop:
 

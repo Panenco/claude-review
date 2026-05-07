@@ -510,6 +510,25 @@ JUDGES_BOTH_FAILED=$(echo "$CORE_META" | jq -r '
     )
   else false end')
 
+# Functional MCP gate. The functional-tester subagent's first turn is a
+# smoke check that calls mcp__playwright__browser_navigate to about:blank;
+# on failure it writes overall=CRASH and exits before running scenarios.
+# Even with that loud-fail in place, a defence-in-depth string match here
+# catches the historical silent-fallback string in uncertain_observations
+# ("Playwright MCP tools were not available...") in case a future skill
+# regression re-introduces the curl-only path. Either signal forces COMMENT
+# + requires_human_review because we have NO UI evidence on a run that the
+# planner said needed UI testing.
+FUNCTIONAL_MCP_BROKEN=false
+FUNCTIONAL_MCP_BROKEN_REASON=""
+if [ "$FUNCTIONAL_OVERALL" = "CRASH" ] && echo "$FUNCTIONAL_META" | jq -e '(.summary // "") | test("Playwright MCP unavailable"; "i")' >/dev/null 2>&1; then
+  FUNCTIONAL_MCP_BROKEN=true
+  FUNCTIONAL_MCP_BROKEN_REASON="Playwright MCP smoke check failed — UI scenarios were not exercised. The .claude/agents/review-functional-tester.md subagent's inline mcpServers definition could not start the @playwright/mcp@latest stdio server. Check the runner has network + npx access; check the 'Pre-warm Playwright MCP package cache' step output."
+elif [ "$FUNCTIONAL_STRATEGY" = "functional" ] && echo "$FUNCTIONAL_META" | jq -e '[(.uncertain_observations // [])[] | select(test("Playwright MCP.*not.*avail|MCP.*unavailable|fall.*back to curl|all testing was done via curl"; "i"))] | length > 0' >/dev/null 2>&1; then
+  FUNCTIONAL_MCP_BROKEN=true
+  FUNCTIONAL_MCP_BROKEN_REASON="Functional tester admitted in uncertain_observations that Playwright MCP was unavailable and tests fell back to curl/psql. UI-touching changes need UI evidence; the smoke-check loud-fail in skills/review-functional-tester.md should have caught this — investigate why it was bypassed."
+fi
+
 if [ "$HAS_BLOCKING" = "true" ]; then
   VERDICT="REQUEST_CHANGES"
 elif [ "$HUMAN_REVIEW" = "true" ]; then
@@ -520,6 +539,11 @@ elif [ "$JUDGES_BOTH_FAILED" = "true" ]; then
 elif [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
   VERDICT="COMMENT"
   echo "::warning::No manual spec available — downgrading APPROVE to COMMENT (core reviewer set manual_spec_present=false)"
+elif [ "$FUNCTIONAL_MCP_BROKEN" = "true" ]; then
+  VERDICT="COMMENT"
+  HUMAN_REVIEW="true"
+  CORE_META=$(echo "$CORE_META" | jq --arg r "$FUNCTIONAL_MCP_BROKEN_REASON" '. + {requires_human_review: true, requires_human_review_reason: $r}')
+  echo "::warning::Playwright MCP unavailable — downgrading APPROVE to COMMENT and flagging for human review. Reason: $FUNCTIONAL_MCP_BROKEN_REASON"
 elif [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
   VERDICT="COMMENT"
   echo "::warning::Technical change without successful smoke test (overall=$FUNCTIONAL_OVERALL, ok=${FUNCTIONAL_OK:-1}) — downgrading APPROVE to COMMENT"
