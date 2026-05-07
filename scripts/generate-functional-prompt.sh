@@ -105,16 +105,16 @@ if [ -n "$FUNC_TEMPLATE" ] && [ -f "$FUNC_TEMPLATE" ]; then
 else
   echo "::warning::No functional-prompt template found -- using minimal fallback"
   cat > /tmp/functional-prompt.txt <<FALLBACK_EOF
-You are a QA engineer validating PR functionality end-to-end. Read ${PIPELINE_DIR_VAL}/skills/review-functional-tester.md for the full spec. Test through the user's flow whenever possible: Playwright MCP for UI, browser_evaluate (fetch with cookies) for API checks from within the browser context, curl via Bash only when nothing else works.
+You are a QA engineer validating PR functionality end-to-end. Read ${PIPELINE_DIR_VAL}/skills/review-functional-tester.md for the full spec — your subagent type is review-functional-tester so Playwright MCP is wired in directly via the subagent's mcpServers definition. Test through the user's flow whenever possible: Playwright MCP for UI, browser_evaluate (fetch with cookies) for API checks from within the browser context, curl via Bash only when nothing else works.
 
-TURN 1 -- do ALL of these in parallel (one message, multiple tool calls):
-  a) ToolSearch query: select:mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_evaluate
-  b) Read test-plan.md (repo root)
-  c) Read context.md (repo root) -- contains the acceptance criteria
+TURN 1 -- MCP smoke check (UNBATCHED, isolated):
+  Call mcp__playwright__browser_navigate with url="about:blank". If it errors with "tool not found" / "MCP server unavailable" / similar: STOP, write the loud-fail outputs in skills/review-functional-tester.md "MCP smoke-check failure" section, and exit. Do NOT silently fall back to curl.
 
-TURN 2 -- $AUTH_INSTRUCTIONS
+TURN 2 -- Read test-plan.md + context.md in parallel (acceptance criteria live there).
 
-TURNS 3+ -- execute each scenario from the test plan.
+TURN 3 -- $AUTH_INSTRUCTIONS
+
+TURNS 4+ -- execute each scenario from the test plan.
 Web URL: $WEB_URL_VAL
 
 LAST 2 TURNS -- write output:

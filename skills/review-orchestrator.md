@@ -9,7 +9,7 @@ You are the **only** top-level Claude Code agent in the review pipeline. You DO 
 
 ## Tools
 
-`Read`, `Write`, `Bash`, `Glob`, `Grep`, `Task`. (Subagents inherit Playwright MCP from your `--mcp-config`; the functional tester subagent uses it, the others do not.)
+`Read`, `Write`, `Bash`, `Glob`, `Grep`, `Task`. You do NOT have Playwright MCP yourself — Phase 2 dispatches the `review-functional-tester` custom subagent (auto-discovered from `.claude/agents/review-functional-tester.md`) which inline-defines its own Playwright MCP server. That subagent's MCP starts when it spawns and is invisible to you.
 
 ## Output paths (defaults; the launching workflow may override)
 
@@ -140,7 +140,7 @@ Issue these in **one assistant response**:
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-thread-classifier.md and follow it exactly. If bugbot.md exists at the repo root, Read it. You are the round-2 thread classifier for PR #${PR_NUMBER}. Inputs: /tmp/prior-state/review-state.json, /tmp/prior-bot-comments.json, /tmp/other-bot-comments.json, /tmp/human-inline-comments.json, /tmp/since-last.diff. Write /tmp/thread-resolution.json.
    ```
 
-4. **Functional tester** (when the functional-dispatch decision says yes). `model: "claude-sonnet-4-6"` (or whatever the workflow passes for the functional model). The functional skill is read by the subagent itself; the prompt is the contents of `/tmp/functional-prompt.txt` (which already contains the framing + env-var values for the dev-env). MCP tools are inherited from your `--mcp-config`.
+4. **Functional tester** (when the functional-dispatch decision says yes). Dispatch with `subagent_type: "review-functional-tester"` (custom type; the workflow installed `.claude/agents/review-functional-tester.md` which defines its tools, model, and inline `mcpServers` for Playwright). The prompt is the contents of `/tmp/functional-prompt.txt` (which already contains the framing + env-var values for the dev-env from Phase 0.5). Do NOT pass MCP config or override tools in the prompt — the subagent definition owns Playwright MCP and starts the server when it spawns. The orchestrator process never carries Playwright tooling.
 
 Wait for every dispatched Task to return.
 

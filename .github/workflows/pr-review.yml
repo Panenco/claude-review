@@ -918,64 +918,38 @@ jobs:
           echo "$PID" > /tmp/dev-env/pid
           echo "Background dev-env launched: PID=$PID (process group leader)"
 
-      - name: Setup Playwright MCP config
-        # Unconditional. The orchestrator step always passes --mcp-config to
-        # the claude CLI; the file must exist even for docs-only PRs (the
-        # MCP server spawns lazily — only when an mcp__playwright__ tool is
-        # called by a functional-tester subagent — so listing it on every
-        # run is free).
+      - name: Pre-warm Playwright MCP package cache
+        # Pre-warm the @playwright/mcp install before the functional-tester
+        # subagent spawns the MCP server. Without this, the first npx
+        # invocation downloads + extracts the package on the runner's hot
+        # path, and Claude Code's MCP-startup handshake can time out before
+        # tools register. Cache is per-runner so this is a once-per-cold
+        # cost (~10-20s); the failure mode it prevents (silent zero
+        # screenshots, every UI scenario untestable) is total. The MCP
+        # server itself is now defined in `.claude/agents/review-functional-tester.md`
+        # — no `--mcp-config` JSON file is written here anymore.
+        # Use `npx -p ... -- node -e 'process.exit(0)'` rather than
+        # `--version`. The MCP server is a long-running stdio process
+        # whose `--version` handling is inconsistent across releases
+        # (some return 1 when stdin is closed). The `-p <pkg> -- node -e 'true'`
+        # form triggers npx's tarball-cache download path without ever
+        # invoking the server itself.
         shell: bash
         run: |
           # Force --output-dir so screenshots land in a known location.
           # Without this, Playwright MCP defaults to os.tmpdir()/playwright-mcp-output/<sessionId>/...
           # which our upload step never finds.
           mkdir -p /tmp/screenshots
-
-          # Pre-warm the @playwright/mcp install before the Claude CLI
-          # spawns it (only when a functional run is plausible — i.e. the
-          # repo has Node + npx on PATH). Without this the first npx
-          # invocation downloads + extracts the package on the runner's
-          # hot path, and the Claude CLI's MCP-startup handshake times out
-          # before tools register. Cache is per-runner so this is a
-          # once-per-cold-runner cost (~10-20s); the failure mode it
-          # prevents (silently 0 screenshots, every UI scenario untestable)
-          # is total. Skip silently when npx is unavailable — docs-only
-          # repos legitimately have no Node and the orchestrator never
-          # dispatches the functional subagent there anyway.
-          # Use `npx -p ... -- node -e 'process.exit(0)'` rather than
-          # `--version`. The MCP server is a long-running stdio process
-          # whose `--version` handling is inconsistent across releases
-          # (some return 1 when stdin is closed, which made the previous
-          # pre-warm fail loudly with `::warning::` on every consumer
-          # review even though the server was perfectly fine to lazy-spawn
-          # later). The `-p <pkg> -- node -e 'true'` form triggers npx's
-          # tarball-cache download path without ever invoking the server
-          # itself, so we get the cache-warming benefit and a reliable
-          # exit code. Falls back to a notice (not warning) on failure
-          # — the lazy-spawn path still works, this is purely a perf
-          # optimisation.
           if command -v npx >/dev/null 2>&1; then
             echo "Pre-warming @playwright/mcp@latest..."
             if npx --yes -p @playwright/mcp@latest -- node -e 'process.exit(0)' >/dev/null 2>&1; then
-              echo "@playwright/mcp@latest tarball cached for the lazy-spawn path."
+              echo "@playwright/mcp@latest tarball cached for the subagent's spawn path."
             else
-              echo "::notice::@playwright/mcp@latest pre-warm did not succeed; functional tester will lazy-spawn (cold start ~10-20s)."
+              echo "::notice::@playwright/mcp@latest pre-warm did not succeed; functional tester will install on first call (cold start ~10-20s)."
             fi
           else
             echo "npx not on PATH — skipping Playwright MCP pre-warm (no functional run expected)."
           fi
-
-          cat > /tmp/mcp-playwright.json << 'MCPEOF'
-          {
-            "mcpServers": {
-              "playwright": {
-                "command": "npx",
-                "args": ["--yes", "@playwright/mcp@latest", "--headless", "--output-dir", "/tmp/screenshots"]
-              }
-            }
-          }
-          MCPEOF
-          sed -i 's/^[[:space:]]*//' /tmp/mcp-playwright.json
 
       # Single top-level Claude Code agent. The orchestrator skill drives:
       #   Phase 0   — Task-dispatches the context-builder subagent, which writes
@@ -997,9 +971,48 @@ jobs:
       # All parallelism happens via the Task tool inside this single
       # claude-code-action invocation. The wrapper gives us native rate-limit
       # fast-fail (the bare `claude -p` CLI hangs on quota walls; the SDK
-      # surfaces the error in <1s). Subagents inherit `--mcp-config` /
-      # `--allowedTools` from this parent — the functional subagent uses
-      # Playwright MCP, the others ignore it.
+      # surfaces the error in <1s).
+      #
+      # Playwright MCP is scoped to the `review-functional-tester` subagent
+      # via `.claude/agents/review-functional-tester.md` (auto-discovered
+      # by Claude Code from `$GITHUB_WORKSPACE/.claude/agents/`). The
+      # subagent file inline-defines `mcpServers` so the Playwright server
+      # spawns when the subagent starts — NOT at the parent orchestrator.
+      # Earlier we passed `--mcp-config` at the orchestrator level and
+      # relied on subagents inheriting it; in practice the server stayed in
+      # `status: "pending"` (Claude Code's lazy-spawn never fired because
+      # deferred MCP tool schemas aren't loaded until the server is up,
+      # ToolSearch can't find tools that aren't loaded, and the subagent
+      # silently fell back to curl/psql with "Playwright MCP tools were
+      # not available in this test context" buried in uncertain_observations).
+      # Inline-defining the server in the subagent forces it to spawn when
+      # the subagent starts; orchestrator no longer carries Playwright
+      # tooling at all (it never called those tools anyway). claude-code-action
+      # SHA bumped to the v1 release that ships Claude Code 2.1.132 (Agent
+      # SDK 0.2.132), which also fixed a 10GB+ RSS leak with stdio MCP
+      # servers — relevant if the leak was contributing to the pending state.
+      - name: 'Install functional-tester subagent definition'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
+          PIPELINE_DIR: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}
+        run: |
+          # Helper writes $HOME/.claude/agents/review-functional-tester.md
+          # (USER-scope, intentional — claude-code-action's restore-config.ts
+          # wipes workspace .claude/ on PR-head jobs as RCE-prevention; the
+          # source code's own comment confirms $HOME is untouched). The
+          # subagent's inline mcpServers spawns the Playwright server when
+          # the subagent starts. NOTE: the MCP tool *permissions* are still
+          # session-level — see the `--allowedTools` list in the orchestrator
+          # step below, which must include every mcp__playwright__* tool
+          # the subagent will call. dontAsk mode evaluates permissions
+          # against the session-level allowlist, not the subagent's tools:
+          # field; without the orchestrator-level grant, the subagent's
+          # tool calls return "permission denied" even though the server
+          # is connected (caught on dogfood seaters#475 round 2).
+          bash "${CLAUDE_REVIEW_PIPELINE_DIR}/scripts/install-functional-tester-agent.sh"
+
       - name: 'Review: orchestrate'
         id: claude_run
         # Don't fail the job if the orchestrator returns non-zero (e.g.
@@ -1008,7 +1021,7 @@ jobs:
         # downstream verdict-gate step reads them and posts an honest
         # crash banner if they're missing.
         continue-on-error: true
-        uses: anthropics/claude-code-action@b47fd721da662d48c5680e154ad16a73ed74d2e0 # v1
+        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # Claude Code 2.1.132
         env:
           REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
           REVIEW_BUILD_AVAILABLE: ${{ (steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true') && 'true' || 'false' }}
@@ -1031,12 +1044,11 @@ jobs:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review — dispatch the context builder, the two judges, the round-2 thread classifier, and the functional tester via the Task tool per the skill above. Write /tmp/all-findings.json + /tmp/review-meta.json before exiting.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review — dispatch the context builder, the two judges, the round-2 thread classifier, and the functional tester via the Task tool per the skill above. The functional tester is registered as the custom subagent type `review-functional-tester` (auto-discovered from .claude/agents/, owns Playwright MCP directly — just dispatch it, do not pass MCP config in the prompt). Write /tmp/all-findings.json + /tmp/review-meta.json before exiting.
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
             --setting-sources user
-            --mcp-config /tmp/mcp-playwright.json
             --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_close,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_type,mcp__playwright__browser_hover,mcp__playwright__browser_resize,mcp__playwright__browser_tabs,mcp__playwright__browser_navigate_back,mcp__playwright__browser_evaluate
             --disallowedTools Edit,WebFetch,WebSearch
             --max-turns 100

@@ -78,9 +78,14 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
 ```
 PR opened / updated
     |
-[Setup] Node, deps, Playwright MCP config, dev environment
-        (launched in background — overlaps with the orchestrator's
-        context-build phase so total wall time = max(CB, dev-env)).
+[Setup] Node, deps, dev environment, install
+        .claude/agents/review-functional-tester.md (subagent definition
+        with inline `mcpServers` for Playwright MCP — server starts when
+        the orchestrator dispatches the subagent, NOT at orchestrator
+        start; eliminates the lazy-spawn vs ToolSearch chicken-and-egg
+        that left MCP "pending" silently). Dev-env launched in background —
+        overlaps with the orchestrator's context-build phase so total wall
+        time = max(CB, dev-env).
     |
 [One agent: Review: orchestrate]  (anthropics/claude-code-action)
     A single Sonnet orchestrator runs end-to-end and dispatches
@@ -516,13 +521,13 @@ If you have a polished config for a stack not covered here (e.g. Python/FastAPI,
 
 The pipeline consists of:
 
-- **Reusable workflow** (`.github/workflows/pr-review.yml`) — dev-env setup, MCP config, the single `claude-code-action` invocation, post-processing, review posting
+- **Reusable workflow** (`.github/workflows/pr-review.yml`) — dev-env setup, Playwright MCP package pre-warm, functional-tester subagent installation (`.claude/agents/review-functional-tester.md`), the single `claude-code-action` invocation, post-processing, review posting
 - **6 skill files** (`skills/`) — prompt templates defining review methodology:
   - `review-orchestrator` — the single top-level Claude Code agent; dispatches the context builder, judges, thread classifier, and functional tester via the `Task` tool, runs the debate, writes the final findings + meta
   - `review-context-builder` — Task subagent; gathers PR metadata, diff index, spec sources, and a 5-sentence diff summary into `context.md`
   - `review-judge` — Task subagent skill used by both the Opus and Haiku judges (correctness, security, spec, consistency, performance, tests)
   - `review-thread-classifier` — Task subagent (round-2 only); classifies prior findings + open inline threads (own bot, other bots, **humans**) as RESOLVED / STILL_PRESENT / NEW_CONTEXT
-  - `review-functional-tester` — Task subagent; Playwright-driven UI smoke + functional tests
+  - `review-functional-tester` — custom subagent type (auto-discovered from `.claude/agents/review-functional-tester.md`, written at workflow runtime); inline `mcpServers` block defines Playwright MCP scoped to this subagent, so the server starts when it spawns rather than relying on parent inheritance. First turn is an MCP smoke check that hard-fails the run as `overall: CRASH` if MCP is unavailable — silent fallback to curl is forbidden.
   - `review-test-planner` — embedded inside the context builder skill; picks the functional strategy (skip / quick / functional / pipeline-self-test) and writes scenarios into `test-plan.md`
 - **Functional prompt template** (`scripts/functional-prompt.template.txt`) — bootstraps the functional tester with auth + env info
 

@@ -456,7 +456,9 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 - "Validate review config" shows all six sections detected and no "references files that don't exist" warnings
 - Context builder produces `context.md` and `test-plan.md`
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
+- "Install functional-tester subagent definition" writes `.claude/agents/review-functional-tester.md` to the runner's checkout (this is what gives the functional tester its own scoped Playwright MCP server — don't commit this file to your repo, the workflow rewrites it on every run from the `inputs.model_functional` value)
 - Orchestrator runs the two judges (Opus + Haiku) in parallel and (when applicable) the functional tester. The judge debate produces a single, deduped findings list — there is no separate `core` / `sweep` step.
+- For PRs with UI surface, the functional tester's Turn 1 is an MCP smoke check (`mcp__playwright__browser_navigate` to `about:blank`). If MCP is unavailable, the run hard-fails with `overall: CRASH` and the verdict gate flags it as `requires_human_review`. Silent fallback to curl/psql is forbidden — a curl-only PASS on a UI fix is the bug we're guarding against.
 - **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
 
 ## Verdict ladder (round 2)
