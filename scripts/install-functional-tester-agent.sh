@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 # install-functional-tester-agent.sh
 #
-# Writes `.claude/agents/review-functional-tester.md` into the runner's
-# checkout cwd. Claude Code auto-discovers `.claude/agents/*.md` at session
-# start, so this file MUST exist before claude-code-action launches.
+# Writes `$HOME/.claude/agents/review-functional-tester.md` (user-scope).
+# Claude Code auto-discovers user-scope subagents from `~/.claude/agents/`
+# at session start, so this file MUST exist before claude-code-action
+# launches.
+#
+# IMPORTANT: this MUST go to user scope, NOT project scope (./.claude/agents/).
+# claude-code-action's `restore-config.ts` explicitly lists `.claude` in
+# SENSITIVE_PATHS and replaces the entire workspace `.claude/` tree with
+# origin/$base on PR-head jobs as an RCE-prevention measure. A project-scope
+# subagent file written before claude-code-action runs would be wiped.
+# `$HOME` is documented as untouched by the restore (the source code's own
+# comment: ".bashrc etc. — shells source these from $HOME; checkout cannot
+# reach $HOME"), so user scope is the survivable location.
+# Reference: https://github.com/anthropics/claude-code-action/blob/main/src/github/operations/restore-config.ts
 #
 # This is the load-bearing workaround for the "Playwright MCP stays in
 # `status: pending`" silent failure: the subagent definition's inline
@@ -37,9 +48,8 @@
 #   PIPELINE_DIR      — absolute path to the installed pipeline dir
 #                       (where skills/review-functional-tester.md lives)
 #
-# Caller is expected to chdir to the runner's workspace BEFORE invoking
-# (we write to ./.claude/agents/ relative to cwd, matching Claude Code's
-# project-level subagent discovery convention).
+# Caller does NOT need a specific cwd — we write to $HOME/.claude/agents/
+# (absolute path), which is invariant across the action's cwd changes.
 
 # `set -uo pipefail` (no -e) per .github/review-config.md + bugbot.md. The
 # explicit `|| exit 1` chains below cover the cases where -e would have
@@ -51,10 +61,14 @@ set -uo pipefail
 : "${PR_NUMBER:?PR_NUMBER must be set}"
 : "${MODEL_FUNCTIONAL:?MODEL_FUNCTIONAL must be set}"
 : "${PIPELINE_DIR:?PIPELINE_DIR must be set}"
+: "${HOME:?HOME must be set}"
 
-mkdir -p .claude/agents || { echo "::error::failed to mkdir .claude/agents (cwd=$(pwd))"; exit 1; }
+AGENT_DIR="$HOME/.claude/agents"
+AGENT_FILE="$AGENT_DIR/review-functional-tester.md"
 
-cat > .claude/agents/review-functional-tester.md <<EOF || { echo "::error::failed to write .claude/agents/review-functional-tester.md"; exit 1; }
+mkdir -p "$AGENT_DIR" || { echo "::error::failed to mkdir $AGENT_DIR"; exit 1; }
+
+cat > "$AGENT_FILE" <<EOF || { echo "::error::failed to write $AGENT_FILE"; exit 1; }
 ---
 name: review-functional-tester
 description: QA agent that validates PR functionality end-to-end with Playwright MCP. Spawned by the review orchestrator to test user flows, take targeted screenshots tied to findings, and write /tmp/functional-meta.json + /tmp/functional-findings.json.
@@ -70,16 +84,16 @@ mcpServers:
 Read ${PIPELINE_DIR}/skills/review-functional-tester.md and follow it exactly. The orchestrator spawned you for PR ${PR_NUMBER}. test-plan.md and context.md are at the repo root. Your first turn MUST be the MCP smoke check described in the skill — do not silently fall back to curl/psql when MCP is unavailable.
 EOF
 
-echo "Functional-tester subagent installed:"
-ls -la .claude/agents/
+echo "Functional-tester subagent installed at $AGENT_FILE:"
+ls -la "$AGENT_DIR"
 
 # Schema validation. Two paths:
 #   1. ruby+psych (always present on macOS + ubuntu-latest GitHub runners)
 #   2. python+pyyaml fallback (some runners).
 # A simple `grep -E` line-pattern check is the third fallback.
 validate_with_ruby() {
-  ruby -ryaml -e '
-    text = File.read(".claude/agents/review-functional-tester.md")
+  AGENT_FILE="$AGENT_FILE" ruby -ryaml -e '
+    text = File.read(ENV.fetch("AGENT_FILE"))
     fm = text.split("---", 3)[1]
     abort "::error::no frontmatter" unless fm
     data = YAML.safe_load(fm)
@@ -101,9 +115,9 @@ validate_with_ruby() {
 }
 
 validate_with_python() {
-  python3 - <<'PYEOF'
-import sys, re, yaml
-text = open('.claude/agents/review-functional-tester.md').read()
+  AGENT_FILE="$AGENT_FILE" python3 - <<'PYEOF'
+import os, sys, re, yaml
+text = open(os.environ['AGENT_FILE']).read()
 fm_match = re.match(r'^---\n(.*?)\n---\n', text, re.S)
 if not fm_match:
     sys.exit("::error::no frontmatter")
@@ -131,9 +145,9 @@ PYEOF
 }
 
 validate_with_grep() {
-  grep -qE '^mcpServers:[[:space:]]*$' .claude/agents/review-functional-tester.md \
+  grep -qE '^mcpServers:[[:space:]]*$' "$AGENT_FILE" \
     || { echo "::error::mcpServers field not on its own line — schema may be malformed"; return 1; }
-  grep -qE '^[[:space:]]+- playwright:[[:space:]]*$' .claude/agents/review-functional-tester.md \
+  grep -qE '^[[:space:]]+- playwright:[[:space:]]*$' "$AGENT_FILE" \
     || { echo "::error::mcpServers must contain '  - playwright:' (YAML list with single-key mapping); dict form is silently ignored"; return 1; }
   echo "OK: subagent frontmatter passes line-pattern validation (no YAML parser available for full schema check)."
 }

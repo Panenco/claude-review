@@ -2,7 +2,7 @@
 set -uo pipefail
 
 # install_functional_tester_agent_test.sh — fixture test for the
-# `.claude/agents/review-functional-tester.md` writer.
+# `$AGENT_FILE` writer.
 #
 # Background. The first iteration of PR #31 wrote the subagent file with
 # `mcpServers:` as a YAML dict. Claude Code's subagent schema (per
@@ -41,28 +41,41 @@ assert_eq() {
   fi
 }
 
-# ── Run the helper in a sandbox cwd so we don't pollute the repo. ──
+# ── Run the helper in a sandbox HOME so we don't pollute the developer's
+#    real ~/.claude/agents/. The helper writes to $HOME/.claude/agents/
+#    (user scope, intentional — claude-code-action's restore-config.ts
+#    wipes workspace .claude/ on PR-head jobs as an RCE prevention,
+#    so project scope can't be used). ──
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 HELPER="$(pwd)/scripts/install-functional-tester-agent.sh"
+AGENT_FILE="$TMP/.claude/agents/review-functional-tester.md"
 
-# Drop CWD into a fresh dir; the helper writes relative to cwd.
-cd "$TMP"
-
+HOME="$TMP" \
 PR_NUMBER=12345 \
 MODEL_FUNCTIONAL=claude-sonnet-4-6 \
 PIPELINE_DIR=/tmp/test-pipeline \
   bash "$HELPER" >/tmp/install-out.log 2>&1 \
   || { echo "FAIL: helper exited non-zero"; cat /tmp/install-out.log; exit 1; }
 
-assert_eq "file written to .claude/agents/review-functional-tester.md" \
+assert_eq "file written to \$HOME/.claude/agents/review-functional-tester.md" \
   "true" \
-  "$([ -f .claude/agents/review-functional-tester.md ] && echo true || echo false)"
+  "$([ -f "$AGENT_FILE" ] && echo true || echo false)"
+
+# Belt-and-braces: the file must NOT also have been written to project
+# scope (./.claude/agents/) — that's the path that claude-code-action
+# wipes, and writing there would have been the bug that motivated this
+# whole PR. Run from a fresh cwd so any pre-existing project file in
+# the test runner's working directory doesn't false-positive.
+WORKDIR=$(mktemp -d)
+( cd "$WORKDIR" && [ ! -e .claude ] ) && PROJECT_SCOPE_LEAKED=false || PROJECT_SCOPE_LEAKED=true
+rm -rf "$WORKDIR"
+assert_eq "did NOT also write to project-scope ./.claude/agents/" "false" "$PROJECT_SCOPE_LEAKED"
 
 # ── YAML structure assertions via ruby+psych (always present on the
 #    Shell tests + lint runner). ──
-RUBY_OUT=$(ruby -ryaml -e '
-  text = File.read(".claude/agents/review-functional-tester.md")
+RUBY_OUT=$(AGENT_FILE="$AGENT_FILE" ruby -ryaml -e '
+  text = File.read(ENV.fetch("AGENT_FILE"))
   fm_str = text.split("---", 3)[1]
   data = YAML.safe_load(fm_str)
   puts "name=#{data["name"]}"
@@ -127,7 +140,7 @@ EXPECTED_PLAYWRIGHT_TOOLS=(
 # each token so the membership test is exact. A regex with anchors is
 # fragile around the `: ` separator and the trailing newline; iterating
 # tokens is the boring-correct version.
-TOOLS_VALUE=$(grep -E '^tools:' .claude/agents/review-functional-tester.md | sed -E 's/^tools:[[:space:]]*//')
+TOOLS_VALUE=$(grep -E '^tools:' "$AGENT_FILE" | sed -E 's/^tools:[[:space:]]*//')
 declare -A TOOLS_SET
 while IFS= read -r tok; do
   tok="$(echo "$tok" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
@@ -148,14 +161,14 @@ done
 
 # ── Body smoke: must include the smoke-check directive so the subagent
 #    knows to fail loud rather than fall back to curl. ──
-BODY_HAS_SMOKE_CHECK=$(grep -qE 'first turn MUST be the MCP smoke check' .claude/agents/review-functional-tester.md && echo true || echo false)
+BODY_HAS_SMOKE_CHECK=$(grep -qE 'first turn MUST be the MCP smoke check' $AGENT_FILE && echo true || echo false)
 assert_eq "body contains MCP smoke-check directive" "true" "$BODY_HAS_SMOKE_CHECK"
 
-BODY_REFERENCES_SKILL=$(grep -qE '/skills/review-functional-tester\.md' .claude/agents/review-functional-tester.md && echo true || echo false)
+BODY_REFERENCES_SKILL=$(grep -qE '/skills/review-functional-tester\.md' $AGENT_FILE && echo true || echo false)
 assert_eq "body references the full skill file" "true" "$BODY_REFERENCES_SKILL"
 
 # Substituted env vars actually substituted (not literal $PR_NUMBER).
-NO_LITERAL_VARS=$(grep -qE '\$(PR_NUMBER|PIPELINE_DIR|MODEL_FUNCTIONAL)' .claude/agents/review-functional-tester.md && echo true || echo false)
+NO_LITERAL_VARS=$(grep -qE '\$(PR_NUMBER|PIPELINE_DIR|MODEL_FUNCTIONAL)' $AGENT_FILE && echo true || echo false)
 assert_eq "no literal '\$VAR' tokens (heredoc substituted env vars)" "false" "$NO_LITERAL_VARS"
 
 if [ "$fail" -eq 0 ]; then
