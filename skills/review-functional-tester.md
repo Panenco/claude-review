@@ -16,7 +16,16 @@ The feature is built and running. You have a real browser (Playwright MCP), can 
 
 Read both. The plan tells you WHAT to test. The context tells you WHY (acceptance criteria, spec).
 
-## How to decide: UI, browser-fetch, or curl?
+## Scope rule (load-bearing)
+
+**Every finding's `path` MUST appear in `## Per-file diff index` of context.md.** The PR's diff is the review's perimeter — your job is to validate THIS PR's changes, not the codebase's pre-existing state.
+
+When a real-user flow surfaces a problem on a shared component or page region the PR didn't touch (e.g. an axe violation on an existing sidebar, a console error from third-party JS, a 403 on a static asset), do NOT file it as a finding. Add ONE line to `uncertain_observations` describing what you saw and move on. Two reasons:
+
+1. The author can't fix it in this PR — it's not in their diff.
+2. The same out-of-scope issue tends to recur on every functional run; filing it as a finding clutters every review with the same noise.
+
+If a finding's natural `path` would be a file you didn't change, that's the signal to drop it. Common case: axe-core returns a DOM violation on a shared component — the violation lives in the component's source file, which isn't in the diff index → drop.
 
 **Always prefer the method closest to the real user flow.**
 
@@ -210,11 +219,13 @@ Always write both files, even on partial completion.
 
 Overall: FAIL if any critical/major, WARN if any minor, PASS otherwise.
 
-## Accessibility checks
+## Accessibility checks (opt-in)
 
-A11y audits are **opt-in per plan**, not per scenario. The test planner marks the plan with `a11y: true` when the diff touches a11y-relevant surface (form labels, semantic markup, color/contrast, keyboard handlers). When the plan does not set `a11y: true`, **skip this section entirely** — running axe-core on every page burns turns without proportional signal on routine PRs.
+A11y audits are **opt-in per plan**, not per scenario. The test planner marks the plan with `a11y: true` when the diff touches a11y-relevant surface (form labels, semantic markup, color/contrast, keyboard handlers). **When the plan does not set `a11y: true`, skip this section entirely** — and that's the default for most PRs. Routine UI changes (copy, layout shifts, components that reuse existing primitives) do not need an a11y audit; running axe burns turns and surfaces violations on shared components the PR didn't touch.
 
-When a11y IS in scope, run **one** axe-core WCAG 2.1 AA audit on the **single most a11y-relevant page** (typically the page whose markup actually changed in the diff), not one per scenario. Use `browser_evaluate`:
+When a11y IS in scope, the **scope rule above still applies**: an axe violation on a shared component file the PR didn't modify → don't file. Note in `uncertain_observations` that "page X has pre-existing a11y issues at <selector>" if the observation is informative; otherwise skip silently. Only file findings whose `path` is in the diff index AND whose root cause is something the PR actually introduced or modified.
+
+Run **one** axe-core WCAG 2.1 AA audit on the **single most a11y-relevant page** (typically the page whose markup actually changed in the diff), not one per scenario. Use `browser_evaluate`:
 
 ```js
 async () => {

@@ -239,7 +239,7 @@ Pick the flow that exercises the code paths most affected by the change. Use jud
 - **Build/config change** → the most-trafficked authenticated page (the build is global)
 - **Trivial `quick` PR** → just hit the changed page/endpoint
 
-Pass criterion: page loads, no uncaught console errors, no 5xx on documented routes, axe-core a11y has no new criticals vs. main.
+Pass criterion: page loads, no uncaught console errors, no 5xx on documented routes. (A11y is opt-in via `a11y: true` in the plan front-matter — see the "Accessibility opt-in" section above. Do NOT include axe-core in the default smoke pass criterion; that creates noise findings on shared components the PR didn't touch.)
 
 ```markdown
 ### 1. App still works end-to-end
