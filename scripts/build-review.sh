@@ -223,44 +223,61 @@ if [ -f /tmp/prior-state/review-state.json ]; then
 fi
 
 # ── Screenshot collection and upload ──
-# Playwright MCP saves screenshots to its CWD when the agent passes a
-# plain filename (e.g. "01-name.png") — that resolves to the repo root
-# in our setup. --output-dir doesn't override agent-chosen paths.
-# So we scan: agent's likely cwd (.), /tmp/screenshots (if agent used
-# an absolute path), and a few historical alternate paths.
-#
-# CRITICAL: every find filters by `-mmin -60` (modified in the last 60
-# minutes) so we never pick up pre-existing repo content. Without this
-# filter the scan of `.` and `screenshots/` would scoop up checked-in
-# product assets — e.g. a consumer repo with `screenshots/wl_logo.png`
-# as a static UI image — and upload them as if they were review
-# screenshots. (Observed on Panenco/seaters#471 round 1: 3 product
-# logos uploaded under pr-471/, then the body's `urls[basename]`
-# lookup missed for the agent's actual files because the basenames
-# didn't match the unrelated logos.)
+# We collect ONLY the basenames the functional tester named in
+# functional-meta.screenshots[].file (and functional-findings[].screenshot).
+# Earlier versions scanned the consumer repo's CWD with `find . -name '*.png'`
+# and a `-mmin -60` mtime filter, but `actions/checkout` rewrites all
+# checked-in file mtimes to ~now — so the filter cannot distinguish a
+# checked-in product asset (e.g. seaters' `screenshots/wl_logo.png`) from
+# a freshly captured tester screenshot. Cursor caught this on PR #30;
+# the only safe rule is to upload exactly what the tester says it wrote.
 SCREENSHOT_URLS='{}'
 mkdir -p /tmp/all-screenshots
 # Short-circuit when the functional tester didn't run or didn't produce
-# any image-typed screenshots[] entries. Without this guard build-review
-# would still scan the consumer repo for PNGs and run the review-assets
-# upload, which means a docs-only / strategy=skip review on a repo that
-# has any pre-existing PNG (a `screenshots/` UI assets folder is common)
-# would commit those PNGs to review-assets/pr-N/. The mtime filter below
-# already drops pre-existing files, but skipping the whole pipeline when
-# there's nothing to embed is cleaner.
+# any image-typed screenshots[] entries. This both saves the upload work
+# and guarantees a docs-only / strategy=skip review on a repo with any
+# pre-existing PNG never commits those PNGs to review-assets/pr-N/.
 EXPECTED_IMAGE_SHOTS=$(echo "$FUNCTIONAL_META" | jq '[(.screenshots // [])[] | select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i"))] | length')
 if [ "$FUNCTIONAL_STRATEGY" = "skip" ] || [ "${EXPECTED_IMAGE_SHOTS:-0}" -eq 0 ]; then
   echo "Skipping screenshot collection + upload (strategy=$FUNCTIONAL_STRATEGY, expected_image_screenshots=${EXPECTED_IMAGE_SHOTS:-0})."
 else
-  for src_dir in . /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp screenshots .playwright-mcp/screenshots; do
-    [ -d "$src_dir" ] || continue
-    find "$src_dir" -maxdepth 2 -name '*.png' -mmin -60 -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
-  done
-  # Final fallback: scan /tmp recursively for any PNG produced in the last hour.
-  if ! ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
-    echo "No screenshots in expected paths — scanning /tmp recursively for recent PNGs..."
-    find /tmp -name '*.png' -mmin -60 -not -path '/tmp/all-screenshots/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
-  fi
+  # Build the allowlist: every `file` field across screenshots[] and
+  # findings[].screenshot. Resolve to absolute paths first (the tester
+  # is contract-bound to write under /tmp/screenshots/ but legacy
+  # plain-filename paths get expanded relative to ., the tester's CWD).
+  FN_INPUT="[]"
+  [ -f /tmp/functional-findings.json ] && jq -e 'type == "array"' /tmp/functional-findings.json >/dev/null 2>&1 \
+    && FN_INPUT=$(cat /tmp/functional-findings.json)
+  EXPECTED_FILES=$(jq -n \
+    --argjson meta "$FUNCTIONAL_META" \
+    --argjson fn "$FN_INPUT" \
+    'def img_paths: map(select(type == "string" and (test("\\.(png|jpg|jpeg|webp)$"; "i")))) | unique;
+     (($meta.screenshots // []) | map(.file // ""))
+     + (($fn // []) | map(.screenshot // ""))
+     | img_paths')
+  echo "Functional tester named $(echo "$EXPECTED_FILES" | jq 'length') screenshot path(s); resolving each."
+  while read -r expected; do
+    [ -z "$expected" ] && continue
+    base=$(basename "$expected")
+    # 1) Absolute path the tester wrote (preferred — /tmp/screenshots/...).
+    if [ -f "$expected" ]; then
+      cp -n "$expected" "/tmp/all-screenshots/$base"
+      continue
+    fi
+    # 2) Plain-filename fallback: the tester used a relative path that
+    #    Playwright MCP expanded against its CWD. Check the agent-only
+    #    output dirs first, then the repo root as a last resort —
+    #    bound to a basename match so we never pick up unrelated PNGs.
+    found=""
+    for d in /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp .playwright-mcp/screenshots screenshots .; do
+      [ -f "$d/$base" ] && { found="$d/$base"; break; }
+    done
+    if [ -n "$found" ]; then
+      cp -n "$found" "/tmp/all-screenshots/$base"
+    else
+      echo "::notice::Functional tester referenced screenshot '$expected' but the file was not produced on disk (basename '$base' not found in /tmp/screenshots, /tmp/playwright-mcp-output, .playwright-mcp{,/screenshots}, screenshots, or repo root)."
+    fi
+  done < <(echo "$EXPECTED_FILES" | jq -r '.[]')
 fi
 SCREENSHOT_DIR=""
 if ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
