@@ -942,10 +942,25 @@ jobs:
           # is total. Skip silently when npx is unavailable — docs-only
           # repos legitimately have no Node and the orchestrator never
           # dispatches the functional subagent there anyway.
+          # Use `npx -p ... -- node -e 'process.exit(0)'` rather than
+          # `--version`. The MCP server is a long-running stdio process
+          # whose `--version` handling is inconsistent across releases
+          # (some return 1 when stdin is closed, which made the previous
+          # pre-warm fail loudly with `::warning::` on every consumer
+          # review even though the server was perfectly fine to lazy-spawn
+          # later). The `-p <pkg> -- node -e 'true'` form triggers npx's
+          # tarball-cache download path without ever invoking the server
+          # itself, so we get the cache-warming benefit and a reliable
+          # exit code. Falls back to a notice (not warning) on failure
+          # — the lazy-spawn path still works, this is purely a perf
+          # optimisation.
           if command -v npx >/dev/null 2>&1; then
             echo "Pre-warming @playwright/mcp@latest..."
-            npx --yes @playwright/mcp@latest --version 2>&1 | head -5 || \
-              echo "::warning::@playwright/mcp@latest pre-warm failed — functional tester may still hit MCP startup timeout. See log above for npx output."
+            if npx --yes -p @playwright/mcp@latest -- node -e 'process.exit(0)' >/dev/null 2>&1; then
+              echo "@playwright/mcp@latest tarball cached for the lazy-spawn path."
+            else
+              echo "::notice::@playwright/mcp@latest pre-warm did not succeed; functional tester will lazy-spawn (cold start ~10-20s)."
+            fi
           else
             echo "npx not on PATH — skipping Playwright MCP pre-warm (no functional run expected)."
           fi

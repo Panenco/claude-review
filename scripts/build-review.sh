@@ -215,15 +215,28 @@ fi
 # didn't match the unrelated logos.)
 SCREENSHOT_URLS='{}'
 mkdir -p /tmp/all-screenshots
-for src_dir in . /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp screenshots .playwright-mcp/screenshots; do
-  if [ -d "$src_dir" ]; then
-    find "$src_dir" -maxdepth 2 -name '*.png' -mmin -60 -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
+# Short-circuit when the functional tester didn't run or didn't produce
+# any image-typed screenshots[] entries. Without this guard build-review
+# would still scan the consumer repo for PNGs and run the review-assets
+# upload, which means a docs-only / strategy=skip review on a repo that
+# has any pre-existing PNG (a `screenshots/` UI assets folder is common)
+# would commit those PNGs to review-assets/pr-N/. The mtime filter below
+# already drops pre-existing files, but skipping the whole pipeline when
+# there's nothing to embed is cleaner.
+EXPECTED_IMAGE_SHOTS=$(echo "$FUNCTIONAL_META" | jq '[(.screenshots // [])[] | select((.file // "") | test("\\.(png|jpg|jpeg|webp)$"; "i"))] | length')
+if [ "$FUNCTIONAL_STRATEGY" = "skip" ] || [ "${EXPECTED_IMAGE_SHOTS:-0}" -eq 0 ]; then
+  echo "Skipping screenshot collection + upload (strategy=$FUNCTIONAL_STRATEGY, expected_image_screenshots=${EXPECTED_IMAGE_SHOTS:-0})."
+else
+  for src_dir in . /tmp/screenshots /tmp/playwright-mcp-output .playwright-mcp screenshots .playwright-mcp/screenshots; do
+    if [ -d "$src_dir" ]; then
+      find "$src_dir" -maxdepth 2 -name '*.png' -mmin -60 -not -path '*/node_modules/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
+    fi
+  done
+  # Final fallback: scan /tmp recursively for any PNG produced in the last hour.
+  if ! ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
+    echo "No screenshots in expected paths — scanning /tmp recursively for recent PNGs..."
+    find /tmp -name '*.png' -mmin -60 -not -path '/tmp/all-screenshots/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
   fi
-done
-# Final fallback: scan /tmp recursively for any PNG produced in the last hour.
-if ! ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
-  echo "No screenshots in expected paths — scanning /tmp recursively for recent PNGs..."
-  find /tmp -name '*.png' -mmin -60 -not -path '/tmp/all-screenshots/*' -exec cp -n {} /tmp/all-screenshots/ \; 2>/dev/null || true
 fi
 SCREENSHOT_DIR=""
 if ls /tmp/all-screenshots/*.png >/dev/null 2>&1; then
