@@ -523,7 +523,7 @@ FUNCTIONAL_MCP_BROKEN=false
 FUNCTIONAL_MCP_BROKEN_REASON=""
 if [ "$FUNCTIONAL_OVERALL" = "CRASH" ] && echo "$FUNCTIONAL_META" | jq -e '(.summary // "") | test("Playwright MCP unavailable"; "i")' >/dev/null 2>&1; then
   FUNCTIONAL_MCP_BROKEN=true
-  FUNCTIONAL_MCP_BROKEN_REASON="Playwright MCP smoke check failed — UI scenarios were not exercised. The .claude/agents/review-functional-tester.md subagent's inline mcpServers definition could not start the @playwright/mcp@latest stdio server. Check the runner has network + npx access; check the 'Pre-warm Playwright MCP package cache' step output."
+  FUNCTIONAL_MCP_BROKEN_REASON="Playwright MCP smoke check failed — UI scenarios were not exercised. The .claude/agents/review-functional-tester.md subagent's inline mcpServers definition could not start the @playwright/mcp stdio server. Check the runner has network + npx access; check the 'Install Playwright + MCP' workflow step output."
 elif { [ "$FUNCTIONAL_STRATEGY" = "functional" ] || [ "$FUNCTIONAL_STRATEGY" = "quick" ]; } \
      && echo "$FUNCTIONAL_META" | jq -e '[(.uncertain_observations // [])[] | select(test("Playwright MCP.*not.*avail|MCP.*unavailable|fall.*back to curl|all testing was done via curl"; "i"))] | length > 0' >/dev/null 2>&1; then
   # Both `functional` and `quick` strategies dispatch the Playwright-bound

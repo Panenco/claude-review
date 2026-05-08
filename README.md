@@ -521,7 +521,7 @@ If you have a polished config for a stack not covered here (e.g. Python/FastAPI,
 
 The pipeline consists of:
 
-- **Reusable workflow** (`.github/workflows/pr-review.yml`) — dev-env setup, Playwright MCP package pre-warm, functional-tester subagent installation (`.claude/agents/review-functional-tester.md`), the single `claude-code-action` invocation, post-processing, review posting
+- **Reusable workflow** (`.github/workflows/pr-review.yml`) — dev-env setup, pinned Playwright + @playwright/mcp install (cached, decoupled from the consumer repo), functional-tester subagent installation (`.claude/agents/review-functional-tester.md`), the single `claude-code-action` invocation, post-processing, review posting
 - **6 skill files** (`skills/`) — prompt templates defining review methodology:
   - `review-orchestrator` — the single top-level Claude Code agent; dispatches the context builder, judges, thread classifier, and functional tester via the `Task` tool, runs the debate, writes the final findings + meta
   - `review-context-builder` — Task subagent; gathers PR metadata, diff index, spec sources, and a 5-sentence diff summary into `context.md`

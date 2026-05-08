@@ -70,6 +70,17 @@ on:
         required: false
         description: "Optional. Newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/dev-start.sh (and the legacy review-config.md bash blocks + Auth eval). Populated from the caller repo's secret of the same name via `secrets: inherit`."
 
+# Single source of truth for the Playwright stack the review pipeline runs.
+# The functional tester drives Chromium via @playwright/mcp regardless of
+# whether the consumer repo vendors Playwright at all — these pins decouple
+# the install from consumer-lockfile churn so the browser-binary cache hits
+# every run that doesn't bump them. Bump both intentionally; check
+# @playwright/mcp's CHANGELOG for the matching `playwright` peer before
+# letting them drift apart.
+env:
+  PLAYWRIGHT_VERSION: "1.59.1"
+  PLAYWRIGHT_MCP_VERSION: "0.0.75"
+
 jobs:
   review:
     name: In-Depth Review
@@ -357,62 +368,41 @@ jobs:
             echo "::warning::$PKG_MANAGER install failed — build verification will be unavailable"
           fi
 
-      # Cache Playwright browser binaries across PRs in the same consumer
-      # repo. setup-node already caches the package store via its `cache:`
-      # parameter; this is purely for ~/.cache/ms-playwright so we don't
-      # re-download chromium every run. Key on lock-file hash so a PR that
-      # bumps @playwright/test invalidates the cache.
-      #
-      # Split into restore + save (instead of the unified `actions/cache`)
-      # so the post-step doesn't re-evaluate `hashFiles(...)`. The unified
-      # action's post step recomputes the key, and `hashFiles()` fails when
-      # the workspace has been cleaned by an earlier post step in the same
-      # job — surfacing as a noisy red `Post Cache Playwright browsers`:
-      # "Fail to hash files under directory '/home/runner/work/<repo>'".
-      # The split form captures the primary key once at restore time and
-      # reuses it on save, so post-step hashFiles is never called.
-      - name: Cache Playwright browsers (restore)
+      # Cache the Playwright stack the review pipeline drives independently
+      # of the consumer repo: Chromium binaries (~/.cache/ms-playwright) plus
+      # the npx tarball cache that holds the @playwright/mcp package the
+      # functional-tester subagent spawns over stdio. Keyed on the
+      # workflow-level pins, so the cache only invalidates when we
+      # deliberately bump those env vars — consumer-lockfile churn no longer
+      # touches it. The Chromium binary check inside `playwright install` and
+      # npx's tarball lookup both short-circuit on cache hit; only apt
+      # (--with-deps) still runs each time (~10-30s on ubuntu-latest, since
+      # most chromium libs are preinstalled there). mkdir for /tmp/screenshots
+      # mirrors the path the subagent's mcpServers config writes to.
+      - name: Cache Playwright assets
         id: pw_cache
         if: steps.code_check.outputs.needs_build == 'true'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-ms-playwright-${{ hashFiles('**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-ms-playwright-
+          path: |
+            ~/.cache/ms-playwright
+            ~/.npm/_npx
+          key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
 
-      # Always install Chromium so `npx @playwright/mcp@latest` (used by the
-      # functional tester) and any consumer-side smoke test have a browser
-      # available, even when the repo has no root lockfile. If the consumer
-      # vendors @playwright/test we install via that workspace so versions
-      # line up; otherwise we fall back to a plain `npx playwright install`.
-      - name: Install Playwright browsers
+      - name: Install Playwright + MCP
         if: steps.code_check.outputs.needs_build == 'true'
         shell: bash
         run: |
-          PW_DIR=$(find . -name 'playwright.config.*' -not -path '*/node_modules/*' -not -path '*/.review-pipeline/*' -not -path '*/.review-scripts/*' -exec dirname {} \; 2>/dev/null | head -1)
-          if [ -z "$PW_DIR" ]; then
-            PW_DIR=$(find . -maxdepth 3 -name 'package.json' -not -path '*/node_modules/*' -exec grep -l '"@playwright/test"' {} \; 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true)
-          fi
-          if [ -n "$PW_DIR" ] && [ -d "$PW_DIR/node_modules" ]; then
-            echo "Found Playwright workspace in $PW_DIR — installing via local @playwright/test"
-            cd "$PW_DIR" && npx playwright install chromium --with-deps 2>&1 | tail -5
-          else
-            echo "No vendored Playwright workspace found — installing chromium via npx playwright@latest"
-            npx --yes playwright@latest install chromium --with-deps 2>&1 | tail -5
-          fi
-          echo "Playwright chromium installed"
-
-      # Save the Playwright cache only on a miss (cache-hit != 'true').
-      # Reuses cache-primary-key from the restore step so post-step
-      # hashFiles is never called. `if: always()` so we still save even
-      # when a downstream step (smoke-test) fails on a fresh-cache run.
-      - name: Cache Playwright browsers (save)
-        if: always() && steps.pw_cache.outputs.cache-hit != 'true' && steps.pw_cache.outputs.cache-primary-key != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ steps.pw_cache.outputs.cache-primary-key }}
+          set -e
+          mkdir -p /tmp/screenshots
+          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
+          # Pre-fetch @playwright/mcp into the npx cache so the subagent's
+          # stdio spawn doesn't pay a cold install on its first MCP call.
+          # `node -e 'process.exit(0)'` cleanly exits the package without
+          # invoking the MCP server (whose --version handling is inconsistent
+          # across releases when stdin is closed).
+          npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 'process.exit(0)'
+          echo "Playwright ${PLAYWRIGHT_VERSION} + @playwright/mcp ${PLAYWRIGHT_MCP_VERSION} ready"
 
       # Optional: GitHub App token for a custom review identity.
       # Requires all three secrets: APP_CLIENT_ID + APP_PRIVATE_KEY + APP_SLUG.
@@ -917,39 +907,6 @@ jobs:
           disown "$PID"
           echo "$PID" > /tmp/dev-env/pid
           echo "Background dev-env launched: PID=$PID (process group leader)"
-
-      - name: Pre-warm Playwright MCP package cache
-        # Pre-warm the @playwright/mcp install before the functional-tester
-        # subagent spawns the MCP server. Without this, the first npx
-        # invocation downloads + extracts the package on the runner's hot
-        # path, and Claude Code's MCP-startup handshake can time out before
-        # tools register. Cache is per-runner so this is a once-per-cold
-        # cost (~10-20s); the failure mode it prevents (silent zero
-        # screenshots, every UI scenario untestable) is total. The MCP
-        # server itself is now defined in `.claude/agents/review-functional-tester.md`
-        # — no `--mcp-config` JSON file is written here anymore.
-        # Use `npx -p ... -- node -e 'process.exit(0)'` rather than
-        # `--version`. The MCP server is a long-running stdio process
-        # whose `--version` handling is inconsistent across releases
-        # (some return 1 when stdin is closed). The `-p <pkg> -- node -e 'true'`
-        # form triggers npx's tarball-cache download path without ever
-        # invoking the server itself.
-        shell: bash
-        run: |
-          # Force --output-dir so screenshots land in a known location.
-          # Without this, Playwright MCP defaults to os.tmpdir()/playwright-mcp-output/<sessionId>/...
-          # which our upload step never finds.
-          mkdir -p /tmp/screenshots
-          if command -v npx >/dev/null 2>&1; then
-            echo "Pre-warming @playwright/mcp@latest..."
-            if npx --yes -p @playwright/mcp@latest -- node -e 'process.exit(0)' >/dev/null 2>&1; then
-              echo "@playwright/mcp@latest tarball cached for the subagent's spawn path."
-            else
-              echo "::notice::@playwright/mcp@latest pre-warm did not succeed; functional tester will install on first call (cold start ~10-20s)."
-            fi
-          else
-            echo "npx not on PATH — skipping Playwright MCP pre-warm (no functional run expected)."
-          fi
 
       # Single top-level Claude Code agent. The orchestrator skill drives:
       #   Phase 0   — Task-dispatches the context-builder subagent, which writes
