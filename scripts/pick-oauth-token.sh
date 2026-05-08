@@ -8,9 +8,13 @@
 # that the headless `/usage` slash command does NOT expose (it returns a
 # static string with no API call). The only proactive signal available is
 # the `rate_limit_event` line emitted by `--output-format stream-json`
-# during a real call — its `rate_limit_info.status` field is "allowed"
-# when the window still has capacity, anything else when it doesn't. So
-# we issue a tiny Haiku probe per candidate, parse the event, and pick a
+# during a real call. Its `rate_limit_info.status` reports:
+#   "allowed"          — under the soft threshold; fully usable
+#   "allowed_warning"  — past the soft threshold but calls still go through
+#   "blocked"          — over the cap; subsequent calls fail
+#   anything else      — abnormal (network error, expired token, etc.)
+# Both "allowed" and "allowed_warning" mean the token can serve a review.
+# We issue a tiny Haiku probe per candidate, parse the event, and pick a
 # token that's actually usable. Pool of one skips the probe entirely.
 #
 # Inputs (env):
@@ -158,7 +162,11 @@ main() {
     RESETS[i]="$resets"
     human_resets=$(format_resets "$resets")
     printf 'token #%d %s — status=%s resetsAt=%s\n' "$i" "$fp" "$status" "$human_resets"
-    [ "$status" = "allowed" ] && ALLOWED_IDX+=("$i")
+    # Accept any "allowed*" status — the API uses "allowed_warning" once
+    # the soft threshold is crossed but calls still go through. Strict
+    # equality ("allowed") was rejecting accounts the operator could
+    # plainly see still had capacity on claude.ai/usage.
+    case "$status" in allowed|allowed_*) ALLOWED_IDX+=("$i") ;; esac
   done
   echo "::endgroup::"
 
