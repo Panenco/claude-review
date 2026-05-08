@@ -191,14 +191,24 @@ assert_eq "no literal '\$VAR' tokens (heredoc substituted env vars)" "false" "$N
 # ── Default fallback: when PLAYWRIGHT_MCP_VERSION is unset (e.g. someone
 #    running the helper standalone), the script should still produce a
 #    valid mcpServers entry by defaulting to @latest. Re-invoke into a
-#    fresh sandbox without the env var and assert the default path. ──
+#    fresh sandbox without the env var and assert the default path.
+#
+#    Important: the workflow that runs this test defines PLAYWRIGHT_MCP_VERSION
+#    at job level, so its value is exported into every step's process env —
+#    including this bash sub-shell. Inline `KEY=val cmd` assignments only
+#    ADD to the env, they don't UNSET, so we need an explicit `unset` in a
+#    subshell to actually exercise the fallback path. Without this the CI
+#    run silently inherits the pinned version and the assertion never tests
+#    what it claims to. ──
 FALLBACK_TMP=$(mktemp -d)
-HOME="$FALLBACK_TMP" \
-PR_NUMBER=22222 \
-MODEL_FUNCTIONAL=claude-sonnet-4-6 \
-PIPELINE_DIR=/tmp/test-pipeline \
-  bash "$HELPER" >/dev/null 2>&1 \
-  || { echo "FAIL: helper (fallback path) exited non-zero"; rm -rf "$FALLBACK_TMP"; exit 1; }
+(
+  unset PLAYWRIGHT_MCP_VERSION
+  HOME="$FALLBACK_TMP" \
+  PR_NUMBER=22222 \
+  MODEL_FUNCTIONAL=claude-sonnet-4-6 \
+  PIPELINE_DIR=/tmp/test-pipeline \
+    bash "$HELPER" >/dev/null 2>&1
+) || { echo "FAIL: helper (fallback path) exited non-zero"; rm -rf "$FALLBACK_TMP"; exit 1; }
 FALLBACK_AGENT="$FALLBACK_TMP/.claude/agents/review-functional-tester.md"
 FALLBACK_HAS_LATEST=$(grep -qE '"@playwright/mcp@latest"' "$FALLBACK_AGENT" && echo true || echo false)
 rm -rf "$FALLBACK_TMP"

@@ -393,7 +393,12 @@ jobs:
         if: steps.code_check.outputs.needs_build == 'true'
         shell: bash
         run: |
-          set -e
+          # set -uo pipefail (no explicit -e) per .github/review-config.md +
+          # bugbot.md — GitHub Actions' `shell: bash` already adds -eo
+          # pipefail at invocation, so the chromium install below still
+          # halts the step on failure, which is what we want for a critical
+          # binary the functional tester depends on.
+          set -uo pipefail
           mkdir -p /tmp/screenshots
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
           # Pre-fetch @playwright/mcp into the npx cache so the subagent's
@@ -401,7 +406,17 @@ jobs:
           # `node -e 'process.exit(0)'` cleanly exits the package without
           # invoking the MCP server (whose --version handling is inconsistent
           # across releases when stdin is closed).
-          npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 'process.exit(0)'
+          #
+          # Non-fatal: a registry hiccup or yanked MCP version only costs
+          # a one-time ~10-20s cold install when the subagent first calls
+          # an MCP tool. Surfacing as ::warning:: keeps the review running
+          # rather than failing the whole job for a cache miss — mirrors
+          # the old standalone Pre-warm step's graceful behaviour.
+          if npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 'process.exit(0)' >/dev/null 2>&1; then
+            echo "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} tarball cached for the subagent's spawn path."
+          else
+            echo "::warning::@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} pre-warm failed — functional tester will cold-install on first call (~10-20s)."
+          fi
           echo "Playwright ${PLAYWRIGHT_VERSION} + @playwright/mcp ${PLAYWRIGHT_MCP_VERSION} ready"
 
       # Optional: GitHub App token for a custom review identity.
