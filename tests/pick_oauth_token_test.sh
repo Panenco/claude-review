@@ -33,14 +33,19 @@ assert_contains() {
 }
 
 # Stub probe. Token content drives the simulated status:
-#   prefix "allowed-" → status=allowed (with future resetsAt)
-#   prefix "blocked-" → status=blocked
-#   prefix "warning-" → status=warning
-#   prefix "noevent-" → emit nothing → picker classifies as invalid
-#   anything else     → status=invalid (no rate_limit_event line)
+#   prefix "allowed-"         → status=allowed (with future resetsAt)
+#   prefix "allowedwarning-"  → status=allowed_warning (past soft threshold,
+#                               but calls still go through — must be treated
+#                               as healthy)
+#   prefix "blocked-"         → status=blocked
+#   prefix "warning-"         → status=warning  (NOT "allowed_warning" —
+#                               bare "warning" is treated as exhausted)
+#   prefix "noevent-"         → emit nothing → picker classifies as invalid
+#   anything else             → status=invalid (no rate_limit_event line)
 PROBE_STUB='
 case "$CLAUDE_CODE_OAUTH_TOKEN" in
   allowed-*) printf "%s\n" "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"resetsAt\":1778065800,\"rateLimitType\":\"five_hour\"}}" ;;
+  allowedwarning-*) printf "%s\n" "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed_warning\",\"resetsAt\":1778065800,\"rateLimitType\":\"five_hour\"}}" ;;
   blocked-*) printf "%s\n" "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"blocked\",\"resetsAt\":1778100000,\"rateLimitType\":\"five_hour\"}}" ;;
   warning-*) printf "%s\n" "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"warning\",\"resetsAt\":1778099999,\"rateLimitType\":\"five_hour\"}}" ;;
   noevent-*) printf "%s\n" "{\"type\":\"result\",\"is_error\":true}" ;;
@@ -118,7 +123,35 @@ assert_contains "Mixed pool → picks the allowed candidate" \
 assert_contains "Mixed pool → healthy_count=1" "healthy_count=1" "$RESULT"
 assert_contains "Mixed pool → pool_size=3" "pool_size=3" "$RESULT"
 
+# --- 5b. allowed_warning treated as healthy (regression: bare "allowed"
+# strict-equality used to reject these even though calls still went
+# through — the user's claude.ai/usage screenshots showed plenty of
+# headroom, but the picker exited 1). -----
+INPUT=$'allowedwarning-only'
+RESULT=$(unset CLAUDE_CODE_OAUTH_TOKEN
+  CLAUDE_CODE_OAUTH_TOKENS="$INPUT" run_picker)
+# Pool of 1 takes the fast path so the probe doesn't even fire — wrap in a
+# real pool of 2 to force the probe path and exercise the status check.
+INPUT=$'allowedwarning-1\nallowedwarning-2'
+RESULT=$(unset CLAUDE_CODE_OAUTH_TOKEN
+  CLAUDE_CODE_OAUTH_TOKENS="$INPUT" run_picker)
+assert_eq "Pool of 2 allowed_warning → exits 0" "rc=0" "$(echo "$RESULT" | grep '^rc=')"
+assert_contains "Pool of 2 allowed_warning → healthy_count=2" \
+  "healthy_count=2" "$RESULT"
+
+# Mixed: 1 allowed + 1 allowed_warning + 1 blocked → 2 healthy, picker
+# treats both allowed* statuses as eligible.
+INPUT=$'allowed-fresh\nallowedwarning-near-cap\nblocked-1'
+RESULT=$(unset CLAUDE_CODE_OAUTH_TOKEN
+  CLAUDE_CODE_OAUTH_TOKENS="$INPUT" run_picker)
+assert_eq "Mixed allowed* + blocked → exits 0" "rc=0" "$(echo "$RESULT" | grep '^rc=')"
+assert_contains "Mixed allowed* + blocked → healthy_count=2" \
+  "healthy_count=2" "$RESULT"
+
 # --- 6. All exhausted (blocked + warning + invalid) → exits 1 with table ----
+# Note: "warning" here is the bare status (NOT "allowed_warning") — that
+# value indicates an abnormal probe result, not a healthy token. Bare
+# warning, blocked, and invalid all stay exhausted.
 INPUT=$'blocked-1\nwarning-2\nnoevent-3'
 RESULT=$(unset CLAUDE_CODE_OAUTH_TOKEN
   CLAUDE_CODE_OAUTH_TOKENS="$INPUT" run_picker)
