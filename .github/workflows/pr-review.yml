@@ -308,65 +308,20 @@ jobs:
             echo "Pure docs PR — skipping build setup."
           fi
 
-      # Detect package manager from lockfile.
-      - name: Detect package manager
-        id: pkg
-        if: steps.code_check.outputs.needs_build == 'true'
-        shell: bash
-        run: |
-          if [ -f pnpm-lock.yaml ]; then echo "manager=pnpm" >> "$GITHUB_OUTPUT"
-          elif [ -f yarn.lock ]; then echo "manager=yarn" >> "$GITHUB_OUTPUT"
-          elif [ -f package-lock.json ]; then echo "manager=npm" >> "$GITHUB_OUTPUT"
-          else echo "manager=none" >> "$GITHUB_OUTPUT"; fi
-
-      # Node + Playwright are installed unconditionally (see below) so the
-      # review pipeline's own npx-based tooling works on any repo. pnpm
-      # stays gated on manager=='pnpm' because pnpm/action-setup@v5 fails
-      # when there's no pnpm-lock.yaml or `packageManager` field, and
-      # nothing review-side shells out to pnpm directly.
-      - name: Set up pnpm
-        if: steps.pkg.outputs.manager == 'pnpm'
-        uses: pnpm/action-setup@b307475762933b98ed359c036b0e51f26b63b74b # v5.0.0
-
-      - name: Detect Node version file
-        id: node_version
-        if: steps.code_check.outputs.needs_build == 'true'
-        shell: bash
-        run: |
-          if [ -f .node-version ]; then echo "file=.node-version" >> "$GITHUB_OUTPUT"
-          elif [ -f .nvmrc ]; then echo "file=.nvmrc" >> "$GITHUB_OUTPUT"
-          else echo "file=" >> "$GITHUB_OUTPUT"; fi
-
+      # Node is installed at the default LTS so npx-based tooling (Playwright
+      # install + @playwright/mcp pre-warm below) just works. The review
+      # pipeline does NOT install the consumer's dependencies — build / lint
+      # / typecheck verification was deterministic in earlier versions but
+      # has been dropped in favour of: (a) consumer-side CI, which already
+      # runs the same checks on every PR, and (b) the functional tester,
+      # which exercises the running app via dev-start.sh + Playwright MCP.
+      # Anything compile-shaped that the agent still wants to check is one
+      # Bash call away from the orchestrator.
       - name: Set up Node
         if: steps.code_check.outputs.needs_build == 'true'
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version-file: ${{ steps.node_version.outputs.file || '' }}
-          node-version: ${{ steps.node_version.outputs.file == '' && 'lts/*' || '' }}
-          # Only enable the package-store cache when a root lockfile was
-          # detected — passing `cache: none` makes setup-node error out.
-          cache: ${{ steps.pkg.outputs.manager != 'none' && steps.pkg.outputs.manager || '' }}
-
-      # Soft-fail: degraded review is better than no review.
-      - name: Install dependencies
-        id: install
-        if: steps.code_check.outputs.needs_build == 'true' && steps.pkg.outputs.manager != 'none'
-        shell: bash
-        env:
-          PKG_MANAGER: ${{ steps.pkg.outputs.manager }}
-        run: |
-          set -euo pipefail
-          case "$PKG_MANAGER" in
-            pnpm) CMD="pnpm install --frozen-lockfile" ;;
-            yarn) CMD="yarn install --frozen-lockfile" ;;
-            npm)  CMD="npm ci" ;;
-          esac
-          if eval "$CMD"; then
-            echo "install_ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "install_ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::$PKG_MANAGER install failed — build verification will be unavailable"
-          fi
+          node-version: 'lts/*'
 
       # Cache the Playwright stack the review pipeline drives independently
       # of the consumer repo: Chromium binaries (~/.cache/ms-playwright) plus
@@ -491,16 +446,6 @@ jobs:
       #
       # All parallelism happens inside the orchestrator via the Task tool.
       # No background `claude -p` processes, no sibling stdout files.
-
-      # Write build status to a file the context-builder agent can read.
-      # This is more reliable than env vars since the agent's Bash calls
-      # always have access to filesystem but may not faithfully check env vars.
-      - name: Write build status
-        shell: bash
-        run: |
-          BUILD_OK="${{ (steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true') && 'true' || 'false' }}"
-          echo "{\"build_available\": $BUILD_OK, \"needs_build\": ${{ steps.code_check.outputs.needs_build || 'false' }}}" > /tmp/build-status.json
-          echo "Build status: $(cat /tmp/build-status.json)"
 
       # Deterministic PRD detection — runs BEFORE the context-builder agent so
       # the result is available as a file the agent just reads (no bash interpretation).
@@ -886,15 +831,12 @@ jobs:
       # blocking the analyzer fan. The wait step further down reaps the PID
       # and replays captured outputs / exit code into the real $GITHUB_OUTPUT.
       #
-      # Gate fires when either (a) root deps installed cleanly, or (b) a
-      # consumer-owned dev-start.sh exists. Case (b) covers polyglot /
-      # subfolder repos (PHP + Node in apps/, monorepos with the lockfile
-      # under a workspace dir, etc.) where there is no root lockfile so the
-      # earlier `Install dependencies` step is skipped — but dev-start.sh
-      # is fully self-contained (typically Docker-based) and doesn't need
-      # anything installed on the host beyond docker/curl/bash.
+      # dev-start.sh is the consumer's contract for "bring up everything the
+      # functional tester needs" — typically Docker-based and self-contained,
+      # owning its own dependency install. Without it, no dev-env launches
+      # and the functional tester runs in skip strategy.
       - name: Pre-start dev environment (background)
-        if: steps.code_check.outputs.needs_build == 'true' && (steps.install.outputs.install_ok == 'true' || hashFiles('.github/claude-review/dev-start.sh') != '')
+        if: steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != ''
         id: dev_env_bg
         shell: bash
         env:
@@ -996,7 +938,6 @@ jobs:
         uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # Claude Code 2.1.132
         env:
           REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
-          REVIEW_BUILD_AVAILABLE: ${{ (steps.code_check.outputs.needs_build == 'true' && steps.install.outputs.install_ok == 'true') && 'true' || 'false' }}
           PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
           PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
           NEEDS_BUILD: ${{ steps.code_check.outputs.needs_build || 'true' }}

@@ -14,7 +14,7 @@ You are the **only** top-level Claude Code agent in the review pipeline. You DO 
 ## Output paths (defaults; the launching workflow may override)
 
 - `/tmp/all-findings.json` — final, deduped findings array.
-- `/tmp/review-meta.json` — `verdict`, `verdict_summary`, `manual_spec_present`, `spec_compliance`, `requires_human_review[_reason]`, `uncertain_observations`, `prompt_injection_detected`, `build_unavailable`, `spec_sources`, `judge_health` (per-judge status + rebuttal count + agreed_at).
+- `/tmp/review-meta.json` — `verdict`, `verdict_summary`, `manual_spec_present`, `spec_compliance`, `requires_human_review[_reason]`, `uncertain_observations`, `prompt_injection_detected`, `spec_sources`, `judge_health` (per-judge status + rebuttal count + agreed_at).
 
 ## Efficiency
 
@@ -98,7 +98,6 @@ In that case, write:
   "requires_human_review_reason": null,
   "uncertain_observations": [],
   "prompt_injection_detected": false,
-  "build_unavailable": false,
   "spec_sources": <from context.md>,
   "judge_health": { "trivial_skip": true, "agreed_at": "trivial" }
 }
@@ -245,7 +244,6 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
   "uncertain_observations": ["..."],
   "prompt_injection_detected": false,
   "reviewer_self_modification": false,
-  "build_unavailable": false,
   "spec_sources": {
     "linked_issue": null,
     "external_issue": null,
@@ -270,4 +268,4 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
 - **Always write both files.** On any failure path (CB failed, both judges failed, parse errors, hitting the STOP anchor), write best-effort output: empty findings array, a defensible verdict (`COMMENT` when degraded), `judge_health` reflecting the actual state. Never silently exit without writing.
 - **Two Task calls per debate round, in one assistant response.** Single calls serialise the judges and waste wall time.
 - **No retries on a single judge.** A judge that returns no parseable output is recorded as `failed` and the run proceeds. The redundancy is the *other* judge, not retries of the same one.
-- **Trivial-skip is a verdict-relevant decision.** If you short-circuit at Phase 1, you are still responsible for `manual_spec_present`, `prompt_injection_detected`, `build_unavailable` — copy these from `context.md`'s flags, don't fabricate.
+- **Trivial-skip is a verdict-relevant decision.** If you short-circuit at Phase 1, you are still responsible for `manual_spec_present` and `prompt_injection_detected` — copy these from `context.md`'s flags, don't fabricate.

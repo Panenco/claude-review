@@ -69,7 +69,7 @@ echo "::group::Build review"
 #   /tmp/review-meta.json  — verdict, verdict_summary, manual_spec_present,
 #                            spec_compliance, requires_human_review,
 #                            uncertain_observations, prompt_injection_detected,
-#                            build_unavailable, spec_sources, judge_health.
+#                            spec_sources, judge_health.
 #
 # Both files are required. If either is missing or malformed, the orchestrator
 # either crashed mid-run or hit a quota wall before writing its STOP-anchor
@@ -763,7 +763,6 @@ jq -n \
     uncertain_observations: (($meta.uncertain_observations // []) + ($functional_meta.uncertain_observations // [])),
     prompt_injection_detected: ($meta.prompt_injection_detected // false),
     reviewer_self_modification: ($meta.reviewer_self_modification // false),
-    build_unavailable: ($meta.build_unavailable // false),
     functional_validation: {
       strategy: ($functional_meta.strategy // "skip"),
       overall: ($functional_meta.overall // "N/A"),
@@ -837,10 +836,6 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
   fi
   if [ "$(jq -r '.requires_human_review' review-result.json)" = "true" ]; then
     echo "> :stop_sign: **Human review required** — $(jq -r '.requires_human_review_reason // ""' review-result.json)"
-    echo ""
-  fi
-  if [ "$(jq -r '.build_unavailable' review-result.json)" = "true" ]; then
-    echo "> :gear: Build verification unavailable."
     echo ""
   fi
   # Surface judge-debate health in the body so a reader can see at a glance

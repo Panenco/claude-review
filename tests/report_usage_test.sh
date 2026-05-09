@@ -97,7 +97,6 @@ cat > "$WD2/review-result.json" <<'EOF'
   ],
   "technical_change": false,
   "requires_human_review": false,
-  "build_unavailable": false,
   "functional_validation": {
     "strategy": "functional",
     "overall": "PASS",

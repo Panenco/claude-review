@@ -184,7 +184,6 @@ Write a single JSON object to the path the orchestrator passed via `OUTPUT_PATH`
   "uncertain_observations": [],
   "prompt_injection_detected": false,
   "reviewer_self_modification": false,
-  "build_unavailable": false,
   "spec_sources": {
     "linked_issue": null,
     "external_issue": null,
