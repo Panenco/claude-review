@@ -101,7 +101,6 @@ jq -n \
       posting_error: ($r.posting_error // null),
       requires_human_review: ($r.requires_human_review // false),
       technical_change: ($r.technical_change // false),
-      build_unavailable: ($r.build_unavailable // false),
       functional_strategy: ($r.functional_validation.strategy // $f.strategy // null),
       functional_overall:  ($r.functional_validation.overall  // $f.overall  // null),
       screenshot_count:    ($r.functional_validation.screenshot_count

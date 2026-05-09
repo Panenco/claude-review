@@ -118,7 +118,6 @@ FINDING_COUNT=$(jq '(.findings // []) | length' review-result.json)
 POSTING_ERROR=$(jq -r '.posting_error // empty' review-result.json)
 HUMAN_REVIEW=$(jq -r '.requires_human_review // false' review-result.json)
 HUMAN_REASON=$(jq -r '.requires_human_review_reason // empty' review-result.json)
-BUILD_UNAVAILABLE=$(jq -r '.build_unavailable // false' review-result.json)
 MANUAL_SPEC=$(jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end' review-result.json)
 TECHNICAL_CHANGE=$(jq -r 'if (type == "object" and has("technical_change")) then .technical_change else false end' review-result.json)
 # Read smoke_ok directly — it captures both the FUNCTIONAL_OK crash flag and
@@ -151,10 +150,6 @@ FUNCTIONAL_OVERALL=$(jq -r '.functional_validation.overall // "N/A"' review-resu
   if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
     echo ""
     echo "> :no_entry: **Technical change — APPROVE withheld until smoke-tested** (overall=\`$FUNCTIONAL_OVERALL\`). Refactors/upgrades have no acceptance criteria, so a passing smoke run is required. Configure \`.github/claude-review/dev-start.sh\` to bring up the app, or fix the issues that caused the smoke run to fail."
-  fi
-  if [ "$BUILD_UNAVAILABLE" = "true" ]; then
-    echo ""
-    echo "> :gear: **Build verification unavailable** — dependency install failed; findings are inferred from source reading without typecheck/lint corroboration."
   fi
   # Functional validation summary
   FN_STRATEGY=$(jq -r '.functional_validation.strategy // "skip"' review-result.json)

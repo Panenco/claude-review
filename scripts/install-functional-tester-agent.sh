@@ -63,6 +63,12 @@ set -uo pipefail
 : "${PIPELINE_DIR:?PIPELINE_DIR must be set}"
 : "${HOME:?HOME must be set}"
 
+# Pinned by the workflow's top-level env so the subagent spawns the same
+# @playwright/mcp version that the install step pre-fetched into the npx
+# cache. Defaults to "latest" when the env var isn't set (e.g. local
+# manual runs of this helper) so the script stays usable in isolation.
+PLAYWRIGHT_MCP_VERSION="${PLAYWRIGHT_MCP_VERSION:-latest}"
+
 AGENT_DIR="$HOME/.claude/agents"
 AGENT_FILE="$AGENT_DIR/review-functional-tester.md"
 
@@ -78,7 +84,7 @@ mcpServers:
   - playwright:
       type: stdio
       command: npx
-      args: ["--yes", "@playwright/mcp@latest", "--headless", "--output-dir", "/tmp/screenshots"]
+      args: ["--yes", "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}", "--headless", "--output-dir", "/tmp/screenshots"]
 ---
 
 Read ${PIPELINE_DIR}/skills/review-functional-tester.md and follow it exactly. The orchestrator spawned you for PR ${PR_NUMBER}. test-plan.md and context.md are at the repo root. Your first turn MUST be the MCP smoke check described in the skill — do not silently fall back to curl/psql when MCP is unavailable.
