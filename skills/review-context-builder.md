@@ -334,9 +334,6 @@ If none of these files exist, omit the section.
 ### `## Convention files`
 List the convention/rule file paths that apply to the changed files (derived from `.github/review-config.md`'s routing). Just paths — reviewers Read the ones relevant to their role.
 
-### `## Build results`
-Two short lines: `typecheck: PASSED|FAILED` and `lint: PASSED|FAILED`. If FAILED, include the path to the captured output (`/tmp/typecheck.out` / `/tmp/lint.out`) so the reviewer can Read the details. Do NOT paste the full output here.
-
 ### `## Open inline threads` (if any)
 List paths reviewers should consult to avoid re-flagging the same thing humans/bots already raised:
 - `/tmp/prior-bot-comments.json` — open inline comments from our own past bot reviewer
