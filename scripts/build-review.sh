@@ -951,14 +951,18 @@ if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; t
       ' /tmp/functional-findings.json
       echo ""
     fi
-    # Screenshot gallery
+    # Screenshot gallery — render each as caption + inline image so the
+    # whole gallery is visible at a glance once the parent Functional
+    # Validation section is expanded. The previous form wrapped each shot
+    # in its own <details>, which forced the reader to expand twice (once
+    # for the section, once per screenshot) before seeing anything.
+    # Skip non-image entries up front: the functional tester sometimes
+    # records API-response JSON dumps as "screenshots" for API-only
+    # scenarios; we only render actual image files so the body never
+    # claims a screenshot exists when there is nothing to embed.
     if [ "$FUNCTIONAL_SCREENSHOT_COUNT" -gt 0 ]; then
       echo "#### Screenshots"
       echo ""
-      # Skip non-image entries up front: the functional tester sometimes
-      # records API-response JSON dumps as "screenshots" for API-only
-      # scenarios; we only render actual image files so the body never
-      # claims a screenshot exists when there is nothing to embed.
       echo "$FUNCTIONAL_META" | jq -r --argjson urls "$SCREENSHOT_URLS" \
         --arg repo "$GITHUB_REPOSITORY" --arg run "${GITHUB_RUN_ID:-}" '
         .screenshots[] |
@@ -967,7 +971,7 @@ if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; t
         ($file | split("/") | last) as $basename |
         ($urls[$basename] // null) as $url |
         if $url then
-          "<details><summary>\(.description)</summary>\n\n![\(.description)](\($url))\n\n</details>\n"
+          "**\(.description)**\n\n![\(.description)](\($url))\n"
         else
           "- **\(.description)** — *see [build artifacts](https://github.com/\($repo)/actions/runs/\($run))*\n"
         end
