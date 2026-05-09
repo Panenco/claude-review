@@ -79,7 +79,7 @@ cat > "$AGENT_FILE" <<EOF || { echo "::error::failed to write $AGENT_FILE"; exit
 name: review-functional-tester
 description: QA agent that validates PR functionality end-to-end with Playwright MCP. Spawned by the review orchestrator to test user flows, take targeted screenshots tied to findings, and write /tmp/functional-meta.json + /tmp/functional-findings.json.
 model: ${MODEL_FUNCTIONAL}
-tools: Bash, Read, Write, Glob, Grep, ToolSearch, mcp__playwright__browser_navigate, mcp__playwright__browser_take_screenshot, mcp__playwright__browser_snapshot, mcp__playwright__browser_console_messages, mcp__playwright__browser_click, mcp__playwright__browser_fill_form, mcp__playwright__browser_wait_for, mcp__playwright__browser_close, mcp__playwright__browser_select_option, mcp__playwright__browser_press_key, mcp__playwright__browser_type, mcp__playwright__browser_hover, mcp__playwright__browser_resize, mcp__playwright__browser_tabs, mcp__playwright__browser_navigate_back, mcp__playwright__browser_evaluate
+tools: Bash, Read, Write, Glob, Grep, ToolSearch, mcp__playwright
 mcpServers:
   - playwright:
       type: stdio

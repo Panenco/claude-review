@@ -919,12 +919,15 @@ jobs:
           # subagent's inline mcpServers spawns the Playwright server when
           # the subagent starts. NOTE: the MCP tool *permissions* are still
           # session-level — see the `--allowedTools` list in the orchestrator
-          # step below, which must include every mcp__playwright__* tool
-          # the subagent will call. dontAsk mode evaluates permissions
-          # against the session-level allowlist, not the subagent's tools:
-          # field; without the orchestrator-level grant, the subagent's
-          # tool calls return "permission denied" even though the server
-          # is connected (caught on dogfood seaters#475 round 2).
+          # step below, which uses the bare `mcp__playwright` server-wildcard
+          # so the subagent can call ANY tool the @playwright/mcp package
+          # exposes (browser_drag, browser_handle_dialog, browser_network_*,
+          # etc.) without us having to enumerate. dontAsk mode evaluates
+          # permissions against the session-level allowlist, not the
+          # subagent's tools: field; without the orchestrator-level grant,
+          # the subagent's tool calls return "permission denied" even
+          # though the server is connected (caught on dogfood seaters#475
+          # round 2).
           bash "${CLAUDE_REVIEW_PIPELINE_DIR}/scripts/install-functional-tester-agent.sh"
 
       - name: 'Review: orchestrate'
@@ -962,7 +965,7 @@ jobs:
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
             --setting-sources user
-            --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch,mcp__playwright__browser_navigate,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_snapshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_click,mcp__playwright__browser_fill_form,mcp__playwright__browser_wait_for,mcp__playwright__browser_close,mcp__playwright__browser_select_option,mcp__playwright__browser_press_key,mcp__playwright__browser_type,mcp__playwright__browser_hover,mcp__playwright__browser_resize,mcp__playwright__browser_tabs,mcp__playwright__browser_navigate_back,mcp__playwright__browser_evaluate
+            --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch,mcp__playwright
             --disallowedTools Edit,WebFetch,WebSearch
             --max-turns 100
           show_full_output: 'true'

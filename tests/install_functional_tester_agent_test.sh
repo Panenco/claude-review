@@ -20,9 +20,15 @@ set -uo pipefail
 #   - mcpServers[0] is a single-key Hash whose key is "playwright"
 #   - playwright config has type=stdio, command=npx, args includes
 #     "--headless" + "--output-dir" + "/tmp/screenshots"
-#   - tools is a comma-separated string with all 16 mcp__playwright__*
-#     tools listed (smoke check that the orchestrator dispatch will
-#     have access to the right tool space)
+#   - tools includes the bare `mcp__playwright` server-wildcard so the
+#     subagent can call any tool the @playwright/mcp package exposes
+#     (browser_drag, browser_handle_dialog, browser_network_*, run_code_unsafe,
+#     etc.) without us needing to enumerate. Earlier versions enumerated
+#     16 specific tool names; the enumeration kept silently breaking
+#     whenever @playwright/mcp added a tool the agent legitimately needed
+#     (caught on dogfood seaters round 2 — browser_drag denied with
+#     "Permission to use mcp__playwright__browser_drag has been denied
+#     because Claude Code is running in don't ask mode").
 #
 # Without this test, dict-vs-list regressions would only surface during a
 # real consumer review (when the functional tester silently falls back to
@@ -132,31 +138,12 @@ assert_eq "playwright.args includes --output-dir /tmp/screenshots" "true" \
 assert_eq "playwright.args includes pinned @playwright/mcp@<PLAYWRIGHT_MCP_VERSION>" "true" \
   "$(echo "$ARGS" | grep -qE '"@playwright/mcp@0\.0\.99-test"' && echo true || echo false)"
 
-# ── tools field MUST list every Playwright MCP tool the skill uses, or
-#    the subagent's tool list is incomplete and Claude Code will refuse
-#    those calls even with MCP connected. ──
-EXPECTED_PLAYWRIGHT_TOOLS=(
-  mcp__playwright__browser_navigate
-  mcp__playwright__browser_take_screenshot
-  mcp__playwright__browser_snapshot
-  mcp__playwright__browser_console_messages
-  mcp__playwright__browser_click
-  mcp__playwright__browser_fill_form
-  mcp__playwright__browser_wait_for
-  mcp__playwright__browser_close
-  mcp__playwright__browser_select_option
-  mcp__playwright__browser_press_key
-  mcp__playwright__browser_type
-  mcp__playwright__browser_hover
-  mcp__playwright__browser_resize
-  mcp__playwright__browser_tabs
-  mcp__playwright__browser_navigate_back
-  mcp__playwright__browser_evaluate
-)
-# Pull the comma-separated value off the `tools:` line, split, and trim
-# each token so the membership test is exact. A regex with anchors is
-# fragile around the `: ` separator and the trailing newline; iterating
-# tokens is the boring-correct version.
+# ── tools field MUST grant the subagent access to the Playwright MCP
+#    server. The bare `mcp__playwright` token is Claude Code's
+#    server-wildcard form: it allows every tool the server exposes
+#    without enumeration. Asserting on the wildcard (instead of a
+#    closed list of tool names) keeps this test useful even when
+#    @playwright/mcp adds new tools the agent legitimately needs. ──
 TOOLS_VALUE=$(grep -E '^tools:' "$AGENT_FILE" | sed -E 's/^tools:[[:space:]]*//')
 declare -A TOOLS_SET
 while IFS= read -r tok; do
@@ -164,10 +151,22 @@ while IFS= read -r tok; do
   [ -n "$tok" ] && TOOLS_SET["$tok"]=1
 done < <(echo "$TOOLS_VALUE" | tr ',' '\n')
 
-for t in "${EXPECTED_PLAYWRIGHT_TOOLS[@]}"; do
-  assert_eq "tools list contains $t" "true" \
-    "$([ "${TOOLS_SET[$t]:-}" = "1" ] && echo true || echo false)"
+assert_eq "tools list contains mcp__playwright server-wildcard" "true" \
+  "$([ "${TOOLS_SET[mcp__playwright]:-}" = "1" ] && echo true || echo false)"
+
+# Guard against accidental drift back to enumeration: if any
+# `mcp__playwright__<tool>` token shows up alongside the wildcard, the
+# enumerated tokens are dead weight and a future maintainer might trim
+# the wildcard thinking the explicit list is the real one. Reject that
+# shape so we keep a single source of truth.
+ENUMERATED_LEAK=false
+for t in "${!TOOLS_SET[@]}"; do
+  case "$t" in
+    mcp__playwright__*) ENUMERATED_LEAK=true ;;
+  esac
 done
+assert_eq "no enumerated mcp__playwright__<tool> tokens alongside wildcard" \
+  "false" "$ENUMERATED_LEAK"
 
 # Bash + Read + Write must also be there or the subagent can't run
 # scenarios at all.
