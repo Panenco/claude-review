@@ -138,6 +138,73 @@ assert_eq "max(REQUEST_CHANGES, COMMENT)"     "REQUEST_CHANGES" "$(verdict_max R
 assert_eq "max(UNKNOWN, APPROVE)"             "REQUEST_CHANGES" "$(verdict_max UNKNOWN APPROVE)"
 assert_eq "max(empty, APPROVE)"               "REQUEST_CHANGES" "$(verdict_max '' APPROVE)"
 
+# decide_degraded <PRIOR_VERDICT> <PER_PR_VERDICT> <SINCE_LAST_EXISTS> <THREAD_RES_EXISTS>
+# Echoes "<FINAL_VERDICT>|<OVERRIDE_REASON>". Mirrors build-review.sh's
+# RESOLUTION_VALID=false branch after the shallow-clone-fallback split:
+#
+#   since-last.diff absent      → trust per-PR (judges saw full diff)
+#   since-last.diff present     → classifier was supposed to run; pin via
+#                                  verdict_max because resolution is unknown
+decide_degraded() {
+  local PRIOR_VERDICT="$1"
+  local PER_PR_VERDICT="$2"
+  local SINCE_LAST_EXISTS="$3"
+  local THREAD_RES_EXISTS="$4"
+
+  local VERDICT="$PER_PR_VERDICT"
+  local LADDER_OVERRIDE_REASON=""
+
+  if [ "$SINCE_LAST_EXISTS" = "false" ]; then
+    :  # shallow-clone fallback — no pin, no override reason
+  else
+    local DEGRADED_REASON="missing"
+    [ "$THREAD_RES_EXISTS" = "true" ] && DEGRADED_REASON="malformed"
+    VERDICT=$(verdict_max "$PRIOR_VERDICT" "$PER_PR_VERDICT")
+    if [ "$VERDICT" != "$PER_PR_VERDICT" ]; then
+      LADDER_OVERRIDE_REASON="prior verdict was $PRIOR_VERDICT and the round-2 thread-resolution was $DEGRADED_REASON; pinned to the more severe of (prior, per-PR) so we never silently downgrade"
+    fi
+  fi
+
+  echo "${VERDICT}|${LADDER_OVERRIDE_REASON}"
+}
+
+echo ""
+echo "── degraded round-2 branch split (shallow-clone vs real failure) ──"
+
+# Headline case: qiv#350 (PRIOR_HEAD_SHA outside shallow clone). Prior was
+# REQUEST_CHANGES, judges reviewed the full diff in round-1 fallback mode
+# and landed APPROVE. Old behaviour pinned to REQUEST_CHANGES; new
+# behaviour trusts the per-PR verdict.
+got=$(decide_degraded REQUEST_CHANGES APPROVE false false)
+assert_eq "shallow-clone: prior=REQUEST_CHANGES, per-PR=APPROVE → APPROVE (no pin)" "APPROVE|" "$got"
+
+# Same fallback, per-PR landed COMMENT (minor finding in the full re-review).
+got=$(decide_degraded REQUEST_CHANGES COMMENT false false)
+assert_eq "shallow-clone: prior=REQUEST_CHANGES, per-PR=COMMENT → COMMENT (no pin)" "COMMENT|" "$got"
+
+# Fallback with a benign prior: no behaviour change expected.
+got=$(decide_degraded APPROVE APPROVE false false)
+assert_eq "shallow-clone: prior=APPROVE, per-PR=APPROVE → APPROVE (no pin)" "APPROVE|" "$got"
+
+# Real degraded round-2: since-last.diff existed, classifier should have run
+# but its output is missing — pin must still fire (this is the protection
+# against the classifier crashing).
+got=$(decide_degraded REQUEST_CHANGES APPROVE true false)
+assert_eq "degraded: prior=REQUEST_CHANGES, per-PR=APPROVE, thread-res missing → REQUEST_CHANGES (pin)" \
+  "REQUEST_CHANGES|prior verdict was REQUEST_CHANGES and the round-2 thread-resolution was missing; pinned to the more severe of (prior, per-PR) so we never silently downgrade" "$got"
+
+# Real degraded with a malformed thread-resolution.json (classifier crashed
+# mid-write). Different DEGRADED_REASON in the override message.
+got=$(decide_degraded REQUEST_CHANGES APPROVE true true)
+assert_eq "degraded: prior=REQUEST_CHANGES, per-PR=APPROVE, thread-res malformed → REQUEST_CHANGES (pin)" \
+  "REQUEST_CHANGES|prior verdict was REQUEST_CHANGES and the round-2 thread-resolution was malformed; pinned to the more severe of (prior, per-PR) so we never silently downgrade" "$got"
+
+# Real degraded but prior was benign and per-PR matched it — pin is a no-op
+# and we must not capture an override reason (it'd misleadingly narrate
+# a non-existent override).
+got=$(decide_degraded APPROVE APPROVE true false)
+assert_eq "degraded: prior=APPROVE, per-PR=APPROVE → APPROVE (pin no-op, no override)" "APPROVE|" "$got"
+
 echo ""
 if [ "$fail" -eq 0 ]; then
   echo "All verdict-ladder tests passed."
