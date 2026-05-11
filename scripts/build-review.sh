@@ -699,12 +699,22 @@ if [ "$ROUND2_VALID" = "true" ]; then
         fi
         ;;
     esac
+  elif [ ! -f /tmp/since-last.diff ]; then
+    # Shallow-clone fallback: PRIOR_HEAD_SHA was outside this clone, so
+    # the context builder couldn't produce /tmp/since-last.diff (see
+    # review-context-builder.md "Round-2 fallback"). The orchestrator
+    # correctly skipped the thread classifier per its gating, and the
+    # judges reverted to round-1 full-diff scoping. Their per-PR verdict
+    # is informed about the whole PR — pinning would punish a clean
+    # re-review just because the runner couldn't reach the prior HEAD.
+    # Trust the per-PR verdict; HAS_BLOCKING already escalates new blockers.
+    echo "::notice::Round-2 shallow-clone fallback: /tmp/since-last.diff absent (PRIOR_HEAD_SHA outside the clone). Classifier was correctly skipped; judges reviewed the full diff. Using per-PR verdict '$PER_PR_VERDICT' without pin."
   else
-    # Degraded round-2: prior state is valid but thread-resolution.json
-    # is missing or malformed (thread classifier didn't run, since-last.diff
-    # couldn't be computed, or the agent crashed). Pin VERDICT to the
-    # more-severe of (PRIOR_VERDICT, current per-PR VERDICT) — never
-    # silently downgrade REQUEST_CHANGES.
+    # Degraded round-2: since-last.diff existed so the classifier was
+    # supposed to run, but /tmp/thread-resolution.json is missing or
+    # malformed (agent crashed, timed out, schema-broke). Pin VERDICT to
+    # the more-severe of (PRIOR_VERDICT, current per-PR VERDICT) — never
+    # silently downgrade REQUEST_CHANGES on genuinely missing data.
     DEGRADED_REASON="missing"
     [ -f /tmp/thread-resolution.json ] && DEGRADED_REASON="malformed"
     VERDICT=$(verdict_max "$PRIOR_VERDICT" "$PER_PR_VERDICT")
