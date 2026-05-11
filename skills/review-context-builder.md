@@ -71,22 +71,41 @@ print(f'Split diff: {kept} reviewable chunks, {skipped} skipped ({total_lines} l
 # previous review and per-file chunks for that subset. The two debating
 # judges read `/tmp/since-last.diff` and `/tmp/since-last-chunks/` so
 # round 2 stays narrowly scoped to changes since the last review.
+#
+# The naked `git diff PRIOR..HEAD` includes any commits the author merged
+# in from the target branch (Panenco/qiv#350: a Gemini model bump from
+# `main` landed in since-last and the judges then "approved" the bump as
+# if it were the PR's own work). Scope the range to files in /tmp/pr.diff
+# (GitHub-computed PR diff, already base..head — target-merge noise is
+# already filtered there) so since-last only ever describes the PR's own
+# changes since the prior review.
 if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
   if git cat-file -e "$PRIOR_HEAD_SHA" 2>/dev/null; then
-    git diff "$PRIOR_HEAD_SHA..HEAD" > /tmp/since-last.diff
+    mapfile -t PR_FILES_ARR < <(awk '/^diff --git / { sub(/^a\//,"",$3); sub(/^b\//,"",$4); print $3; print $4 }' /tmp/pr.diff | sort -u)
     mkdir -p /tmp/since-last-chunks
-    # Use git directly (one diff per file) — avoids the inline-python diff
-    # parser, which silently produced 0 chunks in some CI environments.
-    # `git diff --name-only` lists files changed in the range; we then run
-    # a focused `git diff <range> -- <path>` per file. The work is bounded
-    # by the count of changed files (typically 1-5 between consecutive
-    # review rounds), so per-file invocation is fine.
-    while IFS= read -r path; do
-      [ -z "$path" ] && continue
-      safe="${path//\//--}"
-      git diff "$PRIOR_HEAD_SHA..HEAD" -- "$path" > "/tmp/since-last-chunks/${safe}.diff"
-    done < <(git diff --name-only "$PRIOR_HEAD_SHA..HEAD")
-    echo "Round-2 since-last.diff: $(wc -l < /tmp/since-last.diff) lines, $(ls /tmp/since-last-chunks/ 2>/dev/null | wc -l) per-file chunks"
+    if [ "${#PR_FILES_ARR[@]}" -eq 0 ]; then
+      # PR has no own files vs target (rare: round triggered after a
+      # merge-only push with no author work). Empty since-last → planner
+      # picks `skip`, smoke gate inherits prior, verdict ladder pins via
+      # prior. Nothing for the judges to (re-)review.
+      : > /tmp/since-last.diff
+      echo "Round-2 since-last: PR touches no files vs target — emitting empty since-last (merge-only round)."
+    else
+      git diff "$PRIOR_HEAD_SHA..HEAD" -- "${PR_FILES_ARR[@]}" > /tmp/since-last.diff
+      # Per-file chunks for the same scoped range. `git diff --name-only`
+      # respects the same pathspec, so files touched only by a
+      # target-merge commit are filtered out here too. Drop empty chunks
+      # so the diff index doesn't list a file whose since-last diff is
+      # zero bytes (happens when an author-touched file was reverted
+      # to its prior-review state by a subsequent merge).
+      while IFS= read -r path; do
+        [ -z "$path" ] && continue
+        safe="${path//\//--}"
+        git diff "$PRIOR_HEAD_SHA..HEAD" -- "$path" > "/tmp/since-last-chunks/${safe}.diff"
+        [ -s "/tmp/since-last-chunks/${safe}.diff" ] || rm -f "/tmp/since-last-chunks/${safe}.diff"
+      done < <(git diff --name-only "$PRIOR_HEAD_SHA..HEAD" -- "${PR_FILES_ARR[@]}")
+      echo "Round-2 since-last.diff: $(wc -l < /tmp/since-last.diff) lines, $(ls /tmp/since-last-chunks/ 2>/dev/null | wc -l) per-file chunks (scoped to PR-touched files; target-merge noise filtered)."
+    fi
   else
     echo "::warning::PRIOR_HEAD_SHA=$PRIOR_HEAD_SHA not present in this clone — round-2 scope reduction unavailable, full diff will be reviewed."
   fi
