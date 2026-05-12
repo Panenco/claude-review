@@ -329,8 +329,24 @@ jobs:
       # *pinned* version (typically via `corepack enable`, picked up from
       # the consumer's package.json#packageManager) — this is a safety
       # net so a missing preamble doesn't silently skip functional testing.
-      - name: Set up pnpm (default fallback)
+      #
+      # Skip the fallback when the consumer pins pnpm via `packageManager`:
+      # pnpm/action-setup@v6 errors out ("Multiple versions of pnpm specified")
+      # if both `version:` and `packageManager` are set. Consumers with a pin
+      # don't need the fallback — corepack will activate the pinned version.
+      - name: Detect consumer pnpm pin
+        id: pnpm_pin
         if: steps.code_check.outputs.needs_build == 'true'
+        shell: bash
+        run: |
+          if [ -f package.json ] && grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' package.json; then
+            echo "has_pin=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_pin=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up pnpm (default fallback)
+        if: steps.code_check.outputs.needs_build == 'true' && steps.pnpm_pin.outputs.has_pin == 'false'
         uses: pnpm/action-setup@739bfe42ca9233c5e6aca07c1a25a9d34aca49b0 # v6.0.7
         with:
           version: 10
