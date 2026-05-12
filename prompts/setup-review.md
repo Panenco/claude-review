@@ -36,6 +36,15 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # Push-to-main warms the Playwright cache on `refs/heads/main` scope, the
+  # only cache scope every PR run can read. Without this, the first run of
+  # every new PR finds nothing in cache (sibling PR refs are unreachable
+  # by GH cache rules) and pays a full cold install of Chromium + apt deps,
+  # which can hang for many minutes when the runner's apt mirror or the
+  # Playwright CDN is unhealthy. The warmer invocation skips the review
+  # work entirely — it only runs Set up Node + Cache + Install Playwright.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -44,7 +53,9 @@ on:
         type: string
 
 # Cancel superseded review runs when a PR branch is repushed. Manual dispatch
-# gets a per-invocation group so it never cancels concurrent PR runs.
+# gets a per-invocation group so it never cancels concurrent PR runs. Push
+# events use github.run_id so concurrent main pushes warm the cache
+# independently rather than cancelling each other.
 concurrency:
   group: claude-review-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
@@ -53,8 +64,8 @@ jobs:
   review:
     # Skip drafts to avoid burning review budget on in-progress work. The
     # pipeline still re-runs automatically on `ready_for_review`. Manual
-    # dispatch is always allowed.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # dispatch + push-to-main (cache warmer) are always allowed.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.draft == false
     # Track the v2 floating tag so pipeline fixes propagate automatically to
     # every consumer repo. Supply-chain acceptance is declared in bugbot.md
     # under "Accepted supply-chain trade-offs" so the reviewer does not
@@ -78,6 +89,10 @@ jobs:
       actions: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      # On push-to-main, run only the warm-cache job inside the reusable
+      # workflow — no PR exists to review, the goal is to populate the
+      # main-scoped Playwright cache so PRs find it on first run.
+      warm_cache_only: ${{ github.event_name == 'push' }}
     secrets: inherit
 ```
 
@@ -392,7 +407,7 @@ Before committing, re-read your own `.github/review-config.md` and `.github/clau
 - [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
 - [ ] The caller workflow tracks `@v2` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v2 + secrets: inherit` as accepted. Both are needed — the @v2 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
-- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR.
+- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR. The `push` clause in the guard is required so `push: main` invocations of the cache warmer aren't filtered out (they have no `event.pull_request`, so the draft check would evaluate falsy and skip the job).
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
 

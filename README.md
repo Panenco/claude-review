@@ -13,6 +13,11 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # Push-to-main warms the Playwright cache on `refs/heads/main` scope, the
+  # only scope PR runs can read across branches. Without this, every new
+  # PR pays a cold install on its first run.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -30,6 +35,7 @@ jobs:
                             # run's review-state artifact by run-id
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      warm_cache_only: ${{ github.event_name == 'push' }}
     secrets: inherit
 ```
 
