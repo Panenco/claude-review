@@ -357,6 +357,8 @@ jobs:
             ~/.cache/ms-playwright
             ~/.npm/_npx
           key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-pw-
 
       - name: Install Playwright + MCP
         if: steps.code_check.outputs.needs_build == 'true'
@@ -1160,6 +1162,8 @@ jobs:
             ~/.cache/ms-playwright
             ~/.npm/_npx
           key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-pw-
       - run: |
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
           npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0

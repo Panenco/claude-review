@@ -3,6 +3,8 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]  # warms the Playwright cache on main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -21,7 +23,7 @@ jobs:
     # Skip drafts to avoid burning review budget on in-progress work. The
     # pipeline still re-runs automatically on `ready_for_review`. Manual
     # dispatch is always allowed.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # This repo IS panenco/claude-review, so we call the reusable workflow
     # via its local path rather than `panenco/claude-review/.github/workflows/
     # pr-review.yml@v2`. Two reasons:
