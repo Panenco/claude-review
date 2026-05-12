@@ -1149,9 +1149,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Runs in base-branch context (GITHUB_REF = refs/heads/main) so cache
-  # writes land in main scope — readable by every PR. No PR checkout, no
-  # PR-supplied scripts: safe to run with pull_request_target's secrets.
+  # pull_request_target writes cache to main scope. Keep this job PR-code-free.
   warm-cache:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
