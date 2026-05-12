@@ -84,6 +84,7 @@ env:
 jobs:
   review:
     name: In-Depth Review
+    if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -323,18 +324,18 @@ jobs:
         with:
           node-version: 'lts/*'
 
-      # Put a default pnpm on PATH so consumer dev-start.sh scripts that
-      # shell out to `pnpm install` work without a corepack preamble. The
-      # contract still expects dev-start.sh to activate the project's
-      # *pinned* version (typically via `corepack enable`, picked up from
-      # the consumer's package.json#packageManager) — this is a safety
-      # net so a missing preamble doesn't silently skip functional testing.
-      - name: Set up pnpm (default fallback)
+      - name: Ensure pnpm on PATH
         if: steps.code_check.outputs.needs_build == 'true'
-        uses: pnpm/action-setup@739bfe42ca9233c5e6aca07c1a25a9d34aca49b0 # v6.0.7
-        with:
-          version: 10
-          run_install: false
+        shell: bash
+        run: |
+          if command -v pnpm >/dev/null 2>&1; then
+            echo "pnpm already present: $(pnpm --version)"
+          elif corepack enable pnpm 2>/dev/null && command -v pnpm >/dev/null 2>&1; then
+            echo "pnpm via corepack: $(pnpm --version)"
+          else
+            npm install -g pnpm
+            echo "pnpm via npm: $(pnpm --version)"
+          fi
 
       # Cache the Playwright stack the review pipeline drives independently
       # of the consumer repo: Chromium binaries (~/.cache/ms-playwright) plus
@@ -356,6 +357,8 @@ jobs:
             ~/.cache/ms-playwright
             ~/.npm/_npx
           key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-pw-
 
       - name: Install Playwright + MCP
         if: steps.code_check.outputs.needs_build == 'true'
@@ -1145,3 +1148,24 @@ jobs:
             /tmp/*-meta.invalid.json
           if-no-files-found: ignore
           retention-days: 7
+
+  # pull_request_target writes cache to main scope. Keep this job PR-code-free.
+  warm-cache:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 'lts/*'
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.npm/_npx
+          key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-pw-
+      - run: |
+          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
+          npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0

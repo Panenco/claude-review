@@ -13,6 +13,7 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_target:  # warms Playwright cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -23,11 +24,10 @@ jobs:
   review:
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
     permissions:
-      contents: write       # screenshots → review-assets branch
-      pull-requests: write  # post review + comments
+      contents: write
+      pull-requests: write
       issues: write
-      actions: read         # round-2 follow-up reviews look up the prior
-                            # run's review-state artifact by run-id
+      actions: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit

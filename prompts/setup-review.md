@@ -36,6 +36,7 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_target:  # warms Playwright cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -43,34 +44,14 @@ on:
         required: true
         type: string
 
-# Cancel superseded review runs when a PR branch is repushed. Manual dispatch
-# gets a per-invocation group so it never cancels concurrent PR runs.
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number || github.run_id }}
+  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
-    # Skip drafts to avoid burning review budget on in-progress work. The
-    # pipeline still re-runs automatically on `ready_for_review`. Manual
-    # dispatch is always allowed.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
-    # Track the v2 floating tag so pipeline fixes propagate automatically to
-    # every consumer repo. Supply-chain acceptance is declared in bugbot.md
-    # under "Accepted supply-chain trade-offs" so the reviewer does not
-    # re-flag `@v2 + secrets: inherit` on every PR.
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
-    # Grant the reusable workflow the write scopes it needs. Reusable
-    # workflows cannot elevate permissions above the caller, and GitHub's
-    # default `GITHUB_TOKEN` since 2023 is read-only at both org and repo
-    # level. Without this block the run fails at startup with `startup_failure`,
-    # zero jobs, and no downloadable logs — extremely painful to debug.
-    # Required scopes: `contents: write` (push screenshots to the
-    # review-assets branch), `pull-requests: write` + `issues: write`
-    # (post reviews and comments), `actions: read` (round-2 follow-up
-    # reviews look up the prior run's review-state artifact by run-id —
-    # omitting this means follow-up reviews silently degrade to a full
-    # re-review on every push).
     permissions:
       contents: write
       pull-requests: write
@@ -392,7 +373,7 @@ Before committing, re-read your own `.github/review-config.md` and `.github/clau
 - [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
 - [ ] The caller workflow tracks `@v2` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v2 + secrets: inherit` as accepted. Both are needed — the @v2 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
-- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR.
+- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR. `github.event_name` in the group key keeps `pull_request` and `pull_request_target` in separate groups so the warm-cache run doesn't cancel the review (or vice versa).
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
 
