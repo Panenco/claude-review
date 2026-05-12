@@ -106,12 +106,13 @@ Inline comments anchor on (`path`, `line`, `side`) tuples that must exist in the
 
 ## False-positive self-check (MANDATORY)
 
-Before finalising ANY finding, verify all five:
+Before finalising ANY finding, verify all six:
 1. **Concrete evidence** — exact lines that are wrong. Speculation → drop it.
 2. **Refutation test** — could the author dismiss this in one sentence? If yes → drop it.
 3. **Senior-engineer test** — would an experienced engineer agree this is *objectively wrong*?
 4. **Exact reference** — for `spec-mismatch`, quote the exact rule. For `bug`, show the failure path. "Generally bad practice" is not evidence.
 5. **Artifact exists** — if the finding references a specific library/export, verify by Read (`package.json`, the package's `index.ts`, the source file that should contain the symbol). If you cannot verify by Read, drop the finding. Also Read `/tmp/user-replies-on-ours.json` when context.md flags it as non-empty: if a maintainer already rebutted the same issue as a false positive, do not re-flag unless you have new counter-evidence.
+6. **Impact test** — state the concrete bad outcome in one sentence (broken behavior, user-visible regression, correctness/security hole, real maintainability cost on code that will live). A bare convention/bugbot rule match without a stated outcome is noise, regardless of how clearly the rule is written — drop it. Process complaints about the PR description or follow-up tracking are not findings.
 
 A clean `[]` is a confident, valuable review. False positives waste more team time than a missed minor issue. When in doubt, drop the finding.
 
