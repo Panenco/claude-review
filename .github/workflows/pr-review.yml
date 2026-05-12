@@ -1152,39 +1152,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Writes the Playwright cache on `refs/heads/main` scope so PR runs (which
-  # only see their own ref + default branch) can hit it. Consumers trigger
-  # this from `push: main` — see README.md.
   warm-cache:
-    name: Warm Playwright cache
     if: ${{ inputs.warm_cache_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: read
     steps:
-      - name: Set up Node
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 'lts/*'
-
-      - name: Cache Playwright assets
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/.npm/_npx
+          path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
-
-      - name: Install Playwright + MCP
-        shell: bash
-        run: |
-          set -uo pipefail
-          mkdir -p /tmp/screenshots
-          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
-          if npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 'process.exit(0)' >/dev/null 2>&1; then
-            echo "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} tarball cached for the subagent's spawn path."
-          else
-            echo "::warning::@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} pre-warm failed — functional tester will cold-install on first call (~10-20s)."
-          fi
-          echo "Playwright ${PLAYWRIGHT_VERSION} + @playwright/mcp ${PLAYWRIGHT_MCP_VERSION} ready"
+      - run: npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
