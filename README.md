@@ -13,11 +13,8 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  # Push-to-main warms the Playwright cache on `refs/heads/main` scope, the
-  # only scope PR runs can read across branches. Without this, every new
-  # PR pays a cold install on its first run.
   push:
-    branches: [main]
+    branches: [main]  # warms the Playwright cache
   workflow_dispatch:
     inputs:
       pr_number:
@@ -28,11 +25,10 @@ jobs:
   review:
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
     permissions:
-      contents: write       # screenshots → review-assets branch
-      pull-requests: write  # post review + comments
+      contents: write
+      pull-requests: write
       issues: write
-      actions: read         # round-2 follow-up reviews look up the prior
-                            # run's review-state artifact by run-id
+      actions: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       warm_cache_only: ${{ github.event_name == 'push' }}

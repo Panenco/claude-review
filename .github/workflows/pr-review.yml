@@ -48,7 +48,7 @@ on:
         type: number
         default: 200
       warm_cache_only:
-        description: 'When true, skip the review job and run only the Playwright cache warmer. Consumers wire this to `push: main` triggers so the Playwright stack is populated on `refs/heads/main` scope — the only scope every PR run can read. Without this, every brand-new PR pays a cold cache miss because GH Actions cache is branch-scoped and sibling PR refs are unreachable.'
+        description: 'Skip review; only run the Playwright cache warmer. Wire from `push: main` to populate the main-scoped cache that PR runs fall back to.'
         required: false
         type: boolean
         default: false
@@ -329,44 +329,18 @@ jobs:
         with:
           node-version: 'lts/*'
 
-      # Put a pnpm on PATH so consumer dev-start.sh scripts that shell out
-      # to `pnpm install` work without a corepack preamble. The contract
-      # still expects dev-start.sh to activate the project's *pinned*
-      # version (typically via `corepack enable`, picked up from
-      # package.json#packageManager) — this is a safety net so a missing
-      # preamble doesn't silently skip functional testing.
-      #
-      # pnpm/action-setup v6 refuses to run when BOTH a `version:` input
-      # AND a `packageManager` field are present (ERR_PNPM_BAD_PM_VERSION,
-      # "Multiple versions of pnpm specified"). Detect the field first
-      # and pick the right invocation:
-      #   - has packageManager → install that pinned version (no input).
-      #   - no packageManager  → install a sane default (version: 10).
-      # Consumers that don't use pnpm at all just see both steps skipped.
-      - name: Detect pnpm in package.json
-        id: pkg_mgr
+      - name: Ensure pnpm on PATH
         if: steps.code_check.outputs.needs_build == 'true'
         shell: bash
         run: |
-          set -uo pipefail
-          has_pnpm=false
-          if [ -f package.json ] && jq -e '(.packageManager // "") | startswith("pnpm@")' package.json >/dev/null 2>&1; then
-            has_pnpm=true
+          if command -v pnpm >/dev/null 2>&1; then
+            echo "pnpm already present: $(pnpm --version)"
+          elif corepack enable pnpm 2>/dev/null && command -v pnpm >/dev/null 2>&1; then
+            echo "pnpm via corepack: $(pnpm --version)"
+          else
+            npm install -g pnpm
+            echo "pnpm via npm: $(pnpm --version)"
           fi
-          echo "has_pnpm=$has_pnpm" >> "$GITHUB_OUTPUT"
-
-      - name: Set up pnpm (from packageManager)
-        if: steps.code_check.outputs.needs_build == 'true' && steps.pkg_mgr.outputs.has_pnpm == 'true'
-        uses: pnpm/action-setup@739bfe42ca9233c5e6aca07c1a25a9d34aca49b0 # v6.0.7
-        with:
-          run_install: false
-
-      - name: Set up pnpm (default fallback)
-        if: steps.code_check.outputs.needs_build == 'true' && steps.pkg_mgr.outputs.has_pnpm == 'false'
-        uses: pnpm/action-setup@739bfe42ca9233c5e6aca07c1a25a9d34aca49b0 # v6.0.7
-        with:
-          version: 10
-          run_install: false
 
       # Cache the Playwright stack the review pipeline drives independently
       # of the consumer repo: Chromium binaries (~/.cache/ms-playwright) plus
@@ -1178,17 +1152,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Populate the Playwright cache on `refs/heads/main` scope so every PR run
-  # can fall back to it. GH Actions cache scoping: a PR run reads caches
-  # scoped to its own merge ref OR the default branch — never sibling PR
-  # refs. Before this job existed, the cache only got written from PR
-  # branches (`refs/pull/N/merge`), siloed per-PR; new PRs found nothing on
-  # their first run and either paid a ~2-3min cold install or hung entirely
-  # under `--with-deps` apt lock waits.
-  #
-  # Consumers wire this via `push: branches: [main]` + `warm_cache_only:
-  # ${{ github.event_name == 'push' }}` in their caller workflow. See
-  # README.md → 'Add the caller workflow' for the full snippet.
+  # Writes the Playwright cache on `refs/heads/main` scope so PR runs (which
+  # only see their own ref + default branch) can hit it. Consumers trigger
+  # this from `push: main` — see README.md.
   warm-cache:
     name: Warm Playwright cache
     if: ${{ inputs.warm_cache_only }}

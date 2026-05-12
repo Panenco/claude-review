@@ -36,15 +36,8 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  # Push-to-main warms the Playwright cache on `refs/heads/main` scope, the
-  # only cache scope every PR run can read. Without this, the first run of
-  # every new PR finds nothing in cache (sibling PR refs are unreachable
-  # by GH cache rules) and pays a full cold install of Chromium + apt deps,
-  # which can hang for many minutes when the runner's apt mirror or the
-  # Playwright CDN is unhealthy. The warmer invocation skips the review
-  # work entirely — it only runs Set up Node + Cache + Install Playwright.
   push:
-    branches: [main]
+    branches: [main]  # warms the Playwright cache on main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -52,36 +45,14 @@ on:
         required: true
         type: string
 
-# Cancel superseded review runs when a PR branch is repushed. Manual dispatch
-# gets a per-invocation group so it never cancels concurrent PR runs. Push
-# events use github.run_id so concurrent main pushes warm the cache
-# independently rather than cancelling each other.
 concurrency:
   group: claude-review-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   review:
-    # Skip drafts to avoid burning review budget on in-progress work. The
-    # pipeline still re-runs automatically on `ready_for_review`. Manual
-    # dispatch + push-to-main (cache warmer) are always allowed.
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.draft == false
-    # Track the v2 floating tag so pipeline fixes propagate automatically to
-    # every consumer repo. Supply-chain acceptance is declared in bugbot.md
-    # under "Accepted supply-chain trade-offs" so the reviewer does not
-    # re-flag `@v2 + secrets: inherit` on every PR.
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
-    # Grant the reusable workflow the write scopes it needs. Reusable
-    # workflows cannot elevate permissions above the caller, and GitHub's
-    # default `GITHUB_TOKEN` since 2023 is read-only at both org and repo
-    # level. Without this block the run fails at startup with `startup_failure`,
-    # zero jobs, and no downloadable logs — extremely painful to debug.
-    # Required scopes: `contents: write` (push screenshots to the
-    # review-assets branch), `pull-requests: write` + `issues: write`
-    # (post reviews and comments), `actions: read` (round-2 follow-up
-    # reviews look up the prior run's review-state artifact by run-id —
-    # omitting this means follow-up reviews silently degrade to a full
-    # re-review on every push).
     permissions:
       contents: write
       pull-requests: write
@@ -89,9 +60,6 @@ jobs:
       actions: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
-      # On push-to-main, run only the warm-cache job inside the reusable
-      # workflow — no PR exists to review, the goal is to populate the
-      # main-scoped Playwright cache so PRs find it on first run.
       warm_cache_only: ${{ github.event_name == 'push' }}
     secrets: inherit
 ```
