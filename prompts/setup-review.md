@@ -228,6 +228,12 @@ if [ "$READY" != "true" ]; then
 fi
 
 # <Step 2 — install deps>
+# Activate the project-pinned package manager. The pipeline puts a default
+# pnpm on PATH so this script keeps working if you forget the preamble, but
+# you should pin your real version here — pnpm@9.x and pnpm@10.x have
+# different lockfile semantics and the fallback won't match yours.
+# Node ≥ 16.9 includes corepack; it reads package.json#packageManager.
+corepack enable
 pnpm install --frozen-lockfile
 
 # <Step 3 — migrations / codegen>
@@ -264,6 +270,7 @@ Rules:
 - **One place, not two.** If you put commands here, keep `review-config.md`'s `## Functional validation` section as prose only (see Step 4). The script is the source of truth for *how* to bring things up; the markdown is the source of truth for *what* the tester should expect.
 - **Generated code matters.** If your tests import from a generated SDK / GraphQL client / `openapi-generator` output that isn't checked in, run the generator here *before* starting the dev server — otherwise `tsc --watch` / `nest start` floods the log with TS2307 noise (or, worse, the compile never settles). valcori's `dev-start.sh` runs `pnpm run generate-sdk` before `start:dev` for exactly this reason.
 - **Test it locally.** Run `bash .github/claude-review/dev-start.sh` from a clean checkout before committing and confirm the services bind on the ports you list in `### Known service ports`. If it doesn't boot locally, it won't boot in CI — this is where circular imports, missing codegen, and misconfigured `DATABASE_URL` surface.
+- **Pin your package manager.** The runner ships a default pnpm via `pnpm/action-setup`, but it won't necessarily match what you use locally. For pnpm/yarn projects, set `"packageManager"` in the root `package.json` (e.g. `"pnpm@10.33.0"`) and call `corepack enable` near the top of `dev-start.sh` — that activates the exact version you pinned. Skipping this works *most of the time* because the fallback is recent, but lockfile-version mismatches will surface as confusing install errors.
 
 If the project has no services to start (pure-docs repo, lib-only package), do **not** create this file. Its absence triggers degraded mode (the orchestrator's two judges still run; no functional tester). An empty-but-present `dev-start.sh` will fail the step — either commit a real one or don't commit one at all.
 

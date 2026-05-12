@@ -323,6 +323,19 @@ jobs:
         with:
           node-version: 'lts/*'
 
+      # Put a default pnpm on PATH so consumer dev-start.sh scripts that
+      # shell out to `pnpm install` work without a corepack preamble. The
+      # contract still expects dev-start.sh to activate the project's
+      # *pinned* version (typically via `corepack enable`, picked up from
+      # the consumer's package.json#packageManager) — this is a safety
+      # net so a missing preamble doesn't silently skip functional testing.
+      - name: Set up pnpm (default fallback)
+        if: steps.code_check.outputs.needs_build == 'true'
+        uses: pnpm/action-setup@739bfe42ca9233c5e6aca07c1a25a9d34aca49b0 # v6.0.7
+        with:
+          version: 10
+          run_install: false
+
       # Cache the Playwright stack the review pipeline drives independently
       # of the consumer repo: Chromium binaries (~/.cache/ms-playwright) plus
       # the npx tarball cache that holds the @playwright/mcp package the

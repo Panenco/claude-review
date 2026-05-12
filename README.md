@@ -256,7 +256,10 @@ for i in $(seq 1 30); do
 done
 [ "$READY" = "true" ] || { echo "::error::Postgres never became ready in 60s"; exit 1; }
 
-# Install, codegen, migrate.
+# Install, codegen, migrate. The pipeline puts a default pnpm on PATH,
+# but pin your project's real version via `packageManager` + corepack so
+# lockfile semantics match local.
+corepack enable
 pnpm install --frozen-lockfile
 # e.g. pnpm exec prisma generate && pnpm exec prisma migrate deploy
 
@@ -280,6 +283,7 @@ Rules:
 - No `set -e` — the subshell wrapper already tolerates exit N, and `set -e` surprises you in idioms like `curl || true`.
 - Readiness loops must explicitly test the flag after the loop and `exit 1` on timeout. Silent-success loops are flagged by the reviewer.
 - Paths in `cp`/`source`/`cat` are scanned at job start; the Validate step warns if any don't exist.
+- Pin your package manager. The runner provides a default pnpm (`pnpm/action-setup` with `version: 10`) so scripts that call `pnpm` directly keep working, but it won't necessarily match your local version. For pnpm/yarn projects, set `"packageManager"` in the root `package.json` and call `corepack enable` near the top of `dev-start.sh` to activate the exact version you pinned.
 
 If the project has nothing to start (pure-docs, lib-only), do **not** create this file. Its absence is the signal for degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step.
 
