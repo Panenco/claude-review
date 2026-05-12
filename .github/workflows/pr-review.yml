@@ -84,7 +84,6 @@ env:
 jobs:
   review:
     name: In-Depth Review
-    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -1148,22 +1147,3 @@ jobs:
             /tmp/*-meta.invalid.json
           if-no-files-found: ignore
           retention-days: 7
-
-  warm-cache:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
-        with:
-          node-version: 'lts/*'
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/.npm/_npx
-          key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-pw-
-      - run: |
-          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
-          npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0
