@@ -51,7 +51,7 @@ concurrency:
 
 jobs:
   review:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
     permissions:
       contents: write
@@ -60,7 +60,6 @@ jobs:
       actions: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
-      warm_cache_only: ${{ github.event_name == 'push' }}
     secrets: inherit
 ```
 
@@ -375,7 +374,7 @@ Before committing, re-read your own `.github/review-config.md` and `.github/clau
 - [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
 - [ ] The caller workflow tracks `@v2` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v2 + secrets: inherit` as accepted. Both are needed — the @v2 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
-- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR. The `push` clause in the guard is required so `push: main` invocations of the cache warmer aren't filtered out (they have no `event.pull_request`, so the draft check would evaluate falsy and skip the job).
+- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name != 'pull_request' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR.
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
 

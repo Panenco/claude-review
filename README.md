@@ -31,7 +31,6 @@ jobs:
       actions: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
-      warm_cache_only: ${{ github.event_name == 'push' }}
     secrets: inherit
 ```
 

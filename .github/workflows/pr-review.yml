@@ -47,11 +47,6 @@ on:
         required: false
         type: number
         default: 200
-      warm_cache_only:
-        description: 'Skip review; only run the Playwright cache warmer. Wire from `push: main` to populate the main-scoped cache that PR runs fall back to.'
-        required: false
-        type: boolean
-        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         # No longer strictly required: callers can supply CLAUDE_CODE_OAUTH_TOKENS
@@ -89,7 +84,7 @@ env:
 jobs:
   review:
     name: In-Depth Review
-    if: ${{ !inputs.warm_cache_only }}
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -1153,7 +1148,6 @@ jobs:
           retention-days: 7
 
   warm-cache:
-    if: ${{ inputs.warm_cache_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1162,6 +1156,10 @@ jobs:
           node-version: 'lts/*'
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          path: ~/.cache/ms-playwright
+          path: |
+            ~/.cache/ms-playwright
+            ~/.npm/_npx
           key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
-      - run: npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
+      - run: |
+          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
+          npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0
