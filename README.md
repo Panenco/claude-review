@@ -13,7 +13,7 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_target:  # warms Playwright cache in main scope
+  pull_request_target: # warms Playwright cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
