@@ -69,7 +69,7 @@ If `/tmp/dev-env/pid` does NOT exist, the workflow skipped the bring-up (no `dev
 
 ## Phase 1 — Early exit on trivial diffs
 
-Read `context.md`'s `## Per-file diff index`. Count chunks tagged with anything other than markdown / docs / generated. Concretely: a chunk path under `docs/`, ending in `.md` / `.mdx` / `.txt`, or matching a generated/artifact path is *non-reviewable*. Anything else is *reviewable*.
+Read `context.md`'s `## Per-file diff index`. Count chunks tagged with anything other than markdown / docs / generated. Concretely: a chunk path under `docs/`, ending in `.md` / `.mdx` / `.txt`, or matching a generated/artifact path is _non-reviewable_. Anything else is _reviewable_.
 
 Also Read `## Spec sources` and `## Acceptance criteria` from `context.md`.
 
@@ -125,7 +125,7 @@ To prepare the functional tester prompt: run `.review-scripts/generate-functiona
 
 Issue these in **one assistant response**:
 
-1. **Judge-Opus** — `subagent_type: general-purpose`, `model: "claude-opus-4-7"`, `prompt`:
+1. **Judge-Opus** — `subagent_type: general-purpose`, `model: "claude-opus-4-8"`, `prompt`:
 
    ```
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-judge.md and follow it exactly. If bugbot.md exists at the repo root, Read it — its acceptance/exemption sections override the skill's defaults (drop matching findings entirely). You are the Opus judge for PR #${PR_NUMBER}. context.md at the repo root is your INDEX (with a 5-sentence diff summary at the top). Read it, then Read the chunks and spec sources it points at (per the Turn 2 instructions in the skill above). OUTPUT_PATH=/tmp/judge-opus.json MODE=initial.
@@ -267,5 +267,5 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
 - **No own findings.** You never invent findings or rewrite a judge's evidence. If neither judge produced a finding for a region, that region produces no finding in the output.
 - **Always write both files.** On any failure path (CB failed, both judges failed, parse errors, hitting the STOP anchor), write best-effort output: empty findings array, a defensible verdict (`COMMENT` when degraded), `judge_health` reflecting the actual state. Never silently exit without writing.
 - **Two Task calls per debate round, in one assistant response.** Single calls serialise the judges and waste wall time.
-- **No retries on a single judge.** A judge that returns no parseable output is recorded as `failed` and the run proceeds. The redundancy is the *other* judge, not retries of the same one.
+- **No retries on a single judge.** A judge that returns no parseable output is recorded as `failed` and the run proceeds. The redundancy is the _other_ judge, not retries of the same one.
 - **Trivial-skip is a verdict-relevant decision.** If you short-circuit at Phase 1, you are still responsible for `manual_spec_present` and `prompt_injection_detected` — copy these from `context.md`'s flags, don't fabricate.
