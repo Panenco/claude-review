@@ -4,46 +4,46 @@ on:
   workflow_call:
     inputs:
       pr_number:
-        description: 'PR number (auto-detected from PR event if omitted)'
+        description: "PR number (auto-detected from PR event if omitted)"
         required: false
         type: string
       model_high:
-        description: 'Deep-reasoning model — used by the Opus judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Opus tier in its Task dispatch); kept as a workflow input for forward-compatibility when the orchestrator parametrises judge models.'
+        description: "Deep-reasoning model — used by the Opus judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Opus tier in its Task dispatch); kept as a workflow input for forward-compatibility when the orchestrator parametrises judge models."
         required: false
         type: string
-        default: 'claude-opus-4-7'
+        default: "claude-opus-4-8"
       model_standard:
-        description: 'Standard-tier model — used for the context builder, the orchestrator itself, the round-2 thread classifier, and the functional tester (unless overridden by model_functional).'
+        description: "Standard-tier model — used for the context builder, the orchestrator itself, the round-2 thread classifier, and the functional tester (unless overridden by model_functional)."
         required: false
         type: string
-        default: 'claude-sonnet-4-6'
+        default: "claude-sonnet-4-6"
       model_fast:
-        description: 'Cheap-tier model — used by the Haiku judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Haiku tier in its Task dispatch); kept as a workflow input for forward-compatibility.'
+        description: "Cheap-tier model — used by the Haiku judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Haiku tier in its Task dispatch); kept as a workflow input for forward-compatibility."
         required: false
         type: string
-        default: 'claude-haiku-4-5'
+        default: "claude-haiku-4-5"
       model_functional:
-        description: 'Model for the functional tester (Playwright MCP + Bash). Defaults to Sonnet because empirical comparison on the Seaters dogfood showed Haiku regressed on severity calibration — it classified test-environment friction (no auth credentials, empty seed data) as CRITICAL/MAJOR product bugs, while Sonnet correctly noted them as observations and traced a real backend NPE bug that Haiku missed. Override to claude-haiku-4-5 if you accept that risk in exchange for ~3× wall-time speedup on the functional layer. The 19m→5.5m speedup IS real, but only worth it on PRs where the test-environment friction is minimal (well-seeded fixtures + pre-configured auth).'
+        description: "Model for the functional tester (Playwright MCP + Bash). Defaults to Sonnet because empirical comparison on the Seaters dogfood showed Haiku regressed on severity calibration — it classified test-environment friction (no auth credentials, empty seed data) as CRITICAL/MAJOR product bugs, while Sonnet correctly noted them as observations and traced a real backend NPE bug that Haiku missed. Override to claude-haiku-4-5 if you accept that risk in exchange for ~3× wall-time speedup on the functional layer. The 19m→5.5m speedup IS real, but only worth it on PRs where the test-environment friction is minimal (well-seeded fixtures + pre-configured auth)."
         required: false
         type: string
-        default: 'claude-sonnet-4-6'
+        default: "claude-sonnet-4-6"
       pipeline_ref:
-        description: 'Ref of panenco/claude-review to install skills/scripts from. Default v2 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo.'
+        description: "Ref of panenco/claude-review to install skills/scripts from. Default v2 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo."
         required: false
         type: string
-        default: 'v2'
+        default: "v2"
       dev_env_timeout_seconds:
-        description: 'How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. Heavy stacks (Java + Node + Docker compose) can need 5-6 minutes on a cold runner. Default 360.'
+        description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. Heavy stacks (Java + Node + Docker compose) can need 5-6 minutes on a cold runner. Default 360."
         required: false
         type: number
         default: 360
       core_max_turns:
-        description: 'Legacy alias retained for consumer compatibility. Previously gated the standalone core/core-pass2 reviewers; those have been replaced by the orchestrator-driven judge debate, whose ceiling is set inside the workflow at `--max-turns 80` for the orchestrator and is otherwise governed by the prompt-side STOP-and-write anchors in review-judge.md / review-orchestrator.md. Adjusting this input has no effect today; consumer workflows that pass it continue to work without breakage.'
+        description: "Legacy alias retained for consumer compatibility. Previously gated the standalone core/core-pass2 reviewers; those have been replaced by the orchestrator-driven judge debate, whose ceiling is set inside the workflow at `--max-turns 80` for the orchestrator and is otherwise governed by the prompt-side STOP-and-write anchors in review-judge.md / review-orchestrator.md. Adjusting this input has no effect today; consumer workflows that pass it continue to work without breakage."
         required: false
         type: number
         default: 40
       functional_max_turns:
-        description: 'Max turns for the functional tester (Sonnet + Playwright MCP + Bash). The skill targets ≤30 with STOP-and-write anchors at 60/80/100; 200 is the runtime ceiling — generous headroom over the planner-capped 4 scenarios × ~6 turns/scenario + auth + output budget. Bumped from 120 after observed crashes on PRs with bigger UI surfaces (e.g. seaters#464 crashed at 120 with 12 captured screenshots). The prompt-side anchors keep cost bounded; this ceiling is so the framework rarely has to enforce one.'
+        description: "Max turns for the functional tester (Sonnet + Playwright MCP + Bash). The skill targets ≤30 with STOP-and-write anchors at 60/80/100; 200 is the runtime ceiling — generous headroom over the planner-capped 4 scenarios × ~6 turns/scenario + auth + output budget. Bumped from 120 after observed crashes on PRs with bigger UI surfaces (e.g. seaters#464 crashed at 120 with 12 captured screenshots). The prompt-side anchors keep cost bounded; this ceiling is so the framework rarely has to enforce one."
         required: false
         type: number
         default: 200
@@ -88,11 +88,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: write  # write needed for uploading screenshots to review-assets branch
+      contents: write # write needed for uploading screenshots to review-assets branch
       pull-requests: write
       issues: write
-      actions: read    # needed for actions/download-artifact with run-id (round-2 state)
-      packages: read  # needed for fetching from private registries when the consumer repo uses them
+      actions: read # needed for actions/download-artifact with run-id (round-2 state)
+      packages: read # needed for fetching from private registries when the consumer repo uses them
 
     steps:
       - name: Resolve PR head SHA
@@ -322,7 +322,7 @@ jobs:
         if: steps.code_check.outputs.needs_build == 'true'
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 'lts/*'
+          node-version: "lts/*"
 
       - name: Ensure pnpm on PATH
         if: steps.code_check.outputs.needs_build == 'true'
@@ -921,7 +921,7 @@ jobs:
       # SHA bumped to the v1 release that ships Claude Code 2.1.132 (Agent
       # SDK 0.2.132), which also fixed a 10GB+ RSS leak with stdio MCP
       # servers — relevant if the leak was contributing to the pending state.
-      - name: 'Install functional-tester subagent definition'
+      - name: "Install functional-tester subagent definition"
         shell: bash
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -946,7 +946,7 @@ jobs:
           # round 2).
           bash "${CLAUDE_REVIEW_PIPELINE_DIR}/scripts/install-functional-tester-agent.sh"
 
-      - name: 'Review: orchestrate'
+      - name: "Review: orchestrate"
         id: claude_run
         # Don't fail the job if the orchestrator returns non-zero (e.g.
         # max-turns hit at the STOP-and-write anchor). /tmp/all-findings.json
@@ -984,11 +984,11 @@ jobs:
             --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch,mcp__playwright
             --disallowedTools Edit,WebFetch,WebSearch
             --max-turns 100
-          show_full_output: 'true'
+          show_full_output: "true"
 
       # Build the review body + comments + screenshot upload from the
       # orchestrator's outputs. No agents launched here — pure post-processing.
-      - name: 'Review: build artifacts'
+      - name: "Review: build artifacts"
         id: review_builder
         if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
         shell: bash
@@ -1038,7 +1038,7 @@ jobs:
       # orchestrator wrote partial output and build-review.sh succeeded, we
       # post; if build-review.sh exited 1 (missing /tmp/all-findings.json), the
       # verdict gate downstream surfaces the crash banner instead.
-      - name: 'Review: post results'
+      - name: "Review: post results"
         id: review_poster
         if: always() && steps.review_builder.outcome == 'success'
         shell: bash
@@ -1157,7 +1157,7 @@ jobs:
     steps:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 'lts/*'
+          node-version: "lts/*"
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |

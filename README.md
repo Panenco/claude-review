@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to review'
+        description: "PR number to review"
         required: true
         type: string
 jobs:
@@ -35,7 +35,7 @@ jobs:
 
 The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. See `prompts/setup-review.md` for the full troubleshooting flow.
 
-Why `@v2` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If *your* repo has different trust needs, substitute a 40-char SHA for `@v2`.
+Why `@v2` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If _your_ repo has different trust needs, substitute a 40-char SHA for `@v2`.
 
 **Tag-resolution caveat.** The reusable workflow file and the install step resolve their refs at different moments of the job. Moving `v2` while a run is starting can cause a mismatch — push the `v2` tag at idle times, not while runs are in flight.
 
@@ -99,7 +99,7 @@ PR opened / updated
                   chunks AND no spec source) without dispatching any
                   judges. Writes APPROVE-eligible meta and exits.
       Phase 2   — Parallel Task fan (single assistant response):
-                    Judge-Opus  (model: claude-opus-4-7)   ─┐
+                    Judge-Opus  (model: claude-opus-4-8)   ─┐
                     Judge-Haiku (model: claude-haiku-4-5)  ├ all parallel
                     Thread classifier (round 2 only)       │
                     Functional tester (Playwright MCP)     ─┘
@@ -124,7 +124,7 @@ Verdict: APPROVE / COMMENT / REQUEST_CHANGES
 
 ### Why one top-level agent?
 
-Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code-action` exits in <1 s when the OAuth token hits a quota wall; the bare `claude -p` CLI silently retries and *hangs* until the 45-minute job timeout — a real bug observed on PR #309. (2) **All parallelism through the `Task` tool.** No bash background processes, no `wait`/reap traps, no sibling stdout files. One nested transcript covers the whole review.
+Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code-action` exits in <1 s when the OAuth token hits a quota wall; the bare `claude -p` CLI silently retries and _hangs_ until the 45-minute job timeout — a real bug observed on PR #309. (2) **All parallelism through the `Task` tool.** No bash background processes, no `wait`/reap traps, no sibling stdout files. One nested transcript covers the whole review.
 
 ### Why two judges?
 
@@ -179,6 +179,7 @@ Add a "Verify before flagging" section to prevent reviewers from citing librarie
 ## Verify before flagging
 
 Before reporting a finding that cites a library or component, confirm it exists:
+
 - Check `context.md` -> "Repo capabilities" for available exports and dependencies.
 - If the artifact is not listed, drop the finding or move to `uncertain_observations`.
 ```
@@ -208,8 +209,8 @@ Map changed paths to convention/rule files:
 ```markdown
 ## Convention files
 
-| Changed path | Read |
-|---|---|
+| Changed path  | Read                                                 |
+| ------------- | ---------------------------------------------------- |
 | `apps/api/**` | `.cursor/rules/api.mdc`, `.cursor/rules/general.mdc` |
 | `apps/web/**` | `.cursor/rules/web.mdc`, `.cursor/rules/general.mdc` |
 ```
@@ -222,16 +223,18 @@ Free-text guidance for reviewers. Write rules in terms of **your** stack — the
 ## Stack-specific review focus
 
 **API (<your framework>)**
+
 - <Architectural rule reviewers must enforce — e.g., "controllers thin, logic in services".>
 - <Test expectation — e.g., "tests use real DB, never mock the ORM".>
 
 **Web (<your framework>)**
+
 - <Data-fetching rule — e.g., "data via <library>; query keys centralized".>
 ```
 
 #### `## Functional validation`
 
-**Prose only — no executable bash.** This section is read by the reviewer agents from `context.md` and describes what the functional tester should exercise. The *executable* side of dev-env bring-up lives in `.github/claude-review/dev-start.sh` (see below).
+**Prose only — no executable bash.** This section is read by the reviewer agents from `context.md` and describes what the functional tester should exercise. The _executable_ side of dev-env bring-up lives in `.github/claude-review/dev-start.sh` (see below).
 
 Describe (in prose) what the project needs at runtime: database flavour + credentials, where `.env` lives, migrations/codegen, dev-server ports, seed data / test users. Do not duplicate the commands — the script is the source of truth.
 
@@ -279,6 +282,7 @@ done
 ```
 
 Rules:
+
 - `chmod +x` after creating it.
 - No `set -e` — the subshell wrapper already tolerates exit N, and `set -e` surprises you in idioms like `curl || true`.
 - Readiness loops must explicitly test the flag after the loop and `exit 1` on timeout. Silent-success loops are flagged by the reviewer.
@@ -329,10 +333,10 @@ Authentication for functional testing:
 ```markdown
 ### Known service ports
 
-| Service | URL | Notes |
-|---------|-----|-------|
-| API | http://localhost:3001/api | Health at GET /api |
-| Web | http://localhost:3000 | |
+| Service | URL                       | Notes              |
+| ------- | ------------------------- | ------------------ |
+| API     | http://localhost:3001/api | Health at GET /api |
+| Web     | http://localhost:3000     |                    |
 ```
 
 ### `.github/claude-review/fetch-issue.sh` (optional — external issue trackers)
@@ -408,10 +412,20 @@ A workflow step scans the branch name, PR title, and PR body for every recognize
 
 ```json
 {
-  "explicit_markers": [{"key": "Linear", "value": "LIN-123", "source": "pr_body_line"}],
-  "closing_keywords": [{"keyword": "Fixes", "target": "LIN-123", "source": "pr_body"}],
-  "urls":             [{"url": "https://linear.app/...", "host": "linear.app", "source": "pr_body"}],
-  "ids":              [{"id": "LIN-123", "source": "branch_name"}]
+  "explicit_markers": [
+    { "key": "Linear", "value": "LIN-123", "source": "pr_body_line" }
+  ],
+  "closing_keywords": [
+    { "keyword": "Fixes", "target": "LIN-123", "source": "pr_body" }
+  ],
+  "urls": [
+    {
+      "url": "https://linear.app/...",
+      "host": "linear.app",
+      "source": "pr_body"
+    }
+  ],
+  "ids": [{ "id": "LIN-123", "source": "branch_name" }]
 }
 ```
 
@@ -421,26 +435,26 @@ Confidence tiers (in extraction priority order): (1) `explicit_markers` — `Tic
 
 ## Degradation Matrix
 
-| Missing file | Impact | Behavior |
-|---|---|---|
-| `.github/claude-review/dev-start.sh` | Expected for degraded mode | Functional tester skipped. Core + sweep reviewers still run. |
-| `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Skipped silently. GitHub-issue lookup remains the default spec source. |
-| `review-config.md` | Reduced | No build prep doc, no convention-rule routing, no Known-service-ports URLs to probe, no auth setup. |
-| `bugbot.md` | Minor | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
-| `CLAUDE.md` | Minor | No architecture context. Reviewers rely on diff + issue. |
-| All config files | Significant | Code-only review (core + sweep) on raw diff + build output. Still catches bugs, spec issues, security. |
+| Missing file                           | Impact                            | Behavior                                                                                               |
+| -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `.github/claude-review/dev-start.sh`   | Expected for degraded mode        | Functional tester skipped. Core + sweep reviewers still run.                                           |
+| `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Skipped silently. GitHub-issue lookup remains the default spec source.                                 |
+| `review-config.md`                     | Reduced                           | No build prep doc, no convention-rule routing, no Known-service-ports URLs to probe, no auth setup.    |
+| `bugbot.md`                            | Minor                             | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
+| `CLAUDE.md`                            | Minor                             | No architecture context. Reviewers rely on diff + issue.                                               |
+| All config files                       | Significant                       | Code-only review (core + sweep) on raw diff + build output. Still catches bugs, spec issues, security. |
 
-Note: a *present but broken* `dev-start.sh` is **not** a soft-degrade case — the pipeline fails the Pre-start step and stops. Remove the file to enter degraded mode explicitly.
+Note: a _present but broken_ `dev-start.sh` is **not** a soft-degrade case — the pipeline fails the Pre-start step and stops. Remove the file to enter degraded mode explicitly.
 
 ---
 
 ## Spec-presence gate
 
-The pipeline withholds `APPROVE` whenever the PR has no human-authored spec. The core reviewer judges this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff *does*, not what it *should do*, and don't qualify on their own — they're a code summary, not a contract. When the core reviewer sets `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated.
+The pipeline withholds `APPROVE` whenever the PR has no human-authored spec. The core reviewer judges this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the core reviewer sets `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated.
 
 ## Smoke-test gate for technical PRs
 
-The pipeline withholds `APPROVE` whenever the PR's stated intent is "no user-visible behavior change" (refactor, library swap, framework/runtime upgrade, build-config change, restructure, perf rewrite — across any ecosystem) but the smoke run did not pass. The trigger is intent, not file types: a `refactor: split foo into bar/baz` with no manifest touch counts; a major `Cargo.toml`/`Dockerfile`/`pyproject.toml` bump counts. The test planner detects this from PR title/body keywords (`refactor`, `chore`, `bump`, `upgrade`, `migrate`, "no behavior change"), diff shape (high move/rename ratio, low net new logic), and dependency-manifest deltas, then emits `## Technical change: true` in `test-plan.md`. The functional tester copies the flag into `functional-meta.json` and walks through one representative user flow (the planner picks it autonomously based on which code paths the change affects) with screenshots. If the smoke run does not return `PASS` or `WARN` — including the degraded-mode case where `.github/claude-review/dev-start.sh` is missing and the app can't be brought up — the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to enable it (configure `dev-start.sh`, or fix the smoke failures). Composes naturally with the spec-presence gate: together they ensure `APPROVE` is only granted when *something* substantively validated the change, either an acceptance criterion or a working app.
+The pipeline withholds `APPROVE` whenever the PR's stated intent is "no user-visible behavior change" (refactor, library swap, framework/runtime upgrade, build-config change, restructure, perf rewrite — across any ecosystem) but the smoke run did not pass. The trigger is intent, not file types: a `refactor: split foo into bar/baz` with no manifest touch counts; a major `Cargo.toml`/`Dockerfile`/`pyproject.toml` bump counts. The test planner detects this from PR title/body keywords (`refactor`, `chore`, `bump`, `upgrade`, `migrate`, "no behavior change"), diff shape (high move/rename ratio, low net new logic), and dependency-manifest deltas, then emits `## Technical change: true` in `test-plan.md`. The functional tester copies the flag into `functional-meta.json` and walks through one representative user flow (the planner picks it autonomously based on which code paths the change affects) with screenshots. If the smoke run does not return `PASS` or `WARN` — including the degraded-mode case where `.github/claude-review/dev-start.sh` is missing and the app can't be brought up — the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to enable it (configure `dev-start.sh`, or fix the smoke failures). Composes naturally with the spec-presence gate: together they ensure `APPROVE` is only granted when _something_ substantively validated the change, either an acceptance criterion or a working app.
 
 ---
 
@@ -482,21 +496,22 @@ Round-2 follow-up reviews download the prior run's `review-state` artifact via `
 
 ```yaml
 permissions:
-  contents: write       # screenshots → review-assets branch
-  pull-requests: write  # post review + comments
+  contents: write # screenshots → review-assets branch
+  pull-requests: write # post review + comments
   issues: write
-  actions: read         # round-2 follow-up reviews look up the prior
-                        # run's review-state artifact by run-id
+  actions:
+    read # round-2 follow-up reviews look up the prior
+    # run's review-state artifact by run-id
 ```
 
-If your existing caller has *no* `permissions:` block at all (the original v1 README's minimal example), this is also where you fix the `startup_failure`-on-orgs-with-default-read-only-`GITHUB_TOKEN` issue — the other three lines were always required, just under-documented.
+If your existing caller has _no_ `permissions:` block at all (the original v1 README's minimal example), this is also where you fix the `startup_failure`-on-orgs-with-default-read-only-`GITHUB_TOKEN` issue — the other three lines were always required, just under-documented.
 
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
-- **Smoke-test gate** — on technical PRs (refactor / library swap / framework or runtime upgrade / build-config / `chore: bump …`), `APPROVE` is withheld unless the functional smoke run returns `PASS` or `WARN`. The trigger is *intent*, not file types: a pure-refactor commit with no manifest touch counts; a major `Cargo.toml` / `Dockerfile` / `pyproject.toml` bump counts. Repos in degraded mode (no `.github/claude-review/dev-start.sh`) will see refactor PRs flip from APPROVE → COMMENT until they configure a working bring-up.
+- **Smoke-test gate** — on technical PRs (refactor / library swap / framework or runtime upgrade / build-config / `chore: bump …`), `APPROVE` is withheld unless the functional smoke run returns `PASS` or `WARN`. The trigger is _intent_, not file types: a pure-refactor commit with no manifest touch counts; a major `Cargo.toml` / `Dockerfile` / `pyproject.toml` bump counts. Repos in degraded mode (no `.github/claude-review/dev-start.sh`) will see refactor PRs flip from APPROVE → COMMENT until they configure a working bring-up.
 - **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
 
-Both gates compose with each other: `APPROVE` is granted only when *something* substantively validated the change — either a manual spec or a working app smoke-tested under the diff.
+Both gates compose with each other: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff.
 
 ### 3. New optional knobs (defaults preserve v1 behaviour)
 
