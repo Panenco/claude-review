@@ -78,7 +78,7 @@ on:
 # @playwright/mcp's CHANGELOG for the matching `playwright` peer before
 # letting them drift apart.
 env:
-  PLAYWRIGHT_VERSION: "1.59.1"
+  PLAYWRIGHT_VERSION: "1.60.0"
   PLAYWRIGHT_MCP_VERSION: "0.0.75"
 
 jobs:
