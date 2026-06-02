@@ -2,3 +2,10 @@
 # Local Claude Code state — never commit
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+# Private cost/metrics artifacts — internal financial data.
+# This repo is PUBLIC; these contain real per-repo spend + PR costs. Never commit.
+docs/review-pipeline-snapshot.md
+docs/prds/review-cost-reduction.md
+docs/metrics/
+.metrics.env
