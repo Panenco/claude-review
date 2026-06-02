@@ -28,9 +28,10 @@ trap 'rm -rf "$TMP"' EXIT
 USAGE_OUT=/tmp/usage.json
 PHASE_FILE=/tmp/phase-summary.txt
 FN_META=/tmp/functional-meta.json
+ORCH_FILE=/tmp/orchestrator-output.txt
 
 reset_global() {
-  rm -f "$USAGE_OUT" "$PHASE_FILE" "$FN_META"
+  rm -f "$USAGE_OUT" "$PHASE_FILE" "$FN_META" "$ORCH_FILE"
 }
 
 run_case() {
@@ -83,6 +84,7 @@ assert_field "  verdict defaults null"     '.verdict'               'null'
 assert_field "  findings_count defaults 0" '.findings_count'        '0'
 assert_field "  phases is object"          '.phases | type'         'object'
 assert_field "  technical_change=false"    '.technical_change'      'false'
+assert_field "  claude_cost_usd null"      '.claude_cost_usd'       'null'
 
 # ── Case 2: realistic inputs, round 1 ──
 WD2="$TMP/case2"
@@ -192,6 +194,34 @@ assert_field "  phases is object"           '.phases | type'         'object'
 assert_field "  phases.context-build=37"    '.phases."context-build"' '37'
 assert_field "  phases.analyze=120"         '.phases.analyze'         '120'
 assert_field "  phases has 2 keys"          '.phases | keys | length' '2'
+
+# ── Case 7: claude_cost_usd = MAX total_cost_usd in the orchestrator log ──
+# The orchestrator's stream-json log carries a cumulative total_cost_usd that
+# grows over the run; subagent (judge/functional) costs roll into it, so the
+# final/largest value is the run's total Claude spend. report-usage.sh greps
+# the max from /tmp/orchestrator-output.txt.
+WD7="$TMP/case7"
+mkdir -p "$WD7"
+reset_global
+cat > "$ORCH_FILE" <<'EOF'
+{"type":"assistant","message":{"usage":{"output_tokens":10}}}
+{"type":"result","subtype":"success","total_cost_usd":0.69}
+{"type":"result","subtype":"success","total_cost_usd":2.41}
+EOF
+run_case "claude_cost_usd = max total_cost_usd from orchestrator log" "$WD7" \
+  GITHUB_REPOSITORY=owner/repo \
+  || true
+assert_field "  claude_cost_usd=2.41"  '.claude_cost_usd'  '2.41'
+
+# ── Case 8: malformed/absent cost line → claude_cost_usd stays null ──
+WD8="$TMP/case8"
+mkdir -p "$WD8"
+reset_global
+echo '{"type":"result","subtype":"success","no_cost_here":true}' > "$ORCH_FILE"
+run_case "no total_cost_usd in log → claude_cost_usd null" "$WD8" \
+  GITHUB_REPOSITORY=owner/repo \
+  || true
+assert_field "  claude_cost_usd null"  '.claude_cost_usd'  'null'
 
 reset_global
 if [ "$fail" -eq 0 ]; then

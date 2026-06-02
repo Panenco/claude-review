@@ -21,6 +21,10 @@
 #   ANALYZER_OUTCOME         — outcome of the analyzer step (success/failure/…)
 #   POSTER_OUTCOME           — outcome of the poster step
 #   PRIOR_STATE_AVAILABLE    — "true" iff this is round 2+
+#
+# Also reads (optional): /tmp/orchestrator-output.txt — the orchestrator's
+# claude-code-action conversation log, copied there by the build step. Used to
+# extract the run's total Claude spend (see CLAUDE_COST below).
 
 set +e
 
@@ -68,6 +72,24 @@ if [ -f /tmp/phase-summary.txt ]; then
   fi
 fi
 
+# Claude spend. The orchestrator's claude-code-action emits a stream-json
+# conversation log; the build step copies it to /tmp/orchestrator-output.txt.
+# Each result message carries a CUMULATIVE "total_cost_usd", and subagent Task
+# costs (the two judges, the functional tester) roll up into the parent run's
+# total — so the LARGEST value in the log is the run's full Claude spend. We
+# record it here so usage.json carries cost in the durable 90-day usage
+# artifact, instead of cost living only in the 7-day full artifact. Best-effort:
+# stays null when the log is absent (crash before the build step) or has no
+# cost line. `sort -g | tail -1` picks the max (final cumulative) value.
+CLAUDE_COST="null"
+if [ -f /tmp/orchestrator-output.txt ]; then
+  _c=$(grep -oE '"total_cost_usd"[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)?' /tmp/orchestrator-output.txt 2>/dev/null \
+        | grep -oE '[0-9]+(\.[0-9]+)?$' | sort -g | tail -1)
+  if [ -n "$_c" ] && printf '%s' "$_c" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    CLAUDE_COST="$_c"
+  fi
+fi
+
 RECORDED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
 
 OUT=/tmp/usage.json
@@ -82,6 +104,7 @@ jq -n \
   --arg poster_outcome "${POSTER_OUTCOME:-}" \
   --argjson round "$ROUND" \
   --argjson phases "$PHASES_JSON" \
+  --argjson claude_cost "$CLAUDE_COST" \
   --slurpfile rr "$RR_TMP" \
   --slurpfile fm "$FM_TMP" \
   '
@@ -107,6 +130,7 @@ jq -n \
                             // (($f.screenshots // []) | length)),
       analyzer_outcome: $analyzer_outcome,
       poster_outcome:   $poster_outcome,
+      claude_cost_usd: $claude_cost,
       phases: $phases
     }
   ' > "$OUT" 2>/dev/null
