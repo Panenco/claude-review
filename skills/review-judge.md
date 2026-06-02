@@ -137,6 +137,8 @@ When a manual spec exists (linked issue, PRD, external issue, substantive PR-bod
 
 A PR that compiles cleanly but doesn't do what the spec says is worse than one with a style issue.
 
+**Referencing acceptance criteria in posted text.** When you cite a criterion in `verdict_summary` or in a finding's `title`/`reasoning`/`expected`, use the `AC1`/`AC2` labels from context.md — **never** a `#`-prefixed form like `AC #5`. These fields are posted verbatim to GitHub, which auto-links `#5` to issue/PR #5 and produces a wrong cross-reference. Write `AC5` (or `AC1 and AC2`), not `AC #5`.
+
 ## Rebuttal mode
 
 When the orchestrator launches you with `MODE=rebuttal` in the prompt and includes the **other judge's output** under `OTHER_JUDGE_OUTPUT_PATH`, you are NOT redoing the review from scratch. You are reconciling.
