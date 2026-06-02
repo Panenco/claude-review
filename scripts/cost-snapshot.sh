@@ -105,7 +105,7 @@ to_iso_since() {
     echo "$input"
   fi
 }
-SINCE_ISO=$(to_iso_since "$SINCE")
+SINCE_ISO=$(to_iso_since "$SINCE") || exit 1   # propagate the subshell's exit (date failure)
 
 # ── repo list ──
 REPO_LIST=()
@@ -212,7 +212,8 @@ for repo in "${REPO_LIST[@]}"; do
   umap_start=$(date +%s)
   USAGE_MAP="$TMP/usage-${repo//\//_}.json"; echo '{}' > "$USAGE_MAP"
   arts=$(gh api --paginate "/repos/$repo/actions/artifacts?per_page=100&name=claude-review-usage" \
-          --jq '.artifacts[]? | select(.created_at >= "'"$SINCE_ISO"'") | {id, run_id: .workflow_run.id}' 2>/dev/null || true)
+          --jq '.artifacts[]? | select(.created_at >= "'"$SINCE_ISO"'") | {id, run_id: .workflow_run.id}' 2>/dev/null \
+          || { log "  ::warning::failed to list usage artifacts for $repo; continuing with empty usage map"; true; })
   uarts=()
   while IFS= read -r meta; do [ -n "$meta" ] && uarts+=("$meta"); done <<< "$arts"
   art_total=${#uarts[@]}
