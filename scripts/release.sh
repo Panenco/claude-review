@@ -38,14 +38,20 @@ run() {
 
 git fetch origin --tags --quiet || { echo "error: git fetch failed" >&2; exit 1; }
 
-if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
-  echo "error: $VERSION already exists — immutable tags are never reused." >&2
+# Reject only if the immutable tag is already PUBLISHED on the remote — that is
+# the real "never reuse a release" condition. A local-only tag is a leftover
+# from an aborted prior run (e.g. a push that failed after the tag was cut) and
+# must not block a retry, so we check the remote here, not local refs.
+if git ls-remote --tags --exit-code origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+  echo "error: $VERSION already published — immutable tags are never reused." >&2
   exit 1
 fi
 
 echo "→ publishing origin/main tip: $(git --no-pager log --oneline -1 origin/main)"
 
-run git tag "$VERSION" origin/main      # immutable rollback anchor (cut FIRST)
+# -f only ever overwrites a stale local leftover from an aborted prior run
+# (we proved above the tag is not published), so a retry cuts cleanly.
+run git tag -f "$VERSION" origin/main   # immutable rollback anchor (cut FIRST)
 run git tag -f "$MAJOR" origin/main     # point floating major at the same tip
 run git push origin "$VERSION"
 run git push origin "$MAJOR" --force
