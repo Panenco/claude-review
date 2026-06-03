@@ -26,7 +26,10 @@ done
 MAJOR="${VERSION%%.*}"   # v2.2.0 -> v2
 
 # run() executes a command, or just prints it in --dry-run mode.
-run() { if [ "$DRY_RUN" -eq 1 ]; then echo "  [dry-run] $*"; else "$@"; fi; }
+run() {
+  if [ "$DRY_RUN" -eq 1 ]; then echo "  [dry-run] $*"; return; fi
+  "$@"
+}
 
 git fetch origin --tags --quiet
 
