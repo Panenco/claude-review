@@ -46,7 +46,12 @@ TIP="$(git rev-parse origin/main)"
 # at a DIFFERENT commit than this tip — the real "never re-point a release" rule.
 # Already published at this exact tip → proceed and converge. Local-only (never
 # pushed) → no remote sha, overwritten by the -f cut below.
-REMOTE_VERSION_SHA="$(git ls-remote --tags origin "refs/tags/$VERSION" | cut -f1)"
+#
+# Resolve to the COMMIT, not the ref object: for an annotated tag ls-remote's
+# plain ref is the tag object, so we also request the peeled `^{}` ref and take
+# the last line (the commit). A lightweight tag has no peel and yields the
+# commit directly; an absent tag yields nothing.
+REMOTE_VERSION_SHA="$(git ls-remote origin "refs/tags/$VERSION" "refs/tags/$VERSION^{}" | tail -n1 | cut -f1)"
 if [ -n "$REMOTE_VERSION_SHA" ] && [ "$REMOTE_VERSION_SHA" != "$TIP" ]; then
   echo "error: $VERSION already published at ${REMOTE_VERSION_SHA:0:12}, not origin/main (${TIP:0:12})." >&2
   echo "       Immutable tags are never re-pointed — pick a new version." >&2
