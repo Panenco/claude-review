@@ -27,8 +27,10 @@ done
 [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: version must look like vX.Y.Z (got: $VERSION)" >&2; exit 1; }
 MAJOR="${VERSION%%.*}"   # v2.2.0 -> v2
 
-# run() executes a command, or just prints it in --dry-run mode. A failed
-# command aborts the release so a half-applied tag set is never pushed.
+# run CMD... — the --dry-run gate for every side-effecting (tag/push) command.
+# Normal run: executes CMD and aborts the release on failure, so a half-applied
+# tag set is never pushed. --dry-run: prints CMD prefixed with [dry-run] and
+# does nothing. Read-only git queries are called directly, not through run().
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then echo "  [dry-run] $*"; return; fi
   "$@" || { echo "error: command failed: $*" >&2; exit 1; }
