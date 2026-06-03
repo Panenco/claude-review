@@ -38,21 +38,29 @@ run() {
 
 git fetch origin --tags --quiet || { echo "error: git fetch failed" >&2; exit 1; }
 
-# Reject only if the immutable tag is already PUBLISHED on the remote — that is
-# the real "never reuse a release" condition. A local-only tag is a leftover
-# from an aborted prior run (e.g. a push that failed after the tag was cut) and
-# must not block a retry, so we check the remote here, not local refs.
-if git ls-remote --tags --exit-code origin "refs/tags/$VERSION" >/dev/null 2>&1; then
-  echo "error: $VERSION already published — immutable tags are never reused." >&2
+TIP="$(git rev-parse origin/main)"
+
+# The script is idempotent: re-running it FINISHES a partially-applied release
+# (e.g. the immutable tag pushed but the major-tag move then failed) instead of
+# dead-ending. Reuse is rejected ONLY when the immutable tag is already published
+# at a DIFFERENT commit than this tip — the real "never re-point a release" rule.
+# Already published at this exact tip → proceed and converge. Local-only (never
+# pushed) → no remote sha, overwritten by the -f cut below.
+REMOTE_VERSION_SHA="$(git ls-remote --tags origin "refs/tags/$VERSION" | cut -f1)"
+if [ -n "$REMOTE_VERSION_SHA" ] && [ "$REMOTE_VERSION_SHA" != "$TIP" ]; then
+  echo "error: $VERSION already published at ${REMOTE_VERSION_SHA:0:12}, not origin/main (${TIP:0:12})." >&2
+  echo "       Immutable tags are never re-pointed — pick a new version." >&2
   exit 1
 fi
 
-echo "→ publishing origin/main tip: $(git --no-pager log --oneline -1 origin/main)"
+echo "→ publishing origin/main tip: $(git --no-pager log --oneline -1 "$TIP")"
 
-# -f only ever overwrites a stale local leftover from an aborted prior run
-# (we proved above the tag is not published), so a retry cuts cleanly.
-run git tag -f "$VERSION" origin/main   # immutable rollback anchor (cut FIRST)
-run git tag -f "$MAJOR" origin/main     # point floating major at the same tip
+# -f makes each step re-runnable: it overwrites a stale local leftover, or
+# re-points to the same already-published tip on a retry — both no-op on the
+# remote (the immutable push is then "up to date"). The major-tag push always
+# runs, so a re-run completes a move that failed the first time.
+run git tag -f "$VERSION" "$TIP"   # immutable rollback anchor (cut FIRST)
+run git tag -f "$MAJOR" "$TIP"     # point floating major at the same tip
 run git push origin "$VERSION"
 run git push origin "$MAJOR" --force
 
