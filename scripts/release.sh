@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# No `set -e`: this script fails fast via explicit `|| exit 1` (see run() and
+# the fetch below) so a failed git step never silently continues to a push.
+set -uo pipefail
 
 # release.sh — publish a pipeline change to consumer repos.
 #
@@ -25,13 +27,14 @@ done
 [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: version must look like vX.Y.Z (got: $VERSION)" >&2; exit 1; }
 MAJOR="${VERSION%%.*}"   # v2.2.0 -> v2
 
-# run() executes a command, or just prints it in --dry-run mode.
+# run() executes a command, or just prints it in --dry-run mode. A failed
+# command aborts the release so a half-applied tag set is never pushed.
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then echo "  [dry-run] $*"; return; fi
-  "$@"
+  "$@" || { echo "error: command failed: $*" >&2; exit 1; }
 }
 
-git fetch origin --tags --quiet
+git fetch origin --tags --quiet || { echo "error: git fetch failed" >&2; exit 1; }
 
 if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
   echo "error: $VERSION already exists — immutable tags are never reused." >&2
