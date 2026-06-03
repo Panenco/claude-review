@@ -15,6 +15,11 @@
 SINCE ?= 7d
 -include .metrics.env
 
+.PHONY: release
+release:
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=vX.Y.Z"; exit 1; }
+	@bash scripts/release.sh $(VERSION)
+
 .PHONY: metrics
 metrics:
 	@bash scripts/cost-snapshot.sh \

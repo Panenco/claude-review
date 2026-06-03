@@ -484,6 +484,31 @@ The script uses your local `gh` auth (already cross-org), discovers repos via `g
 - `@v1` — frozen at the final v1 release (`b8223a98`, Apr 21 2026). No new fixes are backported here. Repos still on `@v1` continue to work; bump to `@v2` to receive new pipeline fixes (see [Migration: v1 → v2](#migration-v1--v2)).
 - Breaking changes (input/output format changes, new required permissions, verdict-gate additions) bump the major version.
 
+### Releasing a new version (maintainers)
+
+There is **no release automation** — merging to `main` does not publish anything. Consumers pin the floating major tag (`@v2`), so a release is two steps: cut an immutable `vX.Y.Z` rollback anchor at the current `origin/main` tip, then move the floating major tag onto the same commit. Use the script:
+
+```bash
+scripts/release.sh v2.2.0            # publish (or: make release VERSION=v2.2.0)
+scripts/release.sh v2.2.0 --dry-run  # preview the four git commands without pushing
+```
+
+It runs, in this order (immutable tag **first**, so the new tip keeps a stable name even if `v2` is later reverted):
+
+```bash
+git tag v2.2.0 origin/main      # immutable rollback anchor
+git tag -f v2 origin/main       # point floating major at the same tip
+git push origin v2.2.0
+git push origin v2 --force
+```
+
+**Choosing the number:** bump the **minor** for a new capability or config-affecting change, the **patch** for a pure fix. A breaking change bumps the **major** (`v3`) — never force-move the existing major onto a breaking change, since every consumer floats it.
+
+**Before you publish:**
+
+- **Push at idle.** Don't move the major tag while reviews are running — see the **Tag-resolution caveat** near the top of this README (the workflow file and the install step resolve their refs at different moments; moving mid-run can split versions). The script tags `origin/main`, not your local checkout, so a stale local `main` is harmless.
+- **For model changes, confirm the dogfood gate.** This repo self-reviews its own PRs, so the PR's own "In-Depth Review" run exercises the change. Confirm that run reported `judge_health.opus == "ok"` (no silent failover to Haiku) before publishing.
+
 ---
 
 ## Migration: v1 → v2
