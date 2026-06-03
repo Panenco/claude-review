@@ -299,6 +299,13 @@ Reviewers Read whichever of these are non-empty themselves.
 ### `## Acceptance criteria` (REQUIRED — the only synthesis you do)
 Extract criteria from the spec sources above. Look for: checkboxes, "should/must/needs to" statements, "Acceptance Criteria" sections, field definitions, validation rules, defaults.
 
+**Label each criterion `AC1`, `AC2`, … (no `#`).** Reviewers cite these labels back in their posted comments; a `#`-prefixed form like `AC #5` gets auto-linked by GitHub to issue/PR #5, producing a wrong cross-reference. Write them as a numbered list whose markers double as the labels, e.g.:
+
+```
+- **AC1** — API returns 400 for an underage user.
+- **AC2** — Adding a participant dispatches a CREATE sync message to external calendars.
+```
+
 **The PR body is usually MIXED, not all-or-nothing.** Bots APPEND their summary to the body without removing the human-written portion. The most common shape: a human types a description explaining the goal/scope/testing notes, then a bot (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) appends a generated summary below. The HUMAN portion above the AI block is a valid spec source even though the body as a whole contains AI-generated content.
 
 **Strip AI-generated blocks before judging.** Identify and remove these segments from the body, then evaluate what remains:

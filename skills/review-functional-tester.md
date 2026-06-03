@@ -164,6 +164,8 @@ This is your highest-value check. Compare **every observable detail** against th
 
 **The goal is to catch details that no human reviewer would notice** — a human reviews code, but you actually run it and compare output against spec word-by-word.
 
+**Referencing acceptance criteria in posted text.** When a finding's `title`/`reasoning`/`expected` or the meta `summary` cites a criterion, use the `AC1`/`AC2` labels from context.md — **never** a `#`-prefixed form like `AC #5`. These fields are posted verbatim to GitHub (the `title` is the bold header of every inline comment), which auto-links `#5` to issue/PR #5 and produces a wrong cross-reference. Write `AC5`, not `AC #5`.
+
 ## Output
 
 Always write both files, even on partial completion.
