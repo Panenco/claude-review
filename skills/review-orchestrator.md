@@ -33,6 +33,42 @@ The runtime ceiling is set by the launching workflow as an **absolute hard maxim
 
 **STOP-and-write anchor (mandatory).** By **turn 60**, write both output files with whatever you have. After turn 60, finalise only reconciliation decisions you've already drafted.
 
+## Review-plan gate (read this first)
+
+The launching workflow resolves a deterministic **review plan** (`scripts/review-plan.sh`) from the PR's files, branch, and labels and passes it in via env. Honor it before anything else:
+
+- `REVIEW_LEVEL` — `full` | `light` | `skip` (treat empty/unset as `full`)
+- `RUN_FUNCTIONAL` — `true` | `false` (only meaningful at `full`)
+- `GATE` — the classification that produced the plan (`normal`, `small`, `promotion`, `nonruntime`, `oversized`, `label`)
+- `GATE_REASON` — a one-line human-readable explanation
+
+**`skip`** → a human opted out (the `skip-review` label). Dispatch **nothing** — not even the context builder. Write `/tmp/all-findings.json = []` and `/tmp/review-meta.json`, then exit:
+
+```json
+{
+  "verdict": "COMMENT",
+  "verdict_summary": "<GATE_REASON, or 'Detailed review skipped by the review plan.' if empty>",
+  "review_level": "skip",
+  "gate": "<GATE>",
+  "manual_spec_present": false,
+  "spec_compliance": "Review skipped by plan; not assessed.",
+  "requires_human_review": false,
+  "requires_human_review_reason": null,
+  "uncertain_observations": [],
+  "prompt_injection_detected": false,
+  "spec_sources": { "linked_issue": null, "external_issue": null, "prd_path": null, "convention_rules": [] },
+  "judge_health": { "gate_skip": true, "agreed_at": "skipped" }
+}
+```
+
+(`COMMENT`, not `APPROVE`, so the bot never satisfies a required-review check on a PR it was told not to review.)
+
+**`light`** → the cheap single-judge path. Run Phase 0 (context) and Phase 1 (trivial check) normally, then follow the **`light` deltas** flagged in Phases 2–4: one judge on the standard tier, no Haiku, no functional, no rebuttal.
+
+**`full`** (or unset) → the full pipeline below, unchanged.
+
+On every **non-degraded** exit (`skip`, `light`, `full`, trivial-skip), record `review_level` and `gate` in `/tmp/review-meta.json`. Degraded failure paths (context-builder failed, both judges failed) focus on the failure banner and may omit them.
+
 ## Phase 0 — Build context
 
 Use the Task tool to dispatch the context builder. Single Task call.
@@ -92,6 +128,8 @@ In that case, write:
 {
   "verdict": "APPROVE",
   "verdict_summary": "Docs-only / trivial PR — no code-review surface. APPROVE-eligible.",
+  "review_level": "<REVIEW_LEVEL>",
+  "gate": "<GATE>",
   "manual_spec_present": <whatever CB judged>,
   "spec_compliance": "No reviewable code surface; spec compliance not applicable.",
   "requires_human_review": false,
@@ -111,17 +149,23 @@ Skip Phase 2 and 3.
 
 When Phase 1 didn't trigger, dispatch the work fan in a **single assistant response with multiple Task calls** so they run in parallel.
 
+**`light` delta (`REVIEW_LEVEL=light`):** dispatch a **single** judge instead of the panel — the Judge-Opus block below but with `model: "${MODEL_STANDARD:-claude-sonnet-4-6}"` (the standard tier, not Opus) and `OUTPUT_PATH=/tmp/judge-sonnet.json`. Skip the Haiku judge. At `light` the plan sets `RUN_FUNCTIONAL=false`, so the functional tester is off per the **Functional dispatch decision** plan gate below (only `pipeline-self-test`, if that's the strategy, still runs). The round-2 thread classifier still runs when its inputs exist. When the judge returns, skip Phase 3 and go straight to Phase 4.
+
 ### Functional dispatch decision
 
-Read the `## Strategy:` line from `test-plan.md`:
+**Plan gate (check first).** The app-driving functional tester — and its dev-env poll + prompt generation — runs only when `RUN_FUNCTIONAL=true` (the workflow sets that `true` only at `REVIEW_LEVEL=full` with a runtime diff). When `RUN_FUNCTIONAL` is `false`/empty (`light`, `skip`, or a non-runtime `full` PR), the **only** functional work permitted is `pipeline-self-test` (deterministic bash unit-tests — not app-driving, so it stays on); for every other strategy, write the synthetic skip `/tmp/functional-meta.json` (`strategy: "skip"`, `overall: PASS`) + `/tmp/functional-findings.json = []` and skip dev-env polling, prompt generation, and the tester.
 
-- `STRATEGY = pipeline-self-test` AND `tests/` directory exists at the repo root → run `tests/*.sh` directly via Bash (skip `*smoke*`, 60 s timeout per test). Tally pass/fail. Write `/tmp/functional-meta.json` with `strategy: "pipeline-self-test"`, `overall: PASS|FAIL|WARN`, plus `pass`/`fail`/`total`/`summary`. Write `/tmp/functional-findings.json = []`. Skip the functional Task dispatch. (Pipeline-self-test is deterministic; it doesn't need an LLM.)
-- `STRATEGY ∈ {quick, functional}` AND dev-env was ready (Phase 0.5 set `WEB_READY=true`) AND `/tmp/functional-prompt.txt` was generated → dispatch the functional tester subagent.
-- Anything else (`STRATEGY = skip`, dev-env not ready, no functional-prompt) → skip functional. Write a synthetic `/tmp/functional-meta.json` with `strategy: "skip"`, `overall: PASS`, `summary: "Functional testing skipped."`. Write `/tmp/functional-findings.json = []`.
+Then read the `## Strategy:` line from `test-plan.md`:
+
+- `STRATEGY = pipeline-self-test` AND `tests/` directory exists at the repo root → run `tests/*.sh` directly via Bash (skip `*smoke*`, 60 s timeout per test). Tally pass/fail. Write `/tmp/functional-meta.json` with `strategy: "pipeline-self-test"`, `overall: PASS|FAIL|WARN`, plus `pass`/`fail`/`total`/`summary`. Write `/tmp/functional-findings.json = []`. Skip the functional Task dispatch. **Runs regardless of `RUN_FUNCTIONAL`** — deterministic, no app, no LLM; cheap self-validation of the scripts.
+- `RUN_FUNCTIONAL=true` AND `STRATEGY ∈ {quick, functional}` AND dev-env was ready (Phase 0.5 set `WEB_READY=true`) AND `/tmp/functional-prompt.txt` was generated → dispatch the functional tester subagent.
+- Anything else (`RUN_FUNCTIONAL=false`, `STRATEGY = skip`, dev-env not ready, no functional-prompt) → skip functional. Write a synthetic `/tmp/functional-meta.json` with `strategy: "skip"`, `overall: PASS`, `summary: "Functional testing skipped."`. Write `/tmp/functional-findings.json = []`.
 
 To prepare the functional tester prompt: run `.review-scripts/generate-functional-prompt.sh` via Bash (with the dev-env env vars from Phase 0.5 in scope). It writes `/tmp/functional-prompt.txt`. Skip-and-warn if the helper fails — functional dispatch is best-effort.
 
 ### The Task fan
+
+The full Opus + Haiku panel below is for `REVIEW_LEVEL=full`. **At `light`, items 1–2 collapse to a single Sonnet judge (see the `light` delta above) — dispatch ONE judge, NOT Haiku.** Items 3–4 (thread classifier, functional tester) apply per their own conditions.
 
 Issue these in **one assistant response**:
 
@@ -145,13 +189,17 @@ Wait for every dispatched Task to return.
 
 ### Per-subagent failure handling
 
-For each judge: if its output file is missing or unparseable, treat that judge as **failed**. Do NOT retry. Record in `judge_health` and proceed with the surviving judge's output. If both judges failed, write a degraded `/tmp/all-findings.json = []` and `/tmp/review-meta.json` with `verdict: "COMMENT"` and `judge_health.both_failed: true`, then exit.
+At `REVIEW_LEVEL=light` there is exactly **one** judge (`/tmp/judge-sonnet.json`) — the two-judge logic below does NOT apply, and you must NOT look for `judge-opus.json` / `judge-haiku.json`. If `judge-sonnet.json` is missing or unparseable, write the degraded `/tmp/all-findings.json = []` + `/tmp/review-meta.json` (`verdict: "COMMENT"`, `judge_health: { "sonnet": "failed", "single_judge": true }`) and exit; otherwise use its output (Phase 4 `light` delta).
+
+At `REVIEW_LEVEL=full`, for each judge: if its output file is missing or unparseable, treat that judge as **failed**. Do NOT retry. Record in `judge_health` and proceed with the surviving judge's output. If both judges failed, write a degraded `/tmp/all-findings.json = []` and `/tmp/review-meta.json` with `verdict: "COMMENT"` and `judge_health.both_failed: true`, then exit.
 
 For the thread classifier: if it failed, write `/tmp/thread-resolution.json = []` and continue. The downstream verdict-ladder treats a missing/empty thread-resolution as degraded round-2 (pins verdict to max(prior, current)).
 
 For the functional tester: if the dispatched Task crashed (no output, parse error, exception in the subagent log) write `/tmp/functional-meta.json` as `{"strategy": "crashed", "overall": "CRASH", "summary": "Functional tester agent did not complete; see crash log in review body."}` and `/tmp/functional-findings.json = []`. Set `judge_health.functional_failed: true`. Do NOT use the `{strategy: "skip", overall: "PASS"}` shape for crashes — that sentinel is reserved for legitimate skips (no dev-env, docs-only PR, since-last has no user-observable surface), and the downstream verdict gate would treat a crashed run as a successful skip on tester-failure.
 
 ## Phase 3 — Rebuttal (≤2 rounds)
+
+**Skip this phase entirely at `REVIEW_LEVEL=light`** — a single judge has nothing to reconcile; go straight to Phase 4.
 
 Two outputs are **equivalent** when ALL of these hold:
 
@@ -175,6 +223,8 @@ Use round-suffixed paths (`/tmp/judge-opus-r1.json`, `/tmp/judge-haiku-r1.json`,
 After each rebuttal round, re-run the agreement check. Cap at 2 total rebuttal rounds. If still disagreeing after round 2, fall through to Phase 4 with the round-2 outputs.
 
 ## Phase 4 — Consolidate and write final output
+
+**`light` delta:** with a single judge there is nothing to union or reconcile — its findings array IS the output (re-id `j1, j2, …`), and its `verdict` / `verdict_summary` / `manual_spec_present` / `spec_sources` are used directly. Still fold in the thread classifier's net-new findings (round 2) through the same append. Set `judge_health` to `{ "sonnet": "ok|failed", "single_judge": true, "rebuttal_rounds": 0, "agreed_at": "single" }`; if the single judge failed, write the degraded `COMMENT` meta (as in the both-failed path). Skip the rest of this section's two-judge union and verdict reconciliation.
 
 Use the **most recent** outputs from each judge.
 
@@ -237,6 +287,8 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
 {
   "verdict": "REQUEST_CHANGES|COMMENT|APPROVE",
   "verdict_summary": "...",
+  "review_level": "full|light|skip",
+  "gate": "normal|small|nonruntime|oversized|promotion|label",
   "manual_spec_present": true,
   "spec_compliance": "...",
   "requires_human_review": false,
@@ -266,6 +318,6 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
 
 - **No own findings.** You never invent findings or rewrite a judge's evidence. If neither judge produced a finding for a region, that region produces no finding in the output.
 - **Always write both files.** On any failure path (CB failed, both judges failed, parse errors, hitting the STOP anchor), write best-effort output: empty findings array, a defensible verdict (`COMMENT` when degraded), `judge_health` reflecting the actual state. Never silently exit without writing.
-- **Two Task calls per debate round, in one assistant response.** Single calls serialise the judges and waste wall time.
-- **No retries on a single judge.** A judge that returns no parseable output is recorded as `failed` and the run proceeds. The redundancy is the _other_ judge, not retries of the same one.
+- **Two Task calls per debate round, in one assistant response** — at `REVIEW_LEVEL=full`. Single calls serialise the judges and waste wall time. At `light` a single judge runs (Phase 2 `light` delta) — no debate round, no second Task.
+- **No retries on a single judge.** A judge that returns no parseable output is recorded as `failed` and the run proceeds. At `full` the redundancy is the _other_ judge; at `light` a failed single judge → the degraded `COMMENT` exit (per-subagent failure handling). Never retry either way.
 - **Trivial-skip is a verdict-relevant decision.** If you short-circuit at Phase 1, you are still responsible for `manual_spec_present` and `prompt_injection_detected` — copy these from `context.md`'s flags, don't fabricate.

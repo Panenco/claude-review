@@ -1004,11 +1004,16 @@ jobs:
           MODEL_FAST: ${{ inputs.model_fast }}
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
           FUNCTIONAL_MAX_TURNS: ${{ inputs.functional_max_turns }}
+          # Review plan (from the resolver step) — the orchestrator honours review_level.
+          REVIEW_LEVEL: ${{ steps.review_plan.outputs.review_level }}
+          RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
+          GATE: ${{ steps.review_plan.outputs.gate }}
+          GATE_REASON: ${{ steps.review_plan.outputs.reason }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review — dispatch the context builder, the two judges, the round-2 thread classifier, and the functional tester via the Task tool per the skill above. The functional tester is registered as the custom subagent type `review-functional-tester` (auto-discovered from .claude/agents/, owns Playwright MCP directly — just dispatch it, do not pass MCP config in the prompt). Write /tmp/all-findings.json + /tmp/review-meta.json before exiting.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan passed via env (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) per the skill's "Review-plan gate" section FIRST, then dispatch the appropriate subagents (context builder, judges, round-2 thread classifier, functional tester) via the Task tool exactly as the skill directs for that review level. The functional tester is registered as the custom subagent type `review-functional-tester` (auto-discovered from .claude/agents/, owns Playwright MCP directly — just dispatch it, do not pass MCP config in the prompt). Write /tmp/all-findings.json + /tmp/review-meta.json before exiting.
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
