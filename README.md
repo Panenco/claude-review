@@ -130,6 +130,8 @@ Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code
 
 A single LLM judge can have a bad sample on any given run — miss something subtle, over-grade a defensive note, mis-route a finding to the wrong file. The orchestrator runs **two independent judges with different model strengths** (Opus for deep reasoning, Haiku for cheap broad-coverage finds) and reconciles them: if they agree, the review ships immediately; if they disagree, each judge sees the other's findings and either concedes the ones they missed or defends the ones the other dropped. This catches the long tail where one judge is wrong without paying for it on every PR — most reviews converge on the first round.
 
+> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate + functional run for substantial or sensitive changes; small, low-risk PRs take a lighter single-judge pass. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
+
 ### Round 1 vs round 2
 
 The pipeline persists a small state artifact (`/tmp/review-state.json`) on every successful run — the deduped findings, verdict, head SHA reviewed, and the posted review's GitHub id. On the next push to the same PR, the next run downloads it, computes the diff since that SHA, and the round-2 thread classifier runs alongside the orchestrator. The verdict ladder gains a round-2 layer that's strictly **anti-downgrade**:
