@@ -30,14 +30,17 @@ assert_eq() {
 }
 
 # decide_smoke <FUNCTIONAL_OK> <FUNCTIONAL_STRATEGY> <FUNCTIONAL_OVERALL> \
-#              <PLANNED_STRATEGY> <PRIOR_FUNCTIONAL_OVERALL>
-# Echoes "<SMOKE_OK> <SMOKE_INHERITED>". Mirrors build-review.sh:534-563.
+#              <PLANNED_STRATEGY> <PRIOR_FUNCTIONAL_OVERALL> [GATE]
+# Echoes "<SMOKE_OK> <SMOKE_INHERITED>". Mirrors build-review.sh's SMOKE_OK
+# block + the review-plan GATE waiver. GATE is optional (defaults empty →
+# no waiver), so the original 5-arg calls below are unaffected.
 decide_smoke() {
   local FUNCTIONAL_OK="$1"
   local FUNCTIONAL_STRATEGY="$2"
   local FUNCTIONAL_OVERALL="$3"
   local PLANNED_STRATEGY="$4"
   local PRIOR_FUNCTIONAL_OVERALL="$5"
+  local GATE="${6:-}"
   local SMOKE_OK=false
   local SMOKE_INHERITED=false
   if [ "${FUNCTIONAL_OK:-1}" -ne 1 ]; then
@@ -48,6 +51,11 @@ decide_smoke() {
       SMOKE_INHERITED=true
     fi
   elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; then
+    SMOKE_OK=true
+  fi
+  # Review-plan guard: a non-'normal' gate (functional intentionally skipped)
+  # waives the smoke requirement. SMOKE_INHERITED stays as-is.
+  if [ -n "$GATE" ] && [ "$GATE" != "normal" ]; then
     SMOKE_OK=true
   fi
   echo "$SMOKE_OK $SMOKE_INHERITED"
@@ -128,6 +136,38 @@ assert_eq "I: functional FAIL — gate fails" \
 assert_eq "J: pipeline-self-test PASS" \
   "true false" \
   "$(decide_smoke 1 pipeline-self-test PASS pipeline-self-test "")"
+
+# ── Review-plan GATE waiver (1b) ──
+# A non-'normal' gate means the resolver intentionally skipped functional, so a
+# missing smoke result must NOT withhold APPROVE. These all use the degraded
+# shape (functional planned, strategy=skip, no inherit) that would otherwise be
+# "false false" — the gate flips SMOKE_OK to true.
+
+# Case S: gate=promotion waives the smoke requirement.
+assert_eq "S: gate=promotion waives smoke" \
+  "true false" \
+  "$(decide_smoke 1 skip PASS functional "" promotion)"
+
+# Case T: gate=oversized waives.
+assert_eq "T: gate=oversized waives smoke" \
+  "true false" \
+  "$(decide_smoke 1 skip PASS functional "" oversized)"
+
+# Case U: gate=nonruntime waives.
+assert_eq "U: gate=nonruntime waives smoke" \
+  "true false" \
+  "$(decide_smoke 1 skip PASS functional "" nonruntime)"
+
+# Case V: gate=normal does NOT waive — a planned-but-unran functional is a real
+#         gap and still withholds (unchanged from the no-gate behavior).
+assert_eq "V: gate=normal does NOT waive (real gap withholds)" \
+  "false false" \
+  "$(decide_smoke 1 skip PASS functional "" normal)"
+
+# Case W: gate empty (pre-1b / non-PR path) → unchanged behavior.
+assert_eq "W: empty gate — unchanged (no waiver)" \
+  "false false" \
+  "$(decide_smoke 1 skip PASS functional "")"
 
 echo
 echo "── Persistence decision ──"
