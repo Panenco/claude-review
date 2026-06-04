@@ -47,6 +47,11 @@ on:
         required: false
         type: number
         default: 200
+      allowed_bots:
+        description: "Comma-separated bot logins allowed to trigger the review (e.g. 'panenco-automation'), or '*' for all bots. Empty (default) preserves the action's default of blocking all bot-initiated runs."
+        required: false
+        type: string
+        default: ""
       gate_skip_label:
         description: "Label that forces review_level=skip (respects an explicit human opt-out). See docs/review-plan.md."
         required: false
@@ -1061,6 +1066,11 @@ jobs:
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
+          # Pass-through opt-in: empty (default) keeps the action's default of
+          # blocking all bot-initiated runs. A consumer repo sets allowed_bots
+          # (e.g. 'panenco-automation') on its caller's `with:` block to let
+          # that bot's PRs through. See README → "Allowing bot-opened PRs".
+          allowed_bots: ${{ inputs.allowed_bots }}
           prompt: |
             Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan passed via env (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) per the skill's "Review-plan gate" section FIRST, then dispatch the appropriate subagents (context builder, judges, round-2 thread classifier, functional tester) via the Task tool exactly as the skill directs for that review level. The functional tester is registered as the custom subagent type `review-functional-tester` (auto-discovered from .claude/agents/, owns Playwright MCP directly — just dispatch it, do not pass MCP config in the prompt). Write /tmp/all-findings.json + /tmp/review-meta.json before exiting.
           claude_args: |
