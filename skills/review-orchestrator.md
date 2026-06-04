@@ -33,6 +33,42 @@ The runtime ceiling is set by the launching workflow as an **absolute hard maxim
 
 **STOP-and-write anchor (mandatory).** By **turn 60**, write both output files with whatever you have. After turn 60, finalise only reconciliation decisions you've already drafted.
 
+## Review-plan gate (read this first)
+
+The launching workflow resolves a deterministic **review plan** (`scripts/review-plan.sh`) from the PR's files, branch, and labels and passes it in via env. Honor it before anything else:
+
+- `REVIEW_LEVEL` — `full` | `light` | `skip` (treat empty/unset as `full`)
+- `RUN_FUNCTIONAL` — `true` | `false` (only meaningful at `full`)
+- `GATE` — the classification that produced the plan (`normal`, `small`, `promotion`, `nonruntime`, `oversized`, `label`)
+- `GATE_REASON` — a one-line human-readable explanation
+
+**`skip`** → a human opted out (the `skip-review` label). Dispatch **nothing** — not even the context builder. Write `/tmp/all-findings.json = []` and `/tmp/review-meta.json`, then exit:
+
+```json
+{
+  "verdict": "COMMENT",
+  "verdict_summary": "<GATE_REASON, or 'Detailed review skipped by the review plan.' if empty>",
+  "review_level": "skip",
+  "gate": "<GATE>",
+  "manual_spec_present": false,
+  "spec_compliance": "Review skipped by plan; not assessed.",
+  "requires_human_review": false,
+  "requires_human_review_reason": null,
+  "uncertain_observations": [],
+  "prompt_injection_detected": false,
+  "spec_sources": { "linked_issue": null, "external_issue": null, "prd_path": null, "convention_rules": [] },
+  "judge_health": { "gate_skip": true, "agreed_at": "skipped" }
+}
+```
+
+(`COMMENT`, not `APPROVE`, so the bot never satisfies a required-review check on a PR it was told not to review.)
+
+**`light`** → the cheap single-judge path. Run Phase 0 (context) and Phase 1 (trivial check) normally, then follow the **`light` deltas** flagged in Phases 2–4: one judge on the standard tier, no Haiku, no functional, no rebuttal.
+
+**`full`** (or unset) → the full pipeline below, unchanged.
+
+On **every** path (including `full` and trivial-skip), record `review_level` and `gate` in `/tmp/review-meta.json`.
+
 ## Phase 0 — Build context
 
 Use the Task tool to dispatch the context builder. Single Task call.
@@ -111,6 +147,8 @@ Skip Phase 2 and 3.
 
 When Phase 1 didn't trigger, dispatch the work fan in a **single assistant response with multiple Task calls** so they run in parallel.
 
+**`light` delta (`REVIEW_LEVEL=light`):** dispatch a **single** judge instead of the panel — the Judge-Opus block below but with `model: "${MODEL_STANDARD:-claude-sonnet-4-6}"` (the standard tier, not Opus) and `OUTPUT_PATH=/tmp/judge-sonnet.json`. Skip the Haiku judge and the functional tester entirely (there is no functional at `light`). The round-2 thread classifier still runs when its inputs exist. When the judge returns, skip Phase 3 and go straight to Phase 4.
+
 ### Functional dispatch decision
 
 Read the `## Strategy:` line from `test-plan.md`:
@@ -153,6 +191,8 @@ For the functional tester: if the dispatched Task crashed (no output, parse erro
 
 ## Phase 3 — Rebuttal (≤2 rounds)
 
+**Skip this phase entirely at `REVIEW_LEVEL=light`** — a single judge has nothing to reconcile; go straight to Phase 4.
+
 Two outputs are **equivalent** when ALL of these hold:
 
 1. **Verdict matches** exactly (`REQUEST_CHANGES`, `COMMENT`, `APPROVE`).
@@ -175,6 +215,8 @@ Use round-suffixed paths (`/tmp/judge-opus-r1.json`, `/tmp/judge-haiku-r1.json`,
 After each rebuttal round, re-run the agreement check. Cap at 2 total rebuttal rounds. If still disagreeing after round 2, fall through to Phase 4 with the round-2 outputs.
 
 ## Phase 4 — Consolidate and write final output
+
+**`light` delta:** with a single judge there is nothing to union or reconcile — its findings array IS the output (re-id `j1, j2, …`), and its `verdict` / `verdict_summary` / `manual_spec_present` / `spec_sources` are used directly. Still fold in the thread classifier's net-new findings (round 2) through the same append. Set `judge_health` to `{ "sonnet": "ok|failed", "single_judge": true, "rebuttal_rounds": 0, "agreed_at": "single" }`; if the single judge failed, write the degraded `COMMENT` meta (as in the both-failed path). Skip the rest of this section's two-judge union and verdict reconciliation.
 
 Use the **most recent** outputs from each judge.
 
@@ -237,6 +279,8 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
 {
   "verdict": "REQUEST_CHANGES|COMMENT|APPROVE",
   "verdict_summary": "...",
+  "review_level": "full|light|skip",
+  "gate": "normal|small|nonruntime|oversized|promotion|label",
   "manual_spec_present": true,
   "spec_compliance": "...",
   "requires_human_review": false,
