@@ -61,5 +61,8 @@ jobs:
       - name: Run review_plan_test.sh
         run: bash tests/review_plan_test.sh
 
+      - name: Run judge_health_gate_test.sh
+        run: bash tests/judge_health_gate_test.sh
+
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh
