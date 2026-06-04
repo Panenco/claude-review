@@ -505,9 +505,11 @@ fi
 # / `*_failed: true`. With an empty findings array, the per-PR ladder
 # below would otherwise reach APPROVE — contradicting the "Both judges
 # failed" banner the body renders. Force COMMENT here so the verdict
-# matches the banner. Single-judge failure is NOT downgraded — the
-# orchestrator already proceeded with the surviving judge's output, and
-# that's a legitimate review.
+# matches the banner. In a FULL run a single failed judge is NOT downgraded
+# — the orchestrator proceeds with the surviving judge, a legitimate review.
+# But at REVIEW_LEVEL=light there is only ONE judge (`single_judge: true`);
+# if it (`sonnet`) failed there is no surviving output, so that IS a total
+# failure and must degrade too.
 JUDGES_BOTH_FAILED=$(echo "$CORE_META" | jq -r '
   # Strict-equality predicates throughout. jq treats any non-false/non-null
   # value as truthy in `or`, so an LLM emitting `"both_failed": "false"`
@@ -521,6 +523,7 @@ JUDGES_BOTH_FAILED=$(echo "$CORE_META" | jq -r '
       is_true_bool("both_failed")
       or is_true_bool("cb_failed")
       or (is_failed_str("opus") and is_failed_str("haiku"))
+      or (is_true_bool("single_judge") and is_failed_str("sonnet"))
     )
   else false end')
 
