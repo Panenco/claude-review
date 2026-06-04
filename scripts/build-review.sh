@@ -485,6 +485,20 @@ elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; t
   SMOKE_OK=true
 fi
 
+# Review-plan guard. When the deterministic resolver (review-plan.sh) intentionally
+# gated functional off — any GATE other than 'normal' (promotion / oversized /
+# nonruntime / label) — a missing smoke result is BY DESIGN, not a coverage gap.
+# Waive the technical-change smoke withhold so the verdict reflects the resolver's
+# deliberate decision instead of dropping APPROVE→COMMENT for a smoke we chose not
+# to run. (A 'normal' PR where functional was planned but didn't land still
+# withholds — that's a real gap, not an intentional skip.)
+if [ -n "${GATE:-}" ] && [ "$GATE" != "normal" ]; then
+  if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" != "true" ]; then
+    echo "::notice::Technical-change smoke gate waived — review-plan gate '$GATE' intentionally skipped functional testing."
+  fi
+  SMOKE_OK=true
+fi
+
 # Judge-health safety gate. The orchestrator's degraded paths (both
 # judges crashed, or context-builder crashed) write `/tmp/all-findings.json
 # = []` and a meta with `judge_health.{opus,haiku,cb}` set to "failed"

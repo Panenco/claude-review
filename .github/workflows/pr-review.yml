@@ -309,6 +309,38 @@ jobs:
             echo "Pure docs PR — skipping build setup."
           fi
 
+      # Deterministic review-plan resolver (scripts/review-plan.sh). Classifies the
+      # PR from its changed files + branch refs + labels into a plan — review_level
+      # (full|light|skip) + run_functional — BEFORE any agent runs. Drives the
+      # functional-setup gating below and is passed to the orchestrator. Runs on
+      # every PR (incl docs). Pure/deterministic; unit-tested in tests/review_plan_test.sh.
+      - name: Resolve review plan
+        id: review_plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        run: |
+          set -uo pipefail
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --json files,baseRefName,headRefName,labels)
+          GATE_FILES_TSV=$(jq -r '.files[] | "\(.path)\t\(.additions)\t\(.deletions)"' <<< "$PR_JSON")
+          GATE_BASE_REF=$(jq -r '.baseRefName // ""' <<< "$PR_JSON")
+          GATE_HEAD_REF=$(jq -r '.headRefName // ""' <<< "$PR_JSON")
+          GATE_LABELS=$(jq -r '.labels[].name' <<< "$PR_JSON")
+          export GATE_FILES_TSV GATE_BASE_REF GATE_HEAD_REF GATE_LABELS
+          PLAN=$(.review-scripts/review-plan.sh)
+          echo "Review plan:"; echo "$PLAN" | sed 's/^/  /'
+          # Forward to step outputs. review_level/run_functional/gate are simple
+          # tokens; reason is free text → emit via heredoc so spaces/special chars
+          # can't break the KEY=value file.
+          {
+            grep -E '^(review_level|run_functional|gate)=' <<< "$PLAN"
+            echo "reason<<__GATE_EOF__"
+            grep '^reason=' <<< "$PLAN" | cut -d= -f2-
+            echo "__GATE_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       # Node is installed at the default LTS so npx-based tooling (Playwright
       # install + @playwright/mcp pre-warm below) just works. The review
       # pipeline does NOT install the consumer's dependencies — build / lint
@@ -350,7 +382,7 @@ jobs:
       # mirrors the path the subagent's mcpServers config writes to.
       - name: Cache Playwright assets
         id: pw_cache
-        if: steps.code_check.outputs.needs_build == 'true'
+        if: steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -361,7 +393,7 @@ jobs:
             ${{ runner.os }}-pw-
 
       - name: Install Playwright + MCP
-        if: steps.code_check.outputs.needs_build == 'true'
+        if: steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         shell: bash
         run: |
           # set -uo pipefail (no explicit -e) per .github/review-config.md +
@@ -852,7 +884,7 @@ jobs:
       # owning its own dependency install. Without it, no dev-env launches
       # and the functional tester runs in skip strategy.
       - name: Pre-start dev environment (background)
-        if: steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != ''
+        if: steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true'
         id: dev_env_bg
         shell: bash
         env:
@@ -997,6 +1029,10 @@ jobs:
           GITHUB_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
+          # Review-plan gate (from the Resolve review plan step). build-review.sh
+          # waives the technical-change smoke withhold when functional was
+          # intentionally gated off (any gate other than 'normal').
+          GATE: ${{ steps.review_plan.outputs.gate }}
           # claude-code-action's JSONL conversation log. build-review.sh greps
           # it for `"error":"rate_limit"` / `hit your limit · resets …` so the
           # quota-specific error annotation fires (instead of a generic crash
