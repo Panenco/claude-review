@@ -158,6 +158,11 @@ assert_eq "U: gate=nonruntime waives smoke" \
   "true false" \
   "$(decide_smoke 1 skip PASS functional "" nonruntime)"
 
+# Case X: gate=small waives — the new small/light tier intentionally skips functional.
+assert_eq "X: gate=small waives smoke" \
+  "true false" \
+  "$(decide_smoke 1 skip PASS functional "" small)"
+
 # Case V: gate=normal does NOT waive — a planned-but-unran functional is a real
 #         gap and still withholds (unchanged from the no-gate behavior).
 assert_eq "V: gate=normal does NOT waive (real gap withholds)" \

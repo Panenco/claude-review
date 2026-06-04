@@ -8,7 +8,7 @@
 # Output (KEY=value lines on stdout, ready to append to $GITHUB_OUTPUT):
 #   review_level=full|light|skip
 #   run_functional=true|false
-#   gate=normal|nonruntime|oversized|promotion|label
+#   gate=normal|nonruntime|oversized|promotion|label|small
 #   reason=<human-readable, single line>
 #
 # review_level (consumed by review-orchestrator.md):
@@ -19,11 +19,14 @@
 # gate           — the classification that produced the decision (stable, for banners)
 #
 # Mapping:
-#   label      → skip  / functional off   (human opted out — respect it)
-#   promotion  → light / functional off   (source already reviewed; cheap insurance)
-#   oversized  → light / functional off   (too big for full; a single judge catches the worst)
-#   nonruntime → full  / functional off   (tests/docs/CI/locks — judges yes, no app-driving)
-#   normal     → full  / functional on
+#   label       → skip  / functional off   (human opted out — respect it; beats deep-review if both)
+#   deep-review → full  / functional on    (label; forces full — suppresses promotion/oversized/small.
+#                                           Does NOT turn functional on for an all-nonruntime PR.)
+#   promotion   → light / functional off   (source already reviewed; cheap insurance)
+#   oversized   → light / functional off   (too big for full; a single judge catches the worst)
+#   nonruntime  → full  / functional off   (tests/docs/CI/locks — judges yes, no app-driving)
+#   small       → light / functional off   (<= GATE_SMALL_CEILING non-gen lines, no sensitive paths)
+#   normal      → full  / functional on    (substantial, OR touches a sensitive path)
 #
 # Inputs (env; all optional — safe, review-biased defaults):
 #   GATE_FILES_TSV       one "path<TAB>additions<TAB>deletions" line per changed file
@@ -31,8 +34,15 @@
 #   GATE_HEAD_REF        PR head branch (e.g. staging)
 #   GATE_LABELS          newline-separated PR label names
 #   GATE_SKIP_LABEL      label that forces a skip (default: skip-review)
+#   GATE_DEEP_LABEL      label that forces a full review (default: deep-review)
 #   GATE_SIZE_CEILING    non-generated changed lines → oversized (default 1500)
 #   GATE_FILE_CEILING    non-generated changed files → oversized (default 40)
+#   GATE_SMALL_CEILING   non-gen lines at/under which a runtime PR → small/light (default 300)
+#   GATE_SENSITIVE_GLOBS space-separated path globs that force full even when small
+#                        (default: auth.* / oauth / authentication / authorization /
+#                        security / payments / migrations. A bare "auth/" dir is NOT
+#                        sensitive by default — frontends use views/auth/ as the signed-in
+#                        route group; add "*/auth/*" per-repo if yours holds auth logic.)
 #   GATE_PROMOTION_BASES space-separated release targets (default: main master production prod)
 #   GATE_PROMOTION_HEADS space-separated promotion sources, exact or "<name>/*" prefix
 #                        (default: staging develop dev release hotfix)
@@ -46,10 +56,13 @@ set -uo pipefail
 BASE_REF="${GATE_BASE_REF:-}"
 HEAD_REF="${GATE_HEAD_REF:-}"
 SKIP_LABEL="${GATE_SKIP_LABEL:-skip-review}"
+DEEP_LABEL="${GATE_DEEP_LABEL:-deep-review}"
 SIZE_CEILING="${GATE_SIZE_CEILING:-1500}"
 FILE_CEILING="${GATE_FILE_CEILING:-40}"
+SMALL_CEILING="${GATE_SMALL_CEILING:-300}"
 PROMO_BASES="${GATE_PROMOTION_BASES:-main master production prod}"
 PROMO_HEADS="${GATE_PROMOTION_HEADS:-staging develop dev release hotfix}"
+SENSITIVE_GLOBS="${GATE_SENSITIVE_GLOBS:-*auth.* */oauth/* oauth.* */authentication/* authentication/* */authorization/* authorization/* */security/* security/* */payments/* payments/* */payment/* payment/* */migrations/* migrations/* */migration/* migration/*}"
 
 emit() {
   # $1 review_level, $2 run_functional, $3 gate, $4 reason
@@ -61,6 +74,13 @@ lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 if [ -n "${GATE_LABELS:-}" ] && printf '%s\n' "$GATE_LABELS" | grep -Fxq "$SKIP_LABEL"; then
   emit "skip" "false" "label" "Skipping detailed review — '$SKIP_LABEL' label present (reviewed elsewhere / opted out)."
   exit 0
+fi
+
+# ── 1b) deep-review label → force a full review (suppresses the light downgrades
+#        below). skip-review (above) wins if both labels are present. ──
+FORCE_FULL=false
+if [ -n "${GATE_LABELS:-}" ] && printf '%s\n' "$GATE_LABELS" | grep -Fxq "$DEEP_LABEL"; then
+  FORCE_FULL=true
 fi
 
 # ── 2) Promotion / release PR? base is a release target AND head is a promotion source ──
@@ -80,7 +100,7 @@ is_promotion() {
   done
   return 1
 }
-if is_promotion; then
+if [ "$FORCE_FULL" = false ] && is_promotion; then
   emit "light" "false" "promotion" "Release/promotion PR ($HEAD_REF → $BASE_REF): source changes were reviewed on their own PRs — lightweight pass only (single judge, no functional)."
   exit 0
 fi
@@ -106,8 +126,21 @@ is_nonruntime() {
     *) return 1 ;;
   esac
 }
+# Sensitive: high-risk runtime areas where a single judge isn't enough — these force
+# a full review even when the diff is small. Configurable via GATE_SENSITIVE_GLOBS.
+is_sensitive() {
+  [ -n "$SENSITIVE_GLOBS" ] || return 1
+  local p g; local -a globs
+  p=$(lc "$1")
+  read -ra globs <<< "$SENSITIVE_GLOBS"
+  for g in "${globs[@]}"; do
+    # shellcheck disable=SC2254  # $g is intentionally a glob pattern, not a literal
+    case "$p" in $g) return 0 ;; esac
+  done
+  return 1
+}
 
-ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true
+ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true; has_sensitive=false
 while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
   total_files=$(( total_files + 1 ))
@@ -116,11 +149,12 @@ while IFS=$'\t' read -r path adds dels; do
     ng_files=$(( ng_files + 1 ))
     [[ "${adds:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + adds ))
     [[ "${dels:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + dels ))
+    is_sensitive "$path" && has_sensitive=true
   fi
 done <<< "${GATE_FILES_TSV:-}"
 
 # ── 3) Oversized (non-promotion)? Lightweight pass + a "split / label" note ──
-if [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; then
+if [ "$FORCE_FULL" = false ] && { [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; }; then
   emit "light" "false" "oversized" "PR too large for a full review (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — lightweight single-judge pass. Consider splitting (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
   exit 0
 fi
@@ -131,5 +165,12 @@ if [ "$total_files" -gt 0 ] && [ "$all_nonruntime" = true ]; then
   exit 0
 fi
 
-# ── 5) Normal — full review, functional eligible ──
+# ── 5) Small, non-sensitive runtime change? One judge is enough — skip the debate
+#       and functional. Sensitive paths / the deep-review label fall through to full. ──
+if [ "$total_files" -gt 0 ] && [ "$FORCE_FULL" = false ] && [ "$has_sensitive" = false ] && [ "$ng_lines" -le "$SMALL_CEILING" ]; then
+  emit "light" "false" "small" "Small runtime change (${ng_files} files, ${ng_lines} non-generated lines, at/under the ${SMALL_CEILING}-line small-PR ceiling; no sensitive paths) — lightweight single-judge pass. Add the '$DEEP_LABEL' label to force a full review."
+  exit 0
+fi
+
+# ── 6) Normal — full review, functional eligible (substantial, or sensitive paths) ──
 emit "full" "true" "normal" "Eligible for full review (${ng_files} runtime-relevant files, ${ng_lines} non-generated lines)."
