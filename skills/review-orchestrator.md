@@ -128,6 +128,8 @@ In that case, write:
 {
   "verdict": "APPROVE",
   "verdict_summary": "Docs-only / trivial PR — no code-review surface. APPROVE-eligible.",
+  "review_level": "<REVIEW_LEVEL>",
+  "gate": "<GATE>",
   "manual_spec_present": <whatever CB judged>,
   "spec_compliance": "No reviewable code surface; spec compliance not applicable.",
   "requires_human_review": false,
@@ -147,15 +149,17 @@ Skip Phase 2 and 3.
 
 When Phase 1 didn't trigger, dispatch the work fan in a **single assistant response with multiple Task calls** so they run in parallel.
 
-**`light` delta (`REVIEW_LEVEL=light`):** dispatch a **single** judge instead of the panel — the Judge-Opus block below but with `model: "${MODEL_STANDARD:-claude-sonnet-4-6}"` (the standard tier, not Opus) and `OUTPUT_PATH=/tmp/judge-sonnet.json`. Skip the Haiku judge and the functional tester entirely (there is no functional at `light`). The round-2 thread classifier still runs when its inputs exist. When the judge returns, skip Phase 3 and go straight to Phase 4.
+**`light` delta (`REVIEW_LEVEL=light`):** dispatch a **single** judge instead of the panel — the Judge-Opus block below but with `model: "${MODEL_STANDARD:-claude-sonnet-4-6}"` (the standard tier, not Opus) and `OUTPUT_PATH=/tmp/judge-sonnet.json`. Skip the Haiku judge. At `light` the plan sets `RUN_FUNCTIONAL=false`, so the functional tester is off per the **Functional dispatch decision** plan gate below (only `pipeline-self-test`, if that's the strategy, still runs). The round-2 thread classifier still runs when its inputs exist. When the judge returns, skip Phase 3 and go straight to Phase 4.
 
 ### Functional dispatch decision
 
-Read the `## Strategy:` line from `test-plan.md`:
+**Plan gate (check first).** The app-driving functional tester — and its dev-env poll + prompt generation — runs only when `RUN_FUNCTIONAL=true` (the workflow sets that `true` only at `REVIEW_LEVEL=full` with a runtime diff). When `RUN_FUNCTIONAL` is `false`/empty (`light`, `skip`, or a non-runtime `full` PR), the **only** functional work permitted is `pipeline-self-test` (deterministic bash unit-tests — not app-driving, so it stays on); for every other strategy, write the synthetic skip `/tmp/functional-meta.json` (`strategy: "skip"`, `overall: PASS`) + `/tmp/functional-findings.json = []` and skip dev-env polling, prompt generation, and the tester.
 
-- `STRATEGY = pipeline-self-test` AND `tests/` directory exists at the repo root → run `tests/*.sh` directly via Bash (skip `*smoke*`, 60 s timeout per test). Tally pass/fail. Write `/tmp/functional-meta.json` with `strategy: "pipeline-self-test"`, `overall: PASS|FAIL|WARN`, plus `pass`/`fail`/`total`/`summary`. Write `/tmp/functional-findings.json = []`. Skip the functional Task dispatch. (Pipeline-self-test is deterministic; it doesn't need an LLM.)
-- `STRATEGY ∈ {quick, functional}` AND dev-env was ready (Phase 0.5 set `WEB_READY=true`) AND `/tmp/functional-prompt.txt` was generated → dispatch the functional tester subagent.
-- Anything else (`STRATEGY = skip`, dev-env not ready, no functional-prompt) → skip functional. Write a synthetic `/tmp/functional-meta.json` with `strategy: "skip"`, `overall: PASS`, `summary: "Functional testing skipped."`. Write `/tmp/functional-findings.json = []`.
+Then read the `## Strategy:` line from `test-plan.md`:
+
+- `STRATEGY = pipeline-self-test` AND `tests/` directory exists at the repo root → run `tests/*.sh` directly via Bash (skip `*smoke*`, 60 s timeout per test). Tally pass/fail. Write `/tmp/functional-meta.json` with `strategy: "pipeline-self-test"`, `overall: PASS|FAIL|WARN`, plus `pass`/`fail`/`total`/`summary`. Write `/tmp/functional-findings.json = []`. Skip the functional Task dispatch. **Runs regardless of `RUN_FUNCTIONAL`** — deterministic, no app, no LLM; cheap self-validation of the scripts.
+- `RUN_FUNCTIONAL=true` AND `STRATEGY ∈ {quick, functional}` AND dev-env was ready (Phase 0.5 set `WEB_READY=true`) AND `/tmp/functional-prompt.txt` was generated → dispatch the functional tester subagent.
+- Anything else (`RUN_FUNCTIONAL=false`, `STRATEGY = skip`, dev-env not ready, no functional-prompt) → skip functional. Write a synthetic `/tmp/functional-meta.json` with `strategy: "skip"`, `overall: PASS`, `summary: "Functional testing skipped."`. Write `/tmp/functional-findings.json = []`.
 
 To prepare the functional tester prompt: run `.review-scripts/generate-functional-prompt.sh` via Bash (with the dev-env env vars from Phase 0.5 in scope). It writes `/tmp/functional-prompt.txt`. Skip-and-warn if the helper fails — functional dispatch is best-effort.
 
