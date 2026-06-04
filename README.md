@@ -50,6 +50,16 @@ with:
 
 Without `pipeline_ref`, the install defaults to `@v2` and consumers get new orchestration on old skills, which fails at max-turns. The `@v2` default is correct for normal use; only override during testing.
 
+**Allowing bot-opened PRs.** By default the underlying action blocks any run triggered by a non-human actor, so PRs opened by an automation bot fail at the orchestrator step with `Workflow initiated by non-human actor`. Opt in per-repo by passing `allowed_bots` (comma-separated bot logins, or `*` for all bots) on the caller's `with:` block. Use the login **without** the `[bot]` suffix — it matches `github.actor`:
+
+```yaml
+with:
+  pr_number: ${{ inputs.pr_number || '' }}
+  allowed_bots: panenco-automation   # not "panenco-automation[bot]"
+```
+
+Empty (the default) preserves today's behaviour — all bot-initiated runs stay blocked. This is a safe, opt-in change for every existing consumer.
+
 ### 2. Set secrets
 
 Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo or org secret. Generate it with:
