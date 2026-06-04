@@ -145,16 +145,25 @@ while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
   total_files=$(( total_files + 1 ))
   is_nonruntime "$path" || all_nonruntime=false
+  # Sensitivity is a property of the path (generated or not): a touch under a
+  # sensitive glob forces a full review even if it doesn't count toward size.
+  is_sensitive "$path" && has_sensitive=true
   if ! is_generated "$path"; then
     ng_files=$(( ng_files + 1 ))
     [[ "${adds:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + adds ))
     [[ "${dels:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + dels ))
-    is_sensitive "$path" && has_sensitive=true
   fi
 done <<< "${GATE_FILES_TSV:-}"
 
-# ── 3) Oversized (non-promotion)? Lightweight pass + a "split / label" note ──
-if [ "$FORCE_FULL" = false ] && { [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; }; then
+# Size verdict, precomputed so the guard below stays a simple check.
+oversized=false
+if [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; then
+  oversized=true
+fi
+
+# ── 3) Oversized (non-promotion)? Lightweight pass + a "split / label" note.
+#       deep-review (FORCE_FULL) suppresses this downgrade. ──
+if [ "$FORCE_FULL" = false ] && [ "$oversized" = true ]; then
   emit "light" "false" "oversized" "PR too large for a full review (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — lightweight single-judge pass. Consider splitting (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
   exit 0
 fi
@@ -165,9 +174,10 @@ if [ "$total_files" -gt 0 ] && [ "$all_nonruntime" = true ]; then
   exit 0
 fi
 
-# ── 5) Small, non-sensitive runtime change? One judge is enough — skip the debate
-#       and functional. Sensitive paths / the deep-review label fall through to full. ──
-if [ "$total_files" -gt 0 ] && [ "$FORCE_FULL" = false ] && [ "$has_sensitive" = false ] && [ "$ng_lines" -le "$SMALL_CEILING" ]; then
+# ── 5) Small, non-sensitive runtime change with real (non-generated) source? One
+#       judge is enough — skip the debate and functional. All-generated diffs,
+#       sensitive paths, and the deep-review label fall through to full. ──
+if [ "$ng_files" -gt 0 ] && [ "$FORCE_FULL" = false ] && [ "$has_sensitive" = false ] && [ "$ng_lines" -le "$SMALL_CEILING" ]; then
   emit "light" "false" "small" "Small runtime change (${ng_files} files, ${ng_lines} non-generated lines, at/under the ${SMALL_CEILING}-line small-PR ceiling; no sensitive paths) — lightweight single-judge pass. Add the '$DEEP_LABEL' label to force a full review."
   exit 0
 fi

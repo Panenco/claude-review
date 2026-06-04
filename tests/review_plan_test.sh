@@ -89,6 +89,9 @@ assert_plan "one line over the ceiling (301) → normal" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t200\t101'
 assert_plan "generated lines don't count toward the ceiling → small" "light false small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t50\t10\npnpm-lock.yaml\t5000\t5000'
+# An all-generated diff has no reviewable (non-generated) source → NOT small.
+assert_plan "all-generated bundle → normal, not small" "full true normal" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'dist/app.min.js\t50\t10'
 
 # ── sensitive paths force a full review even when small [NEW] ──
 assert_plan "auth.* file → full" "full true normal" \
@@ -101,6 +104,10 @@ assert_plan "small payments/ change → full" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'apps/api/src/payments/charge.ts\t8\t1'
 assert_plan "small DB migration → full" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'apps/api/database/migrations/2026_06_03_fk.php\t12\t0'
+# Sensitivity is checked on every path, generated or not — a sensitive generated
+# file forces full even when the only non-generated change is small.
+assert_plan "sensitive path in a GENERATED file still forces full" "full true normal" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t10\t2\nsrc/payments/api.generated.ts\t30\t0'
 # A bare auth/ dir is a route group (views/auth/ = the signed-in area), NOT auth logic
 # — it must NOT be force-full by default, else every frontend PR pays for it.
 assert_plan "bare views/auth/ route group → small (not sensitive)" "light false small" \
