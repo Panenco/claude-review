@@ -47,6 +47,46 @@ on:
         required: false
         type: number
         default: 200
+      gate_skip_label:
+        description: "Label that forces review_level=skip (respects an explicit human opt-out). See docs/review-plan.md."
+        required: false
+        type: string
+        default: "skip-review"
+      gate_deep_label:
+        description: "Label that forces review_level=full, overriding the promotion/oversized/small downgrades. Mirror of gate_skip_label; skip wins if both are present."
+        required: false
+        type: string
+        default: "deep-review"
+      gate_small_ceiling:
+        description: "Non-generated changed lines at/under which a runtime PR is `small` (single-judge `light` review, no functional). See docs/review-plan.md."
+        required: false
+        type: number
+        default: 300
+      gate_size_ceiling:
+        description: "Non-generated changed lines over which a PR is `oversized` (a lightweight single-judge pass — too big to debate well)."
+        required: false
+        type: number
+        default: 1500
+      gate_file_ceiling:
+        description: "Changed (non-generated) files over which a PR is `oversized`."
+        required: false
+        type: number
+        default: 40
+      gate_sensitive_globs:
+        description: "Space-separated path globs that force a `full` review even when the diff is small. Setting this REPLACES the default list, so include everything you want sensitive. A bare `auth/` dir is intentionally NOT in the default — see docs/review-plan.md."
+        required: false
+        type: string
+        default: "*auth.* */oauth/* oauth.* */authentication/* authentication/* */authorization/* authorization/* */security/* security/* */payments/* payments/* */payment/* payment/* */migrations/* migrations/* */migration/* migration/*"
+      gate_promotion_bases:
+        description: "Space-separated base branches treated as release targets for promotion detection."
+        required: false
+        type: string
+        default: "main master production prod"
+      gate_promotion_heads:
+        description: "Space-separated head branches treated as promotion sources (exact name or `<name>/*` prefix)."
+        required: false
+        type: string
+        default: "staging develop dev release hotfix"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         # No longer strictly required: callers can supply CLAUDE_CODE_OAUTH_TOKENS
@@ -320,6 +360,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          # Tuning knobs — the resolver reads these; defaults match scripts/review-plan.sh.
+          GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
+          GATE_DEEP_LABEL: ${{ inputs.gate_deep_label }}
+          GATE_SMALL_CEILING: ${{ inputs.gate_small_ceiling }}
+          GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
+          GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
+          GATE_SENSITIVE_GLOBS: ${{ inputs.gate_sensitive_globs }}
+          GATE_PROMOTION_BASES: ${{ inputs.gate_promotion_bases }}
+          GATE_PROMOTION_HEADS: ${{ inputs.gate_promotion_heads }}
         run: |
           set -uo pipefail
           PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \

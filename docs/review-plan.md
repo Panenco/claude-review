@@ -46,19 +46,19 @@ If both labels are on a PR, **`skip-review` wins**.
 
 ## Per-repo tuning
 
-Every knob is an environment variable with a safe default. Set it on the
-`env:` of the job that calls the reusable workflow to tune behavior per repo:
+Every knob is a `workflow_call` **input** with a safe default. Pass it in the
+`with:` block of the job that calls the reusable workflow to tune per repo:
 
-| variable | default | meaning |
-|----------|---------|---------|
-| `GATE_SMALL_CEILING` | `300` | non-generated lines at/under which a runtime PR is `small` (single judge) |
-| `GATE_SIZE_CEILING` | `1500` | non-generated lines over which a PR is `oversized` |
-| `GATE_FILE_CEILING` | `40` | changed files over which a PR is `oversized` |
-| `GATE_SENSITIVE_GLOBS` | auth.* / oauth / authentication / authorization / security / payments / migrations | path globs that force `full` even when small |
-| `GATE_DEEP_LABEL` | `deep-review` | label that forces a full review |
-| `GATE_SKIP_LABEL` | `skip-review` | label that skips review |
-| `GATE_PROMOTION_BASES` | `main master production prod` | base branches treated as release targets |
-| `GATE_PROMOTION_HEADS` | `staging develop dev release hotfix` | head branches treated as promotion sources |
+| input | default | meaning |
+|-------|---------|---------|
+| `gate_small_ceiling` | `300` | non-generated lines at/under which a runtime PR is `small` (single judge) |
+| `gate_size_ceiling` | `1500` | non-generated lines over which a PR is `oversized` |
+| `gate_file_ceiling` | `40` | changed files over which a PR is `oversized` |
+| `gate_sensitive_globs` | auth.* / oauth / authentication / authorization / security / payments / migrations | path globs that force `full` even when small |
+| `gate_deep_label` | `deep-review` | label that forces a full review |
+| `gate_skip_label` | `skip-review` | label that skips review |
+| `gate_promotion_bases` | `main master production prod` | base branches treated as release targets |
+| `gate_promotion_heads` | `staging develop dev release hotfix` | head branches treated as promotion sources |
 
 ### Sensitive paths and the `auth/` caveat
 
@@ -73,12 +73,14 @@ every frontend PR into a full review. The default matches auth *files*
 (`auth.*`) and unambiguous directories (`authentication/`, `oauth/`, …) instead.
 
 If your repo keeps real auth logic in an `auth/` directory, opt it back in.
-Note that setting the variable **replaces** the default list, so include
+Note that setting this input **replaces** the default list, so include
 everything you want treated as sensitive:
 
 ```yaml
-# in the env: of your caller workflow's job
-GATE_SENSITIVE_GLOBS: "*/auth/* */oauth/* */security/* */payments/* */migrations/*"
+# in the with: block of your caller job
+with:
+  pr_number: ${{ inputs.pr_number || '' }}
+  gate_sensitive_globs: "*/auth/* */oauth/* */security/* */payments/* */migrations/*"
 ```
 
 ## Examples
