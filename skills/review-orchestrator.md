@@ -67,7 +67,7 @@ The launching workflow resolves a deterministic **review plan** (`scripts/review
 
 **`full`** (or unset) → the full pipeline below, unchanged.
 
-On **every** path (including `full` and trivial-skip), record `review_level` and `gate` in `/tmp/review-meta.json`.
+On every **non-degraded** exit (`skip`, `light`, `full`, trivial-skip), record `review_level` and `gate` in `/tmp/review-meta.json`. Degraded failure paths (context-builder failed, both judges failed) focus on the failure banner and may omit them.
 
 ## Phase 0 — Build context
 
@@ -165,6 +165,8 @@ To prepare the functional tester prompt: run `.review-scripts/generate-functiona
 
 ### The Task fan
 
+The full Opus + Haiku panel below is for `REVIEW_LEVEL=full`. **At `light`, items 1–2 collapse to a single Sonnet judge (see the `light` delta above) — dispatch ONE judge, NOT Haiku.** Items 3–4 (thread classifier, functional tester) apply per their own conditions.
+
 Issue these in **one assistant response**:
 
 1. **Judge-Opus** — `subagent_type: general-purpose`, `model: "claude-opus-4-8"`, `prompt`:
@@ -187,7 +189,9 @@ Wait for every dispatched Task to return.
 
 ### Per-subagent failure handling
 
-For each judge: if its output file is missing or unparseable, treat that judge as **failed**. Do NOT retry. Record in `judge_health` and proceed with the surviving judge's output. If both judges failed, write a degraded `/tmp/all-findings.json = []` and `/tmp/review-meta.json` with `verdict: "COMMENT"` and `judge_health.both_failed: true`, then exit.
+At `REVIEW_LEVEL=light` there is exactly **one** judge (`/tmp/judge-sonnet.json`) — the two-judge logic below does NOT apply, and you must NOT look for `judge-opus.json` / `judge-haiku.json`. If `judge-sonnet.json` is missing or unparseable, write the degraded `/tmp/all-findings.json = []` + `/tmp/review-meta.json` (`verdict: "COMMENT"`, `judge_health: { "sonnet": "failed", "single_judge": true }`) and exit; otherwise use its output (Phase 4 `light` delta).
+
+At `REVIEW_LEVEL=full`, for each judge: if its output file is missing or unparseable, treat that judge as **failed**. Do NOT retry. Record in `judge_health` and proceed with the surviving judge's output. If both judges failed, write a degraded `/tmp/all-findings.json = []` and `/tmp/review-meta.json` with `verdict: "COMMENT"` and `judge_health.both_failed: true`, then exit.
 
 For the thread classifier: if it failed, write `/tmp/thread-resolution.json = []` and continue. The downstream verdict-ladder treats a missing/empty thread-resolution as degraded round-2 (pins verdict to max(prior, current)).
 
@@ -314,6 +318,6 @@ JSON array of findings, identical schema to what the judges produce. Each entry 
 
 - **No own findings.** You never invent findings or rewrite a judge's evidence. If neither judge produced a finding for a region, that region produces no finding in the output.
 - **Always write both files.** On any failure path (CB failed, both judges failed, parse errors, hitting the STOP anchor), write best-effort output: empty findings array, a defensible verdict (`COMMENT` when degraded), `judge_health` reflecting the actual state. Never silently exit without writing.
-- **Two Task calls per debate round, in one assistant response.** Single calls serialise the judges and waste wall time.
-- **No retries on a single judge.** A judge that returns no parseable output is recorded as `failed` and the run proceeds. The redundancy is the _other_ judge, not retries of the same one.
+- **Two Task calls per debate round, in one assistant response** — at `REVIEW_LEVEL=full`. Single calls serialise the judges and waste wall time. At `light` a single judge runs (Phase 2 `light` delta) — no debate round, no second Task.
+- **No retries on a single judge.** A judge that returns no parseable output is recorded as `failed` and the run proceeds. At `full` the redundancy is the _other_ judge; at `light` a failed single judge → the degraded `COMMENT` exit (per-subagent failure handling). Never retry either way.
 - **Trivial-skip is a verdict-relevant decision.** If you short-circuit at Phase 1, you are still responsible for `manual_spec_present` and `prompt_injection_detected` — copy these from `context.md`'s flags, don't fabricate.
