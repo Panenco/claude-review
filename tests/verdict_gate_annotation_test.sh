@@ -44,13 +44,14 @@ run_gate() {
   local body="$1"
   local work; work="$(mktemp -d)"
   printf '%s' "$body" > "$work/review-result.json"
-  set +e
+  # This file runs `set -uo pipefail` (no errexit), so the gate's non-zero
+  # exit is captured in RC without aborting — no `set +e`/`set -e` toggling
+  # (which would leave errexit on for the rest of the script).
   OUT=$(cd "$work" && ANALYZER_OUTCOME=success POSTER_OUTCOME=success \
         GITHUB_STEP_SUMMARY="$work/summary.md" PR_NUMBER=1 \
         GITHUB_REPOSITORY=o/r GH_TOKEN=x \
         bash "$GATE" 2>&1)
   RC=$?
-  set -e
   rm -rf "$work"
 }
 
