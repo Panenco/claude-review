@@ -288,7 +288,7 @@ If the diff is genuinely tiny (≤20 lines, single file) and the title already c
 
 ### `## Spec sources` (single-purpose, REQUIRED)
 List which spec sources exist as paths reviewers can Read:
-- Linked GitHub issue: `/tmp/issue.json` (or "none")
+- Linked GitHub issue: `#<number>` then ` (body at /tmp/issue.json)` — e.g. `#57 (body at /tmp/issue.json)`, or "none". Lead with the bare `#<number>` (the value `${ISSUE}` you resolved in Turn 1); downstream consumers read the number from the front of this line, so never lead with the path.
 - PRD: `/tmp/prd-content.md` (or "none — file empty")
 - External tracker issue: `/tmp/external-issue.md` (or "none — file empty")
 - Manually-written PR body: yes / no (yes when the PR body has prose that's not auto-generated; see the AI-content filter below)
