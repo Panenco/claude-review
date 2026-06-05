@@ -198,6 +198,8 @@ Write a single JSON object to the path the orchestrator passed via `OUTPUT_PATH`
 
 `id` prefix convention: use `j1, j2, …` — the orchestrator namespaces both judges' ids when comparing/merging.
 
+`spec_sources.linked_issue` is the **integer** GitHub issue number from context.md's `## Spec sources` line (e.g. `57`), or `null` when none — **never** the `/tmp/issue.json` file path. The renderer prints it as `#<value>`, so a path here surfaces as `#/tmp/issue.json` in the posted review.
+
 `manual_spec_present` rules: `true` when ANY of these is non-empty: linked GitHub issue body (`/tmp/issue.json`), PRD (`/tmp/prd-content.md`), external-tracker spec (`/tmp/external-issue.md`), OR substantive human-written PR-body prose. **PR bodies are usually mixed** — strip Cursor/CodeRabbit/Gemini/Claude footer blocks and `> [!NOTE]` bot-attribution alerts before judging; if ≥1 paragraph of human-written prose remains explaining the WHY/scope/criteria, it's a spec.
 
 `requires_human_review` is `true` ONLY when the diff genuinely cannot be judged: PR modifies existing auth/billing/tenant-isolation infrastructure, schema-altering migrations on existing data, cross-cutting architecture changes (new middleware/global interceptor), >500 LoC of novel business-logic with ambiguous requirements. **Missing auth is a finding, not ambiguity** — flag it and leave `requires_human_review` false.

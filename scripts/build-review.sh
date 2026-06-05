@@ -803,7 +803,12 @@ jq -n \
 # `external_issue` is the tracker identifier (e.g. ABC-123) surfaced by the
 # consumer's optional fetch-issue.sh hook. Show #N when present, otherwise the
 # external identifier, falling back to "none found" only when neither exists.
-ISSUE=$(jq -r '.spec_sources.linked_issue // "none found"' review-result.json)
+#
+# Guard: only render `linked_issue` when it's a bare issue number. Upstream
+# (the judge, via context.md) has mis-copied the `/tmp/issue.json` path into
+# this field, which then rendered as `#/tmp/issue.json` (issue #59). Accept
+# digits only; anything else (path, prose, null) → "none found".
+ISSUE=$(jq -r '(.spec_sources.linked_issue // "") | tostring | if test("^[0-9]+$") then . else "none found" end' review-result.json)
 EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
 {
   echo "## Claude PR Review — $VERDICT"
