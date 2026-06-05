@@ -279,7 +279,7 @@ When the functional tester subagent ran AND wrote screenshots: collect from `/tm
 
 ### `/tmp/all-findings.json`
 
-JSON array of findings, identical schema to what the judges produce. Each entry must include at minimum `id`, `severity`, `type`, `path`, `line_start`, `evidence`, `reasoning`, `expected`. `line_end`, `side`, `screenshot`, `prd_quote`, `code_quote` are optional and copied verbatim from the source judge.
+JSON array of findings, identical schema to what the judges produce. Each entry must include at minimum `id`, `title`, `severity`, `type`, `path`, `line_start`, `evidence`, `reasoning`, `expected`. `line_end`, `side`, `screenshot`, `prd_quote`, `code_quote` are optional and copied verbatim from the source judge. **`title` is load-bearing — it is the bold header of every inline comment.** Never drop it during the merge; if a source finding somehow lacks one, synthesize a short title from its `evidence`/`reasoning` rather than emitting an entry without it.
 
 ### `/tmp/review-meta.json`
 

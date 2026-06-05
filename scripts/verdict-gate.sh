@@ -138,7 +138,7 @@ FUNCTIONAL_OVERALL=$(jq -r '.functional_validation.overall // "N/A"' review-resu
   jq -r '.summary // "(no summary)"' review-result.json
   echo ""
   echo "### Confirmed findings ($FINDING_COUNT)"
-  jq -r '(.findings // [])[] | "- **\(.severity | ascii_upcase)** [\(.type)] `\(.path):\(.line_start)` — \(.title)"' review-result.json
+  jq -r '(.findings // [])[] | "- **\(.severity | ascii_upcase)** [\(.type)] `\(.path):\(.line_start)` — \(.title // "Untitled")"' review-result.json
   if [ "$HUMAN_REVIEW" = "true" ]; then
     echo ""
     echo "> :stop_sign: **Human review required.** $HUMAN_REASON"
