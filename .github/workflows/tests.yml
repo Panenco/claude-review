@@ -70,5 +70,8 @@ jobs:
       - name: Run linked_issue_render_test.sh
         run: bash tests/linked_issue_render_test.sh
 
+      - name: Run verdict_gate_annotation_test.sh
+        run: bash tests/verdict_gate_annotation_test.sh
+
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh

@@ -186,6 +186,11 @@ case "$VERDICT" in
     exit 0
     ;;
   REQUEST_CHANGES)
+    # Emit a visible annotation before failing. Without it the blocking
+    # verdict renders as a bare red ✗ with an empty step log — the verdict and
+    # findings live in the step summary + posted PR review, not this step's
+    # console — so the failed gate looks broken rather than intentional.
+    echo "::error::Claude review: REQUEST_CHANGES — $FINDING_COUNT blocking finding(s). See the PR review and the run summary for details."
     exit 1
     ;;
   *)
