@@ -760,7 +760,7 @@ FUNCTIONAL_SUMMARY_TEXT=$(echo "$FUNCTIONAL_META" | jq -r '.summary // ""')
 if [ "$(echo "$ALL_FINDINGS" | jq 'length')" -eq 0 ]; then
   SUMMARY="${SPEC_COMPLIANCE:-No issues found. Code reviewed for correctness, spec compliance, security, consistency, and performance.}"
 else
-  SUMMARY=$(echo "$ALL_FINDINGS" | jq -r '[.[] | "\(.severity): \(.title)"] | join("; ")' | head -c 200)
+  SUMMARY=$(echo "$ALL_FINDINGS" | jq -r '[.[] | "\(.severity): \(.title // "Untitled")"] | join("; ")' | head -c 200)
 fi
 
 jq -n \
@@ -973,7 +973,7 @@ if [ "$FUNCTIONAL_OVERALL" != "N/A" ] && [ "$FUNCTIONAL_STRATEGY" != "skip" ]; t
       echo "#### Issues found"
       echo ""
       jq -r '.[] |
-        "- **[\(.severity | ascii_upcase)]** \(.title)\n" +
+        "- **[\(.severity | ascii_upcase)]** \(.title // "Untitled")\n" +
         "  <br/>_Evidence:_ " + (.evidence | gsub("\n"; " ") | .[:240]) + (if (.evidence | length) > 240 then "..." else "" end)
       ' /tmp/functional-findings.json
       echo ""
@@ -1022,7 +1022,7 @@ elif [ "${FUNCTIONAL_OK:-1}" -eq 0 ] && [ "$TEST_PLAN_EXISTS" = "true" ]; then
     if [ "$CRASH_FINDING_COUNT" -gt 0 ]; then
       echo ""
       echo "**Partial findings:**"
-      jq -r '.[] | "- **\(.title)**: \(.evidence[:200])"' /tmp/functional-findings.json
+      jq -r '.[] | "- **\(.title // "Untitled")**: \(.evidence[:200])"' /tmp/functional-findings.json
     fi
     if [ "$CRASH_SHOT_COUNT" -gt 0 ]; then
       echo ""
