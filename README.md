@@ -50,7 +50,7 @@ with:
 
 Without `pipeline_ref`, the install defaults to `@v2` and consumers get new orchestration on old skills, which fails at max-turns. The `@v2` default is correct for normal use; only override during testing.
 
-**Allowing bot-opened PRs.** By default the underlying action blocks any run triggered by a non-human actor, so PRs opened by an automation bot fail at the orchestrator step with `Workflow initiated by non-human actor`. Opt in per-repo by passing `allowed_bots` (comma-separated bot logins, or `*` for all bots) on the caller's `with:` block. Use the login **without** the `[bot]` suffix — it matches `github.actor`:
+**Allowing bot-opened PRs.** By default, runs triggered by a non-human actor (renovate, dependabot, automation bots) are skipped cleanly — a green check with a `::notice::`, no review, no crash banner. Opt in per-repo by passing `allowed_bots` (comma-separated bot logins, or `*` for all bots) on the caller's `with:` block. Use the login **without** the `[bot]` suffix — it matches `github.actor`:
 
 ```yaml
 with:
@@ -58,7 +58,7 @@ with:
   allowed_bots: panenco-automation   # not "panenco-automation[bot]"
 ```
 
-Empty (the default) preserves today's behaviour — all bot-initiated runs stay blocked. This is a safe, opt-in change for every existing consumer.
+Empty (the default) skips all bot-initiated runs. Two notes for allowed bots: dependabot-triggered events receive *Dependabot secrets*, not Actions secrets — add `CLAUDE_CODE_OAUTH_TOKEN` there too or the token picker fails. And bot-authored PRs waive the manual-spec gate (a machine PR can never link a human spec), so they can reach APPROVE on review merit alone.
 
 ### 2. Set secrets
 
@@ -132,6 +132,8 @@ PR opened / updated
 Verdict: APPROVE / COMMENT / REQUEST_CHANGES
 ```
 
+**Check color ≠ verdict.** The workflow check is green whenever a review was successfully posted — including `REQUEST_CHANGES`. The blocking signal is the PR review itself; use branch protection's required-review settings if you want a blocking verdict to prevent merging. A red check always means the pipeline failed: no review was produced, or a computed verdict never reached the PR. (Earlier versions failed the check on `REQUEST_CHANGES`, which made real pipeline failures indistinguishable from working reviews and trained authors to re-run good runs.)
+
 ### Why one top-level agent?
 
 Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code-action` exits in <1 s when the OAuth token hits a quota wall; the bare `claude -p` CLI silently retries and _hangs_ until the 45-minute job timeout — a real bug observed on PR #309. (2) **All parallelism through the `Task` tool.** No bash background processes, no `wait`/reap traps, no sibling stdout files. One nested transcript covers the whole review.
@@ -140,7 +142,7 @@ Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code
 
 A single LLM judge can have a bad sample on any given run — miss something subtle, over-grade a defensive note, mis-route a finding to the wrong file. The orchestrator runs **two independent judges with different model strengths** (Opus for deep reasoning, Haiku for cheap broad-coverage finds) and reconciles them: if they agree, the review ships immediately; if they disagree, each judge sees the other's findings and either concedes the ones they missed or defends the ones the other dropped. This catches the long tail where one judge is wrong without paying for it on every PR — most reviews converge on the first round.
 
-> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate + functional run for substantial or sensitive changes; small, low-risk PRs take a lighter single-judge pass. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
+> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate for substantial or sensitive changes; small or oversized PRs take a lighter single-judge pass. Functional testing is gated separately and stays on for every runtime diff — screenshots of the running app are the review's centerpiece, so a small UI fix still gets its quick smoke + screenshot pass and a big feature still gets a smoke run even when the judge fan is light. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
 
 ### Round 1 vs round 2
 
@@ -151,6 +153,7 @@ The pipeline persists a small state artifact (`/tmp/review-state.json`) on every
 - Prior `COMMENT`, no new blockers → per-PR verdict (APPROVE when the per-PR judgement is APPROVE, COMMENT when minor findings remain). The ladder no longer pins prior=COMMENT to COMMENT — that ratchet was the source of "bot says Would APPROVE but verdict says COMMENT" contradictions.
 - Any prior verdict + ≥1 new critical/major → `REQUEST_CHANGES` (handled by the per-PR ladder upstream).
 - Prior review **dismissed by the author** → treat prior verdict as APPROVE for ladder purposes (the dismissal is the strongest signal a human gives the bot; we don't re-enforce findings the author has rejected). Surfaced as a banner in the review body.
+- Prior finding **rebutted by the author** (a substantive reply disputing it, code unchanged) → classified `REBUTTED`: it stops counting as a still-present blocker, and the review body lists it under "Dropped after author rebuttal" so a blocker never silently evaporates between rounds.
 
 When the round-2 ladder overrides the bot's per-PR judgement (e.g. STILL_PRESENT blockers force REQUEST_CHANGES on a clean re-review), the body prepends a one-line "Verdict pinned to X by the round-2 ladder" rationale so the body's narrative never contradicts the header.
 
@@ -462,7 +465,7 @@ Note: a _present but broken_ `dev-start.sh` is **not** a soft-degrade case — t
 
 ## Spec-presence gate
 
-The pipeline withholds `APPROVE` whenever the PR has no human-authored spec. The core reviewer judges this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the core reviewer sets `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated.
+The pipeline withholds `APPROVE` whenever the PR has no human-authored spec. The core reviewer judges this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the core reviewer sets `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated. Bot-authored PRs (renovate, dependabot) are exempt — a machine PR can never carry a human spec, so the gate would be permanent noise there.
 
 ## Smoke-test gate for technical PRs
 
@@ -582,7 +585,7 @@ The pipeline consists of:
   - `review-orchestrator` — the single top-level Claude Code agent; dispatches the context builder, judges, thread classifier, and functional tester via the `Task` tool, runs the debate, writes the final findings + meta
   - `review-context-builder` — Task subagent; gathers PR metadata, diff index, spec sources, and a 5-sentence diff summary into `context.md`
   - `review-judge` — Task subagent skill used by both the Opus and Haiku judges (correctness, security, spec, consistency, performance, tests)
-  - `review-thread-classifier` — Task subagent (round-2 only); classifies prior findings + open inline threads (own bot, other bots, **humans**) as RESOLVED / STILL_PRESENT / NEW_CONTEXT
+  - `review-thread-classifier` — Task subagent (round-2 only); classifies prior findings + open inline threads (own bot, other bots, **humans**) as RESOLVED / STILL_PRESENT / REBUTTED / NEW_CONTEXT
   - `review-functional-tester` — custom subagent type (auto-discovered from `.claude/agents/review-functional-tester.md`, written at workflow runtime); inline `mcpServers` block defines Playwright MCP scoped to this subagent, so the server starts when it spawns rather than relying on parent inheritance. First turn is an MCP smoke check that hard-fails the run as `overall: CRASH` if MCP is unavailable — silent fallback to curl is forbidden.
   - `review-test-planner` — embedded inside the context builder skill; picks the functional strategy (skip / quick / functional / pipeline-self-test) and writes scenarios into `test-plan.md`
 - **Functional prompt template** (`scripts/functional-prompt.template.txt`) — bootstraps the functional tester with auth + env info

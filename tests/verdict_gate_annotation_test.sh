@@ -3,10 +3,11 @@ set -uo pipefail
 
 # verdict_gate_annotation_test.sh — regression guard for issue #61.
 #
-# A blocking verdict (REQUEST_CHANGES) used to exit 1 with zero console
-# output, so the Actions "Verdict gate" step rendered as a bare red ✗ with an
-# empty log and no annotation (Panenco/qit#6486). The gate must emit a visible
-# `::error::` annotation so the failed step explains itself.
+# Exit semantics: green whenever a review was successfully posted (including
+# REQUEST_CHANGES — the blocking signal is the PR review, not the check), red
+# only on pipeline failures (no output, or a verdict that never reached the
+# PR). Each path must emit a visible annotation explaining itself
+# (Panenco/qit#6486 was a bare red ✗ with an empty log).
 #
 # This executes the REAL scripts/verdict-gate.sh against fixture
 # review-result.json files for each verdict and asserts both the exit code and
@@ -55,12 +56,20 @@ run_gate() {
   rm -rf "$work"
 }
 
-echo "── REQUEST_CHANGES: must fail AND emit an error annotation ──"
+echo "── REQUEST_CHANGES: review posted → GREEN, with a visible annotation ──"
 run_gate '{"verdict":"REQUEST_CHANGES","summary":"s","findings":[{"severity":"major","type":"bug","path":"a.ts","line_start":1,"title":"boom"}]}'
-assert_eq        "exit code 1"          "1" "$RC"
-assert_contains  "emits ::error::"      "::error::" "$OUT"
+assert_eq        "exit code 0"          "0" "$RC"
+assert_contains  "emits ::warning::"    "::warning::" "$OUT"
+assert_not_contains "no ::error::"      "::error::" "$OUT"
 assert_contains  "names the verdict"    "REQUEST_CHANGES" "$OUT"
 assert_contains  "states finding count" "1 blocking finding" "$OUT"
+
+echo ""
+echo "── posting_error: verdict computed but never reached the PR → RED ──"
+run_gate '{"verdict":"REQUEST_CHANGES","summary":"s","posting_error":"POST failed","findings":[{"severity":"major","type":"bug","path":"a.ts","line_start":1,"title":"boom"}]}'
+assert_eq        "exit code 1"          "1" "$RC"
+assert_contains  "emits ::error::"      "::error::" "$OUT"
+assert_contains  "says posting failed"  "posting failed" "$OUT"
 
 echo ""
 echo "── APPROVE: passes, no error annotation ──"

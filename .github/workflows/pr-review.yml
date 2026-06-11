@@ -48,7 +48,7 @@ on:
         type: number
         default: 200
       allowed_bots:
-        description: "Comma-separated bot logins allowed to trigger the review (e.g. 'panenco-automation'), or '*' for all bots. Empty (default) preserves the action's default of blocking all bot-initiated runs."
+        description: "Comma-separated bot logins allowed to trigger the review (e.g. 'panenco-automation'), or '*' for all bots. Runs triggered by any other bot are skipped cleanly (green check, no crash banner). Empty (default) skips all bot-initiated runs."
         required: false
         type: string
         default: ""
@@ -63,7 +63,7 @@ on:
         type: string
         default: "deep-review"
       gate_small_ceiling:
-        description: "Non-generated changed lines at/under which a runtime PR is `small` (single-judge `light` review, no functional). See docs/review-plan.md."
+        description: "Non-generated changed lines at/under which a runtime PR is `small` (single-judge `light` review with a quick functional pass). See docs/review-plan.md."
         required: false
         type: number
         default: 300
@@ -132,6 +132,12 @@ jobs:
     if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # A push mid-review supersedes the in-flight run: cancel it instead of
+    # paying for two full reviews of which one is already stale. Cancelled
+    # runs post nothing (no crash banner) — the new run covers the PR.
+    concurrency:
+      group: claude-review-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+      cancel-in-progress: true
     permissions:
       contents: write # write needed for uploading screenshots to review-assets branch
       pull-requests: write
@@ -140,6 +146,39 @@ jobs:
       packages: read # needed for fetching from private registries when the consumer repo uses them
 
     steps:
+      # Bot-triggered runs that aren't allowed would otherwise burn a token
+      # probe, fail inside claude-code-action ("non-human actor"), and leave
+      # a red check + crash banner on every push of every renovate/dependabot
+      # PR. Skip the review cleanly instead: green check, one ::notice::, no
+      # banner. claude-code-action's own allowed_bots check stays as backstop.
+      - name: Bot-actor gate
+        id: actor_gate
+        shell: bash
+        env:
+          ACTOR: ${{ github.actor }}
+          ALLOWED_BOTS: ${{ inputs.allowed_bots }}
+        run: |
+          PROCEED=true
+          case "$ACTOR" in
+            *"[bot]")
+              LOGIN="${ACTOR%\[bot\]}"
+              PROCEED=false
+              if [ "$ALLOWED_BOTS" = "*" ]; then
+                PROCEED=true
+              else
+                IFS=',' read -ra ALLOW <<< "$ALLOWED_BOTS"
+                for b in "${ALLOW[@]}"; do
+                  b="$(echo "$b" | tr -d '[:space:]')"
+                  if [ "$b" = "$LOGIN" ] || [ "$b" = "$ACTOR" ]; then PROCEED=true; fi
+                done
+              fi
+              if [ "$PROCEED" = "false" ]; then
+                echo "::notice::Run triggered by bot '$ACTOR', which is not in allowed_bots — skipping the review (no crash banner, no red check). Add '$LOGIN' to the caller's allowed_bots input to review this bot's PRs."
+              fi
+              ;;
+          esac
+          echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+
       - name: Resolve PR head SHA
         # On `pull_request` events, github.event.pull_request.head.sha is set.
         # On `workflow_dispatch`, that field is empty and we'd otherwise fall
@@ -153,7 +192,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         run: |
           set -euo pipefail
-          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid,headRepositoryOwner,headRepository)
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid,headRepositoryOwner,headRepository,author)
           SHA=$(jq -r '.headRefOid // empty' <<< "$PR_JSON")
           HEAD_OWNER=$(jq -r '.headRepositoryOwner.login // empty' <<< "$PR_JSON")
           HEAD_NAME=$(jq -r '.headRepository.name // empty' <<< "$PR_JSON")
@@ -177,6 +216,7 @@ jobs:
           fi
 
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "author_is_bot=$(jq -r '.author.is_bot // false' <<< "$PR_JSON")" >> "$GITHUB_OUTPUT"
           echo "Resolved PR #$PR_NUMBER head SHA: $SHA (origin $HEAD_REPO)"
 
       - name: Checkout PR head
@@ -227,6 +267,7 @@ jobs:
       # installer is idempotent: when the action subsequently fires and
       # finds an existing binary, it leaves it in place.
       - name: Install Claude CLI (for OAuth token picker)
+        if: steps.actor_gate.outputs.proceed == 'true'
         shell: bash
         run: |
           if [ -x "$HOME/.local/bin/claude" ]; then
@@ -248,6 +289,7 @@ jobs:
       # the context-builder hit rate_limit on its first call.
       - name: Pick Claude OAuth token
         id: token_picker
+        if: steps.actor_gate.outputs.proceed == 'true'
         shell: bash
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -405,13 +447,13 @@ jobs:
       # Anything compile-shaped that the agent still wants to check is one
       # Bash call away from the orchestrator.
       - name: Set up Node
-        if: steps.code_check.outputs.needs_build == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true'
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "lts/*"
 
       - name: Ensure pnpm on PATH
-        if: steps.code_check.outputs.needs_build == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true'
         shell: bash
         run: |
           if command -v pnpm >/dev/null 2>&1; then
@@ -436,7 +478,7 @@ jobs:
       # mirrors the path the subagent's mcpServers config writes to.
       - name: Cache Playwright assets
         id: pw_cache
-        if: steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -447,7 +489,7 @@ jobs:
             ${{ runner.os }}-pw-
 
       - name: Install Playwright + MCP
-        if: steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         shell: bash
         run: |
           # set -uo pipefail (no explicit -e) per .github/review-config.md +
@@ -938,7 +980,7 @@ jobs:
       # owning its own dependency install. Without it, no dev-env launches
       # and the functional tester runs in skip strategy.
       - name: Pre-start dev environment (background)
-        if: steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true'
         id: dev_env_bg
         shell: bash
         env:
@@ -1032,8 +1074,16 @@ jobs:
           # round 2).
           bash "${CLAUDE_REVIEW_PIPELINE_DIR}/scripts/install-functional-tester-agent.sh"
 
+      - name: Start orchestrate stopwatch
+        if: steps.actor_gate.outputs.proceed == 'true'
+        shell: bash
+        run: |
+          source .review-scripts/phase-timing.sh
+          phase_start orchestrate
+
       - name: "Review: orchestrate"
         id: claude_run
+        if: steps.actor_gate.outputs.proceed == 'true'
         # Don't fail the job if the orchestrator returns non-zero (e.g.
         # max-turns hit at the STOP-and-write anchor). /tmp/all-findings.json
         # and /tmp/review-meta.json may still have been written; the
@@ -1094,9 +1144,12 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
           # Review-plan gate (from the Resolve review plan step). build-review.sh
-          # waives the technical-change smoke withhold when functional was
-          # intentionally gated off (any gate other than 'normal').
+          # waives the technical-change smoke withhold only when the plan
+          # turned functional off (RUN_FUNCTIONAL != true).
           GATE: ${{ steps.review_plan.outputs.gate }}
+          RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
+          # Bot-authored PRs (renovate/dependabot) waive the manual-spec gate.
+          PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           # claude-code-action's JSONL conversation log. build-review.sh greps
           # it for `"error":"rate_limit"` / `hit your limit · resets …` so the
           # quota-specific error annotation fires (instead of a generic crash
@@ -1104,6 +1157,8 @@ jobs:
           ORCHESTRATOR_EXEC: ${{ steps.claude_run.outputs.execution_file }}
         run: |
           set -uo pipefail
+          source .review-scripts/phase-timing.sh
+          phase_end orchestrate
           # Hand off the orchestrator's conversation log under the path
           # build-review.sh expects. Best-effort — a missing/empty
           # execution_file just means the quota-specific branch in

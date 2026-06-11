@@ -471,8 +471,11 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
 - "Install functional-tester subagent definition" writes `.claude/agents/review-functional-tester.md` to the runner's checkout (this is what gives the functional tester its own scoped Playwright MCP server — don't commit this file to your repo, the workflow rewrites it on every run from the `inputs.model_functional` value)
 - Orchestrator runs the two judges (Opus + Haiku) in parallel and (when applicable) the functional tester. The judge debate produces a single, deduped findings list — there is no separate `core` / `sweep` step.
+- Functional testing runs on **every runtime diff**, including small PRs (single-judge `light` tier gets a quick 1-scenario pass) and oversized PRs (smoke run). This is why `dev-start.sh` matters even for repos that mostly ship small PRs — without it, most day-to-day reviews carry no runtime evidence and refactor PRs can't reach APPROVE (smoke gate).
+- PRs opened by bots (renovate, dependabot) are skipped cleanly by default — green check, no review, no crash banner. To review a bot's PRs, pass `allowed_bots: <login>` (without the `[bot]` suffix) on the caller's `with:` block; for dependabot also add the OAuth token to *Dependabot secrets*. Bot-authored PRs waive the manual-spec gate.
 - For PRs with UI surface, the functional tester's Turn 1 is an MCP smoke check (`mcp__playwright__browser_navigate` to `about:blank`). If MCP is unavailable, the run hard-fails with `overall: CRASH` and the verdict gate flags it as `requires_human_review`. Silent fallback to curl/psql is forbidden — a curl-only PASS on a UI fix is the bug we're guarding against.
 - **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
+- The workflow check is **green whenever a review posted**, even on `REQUEST_CHANGES` — the verdict lives in the PR review (use branch protection's required reviews to make it block merges). A red check means the pipeline itself failed.
 
 ## Verdict ladder (round 2)
 
@@ -483,5 +486,6 @@ When you push follow-up commits to the same PR, the bot runs a round-2 review th
 - Prior `REQUEST_CHANGES` resolved + no new blockers → per-PR verdict (APPROVE if clean, COMMENT if minor findings remain).
 - Prior `COMMENT` + per-PR verdict APPROVE → `APPROVE`. The bot does NOT pin a follow-up to COMMENT just because the prior round was COMMENT — fixing the one issue the bot flagged should land you on green.
 - You dismissed the prior review → the bot treats it as if you'd accepted that round and evaluates the new commits independently.
+- You replied to a finding's thread disputing it (with a reason) and didn't change the code → the finding is classified `REBUTTED`: it stops blocking and the next review lists it under "Dropped after author rebuttal" instead of silently disappearing or nagging forever.
 
 Severities matter: `critical` and `major` block; `minor` and `note` post inline but never gate APPROVE. A doc-only nit (typo, wrong package name in a paragraph) is `note` — it shows up in the review but won't hold the PR at COMMENT. If the bot grades a doc nit as `minor` or higher, that's a calibration bug worth flagging in feedback.

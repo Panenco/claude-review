@@ -56,10 +56,10 @@ assert_plan "huge release PR (size irrelevant)" "light false promotion" \
 assert_plan "feature → main is NOT a promotion (large diff)" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/app.ts\t250\t100'
 
-# ── oversized → light (no functional) ──
-assert_plan "45 runtime files" "light false oversized" \
+# ── oversized → light (functional smoke stays on) ──
+assert_plan "45 runtime files" "light true oversized" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV="$BIG_FILES"
-assert_plan "2100 changed lines" "light false oversized" \
+assert_plan "2100 changed lines" "light true oversized" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1500\t600'
 assert_plan "huge lockfile ALONE → not oversized (generated excluded)" "full false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'pnpm-lock.yaml\t9000\t9000'
@@ -78,16 +78,16 @@ assert_plan "runtime source (large)" "full true normal" \
 assert_plan "mixed test + runtime (large)" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/page.tsx\t250\t100\nsrc/page.test.ts\t20\t0'
 
-# ── small runtime change → light/small (single judge, no functional) [NEW] ──
-assert_plan "small runtime source" "light false small" \
+# ── small runtime change → light/small (single judge, quick functional) [NEW] ──
+assert_plan "small runtime source" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t40\t5'
-assert_plan "tsconfig (ambiguous → runtime, small)" "light false small" \
+assert_plan "tsconfig (ambiguous → runtime, small)" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'tsconfig.json\t3\t1'
-assert_plan "exactly at the 300 ceiling → still small" "light false small" \
+assert_plan "exactly at the 300 ceiling → still small" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t200\t100'
 assert_plan "one line over the ceiling (301) → normal" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t200\t101'
-assert_plan "generated lines don't count toward the ceiling → small" "light false small" \
+assert_plan "generated lines don't count toward the ceiling → small" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t50\t10\npnpm-lock.yaml\t5000\t5000'
 # An all-generated diff has no reviewable (non-generated) source → NOT small.
 assert_plan "all-generated bundle → normal, not small" "full true normal" \
@@ -110,9 +110,9 @@ assert_plan "sensitive path in a GENERATED file still forces full" "full true no
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t10\t2\nsrc/payments/api.generated.ts\t30\t0'
 # A bare auth/ dir is a route group (views/auth/ = the signed-in area), NOT auth logic
 # — it must NOT be force-full by default, else every frontend PR pays for it.
-assert_plan "bare views/auth/ route group → small (not sensitive)" "light false small" \
+assert_plan "bare views/auth/ route group → small (not sensitive)" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'apps/web/src/views/auth/dossier/inpress.vue\t10\t2'
-assert_plan "'author.ts' is NOT sensitive (no false match)" "light false small" \
+assert_plan "'author.ts' is NOT sensitive (no false match)" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/models/author.ts\t10\t2'
 # A repo whose auth/ holds real logic can opt it back in (and the env var overrides the default).
 assert_plan "opt-in '*/auth/*' via GATE_SENSITIVE_GLOBS → full" "full true normal" \
