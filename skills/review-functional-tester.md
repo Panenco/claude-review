@@ -75,7 +75,7 @@ Check the **ENVIRONMENT STATUS** section appended to your prompt for authenticat
 
 ## Efficiency
 
-The runtime ceiling is **200 turns** (configurable via `functional_max_turns`; raised from 120 after seaters#464 hit it). Hitting it crashes the run mid-scenario and produces a partial review. The headroom is recall insurance, **not utilization budget** — the STOP-and-write anchors below stay tight even with 200 turns available, because runs that drift toward the ceiling are usually thrashing, not productively investigating. Stay well below by structure, not optimism.
+Your primary runtime bound is a **wall-clock budget** (`functional_budget_seconds`, default 480s / 8 min), passed into your prompt. Against a live backend each turn is slow, so turn count is a poor proxy for elapsed time — seaters#687 ran ~44 min / 338 tool-uses without the old turn anchors ever biting, blew the job's 45-min ceiling, and got cancelled mid-flight with NOTHING posted. So: on Turn 2 record `echo $(date +%s) > /tmp/functional-start`, and before each new scenario check `echo $(( $(date +%s) - $(cat /tmp/functional-start) ))` against the budget (see anchors below). The **200-turn** ceiling (`functional_max_turns`) is a secondary backstop / recall insurance only — the wall-clock stops you first.
 
 Budget sketch (a typical 4-scenario plan):
 
@@ -101,11 +101,13 @@ If Turn 1's `mcp__playwright__browser_navigate about:blank` errors:
 
 This is **load-bearing**: a silent curl fallback was the bug we shipped this skill to fix. UI bugs slip through when the tester reports PASS-via-curl on a fix that needs UI verification. CRASH > false PASS.
 
-**STOP-and-write anchors (mandatory).** The agent does not get to decide when to stop:
+**STOP-and-write anchors (mandatory).** The agent does not get to decide when to stop. Anchors are keyed to the wall-clock budget `B` (= `functional_budget_seconds`); check elapsed seconds against `B` at each scenario boundary, not turn counts:
 
-- **Turn 60**: write a draft `/tmp/functional-meta.json` and `/tmp/functional-findings.json` with whatever scenarios you have completed so far. You can refine later.
-- **Turn 80**: write the final versions of both files. After turn 80, only continue scenarios that materially raise the verdict's confidence — skip optional cross-cutting checks.
-- **Turn 100 (HARD)**: do NOT start any new scenario or `browser_evaluate` after this point. If files aren't written, write them with whatever you have. The next 20 turns are buffer for the framework to flush, not for more testing.
+- **Go breadth-first**: one happy-path per mutation endpoint first, so a partial run still covers the most surface. Circle back for validation-error / edge depth only after every endpoint has its happy-path.
+- **At 0.7 × B elapsed**: write a draft `/tmp/functional-meta.json` and `/tmp/functional-findings.json` with whatever scenarios you have completed. You can refine later.
+- **At B elapsed (HARD)**: do NOT start any new scenario or `browser_evaluate`. Write the final versions of both files now with whatever you have, list untested areas in `uncertain_observations`, and exit. A bounded, honest partial run beats a job-ceiling cancellation that posts nothing.
+
+(The 200-turn ceiling still applies as a backstop; if you somehow approach it before the wall-clock, the same write-and-exit rule fires.)
 
 **Batch tool calls in a single turn when possible** (e.g., `browser_snapshot` + `browser_take_screenshot` + `browser_console_messages` in one parallel response). Use `browser_snapshot` for fast DOM assertions; screenshots are for evidence only.
 

@@ -24,6 +24,10 @@ set -Eeuxo pipefail
 
 API_URL_VAL="${API_URL:-not discovered}"
 WEB_URL_VAL="${WEB_URL:-not discovered}"
+# Wall-clock budget the tester self-enforces (records a start ts, hard-stops +
+# writes when elapsed exceeds this). Primary runtime bound, well under the job's
+# timeout-minutes — see functional_budget_seconds in pr-review.yml.
+FUNCTIONAL_BUDGET_SECONDS_VAL="${FUNCTIONAL_BUDGET_SECONDS:-480}"
 
 # ── Build ENV_HINT ──
 ENV_HINT="ENVIRONMENT STATUS: "
@@ -98,6 +102,7 @@ if [ -n "$FUNC_TEMPLATE" ] && [ -f "$FUNC_TEMPLATE" ]; then
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{AUTH_INSTRUCTIONS\}\}/$AUTH_INSTRUCTIONS}"
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{ENV_HINT\}\}/$ENV_HINT}"
   TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{PIPELINE_DIR\}\}/$PIPELINE_DIR_VAL}"
+  TEMPLATE_CONTENT="${TEMPLATE_CONTENT//\{\{FUNCTIONAL_BUDGET_SECONDS\}\}/$FUNCTIONAL_BUDGET_SECONDS_VAL}"
   # `printf '%s\n'` over `echo` — if the template ever starts with `-n`/`-e`,
   # echo would swallow it as a flag and silently drop the first line.
   printf '%s\n' "$TEMPLATE_CONTENT" > /tmp/functional-prompt.txt
@@ -110,11 +115,11 @@ You are a QA engineer validating PR functionality end-to-end. Read ${PIPELINE_DI
 TURN 1 -- MCP smoke check (UNBATCHED, isolated):
   Call mcp__playwright__browser_navigate with url="about:blank". If it errors with "tool not found" / "MCP server unavailable" / similar: STOP, write the loud-fail outputs in skills/review-functional-tester.md "MCP smoke-check failure" section, and exit. Do NOT silently fall back to curl.
 
-TURN 2 -- Read test-plan.md + context.md in parallel (acceptance criteria live there).
+TURN 2 -- Read test-plan.md + context.md in parallel (acceptance criteria live there). Also record your start time: \`echo \$(date +%s) > /tmp/functional-start\`. Your wall-clock budget is ${FUNCTIONAL_BUDGET_SECONDS_VAL}s — before EACH new scenario run \`echo \$(( \$(date +%s) - \$(cat /tmp/functional-start) ))\`; once it exceeds ${FUNCTIONAL_BUDGET_SECONDS_VAL}, STOP starting scenarios and write your outputs immediately.
 
 TURN 3 -- $AUTH_INSTRUCTIONS
 
-TURNS 4+ -- execute each scenario from the test plan.
+TURNS 4+ -- execute each scenario from the test plan (respecting the wall-clock budget above).
 Web URL: $WEB_URL_VAL
 
 LAST 2 TURNS -- write output:

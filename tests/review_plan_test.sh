@@ -34,8 +34,8 @@ assert_plan() {
   fi
 }
 
-# A 45-file runtime diff (over the default 40-file ceiling), reused below.
-BIG_FILES=$(for i in $(seq 1 45); do printf 'src/f%d.ts\t10\t10\n' "$i"; done)
+# A 65-file runtime diff (over the default 60-file ceiling), reused below.
+BIG_FILES=$(for i in $(seq 1 65); do printf 'src/f%d.ts\t10\t10\n' "$i"; done)
 
 # ── label → skip (highest precedence) ──
 assert_plan "skip-review label" "skip false label" \
@@ -57,9 +57,11 @@ assert_plan "feature → main is NOT a promotion (large diff)" "full true normal
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/app.ts\t250\t100'
 
 # ── oversized → light (functional smoke stays on) ──
-assert_plan "45 runtime files" "light true oversized" \
+assert_plan "65 runtime files" "light true oversized" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV="$BIG_FILES"
-assert_plan "2100 changed lines" "light true oversized" \
+assert_plan "2600 changed lines" "light true oversized" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1800\t800'
+assert_plan "2100 changed lines is no longer oversized (ceiling raised to 2500)" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1500\t600'
 assert_plan "huge lockfile ALONE → not oversized (generated excluded)" "full false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'pnpm-lock.yaml\t9000\t9000'

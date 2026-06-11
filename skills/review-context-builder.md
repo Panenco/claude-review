@@ -396,9 +396,10 @@ Choose one of:
 | Reviewer-self-modifying PR (scripts/, skills/, workflows/, bugbot.md) AND repo has `tests/*.sh` | `pipeline-self-test` | Workflow runs `tests/*.sh` directly (no agent) and surfaces pass/fail in the review body |
 | Pipeline / CI change with no `tests/*.sh` harness | `skip` | Nothing (note the gap in the plan body) |
 | <30 LoC trivial change | `quick` | One smoke check (page loads / endpoint responds) |
+| `GATE=oversized` (PR too big to debate — the env var is set) | `quick` | ONE smoke scenario over the highest-risk surface. The gate already chose a lightweight pass; a full per-mutation functional sweep on a huge PR blows the wall-clock budget (seaters#687). Note the reduced coverage in the plan body. |
 | Anything with real feature changes (API, UI, or both) | `functional` | Full end-to-end: UI flows first, API via browser fetch, curl only as last resort |
 
-Document the strategy in test-plan.md so the agent knows what to do.
+Document the strategy in test-plan.md so the agent knows what to do. `GATE` is in your environment — when it's `oversized`, cap at `quick` regardless of how much feature surface the diff has; the tester is wall-clock-bounded and a 6-scenario plan can't finish.
 
 ### Round-2 scope reduction (REQUIRED when `/tmp/since-last.diff` exists and is non-empty)
 

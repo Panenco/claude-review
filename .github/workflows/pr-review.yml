@@ -43,10 +43,15 @@ on:
         type: number
         default: 40
       functional_max_turns:
-        description: "Max turns for the functional tester (Sonnet + Playwright MCP + Bash). The skill targets ≤30 with STOP-and-write anchors at 60/80/100; 200 is the runtime ceiling — generous headroom over the planner-capped 4 scenarios × ~6 turns/scenario + auth + output budget. Bumped from 120 after observed crashes on PRs with bigger UI surfaces (e.g. seaters#464 crashed at 120 with 12 captured screenshots). The prompt-side anchors keep cost bounded; this ceiling is so the framework rarely has to enforce one."
+        description: "Turn-count backstop for the functional tester (Sonnet + Playwright MCP + Bash). The primary bound is now wall-clock (functional_budget_seconds) — against a live backend each turn is slow, so turn count is a poor proxy for runtime (seaters#687 ran ~44 min / 338 tool-uses without tripping the old turn anchors). 200 stays as generous recall headroom; the framework rarely enforces it."
         required: false
         type: number
         default: 200
+      functional_budget_seconds:
+        description: "Wall-clock budget for the functional tester. It records a start timestamp and hard-stops + writes its findings once elapsed exceeds this, so it can never run into the job's timeout-minutes ceiling (which would cancel the orchestrator mid-flight and post nothing). Sits well under the 45-min job ceiling, leaving margin for judges + build + post. Default 480 (8 min)."
+        required: false
+        type: number
+        default: 480
       allowed_bots:
         description: "Comma-separated bot logins allowed to trigger the review (e.g. 'panenco-automation'), or '*' for all bots. Runs triggered by any other bot are skipped cleanly (green check, no crash banner). Empty (default) skips all bot-initiated runs."
         required: false
@@ -68,15 +73,15 @@ on:
         type: number
         default: 300
       gate_size_ceiling:
-        description: "Non-generated changed lines over which a PR is `oversized` (a lightweight single-judge pass — too big to debate well)."
+        description: "Non-generated changed lines over which a PR is `oversized` (a lightweight single-judge pass + a quick functional smoke — too big to debate well)."
         required: false
         type: number
-        default: 1500
+        default: 2500
       gate_file_ceiling:
         description: "Changed (non-generated) files over which a PR is `oversized`."
         required: false
         type: number
-        default: 40
+        default: 60
       gate_sensitive_globs:
         description: "Space-separated path globs that force a `full` review even when the diff is small. Setting this REPLACES the default list, so include everything you want sensitive. A bare `auth/` dir is intentionally NOT in the default — see docs/review-plan.md."
         required: false
@@ -1175,6 +1180,7 @@ jobs:
           MODEL_FAST: ${{ inputs.model_fast }}
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
           FUNCTIONAL_MAX_TURNS: ${{ inputs.functional_max_turns }}
+          FUNCTIONAL_BUDGET_SECONDS: ${{ inputs.functional_budget_seconds }}
           # Review plan (from the resolver step) — the orchestrator honours review_level.
           REVIEW_LEVEL: ${{ steps.review_plan2.outputs.review_level }}
           RUN_FUNCTIONAL: ${{ steps.review_plan2.outputs.run_functional }}

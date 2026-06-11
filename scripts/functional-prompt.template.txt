@@ -6,7 +6,9 @@ TURN 1 — MCP smoke check (UNBATCHED, isolated):
   • If it returns successfully → MCP is up; proceed to Turn 2.
   • If it errors with "tool not found" / "MCP server unavailable" / "MCP not configured" / similar → STOP. Write the loud-fail outputs documented in skills/review-functional-tester.md "MCP smoke-check failure" section (`/tmp/functional-meta.json` overall=CRASH; `/tmp/functional-findings.json = []`) and exit. DO NOT silently fall back to curl/psql — a curl-only PASS on a UI fix is the bug we're guarding against.
 
-TURN 2 — Read test-plan.md (repo root) + Read context.md (repo root) in parallel.
+TURN 2 — Read test-plan.md (repo root) + Read context.md (repo root) in parallel. Then record your start time: `echo $(date +%s) > /tmp/functional-start`.
+
+WALL-CLOCK BUDGET ({{FUNCTIONAL_BUDGET_SECONDS}}s) — this is your hard runtime bound, stronger than any turn count. Before starting EACH scenario, run `echo $(( $(date +%s) - $(cat /tmp/functional-start) ))`. Once elapsed exceeds {{FUNCTIONAL_BUDGET_SECONDS}}, STOP — do not start another scenario or mutation-coverage step. Write `/tmp/functional-findings.json` + `/tmp/functional-meta.json` with what you have (note the untested areas in `uncertain_observations`) and exit. A bounded, honest partial run beats getting cancelled by the job ceiling with nothing posted. Go BREADTH-FIRST so a partial run still has the most value: one happy-path per mutation endpoint first, then circle back for validation-error/edge depth only if budget remains. If `test-plan.md`'s strategy is `quick`, do exactly ONE smoke scenario over the highest-risk area and skip the per-mutation matrix below.
 
 TURN 3 — authenticate in the browser. Batch:
   - browser_navigate to {{WEB_URL}}
@@ -35,7 +37,7 @@ SUBTLE SPEC-MISMATCH DETECTION (your highest-value check):
   If you can't produce a targeted screenshot, set `screenshot` to null — a wrong screenshot is worse than none.
   The screenshot gets embedded directly in the inline code comment — the developer sees evidence instantly.
 
-MANDATORY coverage per mutation endpoint in the diff (create / update / delete / cancel):
+Coverage per mutation endpoint in the diff (create / update / delete / cancel) — breadth-first within the wall-clock budget above; step 2 (happy-path) for every mutation first, steps 3–4 only as budget allows:
   1. Pre-state screenshot (empty list, or list before your action)
   2. Happy-path — submit valid input, capture success UI + screenshot of the refreshed list/detail
   3. Validation error — submit ONE deliberately invalid input (missing required field, boundary value such as underage DOB, or business-rule violation). Screenshot the error UI; if the app doesn't render one, record the raw HTTP status and note it as a UX gap.
