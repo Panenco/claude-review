@@ -52,6 +52,11 @@ on:
         required: false
         type: number
         default: 480
+      free_disk_space:
+        description: "How much runner disk to reclaim before the dev-env bring-up (only runs when a dev-start.sh launches). 'safe' (default) removes only tooling no app bring-up needs on Linux — CodeQL bundles, Haskell, Swift (~12 GB) — and never the review job's own Node/pnpm/bun. 'aggressive' also removes the Android SDK + .NET and prunes Docker images (~25 GB total); set it ONLY if your dev-start.sh doesn't build Android or .NET. 'off' disables. Prevents the heavy-dev-env ENOSPC that loses an otherwise-complete review (seaters#687)."
+        required: false
+        type: string
+        default: "safe"
       allowed_bots:
         description: "Comma-separated bot logins allowed to trigger the review (e.g. 'panenco-automation'), or '*' for all bots. Runs triggered by any other bot are skipped cleanly (green check, no crash banner). Empty (default) skips all bot-initiated runs."
         required: false
@@ -1041,6 +1046,32 @@ jobs:
           key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-pkg-store-
+
+      # Reclaim runner disk before the dev-env bring-up. A heavy dev-start.sh
+      # (Docker images + JDK/Gradle + a big monorepo's node_modules) can
+      # exhaust the ~14 GB free on a hosted runner and ENOSPC the post steps,
+      # losing an otherwise-complete review (seaters#687). `safe` (default)
+      # only removes tooling no app bring-up needs on Linux — CodeQL bundles,
+      # Haskell, Swift — and never the review job's own Node/pnpm/bun cache.
+      # `aggressive` also drops the Android SDK + .NET and prunes Docker
+      # images; opt in only if your dev-start.sh doesn't build those.
+      - name: Free up runner disk
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan2.outputs.run_functional == 'true' && inputs.free_disk_space != 'off'
+        shell: bash
+        env:
+          FREE_MODE: ${{ inputs.free_disk_space }}
+        run: |
+          set -uo pipefail
+          echo "Disk before:"; df -h / | tail -1
+          # Safe set — a scanner bundle (CodeQL) and two languages (Haskell,
+          # Swift) no consumer app needs to start on Linux. Targets the CodeQL
+          # subdir only, never the whole hostedtoolcache (Node/pnpm live there).
+          sudo rm -rf /opt/hostedtoolcache/CodeQL /opt/ghc /usr/local/.ghcup /usr/share/swift 2>/dev/null || true
+          if [ "${FREE_MODE}" = "aggressive" ]; then
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet 2>/dev/null || true
+            docker image prune -af >/dev/null 2>&1 || true
+          fi
+          echo "Disk after:"; df -h / | tail -1
 
       # Launch the consumer's dev environment in the background so it brings
       # up alongside the context-builder + Playwright MCP setup, instead of
