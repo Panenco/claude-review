@@ -39,7 +39,7 @@ In this single response, Read all of:
 - Every `chunk` path from `context.md`'s `## Per-file diff index`. Both judges cover the whole review, so do not skip chunks by role tag — all of them are in scope. **On round 2 the index is already scoped to files changed since the previous review** (the chunks point at `/tmp/since-last-chunks/`).
 - From `## Spec sources`: `/tmp/issue.json`, `/tmp/prd-content.md`, `/tmp/external-issue.md` — only the ones context.md lists as non-empty.
 - The convention rule files listed under `## Convention files` that apply to your changed paths.
-- `/tmp/other-bot-comments.json` and `/tmp/user-replies-on-ours.json` when context.md flags them as non-empty.
+- `/tmp/other-bot-comments.json`, `/tmp/prior-bot-comments.json`, and `/tmp/user-replies-on-ours.json` when context.md flags them as non-empty.
 
 If a finding candidate later references a specific library/export/component, you may issue a follow-up Read of `package.json` / source file in turn 3 or later — but do not let that case excuse drip-Reading in turn 2.
 
@@ -116,11 +116,15 @@ Before finalising ANY finding, verify all six:
 
 A clean `[]` is a confident, valuable review. False positives waste more team time than a missed minor issue. When in doubt, drop the finding.
 
+## Open threads are dedup state (round 2)
+
+If `/tmp/prior-bot-comments.json` is non-empty, those are **our own still-open threads** from previous rounds. An open thread already tells the author about its issue, and the round-2 ladder already counts unresolved prior blockers. Re-finding the same root cause — even at a shifted line or with better wording — and emitting it as a new finding opens a second thread for one defect; observed PRs accumulated 4–5 reworded threads for a single unfixed guard. Rule: if an open own-bot thread covers the same root cause in the same file/region, do **not** emit a finding for it. Emit only when you have materially new evidence (a new failure path, a new affected caller) — and say in `reasoning` that it extends the existing thread.
+
 ## Cross-check prior bot comments
 
 If `/tmp/other-bot-comments.json` is non-empty, Read it. For every HIGH/CRITICAL bot finding, decide:
 
-1. **Corroborate** — you independently see the issue or, after a focused Read of the cited file, you agree. Emit a finding with the same severity (or lower, your call) and add `(corroborated by <bot>)` to `reasoning`. Independent corroboration with a second tool is strong evidence — it clears the false-positive self-check on its own.
+1. **Corroborate** — you independently see the issue or, after a focused Read of the cited file, you agree. Emit a finding with the same severity (or lower, your call) and add `(corroborated by <bot>)` to `reasoning`. Independent corroboration with a second tool is strong evidence — it clears the false-positive self-check on its own. **Anchor the corroborating finding at the other bot's exact `path` + `line`** (copy them from the comment) — the poster then folds it into a reply on the existing thread instead of opening a second thread for the same defect.
 2. **Refute** — you read the cited code and disagree. Add a one-line entry to `uncertain_observations` like `"Refuted <bot> finding on <path>:<line>: <reason>"` so the audit trail survives.
 3. **Skip** — the finding is style-tooling territory (low-severity aikido nesting/extract-helper notes) or low severity. Do nothing.
 
@@ -201,6 +205,8 @@ Write a single JSON object to the path the orchestrator passed via `OUTPUT_PATH`
 `spec_sources.linked_issue` is the **integer** GitHub issue number from context.md's `## Spec sources` line (e.g. `57`), or `null` when none — **never** the `/tmp/issue.json` file path. The renderer prints it as `#<value>`, so a path here surfaces as `#/tmp/issue.json` in the posted review.
 
 `manual_spec_present` rules: `true` when ANY of these is non-empty: linked GitHub issue body (`/tmp/issue.json`), PRD (`/tmp/prd-content.md`), external-tracker spec (`/tmp/external-issue.md`), OR substantive human-written PR-body prose. **PR bodies are usually mixed** — strip Cursor/CodeRabbit/Gemini/Claude footer blocks and `> [!NOTE]` bot-attribution alerts before judging; if ≥1 paragraph of human-written prose remains explaining the WHY/scope/criteria, it's a spec.
+
+**Spec fields must agree.** `spec_sources`, `manual_spec_present`, and `verdict_summary` are three views of one decision. If `spec_sources` records a linked issue, external issue, or PRD, then `manual_spec_present` cannot be `false` for lack of a spec, and `verdict_summary` must never say "no linked issue" — reviews have shipped citing an external tracker ID in spec_sources while withholding APPROVE "because no issue is linked", which reads as the bot contradicting itself.
 
 `requires_human_review` is `true` ONLY when the diff genuinely cannot be judged: PR modifies existing auth/billing/tenant-isolation infrastructure, schema-altering migrations on existing data, cross-cutting architecture changes (new middleware/global interceptor), >500 LoC of novel business-logic with ambiguous requirements. **Missing auth is a finding, not ambiguity** — flag it and leave `requires_human_review` false.
 

@@ -38,7 +38,7 @@ The runtime ceiling is set by the launching workflow as an **absolute hard maxim
 The launching workflow resolves a deterministic **review plan** (`scripts/review-plan.sh`) from the PR's files, branch, and labels and passes it in via env. Honor it before anything else:
 
 - `REVIEW_LEVEL` — `full` | `light` | `skip` (treat empty/unset as `full`)
-- `RUN_FUNCTIONAL` — `true` | `false` (only meaningful at `full`)
+- `RUN_FUNCTIONAL` — `true` | `false` (meaningful at both `full` and `light`; the plan turns it on for any runtime diff)
 - `GATE` — the classification that produced the plan (`normal`, `small`, `promotion`, `nonruntime`, `oversized`, `label`)
 - `GATE_REASON` — a one-line human-readable explanation
 
@@ -63,7 +63,7 @@ The launching workflow resolves a deterministic **review plan** (`scripts/review
 
 (`COMMENT`, not `APPROVE`, so the bot never satisfies a required-review check on a PR it was told not to review.)
 
-**`light`** → the cheap single-judge path. Run Phase 0 (context) and Phase 1 (trivial check) normally, then follow the **`light` deltas** flagged in Phases 2–4: one judge on the standard tier, no Haiku, no functional, no rebuttal.
+**`light`** → the cheap single-judge path. Run Phase 0 (context) and Phase 1 (trivial check) normally, then follow the **`light` deltas** flagged in Phases 2–4: one judge on the standard tier, no Haiku, no rebuttal. Functional follows `RUN_FUNCTIONAL` exactly as at `full` — small/oversized runtime PRs get the smoke + screenshot pass even on the single-judge path.
 
 **`full`** (or unset) → the full pipeline below, unchanged.
 
@@ -149,17 +149,19 @@ Skip Phase 2 and 3.
 
 When Phase 1 didn't trigger, dispatch the work fan in a **single assistant response with multiple Task calls** so they run in parallel.
 
-**`light` delta (`REVIEW_LEVEL=light`):** dispatch a **single** judge instead of the panel — the Judge-Opus block below but with `model: "${MODEL_STANDARD:-claude-sonnet-4-6}"` (the standard tier, not Opus) and `OUTPUT_PATH=/tmp/judge-sonnet.json`. Skip the Haiku judge. At `light` the plan sets `RUN_FUNCTIONAL=false`, so the functional tester is off per the **Functional dispatch decision** plan gate below (only `pipeline-self-test`, if that's the strategy, still runs). The round-2 thread classifier still runs when its inputs exist. When the judge returns, skip Phase 3 and go straight to Phase 4.
+**`light` delta (`REVIEW_LEVEL=light`):** dispatch a **single** judge instead of the panel — the Judge-Opus block below but with `model: "${MODEL_STANDARD:-claude-sonnet-4-6}"` (the standard tier, not Opus) and `OUTPUT_PATH=/tmp/judge-sonnet.json`. Skip the Haiku judge. The functional tester follows the **Functional dispatch decision** below unchanged — `RUN_FUNCTIONAL` is commonly `true` at `light` (small/oversized runtime PRs), so dispatch it in the same Task fan as the judge. The round-2 thread classifier still runs when its inputs exist. When the judge returns, skip Phase 3 and go straight to Phase 4.
 
 ### Functional dispatch decision
 
-**Plan gate (check first).** The app-driving functional tester — and its dev-env poll + prompt generation — runs only when `RUN_FUNCTIONAL=true` (the workflow sets that `true` only at `REVIEW_LEVEL=full` with a runtime diff). When `RUN_FUNCTIONAL` is `false`/empty (`light`, `skip`, or a non-runtime `full` PR), the **only** functional work permitted is `pipeline-self-test` (deterministic bash unit-tests — not app-driving, so it stays on); for every other strategy, write the synthetic skip `/tmp/functional-meta.json` (`strategy: "skip"`, `overall: PASS`) + `/tmp/functional-findings.json = []` and skip dev-env polling, prompt generation, and the tester.
+**Plan gate (check first).** The app-driving functional tester — and its dev-env poll + prompt generation — runs only when `RUN_FUNCTIONAL=true` (the plan sets it for runtime diffs at both `full` and `light`). When `RUN_FUNCTIONAL` is `false`/empty (`skip`, promotion, or a non-runtime PR), the **only** functional work permitted is `pipeline-self-test` (deterministic bash unit-tests — not app-driving, so it stays on); for every other strategy, write the synthetic skip `/tmp/functional-meta.json` (`strategy: "skip"`, `overall: PASS`) + `/tmp/functional-findings.json = []` and skip dev-env polling, prompt generation, and the tester.
 
 Then read the `## Strategy:` line from `test-plan.md`:
 
 - `STRATEGY = pipeline-self-test` AND `tests/` directory exists at the repo root → run `tests/*.sh` directly via Bash (skip `*smoke*`, 60 s timeout per test). Tally pass/fail. Write `/tmp/functional-meta.json` with `strategy: "pipeline-self-test"`, `overall: PASS|FAIL|WARN`, plus `pass`/`fail`/`total`/`summary`. Write `/tmp/functional-findings.json = []`. Skip the functional Task dispatch. **Runs regardless of `RUN_FUNCTIONAL`** — deterministic, no app, no LLM; cheap self-validation of the scripts.
 - `RUN_FUNCTIONAL=true` AND `STRATEGY ∈ {quick, functional}` AND dev-env was ready (Phase 0.5 set `WEB_READY=true`) AND `/tmp/functional-prompt.txt` was generated → dispatch the functional tester subagent.
 - Anything else (`RUN_FUNCTIONAL=false`, `STRATEGY = skip`, dev-env not ready, no functional-prompt) → skip functional. Write a synthetic `/tmp/functional-meta.json` with `strategy: "skip"`, `overall: PASS`, `summary: "Functional testing skipped."`. Write `/tmp/functional-findings.json = []`.
+
+These conditions are level-independent — at `light` the only change is the judge fan, never the functional decision.
 
 To prepare the functional tester prompt: run `.review-scripts/generate-functional-prompt.sh` via Bash (with the dev-env env vars from Phase 0.5 in scope). It writes `/tmp/functional-prompt.txt`. Skip-and-warn if the helper fails — functional dispatch is best-effort.
 
@@ -224,7 +226,7 @@ After each rebuttal round, re-run the agreement check. Cap at 2 total rebuttal r
 
 ## Phase 4 — Consolidate and write final output
 
-**`light` delta:** with a single judge there is nothing to union or reconcile — its findings array IS the output (re-id `j1, j2, …`), and its `verdict` / `verdict_summary` / `manual_spec_present` / `spec_sources` are used directly. Still fold in the thread classifier's net-new findings (round 2) through the same append. Set `judge_health` to `{ "sonnet": "ok|failed", "single_judge": true, "rebuttal_rounds": 0, "agreed_at": "single" }`; if the single judge failed, write the degraded `COMMENT` meta (as in the both-failed path). Skip the rest of this section's two-judge union and verdict reconciliation.
+**`light` delta:** with a single judge there is nothing to union or reconcile — its findings array IS the output (re-id `j1, j2, …`), and its `verdict` / `verdict_summary` / `manual_spec_present` / `spec_sources` are used directly. Still fold in the thread classifier's net-new findings (round 2) AND the functional tester's findings (when it ran) through the same appends as at `full`. Set `judge_health` to `{ "sonnet": "ok|failed", "single_judge": true, "rebuttal_rounds": 0, "agreed_at": "single" }`; if the single judge failed, write the degraded `COMMENT` meta (as in the both-failed path). Skip the rest of this section's two-judge union and verdict reconciliation.
 
 Use the **most recent** outputs from each judge.
 

@@ -39,7 +39,11 @@ merge() {
     --argjson primary "$(cat "$primary_file")" \
     --slurpfile fn "$functional_file" \
     '($primary | map(.id)) as $seen
-     | $primary + (($fn[0] // []) | map(select(.id as $id | $seen | index($id) | not)))'
+     | ($primary | map((.path // "") + "|" + (.title // ""))) as $seen_content
+     | $primary + (($fn[0] // []) | map(select(
+         (.id as $id | $seen | index($id) | not)
+         and (((.title // "") == "") or (((.path // "") + "|" + (.title // "")) as $k | $seen_content | index($k) | not))
+       )))'
 }
 
 # ── Block 1: net-new functional finding folds in, screenshot preserved ──
@@ -77,6 +81,31 @@ assert_eq "dedup: f1 appears once"        "1" "$(echo "$M2" | jq '[.[] | select(
 # Orchestrator's already-folded copy wins (its evidence was "orchestrator copy").
 assert_eq "dedup: orchestrator copy wins" "orchestrator copy" \
   "$(echo "$M2" | jq -r '[.[] | select(.id == "f1")] | .[0].evidence')"
+
+# ── Block 2b: orchestrator folded under a re-id'd `j*` id — dedup by content ──
+# Phase 4 re-ids merged findings to j1..jN, so the functional copy arrives
+# under its original f-id. Id-only dedup re-appended it (byte-identical
+# duplicate inline comments, observed at up to a third of comments on
+# busy PRs); content (path+title) dedup must catch it.
+cat > "$TMP/all-findings-2b.json" <<'JSON'
+[
+  {"id":"j1","severity":"major","path":"src/a.ts","line_start":10,"title":"Judge finding","evidence":"x","reasoning":"y","expected":"z","type":"finding"},
+  {"id":"j2","severity":"major","path":"src/c.ts","line_start":30,"title":"Submit button missing","evidence":"orchestrator copy","reasoning":"y","expected":"z","type":"finding","screenshot":"/tmp/screenshots/02-form.png"}
+]
+JSON
+M2B=$(merge "$TMP/all-findings-2b.json" "$TMP/functional-2.json")
+assert_eq "content-dedup: total length unchanged" "2" "$(echo "$M2B" | jq 'length')"
+assert_eq "content-dedup: no f1 re-append"        "0" "$(echo "$M2B" | jq '[.[] | select(.id == "f1")] | length')"
+
+# Untitled findings never content-collide (two distinct untitled findings on one path).
+cat > "$TMP/all-findings-2c.json" <<'JSON'
+[{"id":"j1","severity":"major","path":"src/c.ts","line_start":10,"title":"","evidence":"a","reasoning":"y","expected":"z","type":"finding"}]
+JSON
+cat > "$TMP/functional-2c.json" <<'JSON'
+[{"id":"f9","severity":"minor","path":"src/c.ts","line_start":80,"title":"","evidence":"b","reasoning":"y","expected":"z","type":"finding"}]
+JSON
+M2C=$(merge "$TMP/all-findings-2c.json" "$TMP/functional-2c.json")
+assert_eq "untitled: both kept" "2" "$(echo "$M2C" | jq 'length')"
 
 # ── Block 3: both empty → no-op ──
 echo '[]' > "$TMP/all-findings-3.json"

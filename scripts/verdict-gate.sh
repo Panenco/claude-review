@@ -7,6 +7,14 @@ set -euo pipefail
 # and metadata, writes the GitHub step summary, posts a PR comment if the
 # result is missing, and exits with the appropriate code.
 #
+# Exit semantics: the check is GREEN whenever a review was successfully
+# posted — including REQUEST_CHANGES, which lives on the PR review itself
+# (and blocks via branch protection when required reviews are enforced).
+# A red check means the PIPELINE failed: no review produced, or a verdict
+# was computed but the POST to GitHub failed. Conflating "bot wants
+# changes" with "bot broke" made fleet failure rates unreadable and
+# trained authors to re-run perfectly good reviews.
+#
 # Required env vars:
 #   ANALYZER_OUTCOME      — outcome of the analyzer step (success/failure/etc.)
 #   POSTER_OUTCOME        — outcome of the poster step (success/failure/etc.)
@@ -100,6 +108,19 @@ if [ ! -f review-result.json ]; then
     # to fail the workflow). Using a review instead of an issue comment
     # gives us a single editable surface that the next successful run can
     # supersede in post-review.sh.
+    # Supersede prior crash banners first. post-review.sh only cleans them
+    # on the next SUCCESSFUL run — PRs that crash on every push (quota walls,
+    # bot PRs) otherwise stack a new red banner per night, 10+ observed.
+    PRIOR_CRASH_IDS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null \
+      | jq -s '(add // []) | [.[] | select((.body // "") | contains("<!-- claude-review-crash -->")) | .id] | .[]' 2>/dev/null || true)
+    if [ -n "$PRIOR_CRASH_IDS" ]; then
+      SUPERSEDE_BODY=$'<!-- claude-review-superseded -->\n\n_Superseded by a newer Claude review run on this PR._'
+      while IFS= read -r CRID; do
+        [ -z "$CRID" ] && continue
+        gh api --method PUT "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews/$CRID" -f body="$SUPERSEDE_BODY" >/dev/null 2>&1 \
+          || echo "::warning::Could not supersede prior crash review #$CRID"
+      done <<< "$PRIOR_CRASH_IDS"
+    fi
     CRASH_PAYLOAD=$(jq -n --arg body "$CRASH_MSG" '{event: "COMMENT", body: $body}')
     if ! gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" --input - <<<"$CRASH_PAYLOAD" >/dev/null; then
       echo "::warning::Failed to post crash notification review"
@@ -119,6 +140,7 @@ POSTING_ERROR=$(jq -r '.posting_error // empty' review-result.json)
 HUMAN_REVIEW=$(jq -r '.requires_human_review // false' review-result.json)
 HUMAN_REASON=$(jq -r '.requires_human_review_reason // empty' review-result.json)
 MANUAL_SPEC=$(jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end' review-result.json)
+SPEC_WAIVED=$(jq -r '.spec_gate_waived // false' review-result.json)
 TECHNICAL_CHANGE=$(jq -r 'if (type == "object" and has("technical_change")) then .technical_change else false end' review-result.json)
 # Read smoke_ok directly — it captures both the FUNCTIONAL_OK crash flag and
 # the FUNCTIONAL_OVERALL value as build-review.sh saw them. Reading
@@ -143,7 +165,7 @@ FUNCTIONAL_OVERALL=$(jq -r '.functional_validation.overall // "N/A"' review-resu
     echo ""
     echo "> :stop_sign: **Human review required.** $HUMAN_REASON"
   fi
-  if [ "$MANUAL_SPEC" = "false" ]; then
+  if [ "$MANUAL_SPEC" = "false" ] && [ "$SPEC_WAIVED" != "true" ]; then
     echo ""
     echo "> :no_entry: **No manual spec available — APPROVE withheld.** Link an issue, paste acceptance criteria, or wire up an external tracker to enable APPROVE."
   fi
@@ -166,9 +188,12 @@ FUNCTIONAL_OVERALL=$(jq -r '.functional_validation.overall // "N/A"' review-resu
   fi
 } >> "$GITHUB_STEP_SUMMARY"
 
-# Surface posting failures as a workflow annotation.
+# A verdict that never reached the PR is a pipeline failure — the author
+# sees nothing, so the check must go red (observed: REQUEST_CHANGES computed,
+# POST failed, author saw a bare red check with no findings anywhere).
 if [ -n "$POSTING_ERROR" ]; then
-  echo "::warning::Claude review posting failed ($POSTING_ERROR) — verdict is $VERDICT but no PR review comment was created."
+  echo "::error::Claude review posting failed ($POSTING_ERROR) — verdict is $VERDICT but no PR review was created. Re-run the workflow."
+  exit 1
 fi
 
 case "$VERDICT" in
@@ -186,12 +211,10 @@ case "$VERDICT" in
     exit 0
     ;;
   REQUEST_CHANGES)
-    # Emit a visible annotation before failing. Without it the blocking
-    # verdict renders as a bare red ✗ with an empty step log — the verdict and
-    # findings live in the step summary + posted PR review, not this step's
-    # console — so the failed gate looks broken rather than intentional.
-    echo "::error::Claude review: REQUEST_CHANGES — $FINDING_COUNT blocking finding(s). See the PR review and the run summary for details."
-    exit 1
+    # Green: the review posted successfully. The blocking signal is the
+    # REQUEST_CHANGES review on the PR, not this check's color.
+    echo "::warning::Claude review: REQUEST_CHANGES — $FINDING_COUNT blocking finding(s). See the PR review and the run summary for details."
+    exit 0
     ;;
   *)
     echo "::error::Unknown or missing verdict: $VERDICT"

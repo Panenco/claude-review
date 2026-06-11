@@ -13,9 +13,9 @@
 #
 # review_level (consumed by review-orchestrator.md):
 #   full   — dual-judge debate (+ rebuttal); functional per run_functional
-#   light  — single judge, no rebuttal, no functional (cheap pass)
+#   light  — single judge, no rebuttal; functional per run_functional
 #   skip   — early-return: no judges; post the reason as a note
-# run_functional — drive the app via the functional tester (only meaningful at `full`)
+# run_functional — drive the app via the functional tester (at `full` and `light`)
 # gate           — the classification that produced the decision (stable, for banners)
 #
 # Mapping:
@@ -23,9 +23,11 @@
 #   deep-review → full  / functional on    (label; forces full — suppresses promotion/oversized/small.
 #                                           Does NOT turn functional on for an all-nonruntime PR.)
 #   promotion   → light / functional off   (source already reviewed; cheap insurance)
-#   oversized   → light / functional off   (too big for full; a single judge catches the worst)
+#   oversized   → light / functional on    (too big to debate well, but big features are exactly
+#                                           where runtime evidence matters most)
 #   nonruntime  → full  / functional off   (tests/docs/CI/locks — judges yes, no app-driving)
-#   small       → light / functional off   (<= GATE_SMALL_CEILING non-gen lines, no sensitive paths)
+#   small       → light / functional on    (<= GATE_SMALL_CEILING non-gen lines, no sensitive paths;
+#                                           the test planner still picks skip/quick per surface)
 #   normal      → full  / functional on    (substantial, OR touches a sensitive path)
 #
 # Inputs (env; all optional — safe, review-biased defaults):
@@ -164,7 +166,7 @@ fi
 # ── 3) Oversized (non-promotion)? Lightweight pass + a "split / label" note.
 #       deep-review (FORCE_FULL) suppresses this downgrade. ──
 if [ "$FORCE_FULL" = false ] && [ "$oversized" = true ]; then
-  emit "light" "false" "oversized" "PR too large for a full review (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — lightweight single-judge pass. Consider splitting (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
+  emit "light" "true" "oversized" "PR too large for a full judge debate (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — single-judge pass + functional smoke run. Consider splitting (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
   exit 0
 fi
 
@@ -175,10 +177,13 @@ if [ "$total_files" -gt 0 ] && [ "$all_nonruntime" = true ]; then
 fi
 
 # ── 5) Small, non-sensitive runtime change with real (non-generated) source? One
-#       judge is enough — skip the debate and functional. All-generated diffs,
-#       sensitive paths, and the deep-review label fall through to full. ──
+#       judge is enough — skip the debate, but keep functional on: a quick smoke
+#       + screenshot pass is the natural review artifact for small runtime PRs
+#       (the test planner downgrades to skip when the diff has no user surface).
+#       All-generated diffs, sensitive paths, and the deep-review label fall
+#       through to full. ──
 if [ "$ng_files" -gt 0 ] && [ "$FORCE_FULL" = false ] && [ "$has_sensitive" = false ] && [ "$ng_lines" -le "$SMALL_CEILING" ]; then
-  emit "light" "false" "small" "Small runtime change (${ng_files} files, ${ng_lines} non-generated lines, at/under the ${SMALL_CEILING}-line small-PR ceiling; no sensitive paths) — lightweight single-judge pass. Add the '$DEEP_LABEL' label to force a full review."
+  emit "light" "true" "small" "Small runtime change (${ng_files} files, ${ng_lines} non-generated lines, at/under the ${SMALL_CEILING}-line small-PR ceiling; no sensitive paths) — single-judge pass + quick functional check. Add the '$DEEP_LABEL' label to force a full review."
   exit 0
 fi
 

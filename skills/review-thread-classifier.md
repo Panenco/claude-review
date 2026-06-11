@@ -1,6 +1,6 @@
 ---
 name: review-thread-classifier
-description: Round-2 only. Classifies open inline-comment threads on the PR — from prior bot reviews, other bots, AND human reviewers — plus prior structured findings, against the diff since the last review. RESOLVED entries drive the poster's reply + thread-close step. Replaces the prior split between review-resolution-checker (state.json findings) and review-bot-comment-resolver (other-bot/own-bot inline threads); adds humans as a fourth stream.
+description: Round-2 only. Classifies open inline-comment threads on the PR — from prior bot reviews, other bots, AND human reviewers — plus prior structured findings, against the diff since the last review (RESOLVED / STILL_PRESENT / REBUTTED / NEW_CONTEXT). RESOLVED entries drive the poster's reply + thread-close step. Replaces the prior split between review-resolution-checker (state.json findings) and review-bot-comment-resolver (other-bot/own-bot inline threads); adds humans as a fourth stream.
 ---
 
 # Thread Classifier (round 2 only)
@@ -39,6 +39,7 @@ Read in a single batched response:
 3. `/tmp/other-bot-comments.json` — open top-level inline comments from non-Claude bots. Each: `id`, `node_id`, `user`, `path`, `line`, `body` (truncated). May be empty. **Read fully.**
 4. `/tmp/human-inline-comments.json` — open top-level inline comments from human reviewers (non-bot, non-author). Each: `id`, `node_id`, `user`, `path`, `line`, `body` (truncated). May be empty. **Read fully.**
 5. `/tmp/since-last.diff` — `git diff $PRIOR_HEAD_SHA..HEAD`. The complete change since the last review. **Read fully.**
+6. `/tmp/user-replies-on-ours.json` — maintainer/author replies on our own threads. Drives the REBUTTED classification below. May be missing/empty — treat as `[]`.
 
 If `since-last.diff` is missing, write `[]` to `/tmp/thread-resolution.json` and exit. Round-1 runs and PRs whose PRIOR_HEAD_SHA is no longer reachable hit this path — that's normal.
 
@@ -68,7 +69,7 @@ If a comment's body is too truncated to understand, classify as `NEW_CONTEXT` (y
 
 ## Classification rules
 
-For each in-scope entry, classify into exactly one of three buckets:
+For each in-scope entry, classify into exactly one of four buckets:
 
 ### RESOLVED
 
@@ -83,7 +84,7 @@ Do NOT mark RESOLVED based on:
 
 - The line number shifted but the same defect persists elsewhere in the file. (STILL_PRESENT.)
 - Adjacent lines changed but the flagged code is unchanged. (STILL_PRESENT.)
-- The thread was downvoted or argued-against in replies. (Not your call — leave the thread alone.)
+- The thread was downvoted or argued-against in replies. (That's REBUTTED for our own entries, below — never RESOLVED.)
 
 ### STILL_PRESENT
 
@@ -94,6 +95,12 @@ Examples:
 - The path is unchanged in `since-last.diff`.
 - The path is changed elsewhere but not at `line ±10`.
 - The lines were edited but the issue's root cause is still visible.
+
+### REBUTTED (streams 1 and 2 only)
+
+A maintainer or the PR author explicitly disputed the finding — a reply in `/tmp/user-replies-on-ours.json` saying it's intentional, wrong, out of scope, or handled elsewhere — and the code is unchanged. This is the author's call to make: a rebutted blocker must not silently pin REQUEST_CHANGES forever, and it must not silently vanish either. REBUTTED entries are excluded from the verdict ladder's still-present-blocker count and listed in the review body under "Dropped after author rebuttal", so the decision is on the record.
+
+Bar: the reply must contain a substantive reason ("deliberately removed", "industry standard", "handled in PR #448") — a bare "no" or an unanswered question is STILL_PRESENT. If a later commit DOES change the flagged code, classify on the code (RESOLVED/STILL_PRESENT), not the reply. Never use REBUTTED for other bots' or humans' threads — their disputes are theirs to settle.
 
 ### NEW_CONTEXT
 
@@ -162,7 +169,7 @@ Array, exactly one entry per in-scope input item across all four streams:
 
 `bot_user` mirrors the input comment's `user` field for streams 2 and 3; `null` for streams 1 and 4.
 
-`source` ∈ `prior_finding | own_bot | other_bot | human`. The poster's reply logic differs by source: prior_finding entries DON'T get an inline reply (the verdict body covers them), but own_bot / other_bot / human RESOLVED entries DO get the `✅ Resolved as of <sha>` inline reply + thread-close mutation.
+`source` ∈ `prior_finding | own_bot | other_bot | human`. `status` ∈ `RESOLVED | STILL_PRESENT | REBUTTED | NEW_CONTEXT`. The poster's reply logic differs by source: prior_finding entries DON'T get an inline reply (the verdict body covers them), but own_bot / other_bot / human RESOLVED entries DO get the `✅ Resolved as of <sha>` inline reply + thread-close mutation. REBUTTED entries get no reply and no thread-close — the author already owns that thread.
 
 Write `[]` when there are no in-scope entries to classify. **STILL_PRESENT entries are required for prior findings (stream 1)** because the verdict-ladder math depends on them; for inline-comment streams, STILL_PRESENT entries are optional but encouraged for the audit trail.
 

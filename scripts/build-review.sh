@@ -122,13 +122,19 @@ CORE_META=$(cat /tmp/review-meta.json)
 # `/tmp/resolution-findings.json` into `/tmp/all-findings.json` before
 # exiting; this safety net catches the rare case where the LLM forgot or
 # crashed mid-write, ensuring a major/critical net-new from the
-# classifier still lands in the verdict gate. Dedup by id so an entry
-# already merged by the orchestrator isn't double-counted.
+# classifier still lands in the verdict gate. Dedup by id AND by content
+# (path+title): the orchestrator re-ids merged entries to `j*`, so an
+# id-only check re-appends entries it already folded in — observed as
+# byte-identical duplicate inline comments in one posted review.
 if [ -f /tmp/resolution-findings.json ] && jq -e 'type == "array" and length > 0' /tmp/resolution-findings.json >/dev/null 2>&1; then
   MERGED=$(jq -s '
     (.[0] // []) as $primary |
     ($primary | map(.id)) as $seen |
-    $primary + ((.[1] // []) | map(select(.id as $id | $seen | index($id) | not)))
+    ($primary | map((.path // "") + "|" + (.title // ""))) as $seen_content |
+    $primary + ((.[1] // []) | map(select(
+      (.id as $id | $seen | index($id) | not)
+      and (((.title // "") == "") or (((.path // "") + "|" + (.title // "")) as $k | $seen_content | index($k) | not))
+    )))
   ' /tmp/all-findings.json /tmp/resolution-findings.json)
   ADDED=$(( $(echo "$MERGED" | jq 'length') - $(echo "$ALL_FINDINGS" | jq 'length') ))
   if [ "$ADDED" -gt 0 ]; then
@@ -146,14 +152,19 @@ fi
 # only fires for entries in $ALL_FINDINGS). Without this safety net a
 # functional finding lands only in the body's "Issues found" list and
 # the developer never sees the screenshot at the offending diff line.
-# Dedup by id is mandatory: judges sometimes re-discover the same UI
-# bug with a different id, and the orchestrator may have already folded
-# the functional entry, in which case its id wins.
+# Dedup by id AND content (path+title): the orchestrator re-ids folded
+# entries to `j*`, so an id-only check re-appended already-merged
+# functional findings — the source of byte-identical duplicate comment
+# pairs (up to a third of inline comments on busy PRs).
 if [ -f /tmp/functional-findings.json ] && jq -e 'type == "array" and length > 0' /tmp/functional-findings.json >/dev/null 2>&1; then
   PREV_LEN=$(echo "$ALL_FINDINGS" | jq 'length')
   MERGED=$(jq -n --argjson primary "$ALL_FINDINGS" --slurpfile fn /tmp/functional-findings.json '
     ($primary | map(.id)) as $seen |
-    $primary + (($fn[0] // []) | map(select(.id as $id | $seen | index($id) | not)))
+    ($primary | map((.path // "") + "|" + (.title // ""))) as $seen_content |
+    $primary + (($fn[0] // []) | map(select(
+      (.id as $id | $seen | index($id) | not)
+      and (((.title // "") == "") or (((.path // "") + "|" + (.title // "")) as $k | $seen_content | index($k) | not))
+    )))
   ')
   ADDED=$(( $(echo "$MERGED" | jq 'length') - PREV_LEN ))
   if [ "$ADDED" -gt 0 ]; then
@@ -380,9 +391,11 @@ fi
 # reply, not the body.
 RESOLVED_LIST="[]"
 STILL_PRESENT_LIST="[]"
+REBUTTED_LIST="[]"
 if [ -f /tmp/thread-resolution.json ] && jq -e 'type == "array"' /tmp/thread-resolution.json >/dev/null 2>&1; then
   RESOLVED_LIST=$(jq '[.[] | select(.source == "prior_finding" and .status == "RESOLVED")]' /tmp/thread-resolution.json)
   STILL_PRESENT_LIST=$(jq '[.[] | select(.source == "prior_finding" and .status == "STILL_PRESENT")]' /tmp/thread-resolution.json)
+  REBUTTED_LIST=$(jq '[.[] | select(.source == "prior_finding" and .status == "REBUTTED")]' /tmp/thread-resolution.json)
   TOTAL_RESOLVED=$(jq '[.[] | select(.status == "RESOLVED")] | length' /tmp/thread-resolution.json)
   TOTAL_STILL=$(jq '[.[] | select(.status == "STILL_PRESENT")] | length' /tmp/thread-resolution.json)
   TOTAL_NEW_CTX=$(jq '[.[] | select(.status == "NEW_CONTEXT")] | length' /tmp/thread-resolution.json)
@@ -405,6 +418,13 @@ HUMAN_REVIEW=$(echo "$CORE_META" | jq -r '.requires_human_review // false')
 # because `has()` crashes on non-object JSON (null, arrays) and our
 # `is_valid_json` check only verifies parseability, not shape.
 MANUAL_SPEC_PRESENT=$(echo "$CORE_META" | jq -r 'if (type == "object" and has("manual_spec_present")) then .manual_spec_present else true end')
+
+# Machine-authored PRs (renovate, dependabot) can never carry a human spec;
+# withholding APPROVE for "no spec" on them is noise, not protection.
+SPEC_GATE_WAIVED=false
+if [ "$MANUAL_SPEC_PRESENT" = "false" ] && [ "${PR_AUTHOR_IS_BOT:-false}" = "true" ]; then
+  SPEC_GATE_WAIVED=true
+fi
 
 # Smoke-test gate. The test planner flags PRs whose stated intent is "no
 # user-visible behavior change" (refactor, upgrade, library swap, perf
@@ -486,13 +506,13 @@ elif [ "$FUNCTIONAL_OVERALL" = "PASS" ] || [ "$FUNCTIONAL_OVERALL" = "WARN" ]; t
 fi
 
 # Review-plan guard. When the deterministic resolver (review-plan.sh) intentionally
-# gated functional off — any GATE other than 'normal' (promotion / oversized /
-# nonruntime / label) — a missing smoke result is BY DESIGN, not a coverage gap.
-# Waive the technical-change smoke withhold so the verdict reflects the resolver's
-# deliberate decision instead of dropping APPROVE→COMMENT for a smoke we chose not
-# to run. (A 'normal' PR where functional was planned but didn't land still
-# withholds — that's a real gap, not an intentional skip.)
-if [ -n "${GATE:-}" ] && [ "$GATE" != "normal" ]; then
+# gated functional off — RUN_FUNCTIONAL != true (promotion / nonruntime / label) —
+# a missing smoke result is BY DESIGN, not a coverage gap. Waive the
+# technical-change smoke withhold so the verdict reflects the resolver's
+# deliberate decision instead of dropping APPROVE→COMMENT for a smoke we chose
+# not to run. Gates where functional DID run (normal, and now small/oversized)
+# keep the withhold — there a missing/failed smoke is real signal.
+if [ -n "${GATE:-}" ] && [ "$GATE" != "normal" ] && [ "${RUN_FUNCTIONAL:-}" != "true" ]; then
   if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" != "true" ]; then
     echo "::notice::Technical-change smoke gate waived — review-plan gate '$GATE' intentionally skipped functional testing."
   fi
@@ -558,7 +578,7 @@ elif [ "$HUMAN_REVIEW" = "true" ]; then
 elif [ "$JUDGES_BOTH_FAILED" = "true" ]; then
   VERDICT="COMMENT"
   echo "::warning::Both judges (or context builder) failed — downgrading APPROVE to COMMENT. Body banner explains."
-elif [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
+elif [ "$MANUAL_SPEC_PRESENT" = "false" ] && [ "$SPEC_GATE_WAIVED" != "true" ]; then
   VERDICT="COMMENT"
   echo "::warning::No manual spec available — downgrading APPROVE to COMMENT (core reviewer set manual_spec_present=false)"
 elif [ "$FUNCTIONAL_MCP_BROKEN" = "true" ]; then
@@ -770,6 +790,7 @@ jq -n \
   --arg spec_compliance "$SPEC_COMPLIANCE" \
   --arg verdict_summary "$VERDICT_SUMMARY" \
   --arg technical_change "$TECHNICAL_CHANGE" \
+  --arg spec_gate_waived "$SPEC_GATE_WAIVED" \
   --arg smoke_ok "$SMOKE_OK" \
   --argjson findings "$ALL_FINDINGS" \
   --argjson meta "$CORE_META" \
@@ -782,6 +803,7 @@ jq -n \
     verdict_summary: $verdict_summary,
     spec_sources: ($meta.spec_sources // {linked_issue: null, external_issue: null, prd_path: null, convention_rules: []}),
     manual_spec_present: (if ($meta | type == "object" and has("manual_spec_present")) then $meta.manual_spec_present else true end),
+    spec_gate_waived: ($spec_gate_waived == "true"),
     technical_change: ($technical_change == "true"),
     smoke_ok: ($smoke_ok == "true"),
     findings: $findings,
@@ -859,7 +881,11 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
     echo ""
   fi
   if [ "$MANUAL_SPEC_PRESENT" = "false" ]; then
-    echo "> :no_entry: **APPROVE withheld — no spec.** Link an issue, paste acceptance criteria into the PR body, or wire up the external tracker."
+    if [ "$SPEC_GATE_WAIVED" = "true" ]; then
+      echo "> :robot: **Spec gate waived** — bot-authored PR; machine-generated PRs carry no human spec."
+    else
+      echo "> :no_entry: **APPROVE withheld — no spec.** Link an issue, paste acceptance criteria into the PR body, or wire up the external tracker."
+    fi
     echo ""
   fi
   if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
@@ -898,7 +924,8 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
   # here — keeps the body scannable instead of pasting diff syntax.
   RESOLVED_N=$(echo "$RESOLVED_LIST" | jq 'length')
   STILL_N=$(echo "$STILL_PRESENT_LIST" | jq 'length')
-  if [ "$RESOLVED_N" -gt 0 ] || [ "$STILL_N" -gt 0 ]; then
+  REBUTTED_N=$(echo "$REBUTTED_LIST" | jq 'length')
+  if [ "$RESOLVED_N" -gt 0 ] || [ "$STILL_N" -gt 0 ] || [ "$REBUTTED_N" -gt 0 ]; then
     PRIOR_FINDINGS_JSON='[]'
     [ -f /tmp/prior-state/review-state.json ] \
       && PRIOR_FINDINGS_JSON=$(jq '.findings // []' /tmp/prior-state/review-state.json 2>/dev/null || echo '[]')
@@ -929,6 +956,15 @@ EXTERNAL=$(jq -r '.spec_sources.external_issue // empty' review-result.json)
              ($f.title // ($e.evidence // ""))
              | (if length > 120 then .[:117] + "..." else . end)
            )'
+      echo ""
+    fi
+    # Prior findings the author explicitly disputed without a code change.
+    # Listing them keeps the audit trail — a blocker must never just vanish
+    # between rounds — while the ladder stops re-enforcing it.
+    if [ "$REBUTTED_N" -gt 0 ]; then
+      echo "**Dropped after author rebuttal (${REBUTTED_N}):**"
+      echo "$REBUTTED_LIST" | jq -r --argjson prior "$PRIOR_FINDINGS_JSON" \
+        '.[] | "- `\(.id)` — " + ('"$JOIN_TITLE"')'
       echo ""
     fi
   fi
@@ -1084,6 +1120,12 @@ jq --slurpfile urls /tmp/screenshot-urls.json '[.[] |
   } + (if $use_range then {start_line: .line_start, start_side: $side} else {} end)
 ]' /tmp/all-findings.json > /tmp/review-comments.json
 
+# Belt-and-braces against double-merged findings: identical
+# (path, line, body) tuples post as visibly duplicate inline comments.
+jq 'reduce .[] as $c ([]; if any(.[]; .path == $c.path and .line == $c.line and .body == $c.body) then . else . + [$c] end)' \
+  /tmp/review-comments.json > /tmp/review-comments-uniq.json \
+  && mv /tmp/review-comments-uniq.json /tmp/review-comments.json
+
 # Also write findings.draft.json for artifact upload
 cp /tmp/all-findings.json findings.draft.json
 
@@ -1137,6 +1179,7 @@ jq -n \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg functional_overall "$PERSISTED_FUNCTIONAL_OVERALL" \
   --arg functional_strategy "$PERSISTED_FUNCTIONAL_STRATEGY" \
+  --arg review_level "${REVIEW_LEVEL:-full}" \
   '{
     schema_version: 1,
     prior_head_sha: $head,
@@ -1146,6 +1189,7 @@ jq -n \
     verdict: $verdict,
     functional_overall: $functional_overall,
     functional_strategy: $functional_strategy,
+    review_level: $review_level,
     reviewed_at: $ts
   }' > /tmp/review-state.json
 INHERITED_TAG=""

@@ -164,6 +164,18 @@ This is your highest-value check. Compare **every observable detail** against th
 
 **The goal is to catch details that no human reviewer would notice** — a human reviews code, but you actually run it and compare output against spec word-by-word.
 
+## Evidence integrity (MANDATORY)
+
+Screenshots have two jobs: show a human reviewer the change **working** (so they can skip re-verifying it themselves), and show the builder exactly what's **broken**. Both jobs die the moment a single screenshot lies. Production reviews have shipped a 404 error page captioned "signin page" and a "PASS (1 screenshots)" whose one image was a different app entirely — each one teaches the team to ignore every future gallery.
+
+1. **A screenshot is a capture of the live app you drove this run** — or a rendered HTTP exchange of a request you actually made (the `<pre>` technique above). Never render prose, summaries, or test logs as a PNG; that content belongs in `summary`. Never list a non-app image in `screenshots[]`.
+2. **Verify every caption against the snapshot.** Before recording a `screenshots[]` entry or a finding's `screenshot`, check the most recent `browser_snapshot`: if the page is an error boundary, login wall, 404, or blank, the `description` must say exactly that — or drop the shot.
+3. **If you could not actually drive the app** (server unreachable, auth impossible, scenarios not executable), you must NOT report `PASS` and must NOT attach screenshots. Reading the source code is judge work, not functional evidence. Report honestly: environment failure → `overall: "CRASH"` with a summary saying what was unreachable; partial run → grade only what you exercised and list the rest under `uncertain_observations`.
+4. **Findings are defects only.** Never emit a finding whose content is "X works / is compliant / PASS" — inline comments are read as problems, and a pass-report posted as a finding is pure noise. Positive results live in `summary` and the screenshot gallery.
+5. **Caption for the walkthrough.** Write `screenshots[].description` so the gallery reads as an AC-by-AC walkthrough a human can follow without running anything: name the criterion and the state ("AC3 — list filtered to Active after selecting the status filter"), and cover pre-state → action → post-state for the main flow, not only the failures.
+6. **Deferred ACs are notes, not failures.** When the PR body, linked issue, or a repo convention explicitly defers an acceptance criterion to a sibling PR, still exercise and screenshot the gap, but file it at severity `note` and exclude it from the FAIL calculus — judges have had to argue testers back down from blocking on work the team deliberately split out.
+7. **`strategy` is the enum the plan gave you** — exactly `functional`, `quick`, or `skip`. Free-text strategies ("API-only backend PR…") corrupt the fleet's usage analytics.
+
 **Referencing acceptance criteria in posted text.** When a finding's `title`/`reasoning`/`expected` or the meta `summary` cites a criterion, use the `AC1`/`AC2` labels from context.md — **never** a `#`-prefixed form like `AC #5`. These fields are posted verbatim to GitHub (the `title` is the bold header of every inline comment), which auto-links `#5` to issue/PR #5 and produces a wrong cross-reference. Write `AC5`, not `AC #5`.
 
 ## Output

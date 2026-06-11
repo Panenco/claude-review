@@ -15,13 +15,19 @@ match:
 |---|------|------|--------------|------------|
 | 1 | `label` | `skip-review` label present | `skip` | no |
 | 2 | `promotion` | release/promotion PR (e.g. `staging` → `main`) | `light` | no |
-| 3 | `oversized` | over the size ceiling (default 1500 lines / 40 files) | `light` | no |
+| 3 | `oversized` | over the size ceiling (default 1500 lines / 40 files) | `light` | yes |
 | 4 | `nonruntime` | only tests / docs / CI / lockfiles changed | `full` | no |
-| 5 | `small` | ≤ 300 non-generated lines, no sensitive paths | `light` | no |
+| 5 | `small` | ≤ 300 non-generated lines, no sensitive paths | `light` | yes |
 | 6 | `normal` | substantial, **or** touches a sensitive path | `full` | yes |
 
 - **`full`** — the dual-judge debate (Opus + Haiku, with rebuttal).
-- **`light`** — a single judge, no rebuttal, no functional. The fast path.
+- **`light`** — a single judge, no rebuttal. The fast path for the judge fan only:
+  functional testing still runs per the table, because runtime evidence is the
+  review's centerpiece — small UI fixes are exactly where one screenshot beats
+  prose, and oversized feature PRs are exactly where an APPROVE without runtime
+  evidence is riskiest. The test planner still scopes the run (a small diff with
+  no user-observable surface plans `skip`; a trivial one plans a 1-scenario
+  `quick`), so the cost scales with the surface, not the gate.
 - **`skip`** — no judges; the reason is posted as a note.
 
 > Generated files (lockfiles, snapshots, `dist/`, `*.min.*`, `*.generated.*`, …)
@@ -30,10 +36,23 @@ match:
 
 A `deep-review` label (see below) flips rungs 2, 3, and 5 to `full`.
 
-> **Rollout:** the classification above — and turning functional off for `light` —
-> is live now. The orchestrator's single-judge handling for `light` lands alongside
-> it; until that ships, a `light` PR is classified correctly and skips functional but
-> still runs the two-judge debate. See [ADR 0001](adr/0001-risk-tiered-review-depth.md).
+## Round 2: the plan follows the follow-up, not the PR
+
+Follow-up rounds are most of the fleet's volume, and a 10-line fix-up on an
+800-line PR doesn't need the full Opus + Haiku debate — round-2 judges are
+already scoped to the diff since the last review, the verdict ladder pins
+unresolved prior blockers, and the thread classifier runs regardless of judge
+count. So when prior review state exists, the plan is re-resolved against the
+**since-last diff shape** (`scripts/refine-review-plan.sh`):
+
+- Small, non-sensitive follow-up → `light` single judge + quick functional.
+- Empty since-last (same-SHA re-run) → `light`, no functional.
+- Large or sensitive-path follow-up → `full`, exactly as round 1.
+- `deep-review` label → full-PR plan, every round.
+- Escalation guard: if the PR as a whole warrants `full` and **no prior round
+  ran one** (the PR grew past the ceilings through small pushes), the round
+  escalates to the full-PR plan — a PR can never reach merge without at least
+  one full debate.
 
 ## Labels
 
@@ -87,9 +106,10 @@ with:
 
 | PR | gate | what runs |
 |----|------|-----------|
-| 40-line bug fix in `src/` | `small` | single-judge `light`, fast |
+| 40-line bug fix in `src/` | `small` | single judge + quick functional check (screenshot of the touched surface) |
 | 500-line feature | `normal` | full debate + functional |
+| 2000-line feature | `oversized` | single judge + functional smoke run |
 | 20-line change in `database/migrations/` | `normal` (sensitive) | full debate + functional |
-| `staging` → `main` release | `promotion` | single-judge `light` |
+| `staging` → `main` release | `promotion` | single-judge `light`, no functional |
 | docs-only PR | `nonruntime` | judges run, no functional |
 | small but tricky PR you want fully reviewed | add `deep-review` | full debate + functional |
