@@ -1018,14 +1018,17 @@ jobs:
             : > /tmp/external-issue.md
           }
 
-      # Package-manager store cache: dev-start.sh runs the consumer's
-      # `pnpm install` from a cold store every run otherwise. Content-
-      # addressable stores make even stale restore-key hits save most of the
-      # download. Round-2 runs hit the cache saved by round 1 on this branch;
-      # first rounds hit the base-scoped cache from the warm-cache job below.
-      - name: Cache package-manager store
+      # Package-manager store cache for the consumer's dev-start.sh install.
+      # Restore-only on purpose: the all-in-one cache auto-registers a
+      # post(save) step that re-runs this key's hashFiles after dev-start.sh
+      # has mutated the working tree — once the lockfile is gone hashFiles
+      # errors and reds an otherwise-passing review (seaters #787). The
+      # warm-cache job below is the saver, keyed by lockfile hash; round-2
+      # restores it via the same key. cache/restore has no post step, so the
+      # key is evaluated once against the intact checkout.
+      - name: Restore package-manager store
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan2.outputs.run_functional == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             ~/.local/share/pnpm/store
