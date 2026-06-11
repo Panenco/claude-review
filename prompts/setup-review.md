@@ -6,9 +6,9 @@ You are setting up the Panenco Claude PR review pipeline in this repository. Fol
 
 Your output must pass the pipeline's own review on the first commit — **no findings, verdict `APPROVE`**. To achieve that:
 
-1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. The validator step flags missing paths; don't let it.
+1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. A broken path fails the bring-up hard or feeds the reviewer wrong context; don't ship one.
 2. **Prefer fail-fast patterns over silent timeouts.** Every readiness wait loop must explicitly log and warn (or exit) when it times out, not just `break` out. "Silently succeeds on timeout" is the #1 bug the reviewer catches in review-configs.
-3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the "Validate review config" step greps for `^### Auth` and `^### Known service ports` to count detected sections, and getting the level wrong emits warnings and confuses readers. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
+3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the pipeline greps for them literally (the context builder's config-gap check looks for `^### Auth`, and the dev-env probe reads the ports table), and getting the level wrong surfaces a "Setup notes" line in every review body. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
 4. **Track the `@v2` tag for the reusable workflow** so pipeline fixes auto-propagate, and declare the supply-chain trade-off as accepted in `bugbot.md` so the reviewer doesn't re-flag it on every PR (see Step 3 template). `@v1` is frozen and no longer receives fixes — new repos use `@v2`.
 5. **Match the exact phrasing the auto-extractor expects** for sign-in lines and auth methods (listed in Step 4 → `### Auth`).
 
@@ -56,7 +56,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      actions: read
+      packages: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
@@ -67,7 +67,9 @@ either causes recurring reviewer noise (cursor-style bots flag missing concurren
 alongside all other repo workflows, and the pipeline re-runs on every `synchronize`
 against draft PRs, wasting budget). The `permissions:` block is also required;
 its omission is the #1 startup failure for repos in orgs with the GitHub-default
-read-only `GITHUB_TOKEN` scope (see inline comment above).
+read-only `GITHUB_TOKEN` scope (see inline comment above). `actions: read` is
+**not** needed: round-2 state comes from the PR's own review history, not from
+workflow artifacts — existing callers that still grant it are unaffected.
 
 **If `secrets: inherit` fails with `Secret CLAUDE_CODE_OAUTH_TOKEN is required, but not provided while calling`** — even though the secret is clearly set on the repo — swap `inherit` for the explicit form as a fallback:
 
@@ -126,7 +128,7 @@ config files.
 Frontend changes that touch form labels, ARIA attributes, semantic markup, or
 keyboard handlers should run an axe-core WCAG 2.1 AA audit on the changed page.
 The functional tester picks this up via the test-plan's `a11y: true` flag — the
-test planner already sets it when the diff matches those triggers; no action
+context builder already sets it when the diff matches those triggers; no action
 needed here unless you want it ALWAYS on (in which case add: "Always treat the
 test plan as `a11y: true` regardless of diff").
 ```
@@ -191,7 +193,7 @@ set -uo pipefail
 # review stops. Only commit a dev-start.sh you've verified locally.
 # Repos with nothing to bring up (docs-only, lib-only) should not have
 # this file at all; its absence is the signal for degraded-mode
-# (core + sweep only, no functional tester).
+# (judges only, no functional tester).
 
 # <Step 1 — e.g. Postgres>
 docker compose up -d postgres
@@ -246,7 +248,7 @@ echo "API ready at http://localhost:<port>/<health-path>"
 
 Rules:
 - **Readiness loops must fail fast.** No bare `for ... && break; sleep ...; done` that silently falls through — always follow with `if [ "$READY" != "true" ]; then echo ::error:: ...; exit 1; fi`.
-- **Failure is hard, not soft.** If `dev-start.sh` is present and exits non-zero, the pipeline fails the Pre-start step and the whole review stops. That is intentional — if you wrote a bring-up and it doesn't work, functional findings would be misleading. To run in degraded mode (core + sweep only), delete the file entirely.
+- **Failure is hard, not soft.** If `dev-start.sh` is present and exits non-zero, the pipeline fails the Pre-start step and the whole review stops. That is intentional — if you wrote a bring-up and it doesn't work, functional findings would be misleading. To run in degraded mode (judges only), delete the file entirely.
 - **No `set -e`** at the top. The subshell already propagates your explicit `exit N`; `set -e` adds surprise failures in idioms like `curl || true` or `grep` pipes that return 1 on no-match, without giving you anything back.
 - **One place, not two.** If you put commands here, keep `review-config.md`'s `## Functional validation` section as prose only (see Step 4). The script is the source of truth for *how* to bring things up; the markdown is the source of truth for *what* the tester should expect.
 - **Generated code matters.** If your tests import from a generated SDK / GraphQL client / `openapi-generator` output that isn't checked in, run the generator here *before* starting the dev server — otherwise `tsc --watch` / `nest start` floods the log with TS2307 noise (or, worse, the compile never settles). valcori's `dev-start.sh` runs `pnpm run generate-sdk` before `start:dev` for exactly this reason.
@@ -294,7 +296,7 @@ Walk through this decision even if the project looks GitHub-only; confirm it exp
      <PROVIDER>_API_KEY=<your key>
      ```
      Get your key at `<the provider's API-key page URL>`."
-   - "**Create `.github/claude-review/fetch-issue.sh`**. It reads `$ISSUE_CANDIDATES_FILE` (pre-extracted ticket references), calls your tracker, and prints markdown to stdout. See the README section **External issue trackers** (`.github/claude-review/fetch-issue.sh`) for the full contract, the candidates-file schema, and a provider-neutral skeleton to adapt."
+   - "**Create `.github/claude-review/fetch-issue.sh`**. It reads the pre-extracted ticket references at `/tmp/external-issue-candidates.json`, calls your tracker, and prints markdown to stdout. See the README section **External issue trackers** (`.github/claude-review/fetch-issue.sh`) for the full contract, the candidates-file schema, and a provider-neutral skeleton to adapt."
    - "**Optional but recommended:** add a `Ticket: <url>` line to your PR template so authors paste the tracker URL into every PR — this gives the highest-confidence lookup (Tier-1 explicit marker)."
 
    Emphasize: `fetch-issue.sh` must be committed and `chmod +x`'d. Without `TRACKER_SECRETS` the hook runs but every env var the script references is empty, and the script will soft-fail on the first `curl` — the Actions log will show a `::warning::`.
@@ -315,7 +317,7 @@ Use the exact endpoints, credentials, and auth method you discovered in Step 1. 
 - Method: cookie | bearer | header | none
 ```
 
-**Important — exact phrasing matters for the functional tester's auth auto-detection.** Start the sign-in line with one of `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, or `Login:`. The functional tester scans for these prefixes and for a `POST <endpoint>` + `{JSON body}` to pre-build a browser auth snippet. If your app uses a different phrasing, the snippet just won't be pre-built — the agent will fall back to reading this section directly from `context.md`, which is fine but less efficient.
+**Be explicit and literal.** The context builder turns this section (plus the dev-env outputs) into a ready-made auth recipe so the functional tester spends zero budget rediscovering auth — exact endpoints, exact seeded credentials, exact method. A `Sign in:` line with a `POST <endpoint>` + `{JSON body}` is the canonical shape.
 
 For `header` or non-cookie auth (e.g., token in `x-auth` response header), document exactly how to capture and resend the token. Example:
 
@@ -340,7 +342,7 @@ List the actual ports you found in Step 1 (from `package.json` scripts, framewor
 | <name> | <URL you discovered> | <health endpoint if known> |
 ```
 
-**Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. The "Validate review config" step greps for `^### Auth` and `^### Known service ports` literally.
+**Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. The pipeline greps for these headings literally (the context builder's config-gap check and the dev-env probe).
 
 Correct file outline — note heading levels:
 
@@ -358,7 +360,7 @@ Correct file outline — note heading levels:
 ### Known service ports      ← level 3, placed at file root after ## Functional validation
 ```
 
-Do **not** promote to `## Auth` / `## Known service ports` — the validator's `^### ` grep misses them and emits warnings. Do **not** nest them under `## Functional validation` either — when they live inside, the Functional-validation extractor picks up Auth code it shouldn't. Keep them exactly as **level-3 headings at the file's top level, immediately after the last `### Step N`**.
+Do **not** promote to `## Auth` / `## Known service ports` — the pipeline's `^### ` greps miss them and a "Setup notes" line lands in every review body. Do **not** nest them under `## Functional validation` either — when they live inside, the Functional-validation extractor picks up Auth code it shouldn't. Keep them exactly as **level-3 headings at the file's top level, immediately after the last `### Step N`**.
 
 ## Step 5: Verify self-check
 
@@ -370,7 +372,7 @@ Before committing, re-read your own `.github/review-config.md` and `.github/clau
 - [ ] Every path appearing in a `cp`, `source`, or `cat` command (in either file) exists at the stated path. Run `ls <path>` to prove it.
 - [ ] Every readiness wait loop in `dev-start.sh` either exits non-zero on timeout OR logs a `::warning::`/`::error::`. No bare `for ... && break; sleep ...; done` patterns.
 - [ ] `### Auth` and `### Known service ports` sit at the top level of `review-config.md`, not nested inside `## Functional validation`.
-- [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
+- [ ] `### Auth` documents the sign-in endpoint, seeded credentials, and method verbatim — a `Sign in:` line with `POST <endpoint>` + JSON body is the canonical shape.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
 - [ ] The caller workflow tracks `@v2` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v2 + secrets: inherit` as accepted. Both are needed — the @v2 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
 - [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR. `github.event_name` in the group key keeps `pull_request` and `pull_request_target` in separate groups so the warm-cache run doesn't cancel the review (or vice versa).
@@ -466,21 +468,21 @@ Single multiline secret with newline-separated `KEY=VALUE` pairs exposed as env 
 Push the changes on a branch, open a PR, and verify the workflow triggers. Expected outcome:
 
 - "Install review pipeline" step succeeds (composite action)
-- "Validate review config" shows all six sections detected and no "references files that don't exist" warnings
+- The review body carries **no "Setup notes" line** — the context builder emits one when it detects config gaps (missing `dev-start.sh`, missing `### Auth`); a correct config stays silent
 - Context builder produces `context.md` and `test-plan.md`
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
-- "Install functional-tester subagent definition" writes `.claude/agents/review-functional-tester.md` to the runner's checkout (this is what gives the functional tester its own scoped Playwright MCP server — don't commit this file to your repo, the workflow rewrites it on every run from the `inputs.model_functional` value)
+- "Install functional-tester subagent" copies the pipeline's static `agents/review-functional-tester.md` to `~/.claude/agents/` on the runner, templated with `inputs.model_functional` (this is what gives the functional tester its own scoped Playwright MCP server — don't commit such a file to your repo)
 - Orchestrator runs the two judges (Opus + Haiku) in parallel and (when applicable) the functional tester. The judge debate produces a single, deduped findings list — there is no separate `core` / `sweep` step.
 - Functional testing runs on **every runtime diff**, including small PRs (single-judge `light` tier gets a quick 1-scenario pass) and oversized PRs (a quick 1-scenario smoke — not a full sweep). This is why `dev-start.sh` matters even for repos that mostly ship small PRs — without it, most day-to-day reviews carry no runtime evidence and refactor PRs can't reach APPROVE (smoke gate). The tester is bounded by a wall-clock budget (`functional_budget_seconds`, default 8 min) so it always writes findings before the job's time ceiling rather than getting cancelled mid-run.
 - A heavy `dev-start.sh` (Docker images + JDK/Gradle + a large monorepo's `node_modules`) can exhaust the hosted runner's ~14 GB free disk and fail the job with `No space left on device` after the review already ran. The workflow reclaims disk before the bring-up via the `free_disk_space` input: `safe` (default) clears tooling no Linux app needs (CodeQL/Haskell/Swift, ~12 GB) and is safe for every repo; set it to `aggressive` (also drops Android SDK + .NET, ~25 GB) **only if your `dev-start.sh` doesn't build Android or .NET**; `off` disables it.
 - PRs opened by bots (renovate, dependabot) are skipped cleanly by default — green check, no review, no crash banner. To review a bot's PRs, pass `allowed_bots: <login>` (without the `[bot]` suffix) on the caller's `with:` block; for dependabot also add the OAuth token to *Dependabot secrets*. Bot-authored PRs waive the manual-spec gate.
-- For PRs with UI surface, the functional tester's Turn 1 is an MCP smoke check (`mcp__playwright__browser_navigate` to `about:blank`). If MCP is unavailable, the run hard-fails with `overall: CRASH` and the verdict gate flags it as `requires_human_review`. Silent fallback to curl/psql is forbidden — a curl-only PASS on a UI fix is the bug we're guarding against.
+- For PRs with UI surface, the functional tester's Turn 1 is an MCP smoke check (`mcp__playwright__browser_navigate` to `about:blank`). If MCP is unavailable, the run hard-fails with `overall: CRASH` and the review is flagged `requires_human_review`. Silent fallback to curl/psql is forbidden — a curl-only PASS on a UI fix is the bug we're guarding against.
 - **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
 - The workflow check is **green whenever a review posted**, even on `REQUEST_CHANGES` — the verdict lives in the PR review (use branch protection's required reviews to make it block merges). A red check means the pipeline itself failed.
 
 ## Verdict ladder (round 2)
 
-When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. Small follow-ups get a lighter (single-judge) pass scoped to what changed — large or sensitive follow-ups get the full review again, and the `deep-review` label forces the full review every round. Verdict rules:
+When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. The previous round's verdict and reviewed commit come straight from the PR's own review history (no artifacts, no extra permissions), and the round-2 pass is scoped to what changed since — that scoping is what makes follow-up rounds cheap. The review plan itself resolves fresh each round from the PR's overall shape, and the `deep-review` label still forces a full review. Verdict rules:
 
 - New `critical` or `major` finding → `REQUEST_CHANGES`.
 - Prior `REQUEST_CHANGES` blocker still present → `REQUEST_CHANGES` (keeps until you actually fix it).
@@ -489,4 +491,4 @@ When you push follow-up commits to the same PR, the bot runs a round-2 review th
 - You dismissed the prior review → the bot treats it as if you'd accepted that round and evaluates the new commits independently.
 - You replied to a finding's thread disputing it (with a reason) and didn't change the code → the finding is classified `REBUTTED`: it stops blocking and the next review lists it under "Dropped after author rebuttal" instead of silently disappearing or nagging forever.
 
-Severities matter: `critical` and `major` block; `minor` and `note` post inline but never gate APPROVE. A doc-only nit (typo, wrong package name in a paragraph) is `note` — it shows up in the review but won't hold the PR at COMMENT. If the bot grades a doc nit as `minor` or higher, that's a calibration bug worth flagging in feedback.
+Severities matter: `critical` and `major` block and are the only judge findings posted as inline comments (max 12, plus functional failures); `minor` and `note` appear as bullets in the review body and never gate APPROVE. A doc-only nit (typo, wrong package name in a paragraph) is `note` — it shows up in the review but won't hold the PR at COMMENT. If the bot grades a doc nit as `minor` or higher, that's a calibration bug worth flagging in feedback.

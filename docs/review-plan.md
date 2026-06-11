@@ -36,23 +36,18 @@ match:
 
 A `deep-review` label (see below) flips rungs 2, 3, and 5 to `full`.
 
-## Round 2: the plan follows the follow-up, not the PR
+## Round 2: same plan, scoped review
 
-Follow-up rounds are most of the fleet's volume, and a 10-line fix-up on an
-800-line PR doesn't need the full Opus + Haiku debate — round-2 judges are
-already scoped to the diff since the last review, the verdict ladder pins
-unresolved prior blockers, and the thread classifier runs regardless of judge
-count. So when prior review state exists, the plan is re-resolved against the
-**since-last diff shape** (`scripts/refine-review-plan.sh`):
-
-- Small, non-sensitive follow-up → `light` single judge + quick functional.
-- Empty since-last (same-SHA re-run) → `light`, no functional.
-- Large or sensitive-path follow-up → `full`, exactly as round 1.
-- `deep-review` label → full-PR plan, every round.
-- Escalation guard: if the PR as a whole warrants `full` and **no prior round
-  ran one** (the PR grew past the ceilings through small pushes), the round
-  escalates to the full-PR plan — a PR can never reach merge without at least
-  one full debate.
+The plan resolves **fresh each round** from the PR's overall shape — the table
+above, labels included, applies identically on every push. There is no separate
+round-2 plan refinement. What makes follow-up rounds cheap is **context
+scoping**, not a smaller plan: when a prior review exists (derived from the
+PR's own review history), the context builder scopes the diff index to the
+changes since the last reviewed commit, judges read only that, every open
+thread is classified against it, and functional scenarios are planned against
+the since-last diff (zero scenarios is a valid outcome for follow-ups with no
+user-observable surface). The verdict ladder still pins unresolved prior
+blockers regardless of how small the follow-up is.
 
 ## Labels
 

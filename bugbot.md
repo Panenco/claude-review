@@ -6,7 +6,7 @@ prompts, and config — not an application.
 
 ## What this repo ships
 
-- Bash scripts under `scripts/` (review build, verdict gate, post, dev-env setup, prompt generation).
+- Bash scripts under `scripts/` (review plan, token picker, review posting, dev-env setup, usage tooling).
 - Skill prompts under `skills/review-*.md` — read verbatim by Claude in CI.
 - Reusable workflow `.github/workflows/pr-review.yml` (`workflow_call`).
 - Composite action `action.yml` that installs skills/scripts into the consumer workspace.
@@ -19,7 +19,7 @@ prompts, and config — not an application.
 - **Readiness loops must fail fast.** Any `for i in $(seq …); do …; break; done` that probes a service must be followed by an explicit `if [ "$READY" != "true" ]; then echo ::error:: …; exit 1; fi`. Silent-success-on-timeout is the #1 bug we flag in consumer review-configs — don't ship it in our own examples or scripts.
 - **Pipeline-ref alignment is required for non-`@v2` consumers.** GitHub does not expose the called workflow's resolved ref to the called workflow itself, so `pr-review.yml` accepts `pipeline_ref` (default `'v2'`) and the install step checks out `panenco/claude-review` at that ref. Consumers pinning the workflow file at a non-default ref (a SHA, a feature branch) MUST also pass `with: pipeline_ref: <same-ref>`; otherwise the workflow runs new orchestration with old skills and the build-context agent hits max-turns. Preserve this note when editing tag/release guidance.
 - **`anthropics/claude-code-action` restores `.claude/` from `origin/main` for untrusted PR heads.** Anything we write under `.claude/skills/` in the workspace is wiped at agent-launch time. The current install pattern (export `CLAUDE_REVIEW_PIPELINE_DIR` to the action's own download path, copy scripts to `.review-scripts/` which is *not* on the restore list) exists for this reason. Don't "simplify" by moving skills into the workspace.
-- **Pipeline changes need an end-to-end thought, not just a code review.** A change to `build-review.sh`, any `skills/review-*.md`, `verdict-gate.sh`, or `pr-review.yml` can break every consumer repo on the next PR push (we ship `@v2` as a moving tag). Verdict-affecting changes especially: trace what flows into `core-meta.json` and `verdict-gate.sh` before approving.
+- **Pipeline changes need an end-to-end thought, not just a code review.** A change to `post-review.sh`, any `skills/review-*.md`, `agents/review-functional-tester.md`, or `pr-review.yml` can break every consumer repo on the next PR push (we ship `@v2` as a moving tag). Verdict-affecting changes especially: trace what flows into `/tmp/review.json` and `post-review.sh` before approving.
 
 ## Verify before flagging
 
