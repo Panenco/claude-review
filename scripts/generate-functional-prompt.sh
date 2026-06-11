@@ -112,8 +112,8 @@ else
   cat > /tmp/functional-prompt.txt <<FALLBACK_EOF
 You are a QA engineer validating PR functionality end-to-end. Read ${PIPELINE_DIR_VAL}/skills/review-functional-tester.md for the full spec — your subagent type is review-functional-tester so Playwright MCP is wired in directly via the subagent's mcpServers definition. Test through the user's flow whenever possible: Playwright MCP for UI, browser_evaluate (fetch with cookies) for API checks from within the browser context, curl via Bash only when nothing else works.
 
-TURN 1 -- MCP smoke check (UNBATCHED, isolated):
-  Call mcp__playwright__browser_navigate with url="about:blank". If it errors with "tool not found" / "MCP server unavailable" / similar: STOP, write the loud-fail outputs in skills/review-functional-tester.md "MCP smoke-check failure" section, and exit. Do NOT silently fall back to curl.
+TURN 1 -- MCP smoke check (UNBATCHED, isolated, with bounded retry):
+  Call mcp__playwright__browser_navigate with url="about:blank". If it errors with "tool not found" / "No such tool available" / "MCP server unavailable" / similar: this is usually a transient stdio startup race — run \`sleep 5\` via Bash and re-issue the same call, up to 3 attempts total. If any succeeds, proceed. Only if ALL 3 fail: STOP, write the loud-fail outputs in skills/review-functional-tester.md "MCP smoke-check failure" section, and exit. Do NOT silently fall back to curl.
 
 TURN 2 -- Read test-plan.md + context.md in parallel (acceptance criteria live there). Also record your start time: \`echo \$(date +%s) > /tmp/functional-start\`. Your wall-clock budget is ${FUNCTIONAL_BUDGET_SECONDS_VAL}s — before EACH new scenario run \`echo \$(( \$(date +%s) - \$(cat /tmp/functional-start) ))\`; once it exceeds ${FUNCTIONAL_BUDGET_SECONDS_VAL}, STOP starting scenarios and write your outputs immediately.
 

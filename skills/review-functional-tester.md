@@ -79,7 +79,7 @@ Your primary runtime bound is a **wall-clock budget** (`functional_budget_second
 
 Budget sketch (a typical 4-scenario plan):
 
-- **Turn 1: MCP smoke check.** Call `mcp__playwright__browser_navigate` with `url: "about:blank"` ALONE (no batching). This is the only turn that doesn't batch — it's deliberately isolated so MCP startup failures are unambiguous. If the call returns successfully, proceed to Turn 2. If the call errors with "tool not found", "MCP server unavailable", or any other MCP failure mode, **STOP and write the loud-fail outputs** described under "MCP smoke-check failure" below — DO NOT silently fall back to curl/psql.
+- **Turn 1: MCP smoke check (with bounded retry).** Call `mcp__playwright__browser_navigate` with `url: "about:blank"` ALONE (no batching). This is the only turn that doesn't batch — it's deliberately isolated so MCP startup failures are unambiguous. If it returns successfully, proceed to Turn 2. If it errors with "tool not found", "No such tool available", "MCP server unavailable", or any other MCP failure mode, treat it as a **possible startup race first**: run `sleep 5` via Bash, then re-issue the SAME `browser_navigate("about:blank")` call. Allow **up to 3 attempts** (≈10s of total waiting). The stdio Playwright server is spawned via `npx` when the subagent starts and occasionally isn't registered by the time the first call lands — a short wait usually clears it. If ANY attempt succeeds, proceed to Turn 2. Only when **all 3 attempts fail** do you **STOP and write the loud-fail outputs** described under "MCP smoke-check failure" below — DO NOT silently fall back to curl/psql.
 - Turn 2: Read `test-plan.md` + Read `context.md` (parallel)
 - Turn 3: Navigate to the app + authenticate (batched)
 - Turns 4–9: Scenario 1 (typical: navigate, batched snapshot+screenshot+console, interact, verify)
@@ -90,7 +90,7 @@ Budget sketch (a typical 4-scenario plan):
 
 ### MCP smoke-check failure
 
-If Turn 1's `mcp__playwright__browser_navigate about:blank` errors:
+Only after Turn 1's `mcp__playwright__browser_navigate about:blank` has failed **all 3 bounded-retry attempts** (≈10s of waiting — a transient stdio startup race usually clears within that window, so don't skip the retries):
 
 1. Write `/tmp/functional-meta.json`:
    ```json
