@@ -1179,6 +1179,7 @@ jq -n \
   --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg functional_overall "$PERSISTED_FUNCTIONAL_OVERALL" \
   --arg functional_strategy "$PERSISTED_FUNCTIONAL_STRATEGY" \
+  --arg review_level "${REVIEW_LEVEL:-full}" \
   '{
     schema_version: 1,
     prior_head_sha: $head,
@@ -1188,6 +1189,7 @@ jq -n \
     verdict: $verdict,
     functional_overall: $functional_overall,
     functional_strategy: $functional_strategy,
+    review_level: $review_level,
     reviewed_at: $ts
   }' > /tmp/review-state.json
 INHERITED_TAG=""

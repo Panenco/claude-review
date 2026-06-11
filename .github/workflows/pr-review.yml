@@ -794,6 +794,54 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Round-2 cost tiering: re-resolve the plan against the diff since the
+      # last reviewed commit (scripts/refine-review-plan.sh). Steps BEFORE
+      # this one (Playwright cache/install) gate on the full-PR plan — a
+      # superset, so a refined-off functional never misses its install.
+      # Everything AFTER (dev-env, orchestrator, builder) uses this step.
+      - name: Refine review plan (round 2)
+        id: review_plan2
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
+          PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
+          ORIG_LEVEL: ${{ steps.review_plan.outputs.review_level }}
+          ORIG_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
+          ORIG_GATE: ${{ steps.review_plan.outputs.gate }}
+          ORIG_REASON: ${{ steps.review_plan.outputs.reason }}
+          GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
+          GATE_DEEP_LABEL: ${{ inputs.gate_deep_label }}
+          GATE_SMALL_CEILING: ${{ inputs.gate_small_ceiling }}
+          GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
+          GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
+          GATE_SENSITIVE_GLOBS: ${{ inputs.gate_sensitive_globs }}
+          GATE_BASE_REF: ${{ github.base_ref }}
+          GATE_HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -uo pipefail
+          ROUND2_AVAILABLE=false
+          SINCE_FILES_TSV=""
+          PRIOR_LEVEL=""
+          if [ "$PRIOR_STATE_AVAILABLE" = "true" ] && [ -n "${PRIOR_HEAD_SHA:-}" ] \
+             && git cat-file -e "${PRIOR_HEAD_SHA}^{commit}" 2>/dev/null; then
+            ROUND2_AVAILABLE=true
+            SINCE_FILES_TSV=$(git diff --numstat "$PRIOR_HEAD_SHA"..HEAD -- 2>/dev/null \
+              | awk -F'\t' 'NF >= 3 {print $3 "\t" $1 "\t" $2}' || true)
+            PRIOR_LEVEL=$(jq -r '.review_level // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+          fi
+          GATE_LABELS=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          export ROUND2_AVAILABLE SINCE_FILES_TSV PRIOR_LEVEL GATE_LABELS
+          PLAN=$(.review-scripts/refine-review-plan.sh)
+          echo "Round-2 plan:"; echo "$PLAN" | sed 's/^/  /'
+          {
+            grep -E '^(review_level|run_functional|gate)=' <<< "$PLAN"
+            echo "reason<<__GATE_EOF__"
+            grep '^reason=' <<< "$PLAN" | cut -d= -f2-
+            echo "__GATE_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       # Extract every recognized ticket-reference pattern from the branch name,
       # PR title, and PR body into a structured candidates file. Provider-agnostic:
       # we never hardcode a tracker's host or ID format. The optional hook script
@@ -970,6 +1018,22 @@ jobs:
             : > /tmp/external-issue.md
           }
 
+      # Package-manager store cache: dev-start.sh runs the consumer's
+      # `pnpm install` from a cold store every run otherwise. Content-
+      # addressable stores make even stale restore-key hits save most of the
+      # download. Round-2 runs hit the cache saved by round 1 on this branch;
+      # first rounds hit the base-scoped cache from the warm-cache job below.
+      - name: Cache package-manager store
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan2.outputs.run_functional == 'true'
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.npm
+          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pkg-store-
+
       # Launch the consumer's dev environment in the background so it brings
       # up alongside the context-builder + Playwright MCP setup, instead of
       # blocking the analyzer fan. The wait step further down reaps the PID
@@ -980,7 +1044,7 @@ jobs:
       # owning its own dependency install. Without it, no dev-env launches
       # and the functional tester runs in skip strategy.
       - name: Pre-start dev environment (background)
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan2.outputs.run_functional == 'true'
         id: dev_env_bg
         shell: bash
         env:
@@ -1109,10 +1173,10 @@ jobs:
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
           FUNCTIONAL_MAX_TURNS: ${{ inputs.functional_max_turns }}
           # Review plan (from the resolver step) — the orchestrator honours review_level.
-          REVIEW_LEVEL: ${{ steps.review_plan.outputs.review_level }}
-          RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
-          GATE: ${{ steps.review_plan.outputs.gate }}
-          GATE_REASON: ${{ steps.review_plan.outputs.reason }}
+          REVIEW_LEVEL: ${{ steps.review_plan2.outputs.review_level }}
+          RUN_FUNCTIONAL: ${{ steps.review_plan2.outputs.run_functional }}
+          GATE: ${{ steps.review_plan2.outputs.gate }}
+          GATE_REASON: ${{ steps.review_plan2.outputs.reason }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
@@ -1146,8 +1210,11 @@ jobs:
           # Review-plan gate (from the Resolve review plan step). build-review.sh
           # waives the technical-change smoke withhold only when the plan
           # turned functional off (RUN_FUNCTIONAL != true).
-          GATE: ${{ steps.review_plan.outputs.gate }}
-          RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
+          GATE: ${{ steps.review_plan2.outputs.gate }}
+          RUN_FUNCTIONAL: ${{ steps.review_plan2.outputs.run_functional }}
+          # Persisted into review-state.json so the next round's escalation
+          # guard knows whether a full review ever ran on this PR.
+          REVIEW_LEVEL: ${{ steps.review_plan2.outputs.review_level }}
           # Bot-authored PRs (renovate/dependabot) waive the manual-spec gate.
           PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           # claude-code-action's JSONL conversation log. build-review.sh greps
@@ -1304,12 +1371,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # pull_request_target writes cache to main scope. Keep this job PR-code-free.
+  # pull_request_target writes cache to main scope. Keep this job PR-code-free:
+  # the checkout below lands on the BASE ref (pull_request_target's default
+  # sha), and `pnpm fetch` reads only the lockfile — no lifecycle scripts run.
   warm-cache:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "lts/*"
@@ -1324,3 +1394,40 @@ jobs:
       - run: |
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
           npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0
+      # Restore/save are split so a FAILED fetch never saves: the all-in-one
+      # cache action would persist an empty store under the exact lockfile
+      # key, and every later run would exact-hit the poisoned key and skip
+      # its own save until the lockfile changes.
+      - name: Restore package-manager store
+        id: store_restore
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.npm
+          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pkg-store-
+      - name: Fetch base-lockfile packages into the store
+        id: store_fetch
+        run: |
+          echo "fetched=false" >> "$GITHUB_OUTPUT"
+          if [ ! -f pnpm-lock.yaml ]; then
+            echo "No root pnpm-lock.yaml — store warm skipped."
+            exit 0
+          fi
+          corepack enable 2>/dev/null || true
+          command -v pnpm >/dev/null 2>&1 || npm install -g pnpm
+          if pnpm fetch; then
+            echo "fetched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::pnpm fetch failed — store warm is best-effort, reviews are unaffected."
+          fi
+      - name: Save package-manager store
+        if: steps.store_fetch.outputs.fetched == 'true' && steps.store_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.npm
+          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}

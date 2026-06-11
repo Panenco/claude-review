@@ -165,6 +165,8 @@ When the round-2 ladder overrides the bot's per-PR judgement (e.g. STILL_PRESENT
 
 **Crash-banner cleanup:** when a run crashes before posting a review (OAuth quota, max-turns, runner OOM), the workflow posts a single review carrying the `<!-- claude-review-crash -->` HTML marker. The next successful run finds that review and edits its body to a "_Superseded by …_" form so the misleading red banner doesn't survive every retry.
 
+**Round-2 cost follows the follow-up, not the PR.** The review plan is re-resolved against the since-last diff shape: a small fix-up commit gets a single-judge pass + quick functional instead of the full Opus + Haiku debate, while large or sensitive-path follow-ups keep the full fan. Guards: the `deep-review` label pins the full plan every round, and a PR that has never had a full round (it grew past the ceilings through small pushes) escalates back to one. See [Review plan → Round 2](docs/review-plan.md#round-2-the-plan-follows-the-follow-up-not-the-pr).
+
 If the prior state artifact is missing (retention expired, prior run failed before upload), round 2 degrades to a clean full re-review with a `::notice::` explaining why.
 
 On round 2 the test planner also rescopes the functional run: scenarios are planned against `/tmp/since-last.diff` rather than the full PR diff, and **zero scenarios is a valid outcome**. A small follow-up commit drops to `quick` (one scenario over the touched area) when since-last has user-observable surface, or `skip` (no scenarios) when since-last is comments / log strings / type-only / internal-helper / docs / config / dev-tooling — anything a user wouldn't notice. The smoke gate inherits the prior round's `functional_overall` for technical-change PRs, so a `skip` on round 2 doesn't drop APPROVE → COMMENT (inheritance kicks in only for prior PASS/WARN; a prior FAIL still blocks). Prior `critical`/`major` functional findings whose path is in since-last AND is plausibly the area being fixed get one targeted retest scenario; otherwise the resolution-checker + dedup re-evaluate them independently.
@@ -303,6 +305,7 @@ Rules:
 - Readiness loops must explicitly test the flag after the loop and `exit 1` on timeout. Silent-success loops are flagged by the reviewer.
 - Paths in `cp`/`source`/`cat` are scanned at job start; the Validate step warns if any don't exist.
 - Pin your package manager. The runner provides a default pnpm (`pnpm/action-setup` with `version: 10`) so scripts that call `pnpm` directly keep working, but it won't necessarily match your local version. For pnpm/yarn projects, set `"packageManager"` in the root `package.json` and call `corepack enable` near the top of `dev-start.sh` to activate the exact version you pinned.
+- Installs are store-cached for you. The pipeline caches the pnpm/npm store across runs (keyed on your lockfiles, warmed in main scope so new PRs hit it too), so `pnpm install --frozen-lockfile` in `dev-start.sh` mostly links from cache instead of downloading. No consumer wiring needed.
 
 If the project has nothing to start (pure-docs, lib-only), do **not** create this file. Its absence is the signal for degraded mode (core + sweep reviewers run; no functional tester). An empty-but-present `dev-start.sh` will fail the step.
 

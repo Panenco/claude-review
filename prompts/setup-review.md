@@ -479,7 +479,7 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 
 ## Verdict ladder (round 2)
 
-When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. Verdict rules:
+When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. Small follow-ups get a lighter (single-judge) pass scoped to what changed — large or sensitive follow-ups get the full review again, and the `deep-review` label forces the full review every round. Verdict rules:
 
 - New `critical` or `major` finding → `REQUEST_CHANGES`.
 - Prior `REQUEST_CHANGES` blocker still present → `REQUEST_CHANGES` (keeps until you actually fix it).
