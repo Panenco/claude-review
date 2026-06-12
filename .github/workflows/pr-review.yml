@@ -125,6 +125,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         run: |
+          date +%s > /tmp/job-start
           PROCEED=true
           case "$ACTOR" in
             *"[bot]")
@@ -566,8 +567,9 @@ jobs:
                   | grep -oE 'claude[^"]*' | sort -u | jq -R . | jq -s 'unique' 2>/dev/null)
             echo "$m" | jq -e 'type=="array"' >/dev/null 2>&1 && MODELS="$m"
           fi
-          STARTED=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at' 2>/dev/null)
-          [ -n "$STARTED" ] && s=$(date -d "$STARTED" +%s 2>/dev/null) && WALL=$(( $(date +%s) - s ))
+          if [ -f /tmp/job-start ]; then
+            s=$(cat /tmp/job-start) && WALL=$(( $(date +%s) - s ))
+          fi
           [ -f /tmp/review.json ] && jq -e 'type=="object"' /tmp/review.json >/dev/null 2>&1 && R=$(cat /tmp/review.json)
           jq -n \
             --argjson r "$R" --argjson round "$ROUND" --argjson cost "$COST" \

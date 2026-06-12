@@ -41,7 +41,9 @@ Hard rules:
 
 ## Turn discipline
 
-Target ≤30 turns: 1 env sanity (Bash) → 2 dispatch CB (Task) → 3–4 read CB outputs, trivial check → 5 dev-env poll (Bash) → 6 parallel Task fan → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → last turns: screenshot upload (Bash) + Write `/tmp/review.json`.
+Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB outputs, trivial check → 5 dev-env poll (Bash) → 6 parallel Task fan → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → last turns: screenshot upload (Bash) + Write `/tmp/review.json`.
+
+**Turn 1 (Bash):** `printenv MODEL_HIGH MODEL_STANDARD MODEL_FAST REVIEW_LEVEL RUN_FUNCTIONAL GATE GATE_REASON ROUND PRIOR_VERDICT PRIOR_HEAD_SHA PR_NUMBER FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS PR_AUTHOR_IS_BOT; echo "PIPELINE_DIR=$CLAUDE_REVIEW_PIPELINE_DIR"` — keep every value. Each `${VAR}` in this skill means that LITERAL value. Task `model:` params MUST be the exact model ID read from env (e.g. `claude-opus-4-8`) — NEVER an alias like `opus`/`sonnet`/`haiku`: aliases resolve against the CLI's bundled table and silently demote the judge to an older model.
 **STOP-and-write anchor: by turn 60, write /tmp/review.json with whatever you have.** After turn 60, finalise only decisions already drafted. Never rely on the workflow's max-turns ceiling.
 
 ## Review plan
