@@ -57,7 +57,7 @@ Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB
 One Task call: `subagent_type: "general-purpose"`, `model: "${MODEL_STANDARD}"`, prompt:
 
 ```
-Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-context-builder.md and follow it exactly. PR number: ${PR_NUMBER}. Write context.md AND test-plan.md at the repo root BEFORE running out of turns — partial output beats no output.
+Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-context-builder.md and follow it exactly. PR number: ${PR_NUMBER}. Write context.md AND test-plan.md at the repo root BEFORE running out of turns — partial output beats no output, EXCEPT on round ≥2 (PRIOR_HEAD_SHA set): context.md without `## Thread resolution` and `### Prior findings` is invalid — include both even if sparse.
 ```
 
 When it returns, Read `context.md` + `test-plan.md`. If `context.md` is missing/empty: write degraded `/tmp/review.json` — `verdict: "COMMENT"`, body banner `> :warning: **Context builder failed** — review skipped. Re-run the workflow.`, empty comments, `meta.judge_health.cb_failed: true`, empty findings. Exit without dispatching judges.
