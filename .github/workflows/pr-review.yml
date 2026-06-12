@@ -5,133 +5,94 @@ on:
     inputs:
       pr_number:
         description: "PR number (auto-detected from PR event if omitted)"
-        required: false
         type: string
       model_high:
-        description: "Deep-reasoning model — used by the Opus judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Opus tier in its Task dispatch); kept as a workflow input for forward-compatibility when the orchestrator parametrises judge models."
-        required: false
+        description: "Deep-reasoning model (Opus judge)."
         type: string
         default: "claude-opus-4-8"
       model_standard:
-        description: "Standard-tier model — used for the context builder, the orchestrator itself, the round-2 thread classifier, and the functional tester (unless overridden by model_functional)."
-        required: false
+        description: "Standard-tier model (orchestrator, context builder)."
         type: string
         default: "claude-sonnet-4-6"
       model_fast:
-        description: "Cheap-tier model — used by the Haiku judge inside the orchestrator. Currently consumed only via the orchestrator skill (which hard-codes the Haiku tier in its Task dispatch); kept as a workflow input for forward-compatibility."
-        required: false
+        description: "Cheap-tier model (Haiku judge)."
         type: string
         default: "claude-haiku-4-5"
       model_functional:
-        description: "Model for the functional tester (Playwright MCP + Bash). Defaults to Sonnet because empirical comparison on the Seaters dogfood showed Haiku regressed on severity calibration — it classified test-environment friction (no auth credentials, empty seed data) as CRITICAL/MAJOR product bugs, while Sonnet correctly noted them as observations and traced a real backend NPE bug that Haiku missed. Override to claude-haiku-4-5 if you accept that risk in exchange for ~3× wall-time speedup on the functional layer. The 19m→5.5m speedup IS real, but only worth it on PRs where the test-environment friction is minimal (well-seeded fixtures + pre-configured auth)."
-        required: false
+        description: "Model for the functional tester (Playwright MCP + Bash)."
         type: string
         default: "claude-sonnet-4-6"
       pipeline_ref:
-        description: "Ref of panenco/claude-review to install skills/scripts from. Default v2 tracks the moving release tag. Pin to a SHA or branch when testing pipeline changes against a real consumer repo."
-        required: false
+        description: "Ref of panenco/claude-review to install skills/scripts from. Pin to a SHA or branch when testing pipeline changes."
         type: string
         default: "v2"
       dev_env_timeout_seconds:
-        description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. Heavy stacks (Java + Node + Docker compose) can need 5-6 minutes on a cold runner. Default 360."
-        required: false
+        description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up."
         type: number
         default: 360
       core_max_turns:
-        description: "Legacy alias retained for consumer compatibility. Previously gated the standalone core/core-pass2 reviewers; those have been replaced by the orchestrator-driven judge debate, whose ceiling is set inside the workflow at `--max-turns 80` for the orchestrator and is otherwise governed by the prompt-side STOP-and-write anchors in review-judge.md / review-orchestrator.md. Adjusting this input has no effect today; consumer workflows that pass it continue to work without breakage."
-        required: false
+        description: "Legacy alias retained for consumer compatibility; has no effect."
         type: number
         default: 40
-      functional_max_turns:
-        description: "Turn-count backstop for the functional tester (Sonnet + Playwright MCP + Bash). The primary bound is now wall-clock (functional_budget_seconds) — against a live backend each turn is slow, so turn count is a poor proxy for runtime (seaters#687 ran ~44 min / 338 tool-uses without tripping the old turn anchors). 200 stays as generous recall headroom; the framework rarely enforces it."
-        required: false
-        type: number
-        default: 200
       functional_budget_seconds:
-        description: "Wall-clock budget for the functional tester. It records a start timestamp and hard-stops + writes its findings once elapsed exceeds this, so it can never run into the job's timeout-minutes ceiling (which would cancel the orchestrator mid-flight and post nothing). Sits well under the 45-min job ceiling, leaving margin for judges + build + post. Default 480 (8 min)."
-        required: false
+        description: "Wall-clock budget for the functional tester."
         type: number
         default: 480
       free_disk_space:
-        description: "How much runner disk to reclaim before the dev-env bring-up (only runs when a dev-start.sh launches). 'safe' (default) removes only tooling no app bring-up needs on Linux — CodeQL bundles, Haskell, Swift (~12 GB) — and never the review job's own Node/pnpm/bun. 'aggressive' also removes the Android SDK + .NET and prunes Docker images (~25 GB total); set it ONLY if your dev-start.sh doesn't build Android or .NET. 'off' disables. Prevents the heavy-dev-env ENOSPC that loses an otherwise-complete review (seaters#687)."
-        required: false
+        description: "Runner disk to reclaim before dev-env bring-up: safe (default) | aggressive | off."
         type: string
         default: "safe"
       allowed_bots:
-        description: "Comma-separated bot logins allowed to trigger the review (e.g. 'panenco-automation'), or '*' for all bots. Runs triggered by any other bot are skipped cleanly (green check, no crash banner). Empty (default) skips all bot-initiated runs."
-        required: false
+        description: "Comma-separated bot logins allowed to trigger the review, or '*' for all bots. Empty (default) skips all bot-initiated runs cleanly."
         type: string
         default: ""
       gate_skip_label:
-        description: "Label that forces review_level=skip (respects an explicit human opt-out). See docs/review-plan.md."
-        required: false
+        description: "Label that forces review_level=skip."
         type: string
         default: "skip-review"
       gate_deep_label:
-        description: "Label that forces review_level=full, overriding the promotion/oversized/small downgrades. Mirror of gate_skip_label; skip wins if both are present."
-        required: false
+        description: "Label that forces review_level=full (skip wins if both present)."
         type: string
         default: "deep-review"
       gate_small_ceiling:
-        description: "Non-generated changed lines at/under which a runtime PR is `small` (single-judge `light` review with a quick functional pass). See docs/review-plan.md."
-        required: false
+        description: "Non-generated changed lines at/under which a runtime PR is `small`."
         type: number
         default: 300
       gate_size_ceiling:
-        description: "Non-generated changed lines over which a PR is `oversized` (a lightweight single-judge pass + a quick functional smoke — too big to debate well)."
-        required: false
+        description: "Non-generated changed lines over which a PR is `oversized`."
         type: number
         default: 2500
       gate_file_ceiling:
         description: "Changed (non-generated) files over which a PR is `oversized`."
-        required: false
         type: number
         default: 60
       gate_sensitive_globs:
-        description: "Space-separated path globs that force a `full` review even when the diff is small. Setting this REPLACES the default list, so include everything you want sensitive. A bare `auth/` dir is intentionally NOT in the default — see docs/review-plan.md."
-        required: false
+        description: "Space-separated path globs that force a `full` review even when the diff is small. Setting this REPLACES the default list."
         type: string
         default: "*auth.* */oauth/* oauth.* */authentication/* authentication/* */authorization/* authorization/* */security/* security/* */payments/* payments/* */payment/* payment/* */migrations/* migrations/* */migration/* migration/*"
       gate_promotion_bases:
         description: "Space-separated base branches treated as release targets for promotion detection."
-        required: false
         type: string
         default: "main master production prod"
       gate_promotion_heads:
-        description: "Space-separated head branches treated as promotion sources (exact name or `<name>/*` prefix)."
-        required: false
+        description: "Space-separated head branches treated as promotion sources."
         type: string
         default: "staging develop dev release hotfix"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        # No longer strictly required: callers can supply CLAUDE_CODE_OAUTH_TOKENS
-        # (a newline-separated pool) instead. The picker step accepts either —
-        # at least one MUST be set, which the picker enforces with a clear error.
-        required: false
-        description: "Single Claude OAuth token (legacy/simple setup). Either this or CLAUDE_CODE_OAUTH_TOKENS is required."
+        description: "Single Claude OAuth token. Either this or CLAUDE_CODE_OAUTH_TOKENS is required."
       CLAUDE_CODE_OAUTH_TOKENS:
-        required: false
-        description: "Optional. Newline-separated pool of Claude OAuth tokens. The picker step probes each at job start (cheap Haiku call), filters to tokens whose 5-hour subscription window still allows calls, and randomly picks one. Use when a single token's 5-hour ceiling is the bottleneck — multiple Claude.ai subscriptions spread the load."
+        description: "Optional newline-separated pool of Claude OAuth tokens; the picker probes each and picks one with remaining quota."
       CLAUDE_REVIEW_APP_CLIENT_ID:
-        required: false
       CLAUDE_REVIEW_APP_PRIVATE_KEY:
-        required: false
       CLAUDE_REVIEW_APP_SLUG:
-        required: false
       TRACKER_SECRETS:
-        required: false
-        description: "Optional. Newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/fetch-issue.sh. Populated from the caller repo's secret of the same name via `secrets: inherit`."
+        description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/fetch-issue.sh."
       DEV_ENV_SECRETS:
-        required: false
-        description: "Optional. Newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/dev-start.sh (and the legacy review-config.md bash blocks + Auth eval). Populated from the caller repo's secret of the same name via `secrets: inherit`."
+        description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/dev-start.sh."
 
-# Single source of truth for the Playwright stack the review pipeline runs.
-# The functional tester drives Chromium via @playwright/mcp regardless of
-# whether the consumer repo vendors Playwright at all — these pins decouple
-# the install from consumer-lockfile churn so the browser-binary cache hits
-# every run that doesn't bump them. Bump both intentionally; check
-# @playwright/mcp's CHANGELOG for the matching `playwright` peer before
-# letting them drift apart.
+# Pinned Playwright stack, decoupled from consumer-lockfile churn so the
+# browser-binary cache hits every run that doesn't bump these.
 env:
   PLAYWRIGHT_VERSION: "1.60.0"
   PLAYWRIGHT_MCP_VERSION: "0.0.75"
@@ -142,25 +103,21 @@ jobs:
     if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # A push mid-review supersedes the in-flight run: cancel it instead of
-    # paying for two full reviews of which one is already stale. Cancelled
-    # runs post nothing (no crash banner) — the new run covers the PR.
+    # A push mid-review supersedes the in-flight run: cancel instead of
+    # paying for two reviews of which one is already stale.
     concurrency:
       group: claude-review-pr-${{ github.event.pull_request.number || inputs.pr_number }}
       cancel-in-progress: true
     permissions:
-      contents: write # write needed for uploading screenshots to review-assets branch
+      contents: write # screenshot upload to the review-assets branch
       pull-requests: write
       issues: write
-      actions: read # needed for actions/download-artifact with run-id (round-2 state)
-      packages: read # needed for fetching from private registries when the consumer repo uses them
+      packages: read
 
     steps:
-      # Bot-triggered runs that aren't allowed would otherwise burn a token
-      # probe, fail inside claude-code-action ("non-human actor"), and leave
-      # a red check + crash banner on every push of every renovate/dependabot
-      # PR. Skip the review cleanly instead: green check, one ::notice::, no
-      # banner. claude-code-action's own allowed_bots check stays as backstop.
+      # Disallowed bot actors skip cleanly: green check, one ::notice::, no
+      # crash banner — a red check on every renovate push trains people to
+      # ignore the review.
       - name: Bot-actor gate
         id: actor_gate
         shell: bash
@@ -168,6 +125,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         run: |
+          date +%s > /tmp/job-start
           PROCEED=true
           case "$ACTOR" in
             *"[bot]")
@@ -189,12 +147,9 @@ jobs:
           esac
           echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
 
+      # workflow_dispatch's github.sha is NOT the PR head — resolve via API
+      # and re-verify the head lives in this repo (fork guard for dispatch).
       - name: Resolve PR head SHA
-        # On `pull_request` events, github.event.pull_request.head.sha is set.
-        # On `workflow_dispatch`, that field is empty and we'd otherwise fall
-        # back to github.sha (the SHA of the manually-selected ref, NOT the
-        # PR head — checkout would land on the wrong code). We resolve via
-        # `gh pr view` to always get the actual PR head, regardless of trigger.
         id: pr_sha
         shell: bash
         env:
@@ -212,14 +167,6 @@ jobs:
             echo "::error::Could not resolve PR head SHA for PR #$PR_NUMBER"
             exit 1
           fi
-
-          # Fork-origin guard. The job-level `if:` catches fork PRs for the
-          # `pull_request` event, but `workflow_dispatch` short-circuits that
-          # guard (github.event.pull_request is null on dispatch, so the
-          # head.repo check never runs). Re-verify here so a maintainer
-          # dispatching against a fork-origin PR number can't trick the
-          # workflow into checking out fork-controlled code with OAuth +
-          # pull-requests:write in the environment.
           if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
             echo "::error::PR #$PR_NUMBER head is in $HEAD_REPO, not $GITHUB_REPOSITORY. Fork PRs are not supported — the PR head must be in the same repository."
             exit 1
@@ -229,31 +176,16 @@ jobs:
           echo "author_is_bot=$(jq -r '.author.is_bot // false' <<< "$PR_JSON")" >> "$GITHUB_OUTPUT"
           echo "Resolved PR #$PR_NUMBER head SHA: $SHA (origin $HEAD_REPO)"
 
+      # Full clone: round-2 needs `git diff PRIOR_HEAD...HEAD` to always be
+      # computable, so since-last scoping never degrades to a full re-review.
       - name: Checkout PR head
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ steps.pr_sha.outputs.sha }}
-          fetch-depth: 50
+          fetch-depth: 0
 
-      # Install review pipeline skills + scripts.
-      #
-      # DOGFOOD: when this repo (panenco/claude-review) is reviewing itself,
-      # install from the local checkout (`./`). PRs on this repo get reviewed
-      # by their own current branch, not by whatever was last released.
-      #
-      # DOWNSTREAM: install at `inputs.pipeline_ref` (default 'v2'). The
-      # historic mismatch was that the workflow file's ref (caller's `uses:
-      # panenco/claude-review/.github/workflows/pr-review.yml@<X>`) and the
-      # install action's ref (independent of the workflow ref) could drift —
-      # pinning the workflow to a ref different from the install ref silently
-      # installs old skills on top of new orchestration and hits max-turns.
-      # GitHub does not expose the called workflow's ref inside the reusable
-      # workflow (`github.workflow_ref` returns the OUTER caller's ref on
-      # pull_request events), so we accept it as an input. Consumers stay on
-      # `@v2` by default; pipeline-pre-release dogfooding pins the input to a
-      # SHA or branch.
-      #
-      # The two steps are mutually exclusive on `if:`; only one ever runs.
+      # DOGFOOD installs from the local checkout; DOWNSTREAM installs at
+      # pipeline_ref (a reusable workflow can't observe its own ref).
       - name: Install review pipeline (dogfood — local checkout)
         if: github.repository == 'panenco/claude-review'
         uses: ./
@@ -270,12 +202,7 @@ jobs:
         if: github.repository != 'panenco/claude-review'
         uses: ./__claude-review-pipeline
 
-      # The Claude CLI is normally installed implicitly when the
-      # `anthropics/claude-code-action` step runs (later in the job). The
-      # OAuth token picker below needs it earlier — to probe each candidate
-      # token before any review agent is launched. Re-running the official
-      # installer is idempotent: when the action subsequently fires and
-      # finds an existing binary, it leaves it in place.
+      # The token picker needs the CLI before claude-code-action installs it.
       - name: Install Claude CLI (for OAuth token picker)
         if: steps.actor_gate.outputs.proceed == 'true'
         shell: bash
@@ -287,16 +214,6 @@ jobs:
             "$HOME/.local/bin/claude" --version
           fi
 
-      # OAuth token picker. Reads CLAUDE_CODE_OAUTH_TOKENS (newline-separated
-      # pool) and/or CLAUDE_CODE_OAUTH_TOKEN (single, legacy). When a pool is
-      # supplied, probes each candidate with a Haiku 1-turn call and inspects
-      # the `rate_limit_event` line in stream-json output — picks a token
-      # whose 5-hour window still has capacity. Single-token setups skip the
-      # probe entirely (zero overhead). Writes the chosen token to
-      # $GITHUB_ENV so downstream steps see it as `env.CLAUDE_CODE_OAUTH_TOKEN`.
-      # When every candidate is exhausted, this step exits 1 with a per-token
-      # status table — surfacing the diagnosis up-front instead of letting
-      # the context-builder hit rate_limit on its first call.
       - name: Pick Claude OAuth token
         id: token_picker
         if: steps.actor_gate.outputs.proceed == 'true'
@@ -306,88 +223,6 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKENS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKENS }}
         run: .review-scripts/pick-oauth-token.sh
 
-      # Validate review-config.md sections (warn on missing recommended sections)
-      # and sanity-check that file paths it references actually exist in the repo.
-      # Catching these at validate-time produces a clean, actionable error
-      # instead of letting the functional tester discover the mismatch mid-run.
-      - name: Validate review config
-        shell: bash
-        run: |
-          DEV_SCRIPT=".github/claude-review/dev-start.sh"
-          CONFIG=".github/review-config.md"
-
-          # dev-start.sh is the first-class contract for bringing up the
-          # dev env. review-config.md is the second-class (docs + prose)
-          # contract for describing the project. Either alone works; both
-          # is ideal.
-          if [ -f "$DEV_SCRIPT" ]; then
-            echo "$DEV_SCRIPT found — first-class dev-start contract in use"
-            if [ ! -x "$DEV_SCRIPT" ]; then
-              echo "::notice::$DEV_SCRIPT is not executable — the pipeline runs it via \`bash\`, so this is not fatal, but \`chmod +x\` is conventional"
-            fi
-          else
-            echo "::notice::No $DEV_SCRIPT — see claude-review README → 'dev-start.sh contract' for the recommended setup. Falling back to legacy bash-in-review-config.md extraction if present."
-          fi
-
-          if [ ! -f "$CONFIG" ]; then
-            echo "::warning::No $CONFIG found — reviewers will rely on diff + issue only. Add one for better results."
-            exit 0
-          fi
-
-          SECTIONS=0
-          grep -q '^## Build preparation' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Build preparation' section"
-          grep -q '^## Convention files' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Convention files' section"
-          grep -q '^## Stack-specific review focus' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Stack-specific review focus' section"
-          grep -q '^## Functional validation' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::notice::$CONFIG missing '## Functional validation' — prose describing what to exercise"
-          grep -q '^### Auth' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::warning::$CONFIG missing '### Auth' — functional testing will be unauthenticated"
-          grep -q '^### Known service ports' "$CONFIG" && SECTIONS=$((SECTIONS+1)) || echo "::warning::$CONFIG missing '### Known service ports' — the pipeline won't know which URL to probe"
-          echo "$CONFIG: $SECTIONS/6 recommended sections present"
-
-          # Lint referenced file paths: scan for `cp SOURCE DEST` / `source FILE`
-          # / `cat FILE` commands in both review-config.md and dev-start.sh.
-          # Catches the "points at a file that doesn't exist" class of bug
-          # without needing to parse shell.
-          #
-          # The path filter requires the captured token to contain `/` or
-          # `.` (with at least one character on either side). Without that
-          # guard, English prose like "cat is the file" / "the source tree"
-          # / "via the cp command" matches the regex's second word and
-          # produces false positives — observed in seaters' review-config
-          # which uses these words in markdown explanatory paragraphs. A
-          # genuine file path almost always carries a slash or extension
-          # dot, so the filter is a high-recall heuristic for the bug
-          # class this lint targets.
-          SCAN_FILES=""
-          [ -f "$CONFIG" ] && SCAN_FILES="$CONFIG"
-          [ -f "$DEV_SCRIPT" ] && SCAN_FILES="$SCAN_FILES $DEV_SCRIPT"
-          REFERENCED_PATHS=$(grep -hoE '(cp|source|cat) +[A-Za-z0-9._/-]+' $SCAN_FILES 2>/dev/null | \
-            awk '{print $2}' | \
-            grep -E '/|.\..' | \
-            sort -u || true)
-          MISSING_PATHS=""
-          while IFS= read -r p; do
-            [ -z "$p" ] && continue
-            # Skip destinations and locally-generated files:
-            # - Dotfiles that a sample cp typically CREATES (.env, .env.dev,
-            #   .env.prd, .env.local) — but keep .env.example/.env.sample,
-            #   which are sources that SHOULD exist.
-            # - Lock/log files that are build artefacts.
-            # - Variable placeholders written into example snippets.
-            case "$p" in
-              .env|.env.dev|.env.prd|.env.local|.env.production|.env.development|.env.test) continue ;;
-              *.lock|*.log) continue ;;
-              \$*|*\$*) continue ;;
-            esac
-            if [ ! -e "$p" ]; then
-              MISSING_PATHS="$MISSING_PATHS\n  - $p"
-            fi
-          done <<< "$REFERENCED_PATHS"
-          if [ -n "$MISSING_PATHS" ]; then
-            printf "::warning::Scanned files reference paths that don't exist in the repo. The functional tester/dev-start script will hit these as errors mid-run:%b\n" "$MISSING_PATHS"
-            echo "::warning::Fix the paths in $SCAN_FILES or add the missing files."
-          fi
-
-      # Skip dependency install for pure documentation PRs.
       - name: Detect code changes
         id: code_check
         shell: bash
@@ -406,18 +241,14 @@ jobs:
             echo "Pure docs PR — skipping build setup."
           fi
 
-      # Deterministic review-plan resolver (scripts/review-plan.sh). Classifies the
-      # PR from its changed files + branch refs + labels into a plan — review_level
-      # (full|light|skip) + run_functional — BEFORE any agent runs. Drives the
-      # functional-setup gating below and is passed to the orchestrator. Runs on
-      # every PR (incl docs). Pure/deterministic; unit-tested in tests/review_plan_test.sh.
+      # Deterministic resolver: review_level (full|light|skip) + run_functional
+      # before any agent runs. Unit-tested in tests/review_plan_test.sh.
       - name: Resolve review plan
         id: review_plan
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          # Tuning knobs — the resolver reads these; defaults match scripts/review-plan.sh.
           GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
           GATE_DEEP_LABEL: ${{ inputs.gate_deep_label }}
           GATE_SMALL_CEILING: ${{ inputs.gate_small_ceiling }}
@@ -437,9 +268,6 @@ jobs:
           export GATE_FILES_TSV GATE_BASE_REF GATE_HEAD_REF GATE_LABELS
           PLAN=$(.review-scripts/review-plan.sh)
           echo "Review plan:"; echo "$PLAN" | sed 's/^/  /'
-          # Forward to step outputs. review_level/run_functional/gate are simple
-          # tokens; reason is free text → emit via heredoc so spaces/special chars
-          # can't break the KEY=value file.
           {
             grep -E '^(review_level|run_functional|gate)=' <<< "$PLAN"
             echo "reason<<__GATE_EOF__"
@@ -447,15 +275,6 @@ jobs:
             echo "__GATE_EOF__"
           } >> "$GITHUB_OUTPUT"
 
-      # Node is installed at the default LTS so npx-based tooling (Playwright
-      # install + @playwright/mcp pre-warm below) just works. The review
-      # pipeline does NOT install the consumer's dependencies — build / lint
-      # / typecheck verification was deterministic in earlier versions but
-      # has been dropped in favour of: (a) consumer-side CI, which already
-      # runs the same checks on every PR, and (b) the functional tester,
-      # which exercises the running app via dev-start.sh + Playwright MCP.
-      # Anything compile-shaped that the agent still wants to check is one
-      # Bash call away from the orchestrator.
       - name: Set up Node
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true'
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
@@ -475,17 +294,6 @@ jobs:
             echo "pnpm via npm: $(pnpm --version)"
           fi
 
-      # Cache the Playwright stack the review pipeline drives independently
-      # of the consumer repo: Chromium binaries (~/.cache/ms-playwright) plus
-      # the npx tarball cache that holds the @playwright/mcp package the
-      # functional-tester subagent spawns over stdio. Keyed on the
-      # workflow-level pins, so the cache only invalidates when we
-      # deliberately bump those env vars — consumer-lockfile churn no longer
-      # touches it. The Chromium binary check inside `playwright install` and
-      # npx's tarball lookup both short-circuit on cache hit; only apt
-      # (--with-deps) still runs each time (~10-30s on ubuntu-latest, since
-      # most chromium libs are preinstalled there). mkdir for /tmp/screenshots
-      # mirrors the path the subagent's mcpServers config writes to.
       - name: Cache Playwright assets
         id: pw_cache
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
@@ -502,25 +310,11 @@ jobs:
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         shell: bash
         run: |
-          # set -uo pipefail (no explicit -e) per .github/review-config.md +
-          # bugbot.md — GitHub Actions' `shell: bash` already adds -eo
-          # pipefail at invocation, so the chromium install below still
-          # halts the step on failure, which is what we want for a critical
-          # binary the functional tester depends on.
           set -uo pipefail
           mkdir -p /tmp/screenshots
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
-          # Pre-fetch @playwright/mcp into the npx cache so the subagent's
-          # stdio spawn doesn't pay a cold install on its first MCP call.
-          # `node -e 'process.exit(0)'` cleanly exits the package without
-          # invoking the MCP server (whose --version handling is inconsistent
-          # across releases when stdin is closed).
-          #
-          # Non-fatal: a registry hiccup or yanked MCP version only costs
-          # a one-time ~10-20s cold install when the subagent first calls
-          # an MCP tool. Surfacing as ::warning:: keeps the review running
-          # rather than failing the whole job for a cache miss — mirrors
-          # the old standalone Pre-warm step's graceful behaviour.
+          # Pre-warm @playwright/mcp so the subagent's stdio spawn doesn't pay
+          # a cold install. Non-fatal: a miss only costs ~10-20s at first call.
           if npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 'process.exit(0)' >/dev/null 2>&1; then
             echo "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} tarball cached for the subagent's spawn path."
           else
@@ -528,10 +322,8 @@ jobs:
           fi
           echo "Playwright ${PLAYWRIGHT_VERSION} + @playwright/mcp ${PLAYWRIGHT_MCP_VERSION} ready"
 
-      # Optional: GitHub App token for a custom review identity.
-      # Requires all three secrets: APP_CLIENT_ID + APP_PRIVATE_KEY + APP_SLUG.
-      # APP_SLUG is needed because installation tokens can't query /user.
-      # Without these, falls back to GITHUB_TOKEN (github-actions[bot]).
+      # Optional GitHub App review identity; falls back to github-actions[bot].
+      # APP_SLUG is required because installation tokens can't query /user.
       - name: Generate review token
         id: review_token
         shell: bash
@@ -542,9 +334,7 @@ jobs:
           if [ -n "$APP_CLIENT_ID" ]; then
             if [ -z "$APP_SLUG" ]; then
               echo "::error::CLAUDE_REVIEW_APP_CLIENT_ID is set but CLAUDE_REVIEW_APP_SLUG is not."
-              echo "::error::APP_SLUG is required to identify the bot user for review dismissal."
-              echo "::error::Find your app slug in the App's settings URL (github.com/apps/<slug>)"
-              echo "::error::and add it as a repo secret named CLAUDE_REVIEW_APP_SLUG."
+              echo "::error::Find your app slug in the App's settings URL (github.com/apps/<slug>) and add it as a repo secret named CLAUDE_REVIEW_APP_SLUG."
               exit 1
             fi
             echo "has_app=true" >> "$GITHUB_OUTPUT"
@@ -570,7 +360,6 @@ jobs:
           FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "$HAS_APP" = "true" ] && [ -n "$APP_TOKEN" ]; then
-            # GitHub Apps post comments authored as "<app-slug>[bot]".
             BOT_USER="${APP_SLUG}[bot]"
             echo "token=$APP_TOKEN" >> "$GITHUB_OUTPUT"
           else
@@ -580,464 +369,50 @@ jobs:
           echo "bot_user=$BOT_USER" >> "$GITHUB_OUTPUT"
           echo "Review identity: $BOT_USER"
 
-      # Round-1 vs round-2 detection happens via the prior-state-artifact
-      # lookup downstream (the "Find prior review run" step). When that
-      # step finds a prior review-state artifact for THIS PR + workflow,
-      # the analyzer enters round-2 mode; otherwise round-1 (full fan).
-      # The earlier "Detect first review" step that paginated /reviews
-      # and /comments to derive IS_FIRST_REVIEW was removed: its output
-      # had no remaining consumer after PRIOR_STATE_AVAILABLE replaced
-      # the gate (cursor finding 3159797328).
-
-      # ── Review pipeline ─────────────────────────────────────────
-      # Stage 1: Orchestrator (single claude-code-action run, Sonnet) —
-      #          Task-dispatches the context builder, the two debating
-      #          judges (Opus + Haiku), the round-2 thread classifier,
-      #          and the functional tester. Reconciles judges via debate.
-      #          Writes /tmp/all-findings.json + /tmp/review-meta.json.
-      # Stage 2: Build + Post (Bash) — formats the orchestrator's output
-      #          into the GitHub PR review (deterministic, no LLM).
-      #
-      # All parallelism happens inside the orchestrator via the Task tool.
-      # No background `claude -p` processes, no sibling stdout files.
-
-      # Deterministic PRD detection — runs BEFORE the context-builder agent so
-      # the result is available as a file the agent just reads (no bash interpretation).
-      - name: Detect linked PRD
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-        run: |
-          set -euo pipefail
-          PR_TITLE=$(gh pr view "$PR_NUMBER" --json title --jq '.title' | tr '[:upper:]' '[:lower:]')
-          PR_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')
-          ISSUE_BODY=""
-          ISSUE_NUM=$(gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0]?.number // empty')
-          [ -n "$ISSUE_NUM" ] && ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body // ""' 2>/dev/null || true)
-
-          PRD_FILES=""
-          # 1. Explicit path references in PR/issue body
-          for body in "$PR_BODY" "$ISSUE_BODY"; do
-            MATCHES=$(echo "$body" | grep -oE 'docs/prds/[a-z0-9_-]+\.md' || true)
-            PRD_FILES="$PRD_FILES $MATCHES"
-          done
-          # 2. Infer from PR title keywords
-          PRD_FILES=$(echo "$PRD_FILES" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
-          if [ -z "$PRD_FILES" ] && [ -d docs/prds ]; then
-            for prd in docs/prds/*.md; do
-              BASENAME=$(basename "$prd" .md | sed 's/-prd$//')
-              for word in $(echo "$BASENAME" | tr '-' '\n'); do
-                [ ${#word} -lt 4 ] && continue
-                # Strip trailing 's' for basic stem matching (e.g. "users" → "user")
-                STEM=$(echo "$word" | sed 's/s$//')
-                if echo "$PR_TITLE" | grep -qi "$STEM" 2>/dev/null; then
-                  PRD_FILES="$prd"
-                  break 2
-                fi
-              done
-            done
-          fi
-
-          if [ -n "$PRD_FILES" ]; then
-            echo "PRD detected: $PRD_FILES"
-            echo "$PRD_FILES" > /tmp/prd-files.txt
-            # Pre-concat PRD content so the agent just reads one file
-            echo "# Linked PRD content (auto-detected from PR title)" > /tmp/prd-content.md
-            echo "" >> /tmp/prd-content.md
-            for pf in $PRD_FILES; do
-              echo "## Source: $pf" >> /tmp/prd-content.md
-              cat "$pf" >> /tmp/prd-content.md 2>/dev/null || true
-              echo "" >> /tmp/prd-content.md
-            done
-            echo "PRD content: $(wc -l < /tmp/prd-content.md) lines"
-          else
-            echo "No PRD detected for: $PR_TITLE"
-            # Truncate with `: >` rather than `echo "" >` — the latter writes
-            # a newline (1 byte), which the downstream `[ -s prd-content.md ]`
-            # guard on the spec-compliance launch treats as non-empty content
-            # and fires the spec reviewer against an empty PRD.
-            : > /tmp/prd-files.txt
-            : > /tmp/prd-content.md
-          fi
-
-      # ── Round-2 follow-up review: state read ─────────────────────
-      # On a follow-up review (IS_FIRST_REVIEW=false), look up the most
-      # recent successful review run on this branch and download its state
-      # artifact. The artifact contains the prior review's deduped findings
-      # and the SHA we reviewed against; the round-2 fan reads both.
-      #
-      # Permissions: actions/download-artifact@v6 with run-id requires
-      # `actions: read` (added at the job level above).
-      #
-      # Fail-closed: when the artifact is missing despite IS_FIRST_REVIEW=false
-      # (prior run failed before upload, or retention expired), the round-2
-      # steps gate on the file's presence and degrade to a full re-review
-      # with a ::notice:: explaining why.
-      # Look for a prior run that uploaded the round-state artifact. The
-      # artifact is what makes round-2 possible — not whether a bot review
-      # was posted. So we search for any prior run on this branch that has
-      # a `claude-review-state-pr-N` artifact (uploaded on `claude_run.outcome
-      # == success`, regardless of the rest of the run's outcome) and use
-      # the most recent. If a prior run was cancelled mid-flight or its
-      # post-step failed, we still get the last good state.
-      #
-      # Round-2 fires on ANY 2nd-or-later run with a state artifact —
-      # e.g. when the bot review couldn't be posted (auth glitch) but the
-      # analyzer did finish and uploaded state. The verdict gate still
-      # protects against bad state via the artifact's schema check.
-      - name: Find prior review run
-        id: prior_run
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # `github.head_ref` is only populated on `pull_request` events;
-          # on `workflow_dispatch` it's empty, which previously blew the
-          # prior-run lookup (`branch=` matched nothing → falsely
-          # reported "round 1", pass-2 redundancy ran, resolution-checker
-          # didn't). Falls through to a `gh pr view` lookup below when
-          # this is empty.
-          BRANCH: ${{ github.head_ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          REPO: ${{ github.repository }}
-          # Filter the runs list to THIS workflow only. The /actions/runs
-          # endpoint has no `workflow_id` query param, so we filter
-          # client-side on `.name` (workflow display name). Without this,
-          # repos with multiple workflows on the same branch can match a
-          # state artifact uploaded by an unrelated workflow.
-          WORKFLOW_NAME: ${{ github.workflow }}
-        run: |
-          set -uo pipefail
-          ARTIFACT_NAME="claude-review-state-pr-${PR_NUMBER}"
-          # Derive BRANCH from the PR when the event didn't give us one
-          # (workflow_dispatch path). Without this we'd hit
-          # `?branch=&per_page=30` which the API treats as "no filter"
-          # and returns runs from EVERY branch — wrong artifact match.
-          if [ -z "${BRANCH:-}" ] && [ -n "${PR_NUMBER:-}" ]; then
-            BRANCH=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.ref' 2>/dev/null || echo "")
-            [ -n "$BRANCH" ] && echo "Derived BRANCH=$BRANCH from PR #${PR_NUMBER} (workflow_dispatch path)"
-          fi
-          if [ -z "${BRANCH:-}" ]; then
-            echo "::warning::BRANCH could not be resolved (event=${GITHUB_EVENT_NAME:-?}, PR=${PR_NUMBER}). Falling back to first-review (round 1)."
-            echo "run_id=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # List the 30 most recent runs on this branch (this workflow
-          # only), then find the most recent whose artifacts include the
-          # per-PR state artifact. NO --paginate: GitHub returns runs in
-          # reverse-chronological order, so the first page is the newest.
-          # Paginating would walk every run on a busy branch and trigger
-          # one artifact API call per run found.
-          RUN_IDS=$(gh api "repos/${REPO}/actions/runs?branch=${BRANCH}&per_page=30" \
-            --jq '.workflow_runs[] | select(.name == env.WORKFLOW_NAME) | .id' 2>/dev/null || echo "")
-
-          RUN_ID=""
-          for id in $RUN_IDS; do
-            # `|| true` on head: GitHub Actions runs `bash -eo pipefail`,
-            # so a SIGPIPE on the producer (when artifacts list is large)
-            # would abort the step. We only want the first match.
-            HAS=$(gh api "repos/${REPO}/actions/runs/${id}/artifacts" \
-              --jq ".artifacts[] | select(.name==\"${ARTIFACT_NAME}\") | .id" \
-              2>/dev/null | head -1 || true)
-            if [ -n "$HAS" ]; then
-              RUN_ID="$id"
-              break
-            fi
-          done
-          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
-          if [ -z "$RUN_ID" ]; then
-            echo "No prior review-state artifact found for PR #${PR_NUMBER} on branch ${BRANCH} — round 1 (full review)."
-          else
-            echo "Prior review-state artifact: run_id=${RUN_ID} → round 2 (focused on diff-since-last)."
-          fi
-
-      - name: Download prior review state
-        if: steps.prior_run.outputs.run_id != ''
-        continue-on-error: true
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: claude-review-state-pr-${{ github.event.pull_request.number || inputs.pr_number }}
-          path: /tmp/prior-state
-          run-id: ${{ steps.prior_run.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Resolve prior review state
-        if: steps.prior_run.outputs.run_id != ''
+      # GitHub is the state store: prior verdict + reviewed SHA come straight
+      # from the PR's review list. No cross-run artifacts.
+      - name: Derive prior review state
         id: prior_state
-        shell: bash
-        env:
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -uo pipefail
-          if [ -f /tmp/prior-state/review-state.json ]; then
-            PRIOR_HEAD_SHA=$(jq -r '.prior_head_sha // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
-            if [ -n "$PRIOR_HEAD_SHA" ]; then
-              # Dismissal awareness: when post-review.sh recorded the
-              # prior review's REST id, fetch its current GitHub state.
-              # If the author dismissed it, downgrade the prior verdict
-              # to APPROVE so the round-2 ladder doesn't keep enforcing
-              # findings the author has explicitly rejected. The dismissal
-              # signal is the strongest one a human gives us; previous
-              # behaviour ignored it entirely.
-              PRIOR_REVIEW_ID=$(jq -r '.review_id // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
-              if [ -n "$PRIOR_REVIEW_ID" ]; then
-                PRIOR_REVIEW_STATE=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${PRIOR_REVIEW_ID}" --jq '.state' 2>/dev/null || echo "")
-                if [ "$PRIOR_REVIEW_STATE" = "DISMISSED" ]; then
-                  echo "::notice::Prior review #${PRIOR_REVIEW_ID} was dismissed by the author — treating prior verdict as APPROVE for ladder purposes."
-                  jq '.verdict = "APPROVE" | .dismissed_by_author = true' /tmp/prior-state/review-state.json > /tmp/r.json && mv /tmp/r.json /tmp/prior-state/review-state.json
-                fi
-              fi
-              # Use the has()-guarded read here too — `// false` would
-              # silently swap an explicit `false` for the default; the
-              # actual round-state file uses the same guarded pattern at
-              # build-review.sh:185 so the values stay in sync.
-              echo "Prior state loaded: head=$PRIOR_HEAD_SHA, findings=$(jq '.findings | length' /tmp/prior-state/review-state.json), verdict=$(jq -r '.verdict' /tmp/prior-state/review-state.json), dismissed=$(jq -r 'if (type == "object" and has("dismissed_by_author")) then .dismissed_by_author else false end' /tmp/prior-state/review-state.json)"
-              echo "prior_head_sha=$PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
-              echo "available=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "::notice::Prior state file present but missing prior_head_sha — degrading to full re-review."
-              echo "available=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "::notice::Prior run identified but no state artifact downloaded — degrading to full re-review. Likely cause: download step failed or retention expired."
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Round-2 cost tiering: re-resolve the plan against the diff since the
-      # last reviewed commit (scripts/refine-review-plan.sh). Steps BEFORE
-      # this one (Playwright cache/install) gate on the full-PR plan — a
-      # superset, so a refined-off functional never misses its install.
-      # Everything AFTER (dev-env, orchestrator, builder) uses this step.
-      - name: Refine review plan (round 2)
-        id: review_plan2
+        if: steps.actor_gate.outputs.proceed == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
-          PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
-          ORIG_LEVEL: ${{ steps.review_plan.outputs.review_level }}
-          ORIG_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
-          ORIG_GATE: ${{ steps.review_plan.outputs.gate }}
-          ORIG_REASON: ${{ steps.review_plan.outputs.reason }}
-          GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
-          GATE_DEEP_LABEL: ${{ inputs.gate_deep_label }}
-          GATE_SMALL_CEILING: ${{ inputs.gate_small_ceiling }}
-          GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
-          GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
-          GATE_SENSITIVE_GLOBS: ${{ inputs.gate_sensitive_globs }}
-          GATE_BASE_REF: ${{ github.base_ref }}
-          GATE_HEAD_REF: ${{ github.head_ref }}
+          REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
         run: |
           set -uo pipefail
-          ROUND2_AVAILABLE=false
-          SINCE_FILES_TSV=""
-          PRIOR_LEVEL=""
-          if [ "$PRIOR_STATE_AVAILABLE" = "true" ] && [ -n "${PRIOR_HEAD_SHA:-}" ] \
-             && git cat-file -e "${PRIOR_HEAD_SHA}^{commit}" 2>/dev/null; then
-            ROUND2_AVAILABLE=true
-            SINCE_FILES_TSV=$(git diff --numstat "$PRIOR_HEAD_SHA"..HEAD -- 2>/dev/null \
-              | awk -F'\t' 'NF >= 3 {print $3 "\t" $1 "\t" $2}' || true)
-            PRIOR_LEVEL=$(jq -r '.review_level // empty' /tmp/prior-state/review-state.json 2>/dev/null || echo "")
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null \
+            | jq -s --arg bot "$REVIEW_BOT_USER" '
+                (add // [])
+                | [.[] | select(
+                    .user.login == $bot
+                    and ((.body // "") | length > 0)
+                    and ((.body | contains("<!-- claude-review-crash -->")) | not)
+                    and ((.body | contains("<!-- claude-review-superseded -->")) | not)
+                  )]' > /tmp/prior-reviews.json 2>/dev/null || echo '[]' > /tmp/prior-reviews.json
+          jq -e 'type == "array"' /tmp/prior-reviews.json >/dev/null 2>&1 || echo '[]' > /tmp/prior-reviews.json
+          COUNT=$(jq 'length' /tmp/prior-reviews.json)
+          PRIOR_SHA=$(jq -r 'sort_by(.submitted_at) | last | .commit_id // empty' /tmp/prior-reviews.json)
+          PRIOR_STATE=$(jq -r 'sort_by(.submitted_at) | last | .state // empty' /tmp/prior-reviews.json)
+          case "$PRIOR_STATE" in
+            APPROVED) PRIOR_VERDICT=APPROVE ;;
+            CHANGES_REQUESTED) PRIOR_VERDICT=REQUEST_CHANGES ;;
+            COMMENTED) PRIOR_VERDICT=COMMENT ;;
+            DISMISSED) PRIOR_VERDICT=APPROVE ;; # author opt-out — never re-enforce
+            *) PRIOR_VERDICT="" ;;
+          esac
+          ROUND=$((COUNT + 1))
+          if [ -z "$PRIOR_SHA" ] || ! git cat-file -e "${PRIOR_SHA}^{commit}" 2>/dev/null; then
+            ROUND=1; PRIOR_SHA=""; PRIOR_VERDICT=""
           fi
-          GATE_LABELS=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
-          export ROUND2_AVAILABLE SINCE_FILES_TSV PRIOR_LEVEL GATE_LABELS
-          PLAN=$(.review-scripts/refine-review-plan.sh)
-          echo "Round-2 plan:"; echo "$PLAN" | sed 's/^/  /'
-          {
-            grep -E '^(review_level|run_functional|gate)=' <<< "$PLAN"
-            echo "reason<<__GATE_EOF__"
-            grep '^reason=' <<< "$PLAN" | cut -d= -f2-
-            echo "__GATE_EOF__"
-          } >> "$GITHUB_OUTPUT"
+          printf 'prior_head_sha=%s\nprior_verdict=%s\nround=%s\n' "$PRIOR_SHA" "$PRIOR_VERDICT" "$ROUND" >> "$GITHUB_OUTPUT"
+          echo "Round $ROUND (prior verdict: ${PRIOR_VERDICT:-none}, prior head: ${PRIOR_SHA:-none})"
 
-      # Extract every recognized ticket-reference pattern from the branch name,
-      # PR title, and PR body into a structured candidates file. Provider-agnostic:
-      # we never hardcode a tracker's host or ID format. The optional hook script
-      # (next step) reads this file and decides which signal matches its tracker.
-      # Runs unconditionally — the file is always present and well-formed even when
-      # nothing matches, so downstream readers don't need a guard.
-      - name: Extract external-issue candidates
-        shell: bash
-        env:
-          # PR metadata flows through env vars (never inlined into run: via ${{ }})
-          # to avoid command injection from a maliciously-crafted PR body/title/branch.
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          set -uo pipefail
-          # Pre-create /tmp/external-issue.md as empty so the context-builder skill's
-          # "ALWAYS read" invariant holds for pure-GitHub consumers (no hook script).
-          # The hook step below overwrites this on opt-in; otherwise it stays empty
-          # and Turn 6-7 omits the "Linked external issue" section.
-          : > /tmp/external-issue.md
-
-          python3 <<'PY'
-          import json, os, re
-
-          pr_title = os.environ.get('PR_TITLE') or ''
-          pr_body = os.environ.get('PR_BODY') or ''
-          head_ref = os.environ.get('HEAD_REF') or ''
-
-          TICKET_RE = re.compile(r'\b[A-Z][A-Z0-9]+-\d+\b')
-          URL_RE = re.compile(r'https?://[^\s)\]>]+')
-          URL_WITH_HOST_RE = re.compile(r'https?://([^/\s)\]>]+)')
-          # Lines like "Key: value" — we filter to values that contain a URL or
-          # ticket ID, otherwise every "Status: WIP" line becomes a marker.
-          LINE_MARKER_RE = re.compile(
-              r'^\s*([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.+?)\s*$',
-              re.MULTILINE,
-          )
-          # Closing-keyword style: "Fixes LIN-123", "Closes https://..."
-          CLOSING_RE = re.compile(
-              r'\b(fixes?|closes?|resolves?|implements?|refs?|tracks?)\s+'
-              r'(https?://\S+|[A-Z][A-Z0-9]+-\d+)',
-              re.IGNORECASE,
-          )
-
-          def strip_trailing_punct(s):
-              return s.rstrip('.,;:!?')
-
-          explicit_markers = []
-          closing_keywords = []
-          urls = []
-          ids = []
-
-          # Tier 1: explicit markers in PR body.
-          for key, value in LINE_MARKER_RE.findall(pr_body):
-              if URL_RE.search(value) or TICKET_RE.search(value):
-                  explicit_markers.append({
-                      'key': key,
-                      'value': value.strip(),
-                      'source': 'pr_body_line',
-                  })
-
-          # Tier 2: closing-keyword matches in PR body.
-          seen_closing = set()
-          for keyword, target in CLOSING_RE.findall(pr_body):
-              target = strip_trailing_punct(target)
-              sig = (keyword.lower(), target)
-              if sig in seen_closing:
-                  continue
-              seen_closing.add(sig)
-              closing_keywords.append({
-                  'keyword': keyword,
-                  'target': target,
-                  'source': 'pr_body',
-              })
-
-          # Tier 3: URLs in PR body, host exposed.
-          seen_urls = set()
-          for url in URL_RE.findall(pr_body):
-              url = strip_trailing_punct(url)
-              if url in seen_urls:
-                  continue
-              seen_urls.add(url)
-              m = URL_WITH_HOST_RE.match(url)
-              host = m.group(1) if m else ''
-              urls.append({'url': url, 'host': host, 'source': 'pr_body'})
-
-          # Tier 4: branch-name ticket tokens.
-          branch_seen = set()
-          for m in TICKET_RE.finditer(head_ref):
-              tok = m.group(0)
-              if tok in branch_seen:
-                  continue
-              branch_seen.add(tok)
-              ids.append({'id': tok, 'source': 'branch_name'})
-
-          # Tier 5: PR-body ticket tokens (dedup per-source).
-          body_seen = set()
-          for m in TICKET_RE.finditer(pr_body):
-              tok = m.group(0)
-              if tok in body_seen:
-                  continue
-              body_seen.add(tok)
-              ids.append({'id': tok, 'source': 'pr_body'})
-
-          # PR-title ticket tokens (dedup per-source). Titles often carry a
-          # `[LIN-123]` prefix; catching them here means a ticket mentioned only
-          # in the title still surfaces even if the branch naming convention
-          # isn't followed.
-          title_seen = set()
-          for m in TICKET_RE.finditer(pr_title):
-              tok = m.group(0)
-              if tok in title_seen:
-                  continue
-              title_seen.add(tok)
-              ids.append({'id': tok, 'source': 'pr_title'})
-
-          out = {
-              'explicit_markers': explicit_markers,
-              'closing_keywords': closing_keywords,
-              'urls': urls,
-              'ids': ids,
-          }
-          with open('/tmp/external-issue-candidates.json', 'w') as f:
-              json.dump(out, f, indent=2)
-
-          branch_ids = sum(1 for i in ids if i['source'] == 'branch_name')
-          body_ids = sum(1 for i in ids if i['source'] == 'pr_body')
-          title_ids = sum(1 for i in ids if i['source'] == 'pr_title')
-          print(
-              f"External-issue candidates: {len(explicit_markers)} markers, "
-              f"{len(closing_keywords)} keywords, {len(urls)} urls, "
-              f"{branch_ids} branch-ids, {body_ids} body-ids, {title_ids} title-ids"
-          )
-          PY
-
-      # Optional hook: if the consumer repo has a fetch-issue.sh script, run it
-      # with PR metadata + candidates-file path + TRACKER_SECRETS-derived env
-      # vars. Stdout is inlined into context.md as the external-spec section.
-      # Soft-fails — a bad credential or tracker outage must not block reviews.
-      # GH_TOKEN is deliberately NOT forwarded; consumers who need authenticated
-      # GitHub calls put their own PAT in TRACKER_SECRETS.
-      - name: Fetch external linked issue (optional hook)
-        if: hashFiles('.github/claude-review/fetch-issue.sh') != ''
-        continue-on-error: true
-        shell: bash
-        env:
-          # Untrusted PR inputs flow through env only (never ${{ }} in run:).
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          HEAD_REF: ${{ github.head_ref }}
-          BASE_REF: ${{ github.base_ref }}
-          REPO: ${{ github.repository }}
-          ISSUE_CANDIDATES_FILE: /tmp/external-issue-candidates.json
-          TRACKER_SECRETS: ${{ secrets.TRACKER_SECRETS }}
-        run: |
-          set -uo pipefail
-          # Expose each KEY=VALUE line of TRACKER_SECRETS as an env var to the
-          # script. Consumers pick their own names ($LINEAR_API_KEY, $JIRA_EMAIL,
-          # whatever). Blank lines and `# comments` are skipped; everything after
-          # the first `=` is preserved verbatim so tokens containing `=` survive.
-          if [ -n "${TRACKER_SECRETS:-}" ]; then
-            while IFS= read -r line; do
-              case "$line" in ''|'#'*) continue ;; esac
-              [[ "$line" != *=* ]] && continue
-              export "${line%%=*}=${line#*=}"
-            done <<< "$TRACKER_SECRETS"
-          fi
-          chmod +x .github/claude-review/fetch-issue.sh
-          .github/claude-review/fetch-issue.sh > /tmp/external-issue.md 2> /tmp/fetch-issue.stderr || {
-            echo "::warning::fetch-issue.sh exited non-zero — continuing without external spec"
-            cat /tmp/fetch-issue.stderr >&2 || true
-            : > /tmp/external-issue.md
-          }
-
-      # Package-manager store cache for the consumer's dev-start.sh install.
-      # Restore-only on purpose: the all-in-one cache auto-registers a
-      # post(save) step that re-runs this key's hashFiles after dev-start.sh
-      # has mutated the working tree — once the lockfile is gone hashFiles
-      # errors and reds an otherwise-passing review (seaters #787). The
-      # warm-cache job below is the saver, keyed by lockfile hash; round-2
-      # restores it via the same key. cache/restore has no post step, so the
-      # key is evaluated once against the intact checkout.
+      # Restore-only on purpose: the all-in-one cache's post(save) step re-runs
+      # hashFiles after dev-start.sh mutates the tree, errors, and reds the
+      # check. The warm-cache job below is the saver.
       - name: Restore package-manager store
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan2.outputs.run_functional == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -1047,25 +422,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pkg-store-
 
-      # Reclaim runner disk before the dev-env bring-up. A heavy dev-start.sh
-      # (Docker images + JDK/Gradle + a big monorepo's node_modules) can
-      # exhaust the ~14 GB free on a hosted runner and ENOSPC the post steps,
-      # losing an otherwise-complete review (seaters#687). `safe` (default)
-      # only removes tooling no app bring-up needs on Linux — CodeQL bundles,
-      # Haskell, Swift — and never the review job's own Node/pnpm/bun cache.
-      # `aggressive` also drops the Android SDK + .NET and prunes Docker
-      # images; opt in only if your dev-start.sh doesn't build those.
+      # A heavy dev-start.sh can ENOSPC the post steps and lose a complete
+      # review; reclaim tooling no app bring-up needs.
       - name: Free up runner disk
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan2.outputs.run_functional == 'true' && inputs.free_disk_space != 'off'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true' && inputs.free_disk_space != 'off'
         shell: bash
         env:
           FREE_MODE: ${{ inputs.free_disk_space }}
         run: |
           set -uo pipefail
           echo "Disk before:"; df -h / | tail -1
-          # Safe set — a scanner bundle (CodeQL) and two languages (Haskell,
-          # Swift) no consumer app needs to start on Linux. Targets the CodeQL
-          # subdir only, never the whole hostedtoolcache (Node/pnpm live there).
           sudo rm -rf /opt/hostedtoolcache/CodeQL /opt/ghc /usr/local/.ghcup /usr/share/swift 2>/dev/null || true
           if [ "${FREE_MODE}" = "aggressive" ]; then
             sudo rm -rf /usr/local/lib/android /usr/share/dotnet 2>/dev/null || true
@@ -1073,17 +439,10 @@ jobs:
           fi
           echo "Disk after:"; df -h / | tail -1
 
-      # Launch the consumer's dev environment in the background so it brings
-      # up alongside the context-builder + Playwright MCP setup, instead of
-      # blocking the analyzer fan. The wait step further down reaps the PID
-      # and replays captured outputs / exit code into the real $GITHUB_OUTPUT.
-      #
-      # dev-start.sh is the consumer's contract for "bring up everything the
-      # functional tester needs" — typically Docker-based and self-contained,
-      # owning its own dependency install. Without it, no dev-env launches
-      # and the functional tester runs in skip strategy.
+      # Detached (setsid/nohup/disown) so the bring-up survives the step
+      # boundary; the orchestrator polls /tmp/dev-env/rc + outputs.
       - name: Pre-start dev environment (background)
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan2.outputs.run_functional == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true'
         id: dev_env_bg
         shell: bash
         env:
@@ -1095,14 +454,6 @@ jobs:
           : > /tmp/dev-env/outputs
           : > /tmp/dev-env/log
           rm -f /tmp/dev-env/rc
-          # Detach the bring-up from this step's process group + job table so
-          # GitHub Actions doesn't SIGKILL it at step-end. setsid creates a
-          # new session (the recorded PID is the new group leader), nohup
-          # ignores SIGHUP, < /dev/null prevents tty inheritance, and disown
-          # removes the job from the launching shell's table. The wait step
-          # honors /tmp/dev-env/rc; the kill paths use `kill -- -PID` so the
-          # whole group (dev server + children) is reaped, not just the
-          # wrapper.
           setsid nohup bash -c '
             GITHUB_OUTPUT=/tmp/dev-env/outputs .review-scripts/setup-dev-env.sh
             echo $? > /tmp/dev-env/rc
@@ -1112,121 +463,57 @@ jobs:
           echo "$PID" > /tmp/dev-env/pid
           echo "Background dev-env launched: PID=$PID (process group leader)"
 
-      # Single top-level Claude Code agent. The orchestrator skill drives:
-      #   Phase 0   — Task-dispatches the context-builder subagent, which writes
-      #               context.md + test-plan.md.
-      #   Phase 0.5 — Polls /tmp/dev-env/rc for the background dev-env launched
-      #               by the `Pre-start dev environment` step. Sources
-      #               /tmp/dev-env/outputs to get API_URL/WEB_URL/etc.
-      #   Phase 1   — Early-exits docs-only / trivial PRs (zero non-doc chunks
-      #               + no spec source) without dispatching any judges.
-      #   Phase 2   — Parallel Task fan: judge-Opus + judge-Haiku (always),
-      #               thread classifier (round 2 only when there's anything to
-      #               classify), functional tester (when STRATEGY ∈ {quick,
-      #               functional} and WEB_READY=true). Pipeline-self-test runs
-      #               via Bash directly in this phase (deterministic, no LLM).
-      #   Phase 3   — Up to 2 rebuttal rounds when judges disagree.
-      #   Phase 4   — Consolidates findings + verdict, writes /tmp/all-findings.json
-      #               + /tmp/review-meta.json.
-      #
-      # All parallelism happens via the Task tool inside this single
-      # claude-code-action invocation. The wrapper gives us native rate-limit
-      # fast-fail (the bare `claude -p` CLI hangs on quota walls; the SDK
-      # surfaces the error in <1s).
-      #
-      # Playwright MCP is scoped to the `review-functional-tester` subagent
-      # via `.claude/agents/review-functional-tester.md` (auto-discovered
-      # by Claude Code from `$GITHUB_WORKSPACE/.claude/agents/`). The
-      # subagent file inline-defines `mcpServers` so the Playwright server
-      # spawns when the subagent starts — NOT at the parent orchestrator.
-      # Earlier we passed `--mcp-config` at the orchestrator level and
-      # relied on subagents inheriting it; in practice the server stayed in
-      # `status: "pending"` (Claude Code's lazy-spawn never fired because
-      # deferred MCP tool schemas aren't loaded until the server is up,
-      # ToolSearch can't find tools that aren't loaded, and the subagent
-      # silently fell back to curl/psql with "Playwright MCP tools were
-      # not available in this test context" buried in uncertain_observations).
-      # Inline-defining the server in the subagent forces it to spawn when
-      # the subagent starts; orchestrator no longer carries Playwright
-      # tooling at all (it never called those tools anyway). claude-code-action
-      # SHA bumped to the v1 release that ships Claude Code 2.1.132 (Agent
-      # SDK 0.2.132), which also fixed a 10GB+ RSS leak with stdio MCP
-      # servers — relevant if the leak was contributing to the pending state.
-      - name: "Install functional-tester subagent definition"
-        shell: bash
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
-          PIPELINE_DIR: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}
-        run: |
-          # Helper writes $HOME/.claude/agents/review-functional-tester.md
-          # (USER-scope, intentional — claude-code-action's restore-config.ts
-          # wipes workspace .claude/ on PR-head jobs as RCE-prevention; the
-          # source code's own comment confirms $HOME is untouched). The
-          # subagent's inline mcpServers spawns the Playwright server when
-          # the subagent starts. NOTE: the MCP tool *permissions* are still
-          # session-level — see the `--allowedTools` list in the orchestrator
-          # step below, which uses the bare `mcp__playwright` server-wildcard
-          # so the subagent can call ANY tool the @playwright/mcp package
-          # exposes (browser_drag, browser_handle_dialog, browser_network_*,
-          # etc.) without us having to enumerate. dontAsk mode evaluates
-          # permissions against the session-level allowlist, not the
-          # subagent's tools: field; without the orchestrator-level grant,
-          # the subagent's tool calls return "permission denied" even
-          # though the server is connected (caught on dogfood seaters#475
-          # round 2).
-          bash "${CLAUDE_REVIEW_PIPELINE_DIR}/scripts/install-functional-tester-agent.sh"
-
-      - name: Start orchestrate stopwatch
+      # User scope is REQUIRED: claude-code-action's restore-config wipes the
+      # workspace .claude/ on PR-head jobs; $HOME survives. The agent file
+      # inline-defines mcpServers so Playwright spawns with the subagent.
+      - name: Install functional-tester subagent
         if: steps.actor_gate.outputs.proceed == 'true'
         shell: bash
+        env:
+          MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
         run: |
-          source .review-scripts/phase-timing.sh
-          phase_start orchestrate
+          mkdir -p "$HOME/.claude/agents"
+          envsubst '$MODEL_FUNCTIONAL $PLAYWRIGHT_MCP_VERSION $CLAUDE_REVIEW_PIPELINE_DIR' \
+            < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-functional-tester.md" \
+            > "$HOME/.claude/agents/review-functional-tester.md"
+          echo "Installed review-functional-tester subagent (model=$MODEL_FUNCTIONAL)"
 
+      # Single top-level agent; all subagents dispatch via Task inside this
+      # one invocation. continue-on-error: a max-turns exit may still have
+      # written /tmp/review.json — the poster decides from the artifact.
       - name: "Review: orchestrate"
         id: claude_run
         if: steps.actor_gate.outputs.proceed == 'true'
-        # Don't fail the job if the orchestrator returns non-zero (e.g.
-        # max-turns hit at the STOP-and-write anchor). /tmp/all-findings.json
-        # and /tmp/review-meta.json may still have been written; the
-        # downstream verdict-gate step reads them and posts an honest
-        # crash banner if they're missing.
         continue-on-error: true
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # Claude Code 2.1.132
+        uses: anthropics/claude-code-action@ac7e24bf2938964b8ab203e417a2773802392ddd # v1.0.146
         env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
           PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
-          PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
-          NEEDS_BUILD: ${{ steps.code_check.outputs.needs_build || 'true' }}
+          PRIOR_VERDICT: ${{ steps.prior_state.outputs.prior_verdict }}
+          ROUND: ${{ steps.prior_state.outputs.round }}
+          PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
-          # Separate token for writing to the review-assets branch (custom
-          # GitHub App token may lack `contents: write`).
+          TRACKER_SECRETS: ${{ secrets.TRACKER_SECRETS }}
+          # Separate token for the review-assets branch (a custom App token
+          # may lack contents: write).
           GITHUB_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Models & ceilings flow through env so the orchestrator skill can
-          # honour the consumer's overrides without re-reading `inputs`.
           MODEL_HIGH: ${{ inputs.model_high }}
           MODEL_STANDARD: ${{ inputs.model_standard }}
           MODEL_FAST: ${{ inputs.model_fast }}
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
-          FUNCTIONAL_MAX_TURNS: ${{ inputs.functional_max_turns }}
           FUNCTIONAL_BUDGET_SECONDS: ${{ inputs.functional_budget_seconds }}
-          # Review plan (from the resolver step) — the orchestrator honours review_level.
-          REVIEW_LEVEL: ${{ steps.review_plan2.outputs.review_level }}
-          RUN_FUNCTIONAL: ${{ steps.review_plan2.outputs.run_functional }}
-          GATE: ${{ steps.review_plan2.outputs.gate }}
-          GATE_REASON: ${{ steps.review_plan2.outputs.reason }}
+          REVIEW_LEVEL: ${{ steps.review_plan.outputs.review_level }}
+          RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
+          GATE: ${{ steps.review_plan.outputs.gate }}
+          GATE_REASON: ${{ steps.review_plan.outputs.reason }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
-          # Pass-through opt-in: empty (default) keeps the action's default of
-          # blocking all bot-initiated runs. A consumer repo sets allowed_bots
-          # (e.g. 'panenco-automation') on its caller's `with:` block to let
-          # that bot's PRs through. See README → "Allowing bot-opened PRs".
           allowed_bots: ${{ inputs.allowed_bots }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan passed via env (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) per the skill's "Review-plan gate" section FIRST, then dispatch the appropriate subagents (context builder, judges, round-2 thread classifier, functional tester) via the Task tool exactly as the skill directs for that review level. The functional tester is registered as the custom subagent type `review-functional-tester` (auto-discovered from .claude/agents/, owns Playwright MCP directly — just dispatch it, do not pass MCP config in the prompt). Write /tmp/all-findings.json + /tmp/review-meta.json before exiting.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it owns Playwright MCP directly. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
@@ -1236,136 +523,78 @@ jobs:
             --max-turns 100
           show_full_output: "true"
 
-      # Build the review body + comments + screenshot upload from the
-      # orchestrator's outputs. No agents launched here — pure post-processing.
-      - name: "Review: build artifacts"
-        id: review_builder
+      # This step's exit code IS the check: green = a review reached the PR
+      # (REQUEST_CHANGES included — the blocking signal is the PR review, not
+      # the check color), red = pipeline failure.
+      - name: Post review + gate
+        id: post_review
         if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.review_identity.outputs.token }}
           GITHUB_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
-          # Review-plan gate (from the Resolve review plan step). build-review.sh
-          # waives the technical-change smoke withhold only when the plan
-          # turned functional off (RUN_FUNCTIONAL != true).
-          GATE: ${{ steps.review_plan2.outputs.gate }}
-          RUN_FUNCTIONAL: ${{ steps.review_plan2.outputs.run_functional }}
-          # Persisted into review-state.json so the next round's escalation
-          # guard knows whether a full review ever ran on this PR.
-          REVIEW_LEVEL: ${{ steps.review_plan2.outputs.review_level }}
-          # Bot-authored PRs (renovate/dependabot) waive the manual-spec gate.
-          PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
-          # claude-code-action's JSONL conversation log. build-review.sh greps
-          # it for `"error":"rate_limit"` / `hit your limit · resets …` so the
-          # quota-specific error annotation fires (instead of a generic crash
-          # message) when the orchestrator hit a quota wall mid-run.
+          REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
+          ANALYZER_OUTCOME: ${{ steps.claude_run.outcome }}
+          HEAD_SHA: ${{ steps.pr_sha.outputs.sha }}
           ORCHESTRATOR_EXEC: ${{ steps.claude_run.outputs.execution_file }}
         run: |
           set -uo pipefail
-          source .review-scripts/phase-timing.sh
-          phase_end orchestrate
-          # Hand off the orchestrator's conversation log under the path
-          # build-review.sh expects. Best-effort — a missing/empty
-          # execution_file just means the quota-specific branch in
-          # build-review.sh's error path falls back to its generic message.
           if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then
-            cp "$ORCHESTRATOR_EXEC" /tmp/orchestrator-output.txt 2>/dev/null \
-              || echo "::warning::Could not copy orchestrator execution log to /tmp/orchestrator-output.txt — quota-specific error messaging will be unavailable."
+            cp "$ORCHESTRATOR_EXEC" /tmp/orchestrator-output.txt 2>/dev/null || true
           fi
-          # build-review.sh gates on the artifact (/tmp/all-findings.json
-          # parses as an array) rather than the orchestrator step's outcome
-          # — a max-turns-killed orchestrator that still wrote partial output
-          # is honest signal worth posting. A missing/malformed file is what
-          # triggers the quota-specific error path inside build-review.sh.
-          # FUNCTIONAL_OK is read from /tmp/review-meta.json's judge_health
-          # (the orchestrator records it there alongside the judge statuses).
-          FUNCTIONAL_OK=1
-          # Strict-equality predicate (matches the build-review.sh
-          # JUDGES_BOTH_FAILED pattern). `// false` lets a string "false"
-          # slip through as a non-null value; `== true` only fires for
-          # the explicit boolean. has()-guarded so a missing field keeps
-          # FUNCTIONAL_OK=1.
-          if [ -f /tmp/review-meta.json ] \
-              && [ "$(jq -r 'if (type == "object" and (.judge_health // null | type == "object") and (.judge_health | has("functional_failed")) and .judge_health.functional_failed == true) then "true" else "false" end' /tmp/review-meta.json 2>/dev/null)" = "true" ]; then
-            FUNCTIONAL_OK=0
-          fi
-          export FUNCTIONAL_OK
-          .review-scripts/build-review.sh
+          .review-scripts/post-review.sh
 
-      # Stage 3: Post review (pure Bash — dismiss stale, self-dedupe, POST).
-      # Gated on the build step (not the orchestrator) because build-review.sh
-      # is what produces review-result.json + /tmp/review-comments.json. If the
-      # orchestrator wrote partial output and build-review.sh succeeded, we
-      # post; if build-review.sh exited 1 (missing /tmp/all-findings.json), the
-      # verdict gate downstream surfaces the crash banner instead.
-      - name: "Review: post results"
-        id: review_poster
-        if: always() && steps.review_builder.outcome == 'success'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
-        run: .review-scripts/post-review.sh
-
-      - name: Verdict gate
-        # Skip on cancelled (superseded by new commit) or skipped (upstream failure).
-        if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
-        shell: bash
-        env:
-          ANALYZER_OUTCOME: ${{ steps.claude_run.outcome }}
-          POSTER_OUTCOME: ${{ steps.review_poster.outcome }}
-          # Post the "Claude Review — incomplete" crash notification as the
-          # same bot identity as the successful reviews. Falls back to
-          # GITHUB_TOKEN (github-actions[bot]) when no App is configured.
-          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-        run: .review-scripts/verdict-gate.sh
-
-      # Best-effort usage record. Writes /tmp/usage.json from review-result.json,
-      # functional-meta.json, and phase timings; the next artifact step uploads
-      # it as `claude-review-usage`. The maintainer aggregates across consumer
-      # repos locally with scripts/usage-report.sh + their own `gh` auth — no
-      # PAT or webhook required. Fully no-op when inputs are missing; never
-      # blocks the review.
       - name: Report usage
         if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
         continue-on-error: true
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           HEAD_SHA: ${{ steps.pr_sha.outputs.sha }}
           ANALYZER_OUTCOME: ${{ steps.claude_run.outcome }}
-          POSTER_OUTCOME: ${{ steps.review_poster.outcome }}
-          PRIOR_STATE_AVAILABLE: ${{ steps.prior_state.outputs.available || 'false' }}
-        run: .review-scripts/report-usage.sh
+          POSTER_OUTCOME: ${{ steps.post_review.outcome }}
+          ROUND: ${{ steps.prior_state.outputs.round || '1' }}
+        run: |
+          set +e
+          COST=null; MODELS='[]'; WALL=null; R='{}'
+          if [ -f /tmp/orchestrator-output.txt ]; then
+            c=$(grep -oE '"total_cost_usd"[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)?' /tmp/orchestrator-output.txt 2>/dev/null \
+                  | grep -oE '[0-9]+(\.[0-9]+)?$' | sort -g | tail -1)
+            [ -n "$c" ] && COST="$c"
+            m=$(grep -oE '"model"[[:space:]]*:[[:space:]]*"claude[^"]*"' /tmp/orchestrator-output.txt 2>/dev/null \
+                  | grep -oE 'claude[^"]*' | sort -u | jq -R . | jq -s 'unique' 2>/dev/null)
+            echo "$m" | jq -e 'type=="array"' >/dev/null 2>&1 && MODELS="$m"
+          fi
+          if [ -f /tmp/job-start ]; then
+            s=$(cat /tmp/job-start) && WALL=$(( $(date +%s) - s ))
+          fi
+          [ -f /tmp/review.json ] && jq -e 'type=="object"' /tmp/review.json >/dev/null 2>&1 && R=$(cat /tmp/review.json)
+          jq -n \
+            --argjson r "$R" --argjson round "$ROUND" --argjson cost "$COST" \
+            --argjson models "$MODELS" --argjson wall "$WALL" \
+            --arg repo "$GITHUB_REPOSITORY" --arg pr "${PR_NUMBER:-}" \
+            --arg run_id "$GITHUB_RUN_ID" --arg attempt "${GITHUB_RUN_ATTEMPT:-1}" \
+            --arg head "${HEAD_SHA:-}" --arg analyzer "${ANALYZER_OUTCOME:-}" --arg poster "${POSTER_OUTCOME:-}" \
+            '{schema_version: 1, repo: $repo, pr_number: ($pr | tonumber? // null),
+              run_id: $run_id, run_attempt: ($attempt | tonumber? // 1), head_sha: $head,
+              recorded_at: (now | todate), round: $round,
+              verdict: ($r.verdict // null),
+              findings_count: (($r.meta.findings // []) | length),
+              posting_error: (if $poster == "success" then null else "poster outcome: \($poster)" end),
+              requires_human_review: ($r.meta.requires_human_review // false),
+              technical_change: ($r.meta.technical_change // false),
+              functional_strategy: ($r.meta.functional_validation.strategy // null),
+              functional_overall: ($r.meta.functional_validation.overall // null),
+              screenshot_count: ($r.meta.functional_validation.screenshot_count // 0),
+              analyzer_outcome: $analyzer, poster_outcome: $poster,
+              claude_cost_usd: $cost, models: $models,
+              phases: (if $wall == null then {} else {total: $wall} end)
+            }' > /tmp/usage.json
+          echo "Wrote /tmp/usage.json:"; cat /tmp/usage.json
+          exit 0
 
-      # Persist round-state for the next follow-up review on this PR.
-      # Separate artifact (not bundled with claude-review-${PR_NUMBER}) so
-      # the round-2 read step can download just this small file by name
-      # without pulling the full review-output payload. Retention 90 days
-      # — long enough to cover stale-PR follow-ups without ballooning
-      # artifact storage.
-      - name: Upload review state
-        # Gated on the build step (writes /tmp/review-state.json) succeeding,
-        # not the orchestrator — partial orchestrator output is fine if
-        # build-review.sh accepted it.
-        if: always() && steps.review_builder.outcome == 'success'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: claude-review-state-pr-${{ github.event.pull_request.number || inputs.pr_number }}
-          path: /tmp/review-state.json
-          if-no-files-found: warn
-          retention-days: 90
-          overwrite: true
-
-      # Usage record — one tiny JSON per run, separate artifact so
-      # scripts/usage-report.sh can list+download them across consumer repos
-      # without pulling the multi-MB review payload. Name is fixed (no PR
-      # suffix) so the aggregator's filter is a single equality check.
-      # Best-effort: skip silently when /tmp/usage.json wasn't produced.
       - name: Upload usage record
         if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
         continue-on-error: true
@@ -1383,47 +612,43 @@ jobs:
         with:
           name: claude-review-${{ github.event.pull_request.number || inputs.pr_number }}
           path: |
-            review-result.json
-            findings.draft.json
+            /tmp/review.json
             context.md
             test-plan.md
             screenshots/
+            /tmp/screenshots/
             /tmp/orchestrator-output.txt
-            /tmp/thread-classifier-output.txt
-            /tmp/functional-output.txt
-            /tmp/functional-prompt.txt
-            /tmp/prd-content.md
-            /tmp/all-findings.json
-            /tmp/review-meta.json
-            /tmp/judge-opus.json
-            /tmp/judge-haiku.json
-            /tmp/judge-opus-r1.json
-            /tmp/judge-haiku-r1.json
-            /tmp/judge-opus-r2.json
-            /tmp/judge-haiku-r2.json
-            /tmp/thread-resolution.json
-            /tmp/resolution-findings.json
-            /tmp/functional-findings.json
-            /tmp/functional-meta.json
-            /tmp/build-context-execution.jsonl
-            /tmp/*-findings.invalid.json
-            /tmp/*-meta.invalid.json
+            /tmp/judge-*.json
+            /tmp/functional-*.json
+            /tmp/dev-env/log
           if-no-files-found: ignore
           retention-days: 7
 
-  # pull_request_target writes cache to main scope. Keep this job PR-code-free:
-  # the checkout below lands on the BASE ref (pull_request_target's default
-  # sha), and `pnpm fetch` reads only the lockfile — no lifecycle scripts run.
+  # pull_request_target writes cache to main scope. PR-code-free: checkout
+  # lands on the BASE ref and `pnpm fetch` reads only the lockfile.
   warm-cache:
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # lookup-only probe: when the store is already warm for this lockfile,
+      # skip the whole fetch+save path and land in seconds.
+      - name: Check store cache
+        id: store_probe
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.npm
+          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          lookup-only: true
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        if: steps.store_probe.outputs.cache-hit != 'true'
         with:
           node-version: "lts/*"
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: steps.store_probe.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cache/ms-playwright
@@ -1431,15 +656,15 @@ jobs:
           key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
           restore-keys: |
             ${{ runner.os }}-pw-
-      - run: |
+      - if: steps.store_probe.outputs.cache-hit != 'true'
+        run: |
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
           npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0
-      # Restore/save are split so a FAILED fetch never saves: the all-in-one
-      # cache action would persist an empty store under the exact lockfile
-      # key, and every later run would exact-hit the poisoned key and skip
-      # its own save until the lockfile changes.
+      # Restore/save split so a FAILED fetch never saves a poisoned store
+      # under the exact lockfile key.
       - name: Restore package-manager store
         id: store_restore
+        if: steps.store_probe.outputs.cache-hit != 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -1450,6 +675,7 @@ jobs:
             ${{ runner.os }}-pkg-store-
       - name: Fetch base-lockfile packages into the store
         id: store_fetch
+        if: steps.store_probe.outputs.cache-hit != 'true'
         run: |
           echo "fetched=false" >> "$GITHUB_OUTPUT"
           if [ ! -f pnpm-lock.yaml ]; then
@@ -1464,7 +690,7 @@ jobs:
             echo "::warning::pnpm fetch failed — store warm is best-effort, reviews are unaffected."
           fi
       - name: Save package-manager store
-        if: steps.store_fetch.outputs.fetched == 'true' && steps.store_restore.outputs.cache-hit != 'true'
+        if: steps.store_probe.outputs.cache-hit != 'true' && steps.store_fetch.outputs.fetched == 'true' && steps.store_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
