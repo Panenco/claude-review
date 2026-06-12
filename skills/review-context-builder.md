@@ -96,7 +96,7 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$
 # GitHub is the state store; there is no state artifact.
 if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
   gh api --paginate "repos/$REPO/pulls/$PR/reviews" > /tmp/pr-reviews.json
-  jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot) | select(.body | contains("<!-- claude-review-crash -->") | not) | select(.body | contains("<!-- claude-review-superseded -->") | not)] | sort_by(.submitted_at) | last // {}' \
+  jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot) | select((.body // "") | length > 0) | select(.body | contains("<!-- claude-review-crash -->") | not) | select(.body | contains("<!-- claude-review-superseded -->") | not)] | sort_by(.submitted_at) | last // {}' \
     /tmp/pr-reviews.json > /tmp/prior-review.json
   echo "prior review: state=$(jq -r '.state // "none"' /tmp/prior-review.json) commit=$(jq -r '.commit_id // ""' /tmp/prior-review.json)"
   grep -oE 'Functional Validation — (PASS|WARN|FAIL|CRASH)' <(jq -r '.body // ""' /tmp/prior-review.json) | head -1 || echo "prior functional: none"
