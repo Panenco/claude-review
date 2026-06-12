@@ -72,6 +72,8 @@ jq --arg bot "$BOT_USER" '
   [.[] | select(.user.type != "Bot" and .in_reply_to_id != null and (.in_reply_to_id as $pid | $ours | any(. == $pid)))
        | {parent_id: .in_reply_to_id, user: .user.login, body: (.body[:1000])}]' \
   /tmp/all-raw-comments.json > /tmp/user-replies-on-ours.json
+jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot and .in_reply_to_id != null) | {parent_id: .in_reply_to_id, path, line, body: (.body[:1000])}]' \
+  /tmp/all-raw-comments.json > /tmp/our-replies-on-others.json
 PR_AUTHOR=$(jq -r '.author.login // empty' /tmp/pr.json)
 jq --arg author "$PR_AUTHOR" '[.[] | select(.user.type != "Bot" and .in_reply_to_id == null and .path != null and .user.login != $author)
        | {id, node_id, user: .user.login, path, line, body: (.body[:500])}]' \
@@ -161,11 +163,11 @@ cat /tmp/dev-env/outputs 2>/dev/null || echo "dev-env outputs not available yet"
 
 ## Turn 2: parallel Reads (spec/synthesis material ONLY)
 
-One response: `/tmp/pr.json`, `/tmp/issue.json` (if present), `/tmp/prd-content.md`, `/tmp/external-issue.md`, `.github/review-config.md` (if present — convention routing, `### Auth`, and the optional `### Known dev-env quirks` passthrough), `CLAUDE.md` (if present). On round 2 also `/tmp/prior-review.json`, `/tmp/review-threads.json`, `/tmp/prior-bot-comments.json`, `/tmp/other-bot-comments.json`, `/tmp/human-inline-comments.json`, `/tmp/user-replies-on-ours.json`, `/tmp/since-last.diff`. No changed files, no `/tmp/pr.diff`, no chunks.
+One response: `/tmp/pr.json`, `/tmp/issue.json` (if present), `/tmp/prd-content.md`, `/tmp/external-issue.md`, `.github/review-config.md` (if present — convention routing, `### Auth`, and the optional `### Known dev-env quirks` passthrough), `CLAUDE.md` (if present). On round 2 also `/tmp/prior-review.json`, `/tmp/review-threads.json`, `/tmp/prior-bot-comments.json`, `/tmp/other-bot-comments.json`, `/tmp/human-inline-comments.json`, `/tmp/user-replies-on-ours.json`, `/tmp/our-replies-on-others.json`, `/tmp/since-last.diff`. No changed files, no `/tmp/pr.diff`, no chunks.
 
 ## Turns 3–4 (round 2 only): thread classification
 
-You classify every open thread on the PR — our own bot's, other bots', and humans' — against the since-last diff. Output feeds the orchestrator's `resolve_threads` and the round-2 verdict ladder.
+You classify every open thread on the PR — our own bot's, other bots', and humans' — against the since-last diff. Thread output feeds the orchestrator's `resolve_threads`; the prior-finding reconstruction below feeds the round-2 verdict ladder.
 
 In scope: every open own-bot thread; other bots' substantive findings (Cursor/CodeRabbit/SonarCloud structured findings, snyk/deepcode/bugbot, aikido HIGH/CRITICAL). Out of scope (no entry): aikido low-severity style notes, dependabot/renovate (they manage their own threads), comments with `path == null`.
 
@@ -177,6 +179,8 @@ Classify each in-scope thread into exactly one bucket:
 - **NEW_CONTEXT** — the area was rewritten to the point the entry no longer applies cleanly and you can't confidently say the defect is gone (function deleted, responsibility moved). The "genuinely don't know" bucket; prefer STILL_PRESENT when in doubt.
 
 Per-thread severity: parse the `**[<SEVERITY> · <TYPE>]**` marker from the comment body when present (v3 reviews carry it); otherwise infer from the content; if uninferable on a thread from a REQUEST_CHANGES round, treat as `major` (fail closed — the ladder must not silently lose a blocker).
+
+Then reconstruct OUR prior review's findings: every `**[<SEVERITY> · <TYPE>]** \`<path>:<line>\` — <title>` marker across the prior review body (`/tmp/prior-review.json`), `/tmp/prior-bot-comments.json`, and `/tmp/our-replies-on-others.json` (cross-bot-deduped findings live only as replies on other bots' threads or as body bullets — they have no own thread). Classify each finding RESOLVED | STILL_PRESENT | REBUTTED under the same rules above, including the mandatory HEAD re-verification and REBUTTED via an author reply disputing it on whichever thread carries it. A finding whose carrier thread was resolved or deleted but whose defect is verified still in HEAD code is STILL_PRESENT. Threads drive `resolve_threads`; findings drive the verdict.
 
 Also note 0–3 **net-new candidate areas**: spots in the since-last diff a judge should look at hard (a new critical/major you'd feel bad shipping silently). Don't pad — zero is normal.
 
@@ -211,7 +215,7 @@ Table: `file` | `chunk` (path under `/tmp/diff-chunks/`, slashes→dashes) | `ro
 i18n/locale/message catalogs (e.g. `apps/api/src/messages/en.json`), email/notification templates, and any file whose content is user-facing copy are `core` — reviewable runtime content, NEVER `spec`; `spec` is reserved for PRD/design docs and machine-consumed schema definitions (openapi, json-schema, migration snapshots).
 **Round 2: list ONLY files in `/tmp/since-last-chunks/`, chunks pointing there** — round 1 covered the rest; add the one-line note `Round-2 focused review — index scoped to changes since <PRIOR_HEAD_SHA>; full-diff chunks remain at /tmp/diff-chunks/ for upstream context.` If `/tmp/since-last-chunks/` is empty, fall through to the full diff.
 
-### `## Thread resolution` (round 2 only — REQUIRED when any open thread exists)
+### `## Thread resolution` (round 2 only — REQUIRED when any open thread or prior review exists)
 One markdown table row per classified thread:
 
 ```
@@ -224,6 +228,15 @@ Below the table add:
 - `Prior review state: ACTIVE | DISMISSED` and `Prior verdict: <PRIOR_VERDICT>` (from `/tmp/prior-review.json` / env).
 - `Prior functional result: PASS|WARN|FAIL|CRASH|none` (parsed from the prior review body — drives smoke-gate inheritance).
 - `Net-new candidate areas:` 0–3 bullets (`path:line — why`), or `none`.
+
+Then a `### Prior findings` table — one row per reconstructed prior finding:
+
+```
+| id | severity | path:line | title | carrier | status | evidence |
+| pf1 | major | src/users/locale.ts:88 | actor locale ignored | other-bot-thread PRRT_kwDO... | STILL_PRESENT | HEAD still reads locale from request, not actor |
+```
+
+`carrier` ∈ `own-thread <thread_id> | other-bot-thread <thread_id> | body-only`; `status` ∈ `RESOLVED | STILL_PRESENT | REBUTTED`. This table — not the thread table — is the orchestrator's round-2 verdict input; never omit it when a prior review exists (no prior findings → a `none` line under the heading).
 
 ### `## Open inline threads`
 Paths only: `/tmp/prior-bot-comments.json`, `/tmp/other-bot-comments.json`, `/tmp/human-inline-comments.json` — judges consult these to avoid re-flagging open issues.

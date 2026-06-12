@@ -136,7 +136,7 @@ Use each judge's most recent output. Target ≤8 turns: one consolidation pass, 
 2. One representative per cluster: higher severity wins; tie → longer `evidence` (judge-vs-judge clusters resolved under the Phase C residual-disagreement rule enter with that resolved severity). Representative is a verbatim copy; only graft `screenshot` from cluster members. Re-id `j1, j2, …` in emission order.
 3. Solo findings pass through unchanged. Never invent, never reword.
 4. **Cross-bot dedup:** a cluster matching an open OTHER-bot thread (from context.md `## Open inline threads`, path + line±5 + same defect) is NOT posted as an inline comment and NOT body-bulleted. If our analysis adds genuinely new information (new failure path, concrete evidence the bot lacked, a fix), emit ONE `bot_replies` entry on that thread; otherwise one line under `### Overlap with other reviewers` in the body. **Never post "+1"/"confirmed"-only replies.**
-5. **Self-dedup:** a cluster matching one of our own open threads emits nothing new (the open thread already carries it; round-2 ladder counts it).
+5. **Self-dedup:** a cluster matching one of our own open threads emits nothing new (the open thread already carries it; the round-2 ladder counts it via `### Prior findings`).
 6. **Functional traceability gate:** a functional finding merges only when its expectation traces to a cited source (`[ACn]` / `[PRD: …]`) or is an objective failure (HTTP 5xx, crash, console error, broken navigation, data loss). The objective-failure clause never re-admits what the tester's false-failure gates exclude (pre-existing surfaces, known dev-env quirks, plan-invented contracts); findings asserting un-cited product expectations route to `uncertain_observations` instead.
 
 ### Verdict — per-PR ladder
@@ -145,18 +145,18 @@ First matching rule: any critical/major finding → `REQUEST_CHANGES`; any findi
 
 ### Verdict — round-2 ladder (when `ROUND` ≥ 2 and `PRIOR_HEAD_SHA` non-empty)
 
-Inputs: `PRIOR_VERDICT` (env), context.md `## Thread resolution` (per-thread `RESOLVED|STILL_PRESENT|REBUTTED|NEW_CONTEXT` + prior severity). Apply the FIRST matching rule and record its name in `meta.ladder_rule_applied`:
+Inputs: `PRIOR_VERDICT` (env), context.md `### Prior findings` (per prior finding: severity, carrier, `RESOLVED|STILL_PRESENT|REBUTTED`). The `## Thread resolution` thread table feeds `resolve_threads` only, never the verdict — a prior finding blocks regardless of which surface carried it (own thread, reply on another bot's thread, or body bullet). Apply the FIRST matching rule and record its name in `meta.ladder_rule_applied`:
 
 | Rule name | Condition | Verdict |
 |---|---|---|
 | `prior-dismissed-as-approve` | Prior review state DISMISSED (context.md) | Treat PRIOR_VERDICT as APPROVE for the rules below; never re-enforce findings the author rejected (REBUTTED/dismissed findings stay dropped, listed under "Dropped after author rebuttal") |
 | `new-blockers-escalate` | ≥1 new critical/major finding this round | `REQUEST_CHANGES` |
-| `prior-rc-still-present` | PRIOR_VERDICT=REQUEST_CHANGES AND ≥1 prior blocking (critical/major) thread STILL_PRESENT | `REQUEST_CHANGES` |
-| `prior-rc-resolved` | PRIOR_VERDICT=REQUEST_CHANGES AND every prior blocker RESOLVED or REBUTTED | per-judges verdict (APPROVE if clean, COMMENT if minors remain) |
+| `prior-rc-still-present` | PRIOR_VERDICT=REQUEST_CHANGES AND ≥1 prior critical/major finding STILL_PRESENT | `REQUEST_CHANGES` |
+| `prior-rc-resolved` | PRIOR_VERDICT=REQUEST_CHANGES AND every prior critical/major finding RESOLVED or REBUTTED | per-judges verdict (APPROVE if clean, COMMENT if minors remain) |
 | `prior-comment-no-ratchet` | PRIOR_VERDICT=COMMENT or APPROVE | per-PR verdict stands (may upgrade to APPROVE) |
-| `degraded-pin-max` | `## Thread resolution` missing/unusable | max(PRIOR_VERDICT, per-PR) on REQUEST_CHANGES > COMMENT > APPROVE; unknown PRIOR_VERDICT → treat as REQUEST_CHANGES (fail closed) |
+| `degraded-pin-max` | `## Thread resolution` missing/unusable, OR `### Prior findings` table missing on round ≥2 with PRIOR_VERDICT=REQUEST_CHANGES | max(PRIOR_VERDICT, per-PR) on REQUEST_CHANGES > COMMENT > APPROVE; unknown PRIOR_VERDICT → treat as REQUEST_CHANGES (fail closed) |
 
-REBUTTED threads never count as still-present blockers. Round 1: `ladder_rule_applied: "none-round-1"`. When the ladder changes the verdict vs per-PR, the body gets the override banner below.
+REBUTTED findings never count as still-present blockers. Round 1: `ladder_rule_applied: "none-round-1"`. When the ladder changes the verdict vs per-PR, the body gets the override banner below.
 
 ### Gates (downgrades only, applied after the ladder)
 
@@ -213,9 +213,9 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
    - `> :stop_sign: **Human review required** — <reason>`
    - Judge-health banners (one judge failed / did not converge), verbatim wording from v2.
    - The `Setup notes` line from context.md, when present.
-5. `### Since previous review` (round 2): `**Resolved (N):**`, `**Still present (N):**`, `**Dropped after author rebuttal (N):**` — one bullet per thread, `- \`<id>\` — <title, clipped at 120>`.
+5. `### Since previous review` (round 2): `**Resolved (N):**`, `**Still present (N):**`, `**Dropped after author rebuttal (N):**` — one bullet per `### Prior findings` row, `- **[<SEVERITY>]** \`<path>:<line>\` — <title, clipped at 120> (<carrier: own thread / reply on <bot>'s thread / review body>)`, so the author sees why the verdict held.
 6. `### Findings` — REQUIRED whenever ≥1 finding is not posted inline (even a single one): bullets `- **[<SEVERITY> · <TYPE>]** \`<path>:<line_start>\` — <title> — <one-sentence reasoning>`. Overflowed critical/major first, then minor, then note. Every finding rendering — inline comment, body bullet, bot reply — carries the `**[<SEVERITY> · <TYPE>]**` marker.
-7. `### Overlap with other reviewers` — one bullet per cross-bot-deduped cluster: `- <bot> already flagged \`<path>:<line>\` — <agree/extend one-liner>`.
+7. `### Overlap with other reviewers` — one bullet per cross-bot-deduped cluster: `- **[<SEVERITY> · <TYPE>]** <bot> already flagged \`<path>:<line>\` — <agree/extend one-liner>` (the marker keeps the finding reconstructable for the next round's ladder).
 8. Functional section: `<details><summary><emoji> <b>Functional Validation — <OVERALL></b> (<N> screenshots)</summary>` with `#### Summary`, `#### Issues found` (severity-uppercased bullets + clipped evidence), `#### Screenshots` (caption + `![](url)` per uploaded image, artifact-link fallback), `</details>`. Emoji ✅ PASS / ⚠️ WARN / ❌ FAIL or CRASH. `pipeline-self-test` renders `<b>Pipeline Self-Test — <OVERALL></b> (<pass>/<total> bash test script(s) passed)`. Skip the section when strategy=skip.
 9. `[Run logs](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)`
 
