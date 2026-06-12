@@ -485,7 +485,7 @@ jobs:
         id: claude_run
         if: steps.actor_gate.outputs.proceed == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@9db782c3a17ef2bfc274cd17411bc3e0a5ba1345 # Claude Code 2.1.132
+        uses: anthropics/claude-code-action@ac7e24bf2938964b8ab203e417a2773802392ddd # v1.0.146
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
