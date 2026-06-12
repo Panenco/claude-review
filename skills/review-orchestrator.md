@@ -45,6 +45,7 @@ Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB
 
 **Turn 1 (Bash):** `printenv MODEL_HIGH MODEL_STANDARD MODEL_FAST REVIEW_LEVEL RUN_FUNCTIONAL GATE GATE_REASON ROUND PRIOR_VERDICT PRIOR_HEAD_SHA PR_NUMBER FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS PR_AUTHOR_IS_BOT; echo "PIPELINE_DIR=$CLAUDE_REVIEW_PIPELINE_DIR"` — keep every value. Each `${VAR}` in this skill means that LITERAL value. Task `model:` params MUST be the exact model ID read from env (e.g. `claude-opus-4-8`) — NEVER an alias like `opus`/`sonnet`/`haiku`: aliases resolve against the CLI's bundled table and silently demote the judge to an older model.
 **STOP-and-write anchor: by turn 60, write /tmp/review.json with whatever you have.** After turn 60, finalise only decisions already drafted. Never rely on the workflow's max-turns ceiling.
+**Never end a turn with prose.** You run unattended: a message without tool calls TERMINATES the session, and a terminated session without `/tmp/review.json` is a pipeline crash. Never write "waiting for X" — if Task results are pending, your message must still contain a tool call (e.g. `ls /tmp/judge-*.json /tmp/functional-*.json` via Bash to check what has landed). When a Task-completion notification wakes you, your FIRST action is a tool call that reads the new output and continues the phase; the ONLY message allowed to end without a tool call is the one after Write(/tmp/review.json) succeeded.
 
 ## Review plan
 

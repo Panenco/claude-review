@@ -513,7 +513,7 @@ jobs:
           github_token: ${{ steps.review_identity.outputs.token }}
           allowed_bots: ${{ inputs.allowed_bots }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it owns Playwright MCP directly. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it owns Playwright MCP directly. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
