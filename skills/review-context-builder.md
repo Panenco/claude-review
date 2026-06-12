@@ -66,7 +66,7 @@ if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
 fi
 
 # Inline comments → four views.
-gh api --paginate "repos/$REPO/pulls/$PR/comments" > /tmp/all-raw-comments.json
+gh api --paginate "repos/$REPO/pulls/$PR/comments" | jq -s 'add // []' > /tmp/all-raw-comments.json
 jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot and .in_reply_to_id == null) | {id, node_id, path, line, body}]' \
   /tmp/all-raw-comments.json > /tmp/prior-bot-comments.json
 jq --arg bot "$BOT_USER" '[.[] | select(.user.type == "Bot" and .user.login != $bot and .in_reply_to_id == null) | {id, node_id, user: .user.login, path, line, body: (.body[:500])}]' \
@@ -95,7 +95,7 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$
 # Prior reviews (round 2): dismissal + prior functional result, from GitHub —
 # GitHub is the state store; there is no state artifact.
 if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
-  gh api --paginate "repos/$REPO/pulls/$PR/reviews" > /tmp/pr-reviews.json
+  gh api --paginate "repos/$REPO/pulls/$PR/reviews" | jq -s 'add // []' > /tmp/pr-reviews.json
   jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot) | select((.body // "") | length > 0) | select(.body | contains("<!-- claude-review-crash -->") | not) | select(.body | contains("<!-- claude-review-superseded -->") | not)] | sort_by(.submitted_at) | last // {}' \
     /tmp/pr-reviews.json > /tmp/prior-review.json
   echo "prior review: state=$(jq -r '.state // "none"' /tmp/prior-review.json) commit=$(jq -r '.commit_id // ""' /tmp/prior-review.json)"
@@ -109,14 +109,15 @@ fi
 #    closing keywords. Each is verified as a real issue, not a PR
 #    (.pull_request is null only for real issues; PRs are a subclass of issues
 #    in the API), then fetched via `gh issue view`.
-: > /tmp/issue.json
+: > /tmp/issue-candidates.jsonl
 CANDS="$(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json)
 $(jq -r '(.title // "") + " " + (.body // "")' /tmp/pr.json | grep -oE '(#|/issues/)[0-9]+' | grep -oE '[0-9]+')"
 for n in $(printf '%s\n' "$CANDS" | awk 'NF && !seen[$0]++' | head -6); do
   RESP=$(gh api "repos/$REPO/issues/$n" 2>/dev/null)
   printf '%s' "$RESP" | jq -e '.pull_request == null and (.number | type == "number")' >/dev/null 2>&1 || continue
-  gh issue view "$n" --json number,title,body,labels,state >> /tmp/issue.json 2>/dev/null || true
+  gh issue view "$n" --json number,title,body,labels,state >> /tmp/issue-candidates.jsonl 2>/dev/null || true
 done
+jq -s '.' /tmp/issue-candidates.jsonl > /tmp/issue.json 2>/dev/null || echo '[]' > /tmp/issue.json
 
 # 2. External-tracker candidates from title + body + branch (JIRA-style ids,
 #    tracker URLs), then the consumer's optional fetch-issue.sh hook.
@@ -127,6 +128,10 @@ URLS=$(printf '%s' "$BODY" | grep -oE 'https?://[^ )>"]+' | grep -iE 'jira|linea
 jq -n --arg ids "$IDS" --arg urls "$URLS" '{ids: ($ids | split("\n") | map(select(. != ""))), urls: ($urls | split("\n") | map(select(. != "")))}' > /tmp/external-issue-candidates.json
 : > /tmp/external-issue.md
 if [ -x .github/claude-review/fetch-issue.sh ]; then
+  # Consumer hooks expect TRACKER_SECRETS KEY=VALUE lines as named env vars.
+  while IFS='=' read -r k v; do
+    [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$k=$v"
+  done <<< "${TRACKER_SECRETS:-}"
   timeout 60 .github/claude-review/fetch-issue.sh > /tmp/external-issue.md 2>/tmp/fetch-issue.err || echo "fetch-issue.sh failed (rc=$?): $(tail -c 200 /tmp/fetch-issue.err)"
 fi
 

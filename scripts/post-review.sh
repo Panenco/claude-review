@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
+# No `set -e` (repo rule, bugbot.md): critical steps carry explicit guards instead.
 
 # post-review.sh — validate /tmp/review.json, post the review, set the check.
 #
@@ -16,7 +17,7 @@ BOT="${REVIEW_BOT_USER:-github-actions[bot]}"
 REVIEW_JSON="${REVIEW_JSON:-/tmp/review.json}"
 ORCH_LOG="${ORCH_LOG:-/tmp/orchestrator-output.txt}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
-WORK=$(mktemp -d)
+WORK=$(mktemp -d) || { echo "::error::mktemp failed"; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 
 # Crash banners can't be deleted (no review-delete API); PATCH them to a
@@ -104,8 +105,8 @@ case "$VERDICT" in
   APPROVE|COMMENT|REQUEST_CHANGES) ;;
   *) crash_exit "$REVIEW_JSON has unknown verdict '${VERDICT:-<missing>}'." ;;
 esac
-jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.md"
-jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json"
+jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.md" || crash_exit "could not extract review body from $REVIEW_JSON."
+jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json" || crash_exit "could not extract comments from $REVIEW_JSON."
 
 # ── 2. Hunk validation ───────────────────────────────────────────────────────
 # GitHub 422s the whole atomic POST if any comment line is outside a diff
@@ -190,11 +191,15 @@ echo "::endgroup::"
 
 # ── 5. Atomic POST ───────────────────────────────────────────────────────────
 echo "::group::Post review"
+# Last-line dedup guard: identical (path, line, body) tuples that survive the
+# orchestrator's merge must not reach GitHub twice.
+jq 'unique_by([.path, (.line | tostring), .body])' "$WORK/comments.json" > "$WORK/comments-dedup.json" \
+  && mv "$WORK/comments-dedup.json" "$WORK/comments.json"
 jq -n \
   --arg event "$VERDICT" \
   --rawfile body "$WORK/body.md" \
   --slurpfile comments "$WORK/comments.json" \
-  '{event: $event, body: $body, comments: $comments[0]}' > "$WORK/payload.json"
+  '{event: $event, body: $body, comments: $comments[0]}' > "$WORK/payload.json" || crash_exit "could not build review payload."
 echo "Posting $VERDICT review with $(jq '.comments | length' "$WORK/payload.json") inline comments"
 if ! POST_RESPONSE=$(gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input "$WORK/payload.json" 2>&1); then
   echo "::endgroup::"
