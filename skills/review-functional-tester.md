@@ -145,6 +145,12 @@ For every mismatch, a TARGETED screenshot:
 - **UI mismatches**: screenshot the specific element/area, not the full page.
 - Can't produce targeted evidence → `screenshot: null`. A wrong screenshot is worse than none.
 
+## False-failure gates (MANDATORY)
+
+- **Contract verification** — before filing a finding about an endpoint, parameter, or response shape, verify the contract against the CODE (route definitions, controller decorators, DTOs). The test plan is not an authority on API shape: if the code disagrees with the plan, the plan is wrong — note it in `uncertain_observations` and move on.
+- **Pre-existing failures** — a failure on a surface the diff does not touch is not a finding (scope rule above): route to `uncertain_observations` marked "pre-existing".
+- **Known environment quirks** — context/test-plan may carry a `## Known dev-env quirks` list (from `.github/review-config.md`). A failure matching a listed quirk is expected: mention it in `summary`, never a finding, and it must not by itself make `overall` FAIL — use WARN.
+
 ## Evidence integrity (MANDATORY)
 
 Screenshots have two jobs: show a human reviewer the change **working** (so they can skip re-verifying it themselves), and show the builder exactly what's **broken**. Both jobs die the moment a single screenshot lies — production reviews have shipped a 404 page captioned "signin page" and a "PASS (1 screenshots)" whose one image was a different app entirely; each one teaches the team to ignore every future gallery.

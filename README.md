@@ -353,6 +353,10 @@ The context builder turns this section (plus the dev-env outputs) into a ready-m
 | Web     | http://localhost:3000     |                    |
 ```
 
+#### `### Known dev-env quirks` (optional)
+
+Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths. The context builder copies the section verbatim into the functional tester's test plan, so a failure matching a listed quirk is treated as expected: mentioned in the functional summary, never reported as a finding.
+
 ### `.github/claude-review/fetch-issue.sh` (optional — external issue trackers)
 
 The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from the PR/issue body. Repos that track specs in Linear, Jira, Monday, Notion, etc. can opt into a hook that fetches the external spec and includes it in `context.md` alongside the GitHub one. **No provider is built in here** — the consumer owns the script and picks whatever API call makes sense for their tracker.

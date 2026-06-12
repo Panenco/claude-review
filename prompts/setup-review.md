@@ -342,6 +342,10 @@ List the actual ports you found in Step 1 (from `package.json` scripts, framewor
 | <name> | <URL you discovered> | <health endpoint if known> |
 ```
 
+### Known dev-env quirks (optional)
+
+If the dev environment has known failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths — list them under a `### Known dev-env quirks` section (same level-3, file-root placement as `### Auth`). The pipeline copies it verbatim into the functional tester's test plan, so matching failures are treated as expected instead of reported as findings.
+
 **Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. The pipeline greps for these headings literally (the context builder's config-gap check and the dev-env probe).
 
 Correct file outline — note heading levels:

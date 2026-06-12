@@ -17,7 +17,7 @@ This applies to consistency/sibling-pattern findings too: cite the sibling insid
 
 ## Efficiency
 
-Target ≤10 turns. Use only Read and Write — no Bash, Glob, or Grep. `context.md` is an INDEX, not a dump; you Read what you need.
+Target ≤10 turns. Use only Read and Write — no Glob or Grep; Bash solely for the stale-snapshot guard below. `context.md` is an INDEX, not a dump; you Read what you need.
 
 - **Turn 1**: Read `context.md` (+ `bugbot.md` in the same turn if your prompt mentions it).
 - **Turn 2**: ONE batched parallel Read — drip-Reading across turns is the single most common reason judges hit the ceiling. In one response, Read all of:
@@ -109,6 +109,7 @@ Before finalising ANY finding, verify all of:
 5. **Exact reference** — `spec-mismatch` quotes the exact rule; `bug` shows the failure path. "Generally bad practice" is not evidence.
 6. **Artifact exists** — references to a library/export/symbol must be verified by Read (`package.json`, the source file). Cannot verify → drop. If `/tmp/user-replies-on-ours.json` shows a maintainer already rebutted the same issue, do not re-flag without new counter-evidence.
 7. **Impact test** — state the concrete bad outcome in one sentence. A bare convention-rule match with no stated outcome is noise. Process complaints about the PR description are not findings.
+8. **Stale-snapshot guard** — before filing any finding that claims something is MISSING or ABSENT (a route, a config entry, a migration, a handler), check whether the BASE branch already provides it: `git show origin/<base>:<path>` or `git grep <symbol> origin/<base> -- <path-glob>` (base ref name is in context.md's PR metadata). If base provides it, there is no finding — the merge result has it. Audited failure: a CRITICAL "nginx.conf has no /api/fgo route" filed against a stale head whose base had already shipped the route.
 
 A clean `[]` is a confident, valuable review. When in doubt, drop the finding.
 

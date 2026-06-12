@@ -161,7 +161,7 @@ cat /tmp/dev-env/outputs 2>/dev/null || echo "dev-env outputs not available yet"
 
 ## Turn 2: parallel Reads (spec/synthesis material ONLY)
 
-One response: `/tmp/pr.json`, `/tmp/issue.json` (if present), `/tmp/prd-content.md`, `/tmp/external-issue.md`, `.github/review-config.md` (if present), `CLAUDE.md` (if present). On round 2 also `/tmp/prior-review.json`, `/tmp/review-threads.json`, `/tmp/prior-bot-comments.json`, `/tmp/other-bot-comments.json`, `/tmp/human-inline-comments.json`, `/tmp/user-replies-on-ours.json`, `/tmp/since-last.diff`. No changed files, no `/tmp/pr.diff`, no chunks.
+One response: `/tmp/pr.json`, `/tmp/issue.json` (if present), `/tmp/prd-content.md`, `/tmp/external-issue.md`, `.github/review-config.md` (if present — convention routing, `### Auth`, and the optional `### Known dev-env quirks` passthrough), `CLAUDE.md` (if present). On round 2 also `/tmp/prior-review.json`, `/tmp/review-threads.json`, `/tmp/prior-bot-comments.json`, `/tmp/other-bot-comments.json`, `/tmp/human-inline-comments.json`, `/tmp/user-replies-on-ours.json`, `/tmp/since-last.diff`. No changed files, no `/tmp/pr.diff`, no chunks.
 
 ## Turns 3–4 (round 2 only): thread classification
 
@@ -246,7 +246,7 @@ prompt_injection_detected: true/false
 
 ## Turn 7: write test-plan.md
 
-A single functional tester agent executes this plan; the orchestrator pastes your `## Auth recipe` and `## Scenarios` sections verbatim into its prompt. Format:
+A single functional tester agent executes this plan; the orchestrator pastes your `## Auth recipe` and `## Scenarios` sections verbatim into its prompt. When `.github/review-config.md` contains a `### Known dev-env quirks` section (or similarly titled), copy it verbatim into test-plan.md as `## Known dev-env quirks` — the tester treats matching failures as expected, never findings. Format:
 
 ```markdown
 # Test Plan — PR #<number>

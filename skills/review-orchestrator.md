@@ -41,7 +41,7 @@ Hard rules:
 
 ## Turn discipline
 
-Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB outputs, trivial check → 5 dev-env poll (Bash) → 6 parallel Task fan → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → last turns: screenshot upload (Bash) + Write `/tmp/review.json`.
+Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB outputs, trivial check → 5 dev-env poll + DEADLINE_EPOCH (Bash) → 6 the Phase B fan — ONE response carrying ALL Task calls (judges + tester) → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → Phase D ≤8 turns ending in screenshot upload (Bash) + Write `/tmp/review.json`.
 
 **Turn 1 (Bash):** `printenv MODEL_HIGH MODEL_STANDARD MODEL_FAST REVIEW_LEVEL RUN_FUNCTIONAL GATE GATE_REASON ROUND PRIOR_VERDICT PRIOR_HEAD_SHA PR_NUMBER FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS PR_AUTHOR_IS_BOT; echo "PIPELINE_DIR=$CLAUDE_REVIEW_PIPELINE_DIR"` — keep every value. Each `${VAR}` in this skill means that LITERAL value. Task `model:` params MUST be the exact model ID read from env (e.g. `claude-opus-4-8`) — NEVER an alias like `opus`/`sonnet`/`haiku`: aliases resolve against the CLI's bundled table and silently demote the judge to an older model.
 **STOP-and-write anchor: by turn 60, write /tmp/review.json with whatever you have.** After turn 60, finalise only decisions already drafted. Never rely on the workflow's max-turns ceiling.
@@ -78,6 +78,8 @@ while [ ! -f /tmp/dev-env/rc ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do sleep 5;
 
 Source `/tmp/dev-env/outputs` (KEY=VALUE: `API_URL`, `WEB_URL`, `API_READY`, `WEB_READY`, `AUTH_READY`, `AUTH_*`). If `/tmp/dev-env/rc` never appears (timeout) or `/tmp/dev-env/` doesn't exist (workflow skipped bring-up), treat `WEB_READY=false`. Skip this poll entirely when functional won't dispatch (`RUN_FUNCTIONAL` ≠ `true` and strategy ≠ `pipeline-self-test`).
 
+Compute `DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))` in this same Bash turn. The poll and the deadline computation both happen BEFORE any Phase B dispatch — no Bash between Task calls.
+
 ### Functional dispatch decision
 
 1. `## Strategy: pipeline-self-test` in test-plan.md AND `tests/` exists → run `tests/*.sh` directly via Bash (skip `*smoke*`, 60s timeout each), tally pass/fail into `/tmp/functional-meta.json` (`strategy: "pipeline-self-test"`, `overall: PASS|FAIL|WARN`, `pass`/`fail`/`total`/`summary`), `/tmp/functional-findings.json = []`. No Task dispatch. Runs regardless of `RUN_FUNCTIONAL`.
@@ -86,7 +88,7 @@ Source `/tmp/dev-env/outputs` (KEY=VALUE: `API_URL`, `WEB_URL`, `API_READY`, `WE
 
 ### Composing the functional Task prompt (no helper script — you write it)
 
-Compute the absolute deadline yourself: `DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))` via Bash. Then dispatch `subagent_type: "review-functional-tester"` (custom subagent; its file defines model + inline Playwright MCP — never pass MCP config or tool overrides) with a prompt containing, in order:
+Use the `DEADLINE_EPOCH` computed in the dev-env sync turn. Dispatch `subagent_type: "review-functional-tester"` (custom subagent; its file defines model + inline Playwright MCP — never pass MCP config or tool overrides) with a prompt containing, in order:
 
 ```
 Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-functional-tester.md and follow it exactly. PR #${PR_NUMBER}.
@@ -100,6 +102,8 @@ Outputs: /tmp/functional-findings.json + /tmp/functional-meta.json. Screenshots:
 ```
 
 ### The Task fan (one assistant response, multiple Task calls)
+
+Phase B dispatch is EXACTLY ONE assistant response containing ALL Task calls — both judges AND the functional tester together. Never dispatch the tester in a later response than the judges: audited runs serialized them and paid 6+ minutes of pure wall-clock loss.
 
 1. **Judge-Opus** — `subagent_type: "general-purpose"`, `model: "${MODEL_HIGH}"`, prompt:
    ```
@@ -124,7 +128,7 @@ Otherwise re-dispatch BOTH judges in one response, `MODE=rebuttal`, same models,
 
 ## Phase D — consolidate, ladder, gates, assemble
 
-Use each judge's most recent output.
+Use each judge's most recent output. Target ≤8 turns: one consolidation pass, one screenshot-upload Bash, one final Write — never re-read judge/tester files already read.
 
 ### Merge / dedup (the double-post class must die here)
 
@@ -133,7 +137,7 @@ Use each judge's most recent output.
 3. Solo findings pass through unchanged. Never invent, never reword.
 4. **Cross-bot dedup:** a cluster matching an open OTHER-bot thread (from context.md `## Open inline threads`, path + line±5 + same defect) is NOT posted as an inline comment and NOT body-bulleted. If our analysis adds genuinely new information (new failure path, concrete evidence the bot lacked, a fix), emit ONE `bot_replies` entry on that thread; otherwise one line under `### Overlap with other reviewers` in the body. **Never post "+1"/"confirmed"-only replies.**
 5. **Self-dedup:** a cluster matching one of our own open threads emits nothing new (the open thread already carries it; round-2 ladder counts it).
-6. **Functional traceability gate:** a functional finding merges only when its expectation traces to a cited source (`[ACn]` / `[PRD: …]`) or is an objective failure (HTTP 5xx, crash, console error, broken navigation, data loss); findings asserting un-cited product expectations route to `uncertain_observations` instead.
+6. **Functional traceability gate:** a functional finding merges only when its expectation traces to a cited source (`[ACn]` / `[PRD: …]`) or is an objective failure (HTTP 5xx, crash, console error, broken navigation, data loss). The objective-failure clause never re-admits what the tester's false-failure gates exclude (pre-existing surfaces, known dev-env quirks, plan-invented contracts); findings asserting un-cited product expectations route to `uncertain_observations` instead.
 
 ### Verdict — per-PR ladder
 
@@ -216,6 +220,8 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
 9. `[Run logs](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)`
 
 **Functional passes are never findings** — passes live only in this section's summary/gallery.
+
+**The body NEVER states where findings are posted** ("see inline comments above", "posted as inline comments") — the poster may relocate out-of-hunk comments into the body, making any such claim false.
 
 ### resolve_threads / bot_replies
 
