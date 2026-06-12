@@ -94,6 +94,7 @@ Out of scope for everyone: cosmetic/formatting (linter territory), speculative e
 ## Pointing at the right line
 
 Inline comments anchor on (`path`, `line`, `side`) tuples that must exist in the PR's diff hunks — RIGHT for added/modified (`+`), LEFT for deleted (`-`).
+0. **`line_start`/`line_end` are NEW-FILE line numbers** — computed from the hunk header (`@@ -a,b +c,d @@`), NEVER the line's offset inside the chunk file. The head-verification Read (rule 2 below) shows real line numbers: confirm your `code_quote` appears at `line_start` in that Read output and correct the number if it doesn't. A wrong line number silently demotes the finding from an inline comment to a body bullet.
 1. Cite a line that exists in the hunks; default `side` RIGHT, set `LEFT` for deleted-line findings.
 2. Findings on unchanged code the diff contextualises: anchor on the closest in-hunk line and explain the real location in `reasoning`. Never invent line numbers.
 3. Structural findings: anchor on the topmost added line of the module.
