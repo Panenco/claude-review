@@ -120,7 +120,7 @@ Wait for every dispatched Task.
 
 Judges are equivalent when: verdicts match exactly, finding-cluster sets match (cluster = identical `path` AND `line_start` within ±5 AND same severity), and `manual_spec_present` agrees. Equivalent → Phase D.
 
-Otherwise re-dispatch BOTH judges in one response, `MODE=rebuttal`, same models, prompts pointing at `OWN_PRIOR_OUTPUT_PATH` and `OTHER_JUDGE_OUTPUT_PATH`, round-suffixed outputs (`/tmp/judge-opus-r1.json`, …). Re-check after each round; cap at 2 rounds; on residual disagreement take the union + more severe verdict (`agreed_at: "none"`).
+Otherwise re-dispatch BOTH judges in one response, `MODE=rebuttal`, same models, prompts pointing at `OWN_PRIOR_OUTPUT_PATH` and `OTHER_JUDGE_OUTPUT_PATH`, round-suffixed outputs (`/tmp/judge-opus-r1.json`, …). Re-check after each round; cap at 2 rounds. Residual disagreement (`agreed_at: "none"`): clusters BOTH judges flagged take the high-tier judge's severity (never the union max); findings only the fast judge holds — seen and not adopted by the high-tier judge in rebuttal — cap at `minor` (reported, non-blocking); high-tier-only findings keep their severity. The verdict escalates to REQUEST_CHANGES only on critical/major findings surviving these rules. Light tier (single judge): unchanged.
 
 ## Phase D — consolidate, ladder, gates, assemble
 
@@ -129,10 +129,11 @@ Use each judge's most recent output.
 ### Merge / dedup (the double-post class must die here)
 
 1. Cluster findings across ALL sources (both judges + `/tmp/functional-findings.json`): same `path` AND `line_start` within ±5 AND describing the same defect (judge the defect, not the wording).
-2. One representative per cluster: higher severity wins; tie → longer `evidence`. Representative is a verbatim copy; only graft `screenshot` from cluster members. Re-id `j1, j2, …` in emission order.
+2. One representative per cluster: higher severity wins; tie → longer `evidence` (judge-vs-judge clusters resolved under the Phase C residual-disagreement rule enter with that resolved severity). Representative is a verbatim copy; only graft `screenshot` from cluster members. Re-id `j1, j2, …` in emission order.
 3. Solo findings pass through unchanged. Never invent, never reword.
 4. **Cross-bot dedup:** a cluster matching an open OTHER-bot thread (from context.md `## Open inline threads`, path + line±5 + same defect) is NOT posted as an inline comment and NOT body-bulleted. If our analysis adds genuinely new information (new failure path, concrete evidence the bot lacked, a fix), emit ONE `bot_replies` entry on that thread; otherwise one line under `### Overlap with other reviewers` in the body. **Never post "+1"/"confirmed"-only replies.**
 5. **Self-dedup:** a cluster matching one of our own open threads emits nothing new (the open thread already carries it; round-2 ladder counts it).
+6. **Functional traceability gate:** a functional finding merges only when its expectation traces to a cited source (`[ACn]` / `[PRD: …]`) or is an objective failure (HTTP 5xx, crash, console error, broken navigation, data loss); findings asserting un-cited product expectations route to `uncertain_observations` instead.
 
 ### Verdict — per-PR ladder
 
@@ -159,6 +160,7 @@ REBUTTED threads never count as still-present blockers. Round 1: `ladder_rule_ap
 - **Technical-change smoke:** `technical_change = true` when test-plan.md has `## Technical change: true`. `smoke_ok = true` when functional `overall` ∈ {PASS, WARN}; OR inherited — `ROUND ≥ 2` AND the planner deliberately chose `## Strategy: skip` AND context.md's `Prior functional result:` is PASS/WARN; OR waived — `GATE` ≠ `normal` AND `RUN_FUNCTIONAL` ≠ `true` (the plan chose not to smoke). `technical_change && !smoke_ok` → APPROVE → COMMENT.
 - **Functional crash:** functional `overall` = CRASH (incl. MCP-unavailable) → APPROVE → COMMENT, set `requires_human_review: true` with the crash reason when the cause is MCP unavailability.
 - **Human review:** `requires_human_review=true` (from judges) → APPROVE → COMMENT.
+- **Reviewer self-modification:** `reviewer_self_modification: true` in context.md `## Flags` → set `meta.requires_human_review: true` with reason "PR modifies the reviewer's own configuration"; the human-review gate above then applies. No other behavior changes.
 
 ### Screenshot publishing (only when image files exist)
 
@@ -208,7 +210,7 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
    - Judge-health banners (one judge failed / did not converge), verbatim wording from v2.
    - The `Setup notes` line from context.md, when present.
 5. `### Since previous review` (round 2): `**Resolved (N):**`, `**Still present (N):**`, `**Dropped after author rebuttal (N):**` — one bullet per thread, `- \`<id>\` — <title, clipped at 120>`.
-6. `### Findings` — bullets for every finding NOT posted inline: `- **[<SEVERITY> · <TYPE>]** \`<path>:<line_start>\` — <title> — <one-sentence reasoning>`. Overflowed critical/major first, then minor, then note.
+6. `### Findings` — REQUIRED whenever ≥1 finding is not posted inline (even a single one): bullets `- **[<SEVERITY> · <TYPE>]** \`<path>:<line_start>\` — <title> — <one-sentence reasoning>`. Overflowed critical/major first, then minor, then note. Every finding rendering — inline comment, body bullet, bot reply — carries the `**[<SEVERITY> · <TYPE>]**` marker.
 7. `### Overlap with other reviewers` — one bullet per cross-bot-deduped cluster: `- <bot> already flagged \`<path>:<line>\` — <agree/extend one-liner>`.
 8. Functional section: `<details><summary><emoji> <b>Functional Validation — <OVERALL></b> (<N> screenshots)</summary>` with `#### Summary`, `#### Issues found` (severity-uppercased bullets + clipped evidence), `#### Screenshots` (caption + `![](url)` per uploaded image, artifact-link fallback), `</details>`. Emoji ✅ PASS / ⚠️ WARN / ❌ FAIL or CRASH. `pipeline-self-test` renders `<b>Pipeline Self-Test — <OVERALL></b> (<pass>/<total> bash test script(s) passed)`. Skip the section when strategy=skip.
 9. `[Run logs](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)`
@@ -218,7 +220,7 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
 ### resolve_threads / bot_replies
 
 - `resolve_threads`: one entry per context.md `## Thread resolution` row with status RESOLVED and source ∈ {own_bot, other_bot, human} — `thread_id` = the row's thread node id (`PRRT_…`), `reply` = `✅ Resolved as of <head-sha> — <the row's evidence one-liner>`. STILL_PRESENT / REBUTTED / NEW_CONTEXT rows get nothing.
-- `bot_replies`: only from cross-bot dedup rule 4 — `comment_id` = the other bot's numeric REST comment id, `body` states the NEW information. Empty array is the normal case.
+- `bot_replies`: only from cross-bot dedup rule 4 — `comment_id` = the other bot's numeric REST comment id, `body` opens with the finding's `**[<SEVERITY> · <TYPE>]**` marker and states the NEW information. Empty array is the normal case.
 
 ### meta
 

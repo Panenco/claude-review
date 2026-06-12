@@ -58,6 +58,10 @@ Default severity `minor` (non-blocking); escalate to blocking `major` only when 
 
 Design findings go through the same false-positive self-check as everything else — the design pass changes WHERE you look, not the evidence bar.
 
+### Copy-vs-code consistency check (MANDATORY for every judge)
+
+For every user-facing string in the diff (emails, i18n catalogs, templates, UI copy) that states a factual claim about system behavior — durations, limits, counts, prices, URLs, feature behavior — locate the code/constant that implements the claim and verify they agree. A mismatch is a `bug`, severity `major` when it misleads users into failure paths: e.g. email copy says the link "expires in 7 days" while `ACTIVATION_TTL_MS` is 72h. These are internal inconsistencies between the PR's own copy and code — in scope regardless of spec availability; neither the anti-spec-lawyering gate nor the "doc accuracy is `note`" rule applies (user-facing copy is runtime behavior, not documentation).
+
 ## Severity
 
 | Level | Meaning | Blocks merge? |
@@ -157,7 +161,7 @@ When launched with `MODE=rebuttal` + `OWN_PRIOR_OUTPUT_PATH` + `OTHER_JUDGE_OUTP
 3. Your prior findings the other judge didn't have: **DEFEND** (keep unchanged) or **DROP** (it didn't really clear the self-check).
 4. Shared findings: keep your own version.
 5. Re-derive the verdict from the findings you now hold.
-Target ≤6 turns. The orchestrator caps rebuttal at 2 rounds, then takes union + more severe verdict.
+Target ≤6 turns. The orchestrator caps rebuttal at 2 rounds, then resolves residual disagreement itself (on shared clusters the high-tier judge's severity wins; fast-judge-only findings cap at `minor`).
 
 ## Output: ONE JSON file at `OUTPUT_PATH`
 
