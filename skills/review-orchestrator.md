@@ -24,7 +24,7 @@ Env (set by the workflow): `REVIEW_LEVEL`, `RUN_FUNCTIONAL`, `GATE`, `GATE_REASO
     "findings": [ {"id","title","severity","type","path","line_start","line_end","side","evidence","reasoning","expected","screenshot?"} ],
     "verdict_summary": "<the consolidated judge summary paragraph>",
     "round": 1, "prior_verdict": null, "ladder_rule_applied": "none-round-1",
-    "manual_spec_present": true, "spec_gate_waived": false, "technical_change": false, "smoke_ok": true,
+    "manual_spec_present": true, "spec_gate_waived": false, "technical_change": false,
     "requires_human_review": false, "requires_human_review_reason": "",
     "functional_validation": {"strategy": "skip", "overall": "N/A", "summary": "", "screenshot_count": 0, "areas_tested": []},
     "judge_health": {"opus": "ok", "haiku": "ok", "rebuttal_rounds": 0, "agreed_at": "initial", "cb_failed": false, "functional_failed": false, "trivial_skip": false},
