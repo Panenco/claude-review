@@ -217,6 +217,58 @@ assert_contains "superseded marker in PUT body" "claude-review-superseded" "$GH_
 assert_contains "prior blocking review dismissed" "reviews/778/dismissals" "$GH_CALLS"
 rm -rf "$W" "$REVIEWS_FIXTURE"
 
+# ── (h) reject-oversized → body-only REQUEST_CHANGES ─────────────────────────
+echo ""
+echo "── (h) reject-oversized posts body-only REQUEST_CHANGES ──"
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "REQUEST_CHANGES",
+  "body": "## Claude PR Review\n\nThis PR is too large to review safely — please split it.",
+  "comments": [],
+  "resolve_threads": [],
+  "bot_replies": [],
+  "meta": {
+    "findings": [],
+    "round": 1,
+    "ladder_rule_applied": "reject-oversized"
+  }
+}
+EOF
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "exit 0" "0" "$RC"
+PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
+assert_eq "event is REQUEST_CHANGES" "REQUEST_CHANGES" "$(echo "$PAYLOAD" | jq -r '.event')"
+assert_eq "no inline comments" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "no runtime-evidence banner" "no runtime evidence" "$(cat "$W/summary.md")"
+rm -rf "$W"
+
+# ── (i) runtime-evidence → step-summary banner ───────────────────────────────
+echo ""
+echo "── (i) runtime-evidence renders the step-summary banner ──"
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "REQUEST_CHANGES",
+  "body": "## Claude PR Review\n\nNo runtime evidence — wire up dev-start.sh.",
+  "comments": [],
+  "resolve_threads": [],
+  "bot_replies": [],
+  "meta": {
+    "findings": [],
+    "round": 1,
+    "ladder_rule_applied": "runtime-evidence"
+  }
+}
+EOF
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "exit 0" "0" "$RC"
+PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
+assert_eq "event is REQUEST_CHANGES" "REQUEST_CHANGES" "$(echo "$PAYLOAD" | jq -r '.event')"
+assert_eq "no inline comments" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "step summary has runtime-evidence banner" "no runtime evidence" "$(cat "$W/summary.md")"
+rm -rf "$W"
+
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 
 echo ""
