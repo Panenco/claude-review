@@ -1,6 +1,6 @@
 ---
 name: review-orchestrator
-description: Single top-level agent for the entire review pipeline. Dispatches the context builder, the debating judges (Opus + Haiku, or one Sonnet at light tier), and the functional tester; runs ≤2 rebuttal rounds; then consolidates, applies the verdict ladder + gates, assembles the review body and inline comments, and writes the ONLY output artifact: /tmp/review.json.
+description: Single top-level agent for the entire review pipeline. Dispatches the context builder, the debating judges (Opus + Haiku, or one judge at light tier), and the functional tester; runs ≤2 rebuttal rounds; then consolidates, applies the verdict ladder + gates, assembles the review body and inline comments, and writes the ONLY output artifact: /tmp/review.json.
 ---
 
 # Review Orchestrator
@@ -52,7 +52,7 @@ Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB
 - `REVIEW_LEVEL=skip` → dispatch nothing; branch on `GATE`:
   - Default skip (e.g. `GATE=label`, human opted out): Write `/tmp/review.json` with `verdict: "COMMENT"` (never APPROVE — the bot must not satisfy a required-review check on a PR it was told not to review), `body` = `## Claude PR Review — COMMENT` + GATE_REASON (or "Detailed review skipped by the review plan."), empty `comments`/`resolve_threads`/`bot_replies`, `meta.judge_health: {"gate_skip": true, "agreed_at": "skipped"}`. Exit.
   - `GATE=oversized` (an active structural block, not an opt-out): Write `/tmp/review.json` with `verdict: "REQUEST_CHANGES"`, `body` = `## Claude PR Review — REQUEST_CHANGES\n\n` + the `GATE_REASON` paragraph, empty `comments`/`resolve_threads`/`bot_replies`, and `meta` = `{ "findings": [], "round": <ROUND as int, default 1>, "prior_verdict": <PRIOR_VERDICT in quotes, or the JSON literal null when empty>, "ladder_rule_applied": "reject-oversized", "judge_health": {"gate_oversized": true, "agreed_at": "rejected-oversized"} }`. Exit. Re-derived fresh from PR size every round — a later push that shrinks the PR below the ceiling gets a real review.
-- `REVIEW_LEVEL=light` → Phases A and trivial check as normal; Phase B dispatches ONE judge (`MODEL_STANDARD`, output `/tmp/judge-sonnet.json`) instead of the panel; no Phase C. Functional follows `RUN_FUNCTIONAL` unchanged.
+- `REVIEW_LEVEL=light` → Phases A and trivial check as normal; Phase B dispatches ONE judge (model per `GATE` — see Phase B; output `/tmp/judge-light.json`) with the [DESIGN] pass MANDATORY, instead of the panel; no Phase C. Functional follows `RUN_FUNCTIONAL` unchanged.
 - `REVIEW_LEVEL=full` (or unset) → everything below.
 
 ## Phase A — context build
@@ -113,7 +113,7 @@ Phase B dispatch is EXACTLY ONE assistant response containing ALL Task calls —
    ```
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-judge.md and follow it exactly. If bugbot.md exists at the repo root, Read it — its acceptance/exemption sections override the skill (drop matching findings). You are the Opus judge for PR #${PR_NUMBER}. context.md at the repo root is your index. MODE=initial OUTPUT_PATH=/tmp/judge-opus.json. The [DESIGN] pass is MANDATORY for you.
    ```
-2. **Judge-Haiku** — same prompt, `model: "${MODEL_FAST}"`, `OUTPUT_PATH=/tmp/judge-haiku.json`, and "The [DESIGN] pass is optional for you." At `light`: replace 1–2 with ONE judge, `model: "${MODEL_STANDARD}"`, `OUTPUT_PATH=/tmp/judge-sonnet.json`.
+2. **Judge-Haiku** — same prompt, `model: "${MODEL_FAST}"`, `OUTPUT_PATH=/tmp/judge-haiku.json`, and "The [DESIGN] pass is optional for you." At `light`: replace 1–2 with ONE judge — `model: "${MODEL_HIGH}"` when `GATE=small`, `model: "${MODEL_STANDARD}"` when `GATE=promotion` (any other GATE → `${MODEL_STANDARD}`) — `OUTPUT_PATH=/tmp/judge-light.json`, and "The [DESIGN] pass is MANDATORY for you."
 3. **Functional tester** — per the decision above.
 
 Wait for every dispatched Task.
@@ -121,7 +121,7 @@ Wait for every dispatched Task.
 ### Per-subagent failure handling
 
 - Full tier, one judge's output missing/unparseable → record `"failed"` in `judge_health`, proceed with the survivor. No retries, ever.
-- Full tier, both failed (or light tier, the single judge failed) → degraded `/tmp/review.json`: `verdict: "COMMENT"`, body banner `> :warning: **Both judges failed** — review is empty or partial. Re-run the workflow.` (light: `**Judge failed**`), empty findings/comments, `judge_health.both_failed: true` (light: `{"sonnet": "failed", "single_judge": true}`). Still include the functional section if the tester succeeded. Write, exit.
+- Full tier, both failed (or light tier, the single judge failed) → degraded `/tmp/review.json`: `verdict: "COMMENT"`, body banner `> :warning: **Both judges failed** — review is empty or partial. Re-run the workflow.` (light: `**Judge failed**`), empty findings/comments, `judge_health.both_failed: true` (light: `{"single": "failed", "single_judge": true}`). Still include the functional section if the tester succeeded. Write, exit.
 - Tester Task crashed (no output / parse error) → `/tmp/functional-meta.json = {"strategy": "crashed", "overall": "CRASH", "summary": "Functional tester agent did not complete."}`, `/tmp/functional-findings.json = []`, `judge_health.functional_failed: true`. Never use the `skip`/`PASS` sentinel for a crash.
 
 ## Phase C — rebuttal (≤2 rounds; skip at light)
@@ -145,7 +145,7 @@ Use each judge's most recent output. Target ≤8 turns: one consolidation pass, 
 
 ### Verdict — per-PR ladder
 
-First matching rule: any critical/major finding → `REQUEST_CHANGES`; any finding → `COMMENT`; none → `APPROVE`. `manual_spec_present`: judges agree → use it; disagree → `false`. `verdict_summary`: Opus's verbatim (fallback Haiku/Sonnet) + `(consolidated from N judge(s), R rebuttal round(s))`.
+First matching rule: any critical/major finding → `REQUEST_CHANGES`; any finding → `COMMENT`; none → `APPROVE`. `manual_spec_present`: judges agree → use it; disagree → `false`. `verdict_summary`: Opus's verbatim (fallback Haiku/Sonnet; at `light`, the single judge's) + `(consolidated from N judge(s), R rebuttal round(s))`.
 
 ### Verdict — round-2 ladder (when `ROUND` ≥ 2 and `PRIOR_HEAD_SHA` non-empty)
 
