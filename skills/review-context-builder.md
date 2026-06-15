@@ -247,7 +247,7 @@ Then a `### Prior findings` table — one row per reconstructed prior finding:
 | pf1 | major | src/users/locale.ts:88 | actor locale ignored | other-bot-thread PRRT_kwDO... | STILL_PRESENT | HEAD still reads locale from request, not actor |
 ```
 
-`carrier` ∈ `own-thread <thread_id> | other-bot-thread <thread_id> | body-only`; `status` ∈ `RESOLVED | STILL_PRESENT | REBUTTED`. This table — not the thread table — is the orchestrator's round-2 verdict input; never omit it when a prior review exists (no prior findings → a `none` line under the heading).
+`carrier` ∈ `own-thread <thread_id> | other-bot-thread <thread_id> | body-only`; `status` ∈ `RESOLVED | STILL_PRESENT | REBUTTED`. This table — not the thread table — is the orchestrator's round-2 verdict input; never omit it when a prior review exists. When the prior review recorded NO findings, still emit the `### Prior findings` header with a single line `- none (prior review recorded no findings)` — this lets the round-2 ladder tell a legitimately zero-finding prior RC (a structural block) apart from a reconstruction that failed.
 
 ### `## Open inline threads`
 Paths only: `/tmp/prior-bot-comments.json`, `/tmp/other-bot-comments.json`, `/tmp/human-inline-comments.json` — judges consult these to avoid re-flagging open issues.

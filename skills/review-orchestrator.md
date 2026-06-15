@@ -49,7 +49,9 @@ Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB
 
 ## Review plan
 
-- `REVIEW_LEVEL=skip` → dispatch nothing. Write `/tmp/review.json` with `verdict: "COMMENT"` (never APPROVE — the bot must not satisfy a required-review check on a PR it was told not to review), `body` = `## Claude PR Review — COMMENT` + GATE_REASON (or "Detailed review skipped by the review plan."), empty `comments`/`resolve_threads`/`bot_replies`, `meta.judge_health: {"gate_skip": true, "agreed_at": "skipped"}`. Exit.
+- `REVIEW_LEVEL=skip` → dispatch nothing; branch on `GATE`:
+  - Default skip (e.g. `GATE=label`, human opted out): Write `/tmp/review.json` with `verdict: "COMMENT"` (never APPROVE — the bot must not satisfy a required-review check on a PR it was told not to review), `body` = `## Claude PR Review — COMMENT` + GATE_REASON (or "Detailed review skipped by the review plan."), empty `comments`/`resolve_threads`/`bot_replies`, `meta.judge_health: {"gate_skip": true, "agreed_at": "skipped"}`. Exit.
+  - `GATE=oversized` (an active structural block, not an opt-out): Write `/tmp/review.json` with `verdict: "REQUEST_CHANGES"`, `body` = `## Claude PR Review — REQUEST_CHANGES\n\n` + the `GATE_REASON` paragraph, empty `comments`/`resolve_threads`/`bot_replies`, and `meta` = `{ "findings": [], "round": <ROUND as int, default 1>, "prior_verdict": <PRIOR_VERDICT in quotes, or the JSON literal null when empty>, "ladder_rule_applied": "reject-oversized", "judge_health": {"gate_oversized": true, "agreed_at": "rejected-oversized"} }`. Exit. Re-derived fresh from PR size every round — a later push that shrinks the PR below the ceiling gets a real review.
 - `REVIEW_LEVEL=light` → Phases A and trivial check as normal; Phase B dispatches ONE judge (`MODEL_STANDARD`, output `/tmp/judge-sonnet.json`) instead of the panel; no Phase C. Functional follows `RUN_FUNCTIONAL` unchanged.
 - `REVIEW_LEVEL=full` (or unset) → everything below.
 
@@ -155,7 +157,8 @@ Inputs: `PRIOR_VERDICT` (env), context.md `### Prior findings` (per prior findin
 | `prior-rc-still-present` | PRIOR_VERDICT=REQUEST_CHANGES AND ≥1 prior critical/major finding STILL_PRESENT | `REQUEST_CHANGES` |
 | `prior-rc-resolved` | PRIOR_VERDICT=REQUEST_CHANGES AND every prior critical/major finding RESOLVED or REBUTTED | per-judges verdict (APPROVE if clean, COMMENT if minors remain) |
 | `prior-comment-no-ratchet` | PRIOR_VERDICT=COMMENT or APPROVE | per-PR verdict stands (may upgrade to APPROVE) |
-| `degraded-pin-max` | `## Thread resolution` missing/unusable, OR `### Prior findings` table missing on round ≥2 with PRIOR_VERDICT=REQUEST_CHANGES | max(PRIOR_VERDICT, per-PR) on REQUEST_CHANGES > COMMENT > APPROVE; unknown PRIOR_VERDICT → treat as REQUEST_CHANGES (fail closed) |
+| `prior-structural-block` | `PRIOR_VERDICT=REQUEST_CHANGES` AND **zero** prior findings were reconstructed this round (the prior block carried no findings — e.g. an oversized split-request, or a no-smoke block) | Re-evaluate from this round's live gates and judges; never pin via the findings ladder. A now-split or now-verified PR reaches its per-judges verdict. (A still-blocked PR never reaches here — it re-emits its block upstream before the ladder runs.) |
+| `degraded-pin-max` | `## Thread resolution` missing/unusable, OR `### Prior findings` table missing on round ≥2 with PRIOR_VERDICT=REQUEST_CHANGES AND the prior review recorded ≥1 finding | max(PRIOR_VERDICT, per-PR) on REQUEST_CHANGES > COMMENT > APPROVE; unknown PRIOR_VERDICT → treat as REQUEST_CHANGES (fail closed) (A zero-finding prior RC is handled by prior-structural-block above.) |
 
 REBUTTED findings never count as still-present blockers. Round 1: `ladder_rule_applied: "none-round-1"`. When the ladder changes the verdict vs per-PR, the body gets the override banner below.
 

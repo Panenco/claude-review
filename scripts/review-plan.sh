@@ -23,8 +23,8 @@
 #   deep-review → full  / functional on    (label; forces full — suppresses promotion/oversized/small.
 #                                           Does NOT turn functional on for an all-nonruntime PR.)
 #   promotion   → light / functional off   (source already reviewed; cheap insurance)
-#   oversized   → light / functional on    (too big to debate well, but big features are exactly
-#                                           where runtime evidence matters most)
+#   oversized   → skip  / functional off   (too big to review well — orchestrator returns a canned
+#                                           "split this PR" REQUEST_CHANGES; no judges. deep-review overrides)
 #   nonruntime  → full  / functional off   (tests/docs/CI/locks — judges yes, no app-driving)
 #   small       → light / functional on    (<= GATE_SMALL_CEILING non-gen lines, no sensitive paths;
 #                                           the test planner still picks skip/quick per surface)
@@ -163,10 +163,11 @@ if [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; t
   oversized=true
 fi
 
-# ── 3) Oversized (non-promotion)? Lightweight pass + a "split / label" note.
-#       deep-review (FORCE_FULL) suppresses this downgrade. ──
+# ── 3) Oversized (non-promotion)? Block with a "split this PR" request — reviewing a
+#       huge diff with a single judge is low-confidence. No judges run (review_level=skip);
+#       the orchestrator turns gate=oversized into a REQUEST_CHANGES. deep-review bypasses. ──
 if [ "$FORCE_FULL" = false ] && [ "$oversized" = true ]; then
-  emit "light" "true" "oversized" "PR too large for a full judge debate (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — single-judge pass + functional smoke run. Consider splitting (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
+  emit "skip" "false" "oversized" "PR too large to review well (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — returning REQUEST_CHANGES with a split request instead of a judge debate. Split into focused PRs (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
   exit 0
 fi
 

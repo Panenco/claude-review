@@ -56,10 +56,10 @@ assert_plan "huge release PR (size irrelevant)" "light false promotion" \
 assert_plan "feature → main is NOT a promotion (large diff)" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/app.ts\t250\t100'
 
-# ── oversized → light (functional smoke stays on) ──
-assert_plan "65 runtime files" "light true oversized" \
+# ── oversized → skip (REQUEST_CHANGES split request, no judges) ──
+assert_plan "65 runtime files" "skip false oversized" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV="$BIG_FILES"
-assert_plan "2600 changed lines" "light true oversized" \
+assert_plan "2600 changed lines" "skip false oversized" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1800\t800'
 assert_plan "2100 changed lines is no longer oversized (ceiling raised to 2500)" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1500\t600'
