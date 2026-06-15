@@ -15,20 +15,36 @@ match:
 |---|------|------|--------------|------------|
 | 1 | `label` | `skip-review` label present | `skip` | no |
 | 2 | `promotion` | release/promotion PR (e.g. `staging` → `main`) | `light` | no |
-| 3 | `oversized` | over the size ceiling (default 2500 lines / 60 files) | `light` | yes (quick smoke) |
+| 3 | `oversized` | over the size ceiling (default 2500 lines / 60 files) | `skip` → blocking `REQUEST_CHANGES` (split the PR) | no |
 | 4 | `nonruntime` | only tests / docs / CI / lockfiles changed | `full` | no |
 | 5 | `small` | ≤ 300 non-generated lines, no sensitive paths | `light` | yes |
 | 6 | `normal` | substantial, **or** touches a sensitive path | `full` | yes |
 
 - **`full`** — the dual-judge debate (Opus + Haiku, with rebuttal).
-- **`light`** — a single judge, no rebuttal. The fast path for the judge fan only:
-  functional testing still runs per the table, because runtime evidence is the
-  review's centerpiece — small UI fixes are exactly where one screenshot beats
-  prose, and oversized feature PRs are exactly where an APPROVE without runtime
-  evidence is riskiest. The test planner still scopes the run (a small diff with
-  no user-observable surface plans `skip`; a trivial one plans a 1-scenario
-  `quick`), so the cost scales with the surface, not the gate.
-- **`skip`** — no judges; the reason is posted as a note.
+- **`light`** — a single judge, no rebuttal. The fast path for the judge fan. At
+  `small` the single judge runs on Opus (high recall on the path that gets the
+  least scrutiny); at `promotion` it stays on Sonnet. Functional testing still
+  runs per the table, because runtime evidence is the review's centerpiece —
+  small UI fixes are exactly where one screenshot beats prose. The test planner
+  still scopes the run (a small diff with no user-observable surface plans `skip`;
+  a trivial one plans a 1-scenario `quick`), so the cost scales with the surface,
+  not the gate.
+- **`skip`** — no judges. For most skip reasons the reason is posted as a note;
+  for `oversized` the orchestrator instead emits a blocking `REQUEST_CHANGES`
+  asking to split the PR (no judge debate). The `deep-review` label overrides
+  this and forces a full review.
+
+### Runtime-evidence gate (applies across tiers)
+
+Independently of the tier above, any PR the test planner judged has runtime
+behaviour to exercise (`## Strategy ∈ {quick, functional}`) must produce smoke
+evidence. If the smoke run returns no `PASS`/`WARN` — no `dev-start.sh`, the
+bring-up failed or timed out, or the tester crashed — the orchestrator raises
+the verdict to a blocking `REQUEST_CHANGES` (it carries no findings, so a later
+round un-pins it once smoke runs). Docs-only / non-runtime PRs
+(`## Strategy: skip`, and the `nonruntime` / `promotion` / `label` gates) are
+exempt — there is nothing to test. On round 2, a deliberate `## Strategy: skip`
+inherits the prior round's `PASS`/`WARN`; a prior `FAIL` still blocks.
 
 > Generated files (lockfiles, snapshots, `dist/`, `*.min.*`, `*.generated.*`, …)
 > don't count toward the size — a big lockfile bump alone won't push a small PR
@@ -103,7 +119,7 @@ with:
 |----|------|-----------|
 | 40-line bug fix in `src/` | `small` | single judge + quick functional check (screenshot of the touched surface) |
 | 2000-line feature | `normal` | full debate + functional (under the 2500 ceiling) |
-| 3000-line feature | `oversized` | single judge + quick functional smoke run |
+| 3000-line feature | `oversized` | blocked: `REQUEST_CHANGES` asking to split — no judges (add `deep-review` to force a full review) |
 | 20-line change in `database/migrations/` | `normal` (sensitive) | full debate + functional |
 | `staging` → `main` release | `promotion` | single-judge `light`, no functional |
 | docs-only PR | `nonruntime` | judges run, no functional |

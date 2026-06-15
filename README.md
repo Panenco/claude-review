@@ -140,7 +140,7 @@ Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code
 
 A single LLM judge can have a bad sample on any given run — miss something subtle, over-grade a defensive note, mis-route a finding to the wrong file. The orchestrator runs **two independent judges with different model strengths** (Opus for deep reasoning, Haiku for cheap broad-coverage finds) and reconciles them: if they agree, the review ships immediately; if they disagree, each judge sees the other's findings and either concedes the ones they missed or defends the ones the other dropped. This catches the long tail where one judge is wrong without paying for it on every PR — most reviews converge on the first round.
 
-> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate for substantial or sensitive changes; small or oversized PRs take a lighter single-judge pass. Functional testing is gated separately and stays on for every runtime diff — screenshots of the running app are the review's centerpiece, so a small UI fix still gets its quick smoke + screenshot pass and a big feature still gets a smoke run even when the judge fan is light. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
+> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate for substantial or sensitive changes; small PRs take a lighter single-judge pass (on Opus). Oversized PRs (over the size ceiling) aren't lightly reviewed — they're blocked with a `REQUEST_CHANGES` asking to split, unless you add the `deep-review` label. Functional testing is gated separately and stays on for every runtime diff — screenshots of the running app are the review's centerpiece, so a small UI fix still gets its quick smoke + screenshot pass. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
 
 ### Round 1 vs round 2
 
@@ -165,7 +165,7 @@ When the round-2 ladder overrides the bot's per-PR judgement (e.g. STILL_PRESENT
 
 **Crash-banner cleanup:** when a run crashes before posting a review (OAuth quota, max-turns, runner OOM), the workflow posts a single review carrying the `<!-- claude-review-crash -->` HTML marker. The next successful run finds that review and edits its body to a "_Superseded by …_" form so the misleading red banner doesn't survive every retry.
 
-**Round-2 cost comes from scoping, not a smaller plan.** The review plan resolves fresh each round from the same rules (labels included); what makes follow-up rounds cheap is that everything downstream is scoped to the since-last diff: the context builder indexes only the files changed since the prior review, judges read just that, and functional scenarios are planned against the since-last diff — **zero scenarios is a valid outcome** when the follow-up has no user-observable surface. The smoke gate inherits the prior round's functional result for technical-change PRs, so a deliberate round-2 `skip` doesn't drop APPROVE → COMMENT (inheritance applies only to a prior PASS/WARN; a prior FAIL still blocks).
+**Round-2 cost comes from scoping, not a smaller plan.** The review plan resolves fresh each round from the same rules (labels included); what makes follow-up rounds cheap is that everything downstream is scoped to the since-last diff: the context builder indexes only the files changed since the prior review, judges read just that, and functional scenarios are planned against the since-last diff — **zero scenarios is a valid outcome** when the follow-up has no user-observable surface. The runtime-evidence gate inherits the prior round's functional result, so a deliberate round-2 `skip` doesn't re-block a runtime PR (inheritance applies only to a prior PASS/WARN; a prior FAIL still blocks).
 
 ---
 
@@ -255,7 +255,7 @@ Describe (in prose) what the project needs at runtime: database flavour + creden
 
 ### `.github/claude-review/dev-start.sh` (recommended)
 
-First-class contract for bringing up the dev environment. The pipeline runs this script in a subshell, then probes URLs from `### Known service ports` and the auth block. **Non-zero exit fails the Pre-start step and stops the whole review** — don't commit a `dev-start.sh` you haven't run successfully from a clean checkout. Repos that genuinely have nothing to start should not create the file at all (its absence is the signal for degraded mode).
+First-class contract for bringing up the dev environment. The pipeline runs this script in a subshell, then probes URLs from `### Known service ports` and the auth block. **Non-zero exit fails the Pre-start step and stops the whole review** — don't commit a `dev-start.sh` you haven't run successfully from a clean checkout. Repos that genuinely have nothing to start should not create the file at all — non-runtime PRs review cleanly without it, but a runtime PR with no bring-up is blocked by the runtime-evidence gate (`REQUEST_CHANGES`).
 
 ```bash
 #!/usr/bin/env bash
@@ -303,7 +303,7 @@ Rules:
 - Pin your package manager. The runner provides a default pnpm (`pnpm/action-setup` with `version: 10`) so scripts that call `pnpm` directly keep working, but it won't necessarily match your local version. For pnpm/yarn projects, set `"packageManager"` in the root `package.json` and call `corepack enable` near the top of `dev-start.sh` to activate the exact version you pinned.
 - Installs are store-cached for you. The pipeline caches the pnpm/npm store across runs (keyed on your lockfiles, warmed in main scope so new PRs hit it too), so `pnpm install --frozen-lockfile` in `dev-start.sh` mostly links from cache instead of downloading. No consumer wiring needed.
 
-If the project has nothing to start (pure-docs, lib-only), do **not** create this file. Its absence is the signal for degraded mode (judges run; no functional tester). An empty-but-present `dev-start.sh` will fail the step.
+If the project has nothing to start (pure-docs, lib-only), do **not** create this file — non-runtime PRs review cleanly without it. The judges still run, but a runtime PR with no smoke evidence is blocked by the runtime-evidence gate (`REQUEST_CHANGES`), so any repo that ships a running app should commit a real one. An empty-but-present `dev-start.sh` will fail the step.
 
 ##### Passing secrets to `dev-start.sh`
 
@@ -439,14 +439,14 @@ Before your script runs, the context builder scans the PR title, PR body, and br
 
 | Missing file                           | Impact                            | Behavior                                                                                               |
 | -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `.github/claude-review/dev-start.sh`   | Expected for degraded mode        | Functional tester skipped. The judges still run.                                                       |
+| `.github/claude-review/dev-start.sh`   | Blocks runtime PRs                | Functional tester skipped and the judges still run, but a runtime PR with no smoke evidence is blocked with `REQUEST_CHANGES` by the runtime-evidence gate. Docs-only / non-runtime PRs are exempt and review cleanly. |
 | `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Skipped silently. GitHub-issue lookup remains the default spec source.                                 |
 | `review-config.md`                     | Reduced                           | No build prep doc, no convention-rule routing, no Known-service-ports URLs to probe, no auth setup.    |
 | `bugbot.md`                            | Minor                             | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
 | `CLAUDE.md`                            | Minor                             | No architecture context. Reviewers rely on diff + issue.                                               |
 | All config files                       | Significant                       | Code-only judge review on raw diff + build output. Still catches bugs, spec issues, security.          |
 
-Note: a _present but broken_ `dev-start.sh` is **not** a soft-degrade case — the pipeline fails the Pre-start step and stops. Remove the file to enter degraded mode explicitly.
+Note: a _present but broken_ `dev-start.sh` is **not** a soft-degrade case — the pipeline fails the Pre-start step and stops. Removing the file doesn't give you a clean "judges-only" review either: a runtime PR with no bring-up produces no smoke evidence and is blocked with `REQUEST_CHANGES` (only docs-only / non-runtime PRs review cleanly without it).
 
 ---
 
@@ -454,9 +454,9 @@ Note: a _present but broken_ `dev-start.sh` is **not** a soft-degrade case — t
 
 The pipeline withholds `APPROVE` whenever the PR has no human-authored spec. The judges decide this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the judges set `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated. Bot-authored PRs (renovate, dependabot) are exempt — a machine PR can never carry a human spec, so the gate would be permanent noise there.
 
-## Smoke-test gate for technical PRs
+## Runtime-evidence gate
 
-The pipeline withholds `APPROVE` whenever the PR's stated intent is "no user-visible behavior change" (refactor, library swap, framework/runtime upgrade, build-config change, restructure, perf rewrite — across any ecosystem) but the smoke run did not pass. The trigger is intent, not file types: a `refactor: split foo into bar/baz` with no manifest touch counts; a major `Cargo.toml`/`Dockerfile`/`pyproject.toml` bump counts. The context builder detects this from PR title/body keywords (`refactor`, `chore`, `bump`, `upgrade`, `migrate`, "no behavior change"), diff shape (high move/rename ratio, low net new logic), and dependency-manifest deltas, then emits `## Technical change: true` in `test-plan.md`. The functional tester walks through one representative user flow (the test plan picks it based on which code paths the change affects) with screenshots. If the smoke run does not return `PASS` or `WARN` — including the degraded-mode case where `.github/claude-review/dev-start.sh` is missing and the app can't be brought up — the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to enable it (configure `dev-start.sh`, or fix the smoke failures). Composes naturally with the spec-presence gate: together they ensure `APPROVE` is only granted when _something_ substantively validated the change, either an acceptance criterion or a working app.
+The pipeline blocks with `REQUEST_CHANGES` whenever a PR the planner judged has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}` in `test-plan.md`) produces no smoke evidence — no `.github/claude-review/dev-start.sh`, a bring-up that failed or timed out, or a functional tester that crashed. The functional tester walks through one representative user flow (the test plan picks it based on which code paths the change affects) with screenshots. If the smoke run does not return `PASS` or `WARN`, the verdict is set to `REQUEST_CHANGES` and the review body explains how to fix it (configure `dev-start.sh`, or fix the smoke failure). Docs-only / non-runtime PRs are exempt — there is nothing to test, so they review cleanly. (On round 2, a deliberate `## Strategy: skip` inherits the prior round's `PASS`/`WARN` rather than re-blocking; a prior `FAIL` still blocks.) Composes naturally with the spec-presence gate: together they ensure `APPROVE` is only granted when _something_ substantively validated the change, either an acceptance criterion or a working app.
 
 ---
 
@@ -533,10 +533,11 @@ permissions:
 
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
-- **Smoke-test gate** — on technical PRs (refactor / library swap / framework or runtime upgrade / build-config / `chore: bump …`), `APPROVE` is withheld unless the functional smoke run returns `PASS` or `WARN`. The trigger is _intent_, not file types: a pure-refactor commit with no manifest touch counts; a major `Cargo.toml` / `Dockerfile` / `pyproject.toml` bump counts. Repos in degraded mode (no `.github/claude-review/dev-start.sh`) will see refactor PRs flip from APPROVE → COMMENT until they configure a working bring-up.
+- **Runtime-evidence gate** — a PR the planner judged has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}`) is blocked with `REQUEST_CHANGES` unless the functional smoke run returns `PASS` or `WARN`. Repos with no `.github/claude-review/dev-start.sh` (or a bring-up that fails/times out) will see runtime PRs blocked with `REQUEST_CHANGES` until they configure a working bring-up. Docs-only / non-runtime PRs are exempt.
+- **Oversized PRs** — PRs over the size ceiling (default 2500 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with no judge debate. Add the `deep-review` label to force a full review instead.
 - **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
 
-Both gates compose with each other: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff.
+These gates compose: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff. Note the runtime-evidence gate now _blocks_ (`REQUEST_CHANGES`) rather than merely downgrading to `COMMENT`, while the manual-spec gate still downgrades `APPROVE` → `COMMENT`.
 
 ### 3. New optional knobs (defaults preserve v1 behaviour)
 
