@@ -279,8 +279,7 @@ HUMAN_REVIEW=$(jq -r '.meta.requires_human_review // false' "$REVIEW_JSON")
 HUMAN_REASON=$(jq -r '.meta.requires_human_review_reason // empty' "$REVIEW_JSON")
 MANUAL_SPEC=$(jq -r 'if (.meta | type == "object" and has("manual_spec_present")) then .meta.manual_spec_present else true end' "$REVIEW_JSON")
 SPEC_WAIVED=$(jq -r '.meta.spec_gate_waived // false' "$REVIEW_JSON")
-TECHNICAL_CHANGE=$(jq -r '.meta.technical_change // false' "$REVIEW_JSON")
-SMOKE_OK=$(jq -r 'if (.meta | type == "object" and has("smoke_ok")) then .meta.smoke_ok else true end' "$REVIEW_JSON")
+LADDER_RULE=$(jq -r '.meta.ladder_rule_applied // empty' "$REVIEW_JSON")
 FN_STRATEGY=$(jq -r '.meta.functional_validation.strategy // "skip"' "$REVIEW_JSON")
 FN_OVERALL=$(jq -r '.meta.functional_validation.overall // "N/A"' "$REVIEW_JSON")
 FN_SHOTS=$(jq -r '.meta.functional_validation.screenshot_count // 0' "$REVIEW_JSON")
@@ -299,9 +298,9 @@ FN_SHOTS=$(jq -r '.meta.functional_validation.screenshot_count // 0' "$REVIEW_JS
     echo ""
     echo "> :no_entry: **No manual spec available — APPROVE withheld.** Link an issue, paste acceptance criteria, or wire up an external tracker to enable APPROVE."
   fi
-  if [ "$TECHNICAL_CHANGE" = "true" ] && [ "$SMOKE_OK" = "false" ]; then
+  if [ "$LADDER_RULE" = "runtime-evidence" ]; then
     echo ""
-    echo "> :no_entry: **Technical change — APPROVE withheld until smoke-tested** (overall=\`$FN_OVERALL\`). Refactors/upgrades have no acceptance criteria, so a passing smoke run is required. Configure \`.github/claude-review/dev-start.sh\` to bring up the app, or fix the issues that caused the smoke run to fail."
+    echo "> :no_entry: **Changes requested — no runtime evidence** (overall=\`$FN_OVERALL\`). This PR has runtime behaviour to exercise but the smoke run produced no PASS/WARN. Configure \`.github/claude-review/dev-start.sh\` to bring up the app, or fix what made the smoke run fail/crash."
   fi
   if [ "$FN_STRATEGY" != "skip" ]; then
     echo ""

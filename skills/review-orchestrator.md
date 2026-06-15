@@ -87,7 +87,8 @@ Compute `DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))` 
 
 1. `## Strategy: pipeline-self-test` in test-plan.md AND `tests/` exists → run `tests/*.sh` directly via Bash (skip `*smoke*`, 60s timeout each), tally pass/fail into `/tmp/functional-meta.json` (`strategy: "pipeline-self-test"`, `overall: PASS|FAIL|WARN`, `pass`/`fail`/`total`/`summary`), `/tmp/functional-findings.json = []`. No Task dispatch. Runs regardless of `RUN_FUNCTIONAL`.
 2. `RUN_FUNCTIONAL=true` AND strategy ∈ {`quick`, `functional`} AND `WEB_READY=true` → dispatch the tester (below).
-3. Anything else → write synthetic `/tmp/functional-meta.json` `{"strategy": "skip", "overall": "PASS", "summary": "Functional testing skipped."}` and `/tmp/functional-findings.json = []`.
+3. `RUN_FUNCTIONAL=true` AND strategy ∈ {`quick`, `functional`} AND `WEB_READY` ≠ `true` → functional was warranted but un-runnable (no dev-start.sh, or bring-up failed/timed out). Write `/tmp/functional-meta.json` `{"strategy": "skip", "overall": "SKIP_NO_DEVENV", "summary": "Runtime behaviour was in scope but no dev-env came up — smoke not run."}` and `/tmp/functional-findings.json = []`.
+4. Anything else (nothing to exercise: `## Strategy: skip`, `RUN_FUNCTIONAL` ≠ `true`, or a non-runtime gate) → write `/tmp/functional-meta.json` `{"strategy": "skip", "overall": "N/A", "summary": "No runtime behaviour to test."}` and `/tmp/functional-findings.json = []`.
 
 ### Composing the functional Task prompt (no helper script — you write it)
 
@@ -162,11 +163,13 @@ Inputs: `PRIOR_VERDICT` (env), context.md `### Prior findings` (per prior findin
 
 REBUTTED findings never count as still-present blockers. Round 1: `ladder_rule_applied: "none-round-1"`. When the ladder changes the verdict vs per-PR, the body gets the override banner below.
 
-### Gates (downgrades only, applied after the ladder)
+### Gates (applied after the ladder)
+
+The runtime-evidence gate runs first and may RAISE the verdict to REQUEST_CHANGES regardless of what either ladder produced; every other gate only downgrades APPROVE→COMMENT.
 
 - **No-manual-spec:** `manual_spec_present=false` → `spec_gate_waived = (PR_AUTHOR_IS_BOT == "true")`; if not waived, APPROVE → COMMENT.
-- **Technical-change smoke:** `technical_change = true` when test-plan.md has `## Technical change: true`. `smoke_ok = true` when functional `overall` ∈ {PASS, WARN}; OR inherited — `ROUND ≥ 2` AND the planner deliberately chose `## Strategy: skip` AND context.md's `Prior functional result:` is PASS/WARN; OR waived — `GATE` ≠ `normal` AND `RUN_FUNCTIONAL` ≠ `true` (the plan chose not to smoke). `technical_change && !smoke_ok` → APPROVE → COMMENT.
-- **Functional crash:** functional `overall` = CRASH (incl. MCP-unavailable) → APPROVE → COMMENT, set `requires_human_review: true` with the crash reason when the cause is MCP unavailability.
+- **Runtime-evidence gate (ESCALATION):** `functional_warranted = (test-plan.md `## Strategy` ∈ {`quick`, `functional`}) AND `RUN_FUNCTIONAL`=`true`` — the planner found runtime behaviour to exercise AND the plan opted to smoke it. (False for `## Strategy: skip`/`pipeline-self-test`, for `RUN_FUNCTIONAL`≠`true`, and thus for `nonruntime`/`promotion`/`label` gates — all exempt.) `smoke_ok = true` when functional `overall` ∈ {PASS, WARN}; OR inherited — `ROUND ≥ 2` AND the planner deliberately chose `## Strategy: skip` AND context.md's `Prior functional result:` ∈ {PASS, WARN}; OR waived — not `functional_warranted`. When `functional_warranted` AND not `smoke_ok` (`overall` ∈ {SKIP_NO_DEVENV, CRASH, FAIL}, no inheritance): render the blocking banner below, and — if the verdict is NOT already `REQUEST_CHANGES` from real critical/major findings — set verdict `REQUEST_CHANGES` and `meta.ladder_rule_applied: "runtime-evidence"`, with empty `meta.findings` (this is the RAISE case; the block carries no findings so the round-2 ladder un-pins it once smoke runs). When the judges ALREADY produced surviving critical/major findings (verdict is already `REQUEST_CHANGES`), this gate is a no-op on the verdict and findings — KEEP every finding and the findings-based `ladder_rule_applied`; only the banner is added. Never wipe real findings. Bots are NOT waived — wiring `dev-start.sh` is repo-level.
+- **Functional crash:** functional `overall` = CRASH is `!smoke_ok`, so the runtime-evidence gate above already escalates a warranted run to REQUEST_CHANGES. Additionally, when the cause is MCP unavailability, set `requires_human_review: true` with the crash reason (engine-side, not the author's fault — a human should confirm before the author chases a false block).
 - **Human review:** `requires_human_review=true` (from judges) → APPROVE → COMMENT.
 - **Reviewer self-modification:** `reviewer_self_modification: true` in context.md `## Flags` → set `meta.requires_human_review: true` with reason "PR modifies the reviewer's own configuration"; the human-review gate above then applies. No other behavior changes.
 
@@ -211,10 +214,10 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
 2. `### Spec sources` — `- Linked issue: #N` / external tracker id / `none found`; `- Convention rules: …`
 3. The `verdict_summary` paragraph.
 4. Banners (one line each, only when applicable):
-   - `> :information_source: **Verdict pinned to \`<V>\`** by the round-2 ladder (per-PR judgement was \`<P>\`; <ladder_rule_applied>).`
+   - `> :information_source: **Verdict pinned to \`<V>\`** by the round-2 ladder (per-PR judgement was \`<P>\`; <ladder_rule_applied>).` (skip this banner when the verdict came from the runtime-evidence gate, i.e. `ladder_rule_applied == "runtime-evidence"` — that's a gate escalation, not a round-2 ladder pin)
    - `> :wave: **Prior review dismissed by author** — treating earlier findings as accepted/false-positive for ladder purposes.`
    - `> :no_entry: **APPROVE withheld — no spec.** Link an issue, paste acceptance criteria into the PR body, or wire up the external tracker.` / `> :robot: **Spec gate waived** — bot-authored PR.`
-   - `> :no_entry: **APPROVE withheld — smoke test did not pass** (overall=\`<X>\`). Configure \`.github/claude-review/dev-start.sh\` or fix the smoke run.`
+   - `> :no_entry: **Changes requested — no runtime evidence** (functional overall=\`<X>\`). This PR has runtime behaviour to exercise but the smoke run produced no PASS/WARN. Wire up \`.github/claude-review/dev-start.sh\` so the app comes up (see README → 'dev-start.sh contract'), or fix what made the smoke run fail/crash. Docs-only / non-runtime PRs are exempt.`
    - `> :stop_sign: **Human review required** — <reason>`
    - Judge-health banners (one judge failed / did not converge), verbatim wording from v2.
    - The `Setup notes` line from context.md, when present.
