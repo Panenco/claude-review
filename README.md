@@ -60,6 +60,32 @@ with:
 
 Empty (the default) skips all bot-initiated runs. Two notes for allowed bots: dependabot-triggered events receive *Dependabot secrets*, not Actions secrets — add `CLAUDE_CODE_OAUTH_TOKEN` there too or the token picker fails. And bot-authored PRs waive the manual-spec gate (a machine PR can never link a human spec), so they can reach APPROVE on review merit alone.
 
+**Caching the dev-env build (`dev_cache_*`).** The functional tester runs `dev-start.sh` on a fresh runner every review, so any compiled/downloaded artefacts (a Gradle/Maven build, a Go module cache, a Rust `target`, …) are rebuilt cold each time — often the single biggest chunk of bring-up wall-time. The pnpm/npm store is already cached for you; everything else is opt-in and **stack-agnostic** via four inputs. It reuses the same producer/consumer split as the package store — the lightweight **warm-cache job** (which runs in `main` scope on `pull_request_target`) populates the cache, and the functional job only restores it:
+
+```yaml
+with:
+  pr_number: ${{ inputs.pr_number || '' }}
+  dev_cache_paths: |          # what to cache (newline-separated). Keep it tight.
+    ~/.gradle/caches/modules-2
+    ~/.gradle/wrapper
+  dev_cache_key: ${{ runner.os }}-gradle-${{ hashFiles('**/gradle/libs.versions.toml', '**/*.gradle*', '**/gradle-wrapper.properties') }}
+  dev_cache_restore_keys: |   # fall-back prefixes for partial hits
+    ${{ runner.os }}-gradle-
+  dev_cache_warm_command: cd backend/java && JAVA_HOME=$JAVA_HOME_21_X64 ./gradlew :api:dependencies --no-daemon
+```
+
+Other stacks are the same shape — Go: `~/go/pkg/mod` keyed on `go.sum`, warm `go mod download`; Maven: `~/.m2/repository` keyed on `pom.xml`, warm `mvn -q dependency:go-offline`; Rust: `~/.cargo` keyed on `Cargo.lock`, warm `cargo fetch`.
+
+> The warm-cache job is a vanilla `ubuntu-latest` with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
+
+How it works and how far the warmth reaches:
+- **`dev_cache_warm_command`** runs in the warm-cache job — `main` scope, against the trusted **base ref** (never PR head). Because it writes to `main` scope, **every** PR's functional job restores it, not just re-pushes of the same branch. It runs **only on a cache miss** (i.e. after the key rotates), so steady-state it's a no-op. Keep it cheap and PR-code-free — a dependency *resolve/prefetch*, not a full build.
+- The functional job **restores** the cache after disk cleanup, before the bring-up, so `dev-start.sh` builds warm. It does **not** save (no extra weight on the long review job).
+- Omit `dev_cache_warm_command` and only the restore runs — useful if your **own** main CI already writes a cache under the same key/prefix (Actions caches are repo-scoped, so it's reused here).
+- Leave all of it unset to disable caching entirely — no cache step runs.
+
+**Keep it short-lived.** Build caches are large and the repo shares a 10 GB Actions-cache budget (LRU-evicted, plus 7-day idle eviction). Two habits keep it bounded: cache the **dependency** dir, not whole build trees (`~/.gradle/caches/modules-2`, not `~/.gradle` — the latter drags in transient daemon/build state), and let the **key rotate via `hashFiles`** of your lockfiles so entries churn only when dependencies actually change. The warm-on-miss design means a new entry is written only when the key rotates, not on every PR.
+
 ### 2. Set secrets
 
 Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo or org secret. Generate it with:
