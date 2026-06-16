@@ -207,9 +207,9 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
 
 ### Inline comments (`comments[]`)
 
-- ONLY critical/major findings + functional failures (any-severity findings with `type` ∈ {spec-mismatch from the tester, ui-regression, endpoint-failure, smoke-failure}). Minor/note judge findings go to the body list instead.
-- **REQUIRED, every path through this skill (degraded included): each critical/major finding with a `path` + `line_start` gets a `comments[]` entry.** Body-only majors are invalid output — the poster's hunk validation is the only thing allowed to demote one.
-- Max 12 inline. Overflow by severity (critical first); overflowed findings move to the body list.
+- Inline-eligible: all critical/major findings + functional failures (any-severity findings with `type` ∈ {spec-mismatch from the tester, ui-regression, endpoint-failure, smoke-failure}) + **`minor` findings that carry a `path` + `line_start`** (a precise line anchor reads better inline than buried in the body). **`note`-severity findings, and any finding without a line anchor, always go to the body list.**
+- **REQUIRED, every path through this skill (degraded included): each critical/major finding with a `path` + `line_start` gets a `comments[]` entry.** Body-only majors are invalid output — the poster's hunk validation is the only thing allowed to demote one. (Minor inline is best-effort, not required — it yields to the cap.)
+- Max 12 inline. Fill strictly by severity — critical, then major, then minor — so majors never lose a slot to a minor; overflow (and every `note`/anchorless finding) moves to the body list. On nitpicky PRs this still caps inline noise at 12.
 - Each: `path`, `line` = `line_end // line_start`, `side` = finding's side (default RIGHT), `start_line` = `line_start` when the range spans >1 and ≤10 lines (else null), `body`:
   `**[<SEVERITY> · <TYPE uppercased>]** <title>\n\n<reasoning>\n\n_Expected:_ <expected>` + (`\n\n_PRD:_ <prd_quote>` when present) + (`\n\n![screenshot](<url>)` when uploaded). Truncate body at 65000 chars.
 
