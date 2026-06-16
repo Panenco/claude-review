@@ -564,7 +564,7 @@ permissions:
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
 - **Runtime-evidence gate** — a PR the planner judged has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}`) is blocked with `REQUEST_CHANGES` unless the functional smoke run returns `PASS` or `WARN`. Repos with no `.github/claude-review/dev-start.sh` (or a bring-up that fails/times out) will see runtime PRs blocked with `REQUEST_CHANGES` until they configure a working bring-up. Docs-only / non-runtime PRs are exempt.
-- **Oversized PRs** — PRs over the size ceiling (default 2500 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with no judge debate. Add the `deep-review` label to force a full review instead.
+- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with no judge debate. Add the `deep-review` label to force a full review instead.
 - **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
 
 These gates compose: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff. Note the runtime-evidence gate now _blocks_ (`REQUEST_CHANGES`) rather than merely downgrading to `COMMENT`, while the manual-spec gate still downgrades `APPROVE` → `COMMENT`.

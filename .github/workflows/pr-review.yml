@@ -61,7 +61,7 @@ on:
       gate_size_ceiling:
         description: "Non-generated changed lines over which a PR is `oversized`."
         type: number
-        default: 2500
+        default: 3000
       gate_file_ceiling:
         description: "Changed (non-generated) files over which a PR is `oversized`."
         type: number

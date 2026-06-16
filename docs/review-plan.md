@@ -15,7 +15,7 @@ match:
 |---|------|------|--------------|------------|
 | 1 | `label` | `skip-review` label present | `skip` | no |
 | 2 | `promotion` | release/promotion PR (e.g. `staging` → `main`) | `light` | no |
-| 3 | `oversized` | over the size ceiling (default 2500 lines / 60 files) | `skip` → blocking `REQUEST_CHANGES` (split the PR) | no |
+| 3 | `oversized` | over the size ceiling (default 3000 lines / 60 files) | `skip` → blocking `REQUEST_CHANGES` (split the PR) | no |
 | 4 | `nonruntime` | only tests / docs / CI / lockfiles changed | `full` | no |
 | 5 | `small` | ≤ 300 non-generated lines, no sensitive paths | `light` | yes |
 | 6 | `normal` | substantial, **or** touches a sensitive path | `full` | yes |
@@ -82,7 +82,7 @@ Every knob is a `workflow_call` **input** with a safe default. Pass it in the
 | input | default | meaning |
 |-------|---------|---------|
 | `gate_small_ceiling` | `300` | non-generated lines at/under which a runtime PR is `small` (single judge) |
-| `gate_size_ceiling` | `2500` | non-generated lines over which a PR is `oversized` |
+| `gate_size_ceiling` | `3000` | non-generated lines over which a PR is `oversized` |
 | `gate_file_ceiling` | `60` | changed files over which a PR is `oversized` |
 | `gate_sensitive_globs` | auth.* / oauth / authentication / authorization / security / payments / migrations | path globs that force `full` even when small |
 | `gate_deep_label` | `deep-review` | label that forces a full review |
@@ -118,8 +118,8 @@ with:
 | PR | gate | what runs |
 |----|------|-----------|
 | 40-line bug fix in `src/` | `small` | single judge + quick functional check (screenshot of the touched surface) |
-| 2000-line feature | `normal` | full debate + functional (under the 2500 ceiling) |
-| 3000-line feature | `oversized` | blocked: `REQUEST_CHANGES` asking to split — no judges (add `deep-review` to force a full review) |
+| 2500-line feature | `normal` | full debate + functional (under the 3000 ceiling) |
+| 3500-line feature | `oversized` | blocked: `REQUEST_CHANGES` asking to split — no judges (add `deep-review` to force a full review) |
 | 20-line change in `database/migrations/` | `normal` (sensitive) | full debate + functional |
 | `staging` → `main` release | `promotion` | single-judge `light`, no functional |
 | docs-only PR | `nonruntime` | judges run, no functional |

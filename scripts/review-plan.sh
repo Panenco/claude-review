@@ -37,7 +37,7 @@
 #   GATE_LABELS          newline-separated PR label names
 #   GATE_SKIP_LABEL      label that forces a skip (default: skip-review)
 #   GATE_DEEP_LABEL      label that forces a full review (default: deep-review)
-#   GATE_SIZE_CEILING    non-generated changed lines → oversized (default 2500)
+#   GATE_SIZE_CEILING    non-generated changed lines → oversized (default 3000)
 #   GATE_FILE_CEILING    non-generated changed files → oversized (default 60)
 #   GATE_SMALL_CEILING   non-gen lines at/under which a runtime PR → small/light (default 300)
 #   GATE_SENSITIVE_GLOBS space-separated path globs that force full even when small
@@ -59,7 +59,7 @@ BASE_REF="${GATE_BASE_REF:-}"
 HEAD_REF="${GATE_HEAD_REF:-}"
 SKIP_LABEL="${GATE_SKIP_LABEL:-skip-review}"
 DEEP_LABEL="${GATE_DEEP_LABEL:-deep-review}"
-SIZE_CEILING="${GATE_SIZE_CEILING:-2500}"
+SIZE_CEILING="${GATE_SIZE_CEILING:-3000}"
 FILE_CEILING="${GATE_FILE_CEILING:-60}"
 SMALL_CEILING="${GATE_SMALL_CEILING:-300}"
 PROMO_BASES="${GATE_PROMOTION_BASES:-main master production prod}"

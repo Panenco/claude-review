@@ -59,10 +59,10 @@ assert_plan "feature → main is NOT a promotion (large diff)" "full true normal
 # ── oversized → skip (REQUEST_CHANGES split request, no judges) ──
 assert_plan "65 runtime files" "skip false oversized" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV="$BIG_FILES"
-assert_plan "2600 changed lines" "skip false oversized" \
-  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1800\t800'
-assert_plan "2100 changed lines is no longer oversized (ceiling raised to 2500)" "full true normal" \
-  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1500\t600'
+assert_plan "3200 changed lines (over the 3000 ceiling)" "skip false oversized" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t2200\t1000'
+assert_plan "2800 changed lines is under the raised 3000 ceiling → normal (was oversized at 2500)" "full true normal" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1800\t1000'
 assert_plan "huge lockfile ALONE → not oversized (generated excluded)" "full false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'pnpm-lock.yaml\t9000\t9000'
 
