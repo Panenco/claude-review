@@ -68,13 +68,17 @@ with:
   dev_cache_paths: |          # what to cache (newline-separated). Keep it tight.
     ~/.gradle/caches/modules-2
     ~/.gradle/wrapper
-  dev_cache_key: ${{ runner.os }}-gradle-${{ hashFiles('**/gradle/libs.versions.toml', '**/*.gradle*', '**/gradle-wrapper.properties') }}
-  dev_cache_restore_keys: |   # fall-back prefixes for partial hits
-    ${{ runner.os }}-gradle-
+  dev_cache_key_files: |      # files whose contents key the cache (globs, ** ok)
+    **/gradle/libs.versions.toml
+    **/*.gradle*
+    **/gradle-wrapper.properties
+  dev_cache_key_prefix: gradle
   dev_cache_warm_command: cd backend/java && JAVA_HOME=$JAVA_HOME_21_X64 ./gradlew :api:dependencies --no-daemon
 ```
 
-Other stacks are the same shape — Go: `~/go/pkg/mod` keyed on `go.sum`, warm `go mod download`; Maven: `~/.m2/repository` keyed on `pom.xml`, warm `mvn -q dependency:go-offline`; Rust: `~/.cargo` keyed on `Cargo.lock`, warm `cargo fetch`.
+You pass **globs, not a pre-hashed key**: a reusable-workflow caller's `with:` has no runner or checkout, so `${{ runner.os }}` / `${{ hashFiles() }}` aren't available there (they'd fail at startup). The workflow computes the key — `<RUNNER_OS>-<prefix>-<hash of dev_cache_key_files>` — and the restore-keys (`<RUNNER_OS>-<prefix>-`) inside the jobs, where a checkout exists.
+
+Other stacks are the same shape — Go: `~/go/pkg/mod`, key files `**/go.sum`, warm `go mod download`; Maven: `~/.m2/repository`, key files `**/pom.xml`, warm `mvn -q dependency:go-offline`; Rust: `~/.cargo`, key files `**/Cargo.lock`, warm `cargo fetch`.
 
 > The warm-cache job is a vanilla `ubuntu-latest` with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
 

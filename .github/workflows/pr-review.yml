@@ -79,19 +79,19 @@ on:
         type: string
         default: "staging develop dev release hotfix"
       dev_cache_paths:
-        description: "Optional, stack-agnostic. Newline-separated filesystem paths to restore BEFORE the dev-env bring-up and warm/save in the warm-cache job, so dev-start.sh compiles/installs against a warm build/dependency cache instead of cold every run. Examples: `~/.gradle/caches/modules-2` + `~/.gradle/wrapper` (Gradle), `~/.m2/repository` (Maven), `~/.cache/go-build` + `~/go/pkg/mod` (Go), `~/.cargo` + `target` (Rust), `~/.cache/pip` (Python). Empty (default) disables it — no cache step runs and behaviour is unchanged. Pair with dev_cache_key. The pnpm/npm store is already cached separately, so this is for everything else dev-start.sh builds."
+        description: "Optional, stack-agnostic. Newline-separated filesystem paths to restore BEFORE the dev-env bring-up and warm/save in the warm-cache job, so dev-start.sh compiles/installs against a warm build/dependency cache instead of cold every run. Examples: `~/.gradle/caches/modules-2` + `~/.gradle/wrapper` (Gradle), `~/.m2/repository` (Maven), `~/.cache/go-build` + `~/go/pkg/mod` (Go), `~/.cargo` + `target` (Rust), `~/.cache/pip` (Python). Empty (default) disables it — no cache step runs and behaviour is unchanged. Pair with dev_cache_key_files. The pnpm/npm store is already cached separately, so this is for everything else dev-start.sh builds."
         type: string
         default: ""
-      dev_cache_key:
-        description: "Cache key for dev_cache_paths. Compute it in your caller workflow so it rotates when your lockfiles/build config change — typically the runner OS plus a hashFiles() of your build descriptors, e.g. an expression resolving to 'Linux-devcache-<hash of **/gradle/libs.versions.toml, **/*.gradle*, **/gradle-wrapper.properties>'. The reusable workflow treats the value as an opaque literal (it never re-hashes a dev-start-mutated tree), so restore and save share the exact same key with no post-save mismatch. Required when dev_cache_paths is set; if empty the cache is skipped."
+      dev_cache_key_files:
+        description: "Newline-separated file globs whose contents key the cache. The workflow computes the key itself — `<RUNNER_OS>-<prefix>-<sha of these files>` — inside the jobs where a checkout + runner exist, so you pass globs (not a pre-hashed key): a reusable-workflow caller's `with:` has no runner/checkout, so `runner`/`hashFiles` can't be used there. Point it at the lockfiles/build descriptors that should rotate the cache, e.g. for Gradle: `backend/java/gradle/libs.versions.toml` + `backend/java/**/*.gradle*` + `backend/java/**/gradle-wrapper.properties`. Globs support `**` (globstar). Required when dev_cache_paths is set; if empty the cache is skipped."
         type: string
         default: ""
-      dev_cache_restore_keys:
-        description: "Optional. Newline-separated restore-key prefixes for partial hits. GitHub falls through them in order and across the run's branch then base branch then default branch, so a prefix like 'Linux-devcache-' lets a cold PR reuse the most recent compatible cache from main. Caches are repo-scoped, so a cache your main CI saves under the same prefix is reused here too."
+      dev_cache_key_prefix:
+        description: "Optional cache-key prefix (default 'devcache'). The computed key is `<RUNNER_OS>-<prefix>-<hash of dev_cache_key_files>`, and restore-keys fall back to `<RUNNER_OS>-<prefix>-` (so a cold PR prefix-matches the latest main-scope entry; caches are repo-scoped, so a cache your main CI writes under the same prefix is reused too). Set it per stack (e.g. 'gradle') so unrelated caches don't collide."
         type: string
-        default: ""
+        default: "devcache"
       dev_cache_warm_command:
-        description: "Optional. Shell command the warm-cache job runs (in main scope, against the trusted BASE ref — never PR head) to populate dev_cache_paths, then saves under dev_cache_key. This is what makes the cache available to EVERY PR rather than only re-pushes of the same branch. Keep it cheap and PR-code-free — a dependency resolve/prefetch, not a full build. It runs only on a cache miss (i.e. after the key rotates), so steady-state cost is one prefetch per dependency change. The warm-cache job is a vanilla ubuntu-latest with only Node set up, so the command owns its own toolchain — use the runner's preinstalled versions (e.g. JAVA_HOME_21_X64 / GOROOT_1_22_X64) or install what it needs. Example: 'cd backend/java && JAVA_HOME=$JAVA_HOME_21_X64 ./gradlew :api:dependencies --no-daemon'. Leave empty to skip main-scope warming (the functional job still restores whatever exists under the key/prefix, e.g. a cache your own main CI writes)."
+        description: "Optional. Shell command the warm-cache job runs (in main scope, against the trusted BASE ref — never PR head) to populate dev_cache_paths, then saves under the computed key. This is what makes the cache available to EVERY PR rather than only re-pushes of the same branch. Keep it cheap and PR-code-free — a dependency resolve/prefetch, not a full build. It runs only on a cache miss (i.e. after the key rotates), so steady-state cost is one prefetch per dependency change. The warm-cache job is a vanilla ubuntu-latest with only Node set up, so the command owns its own toolchain — use the runner's preinstalled versions (e.g. JAVA_HOME_21_X64 / GOROOT_1_22_X64) or install what it needs. Example: 'cd backend/java && JAVA_HOME=$JAVA_HOME_21_X64 ./gradlew :api:dependencies --no-daemon'. Leave empty to skip main-scope warming (the functional job still restores whatever exists under the key/prefix, e.g. a cache your own main CI writes)."
         type: string
         default: ""
     secrets:
@@ -456,22 +456,45 @@ jobs:
           echo "Disk after:"; df -h / | tail -1
 
       # Generic, opt-in dev build/dependency cache (the dev_cache_* inputs).
-      # Restore-ONLY here — after disk cleanup, before the bring-up — so
-      # dev-start.sh compiles/installs against a warm cache instead of cold every
-      # run. The matching warm/save lives in the warm-cache job (main scope),
-      # exactly like the package-store: warming there makes the cache available to
-      # every PR, not just re-pushes of the same branch. Stack-agnostic: the
-      # consumer picks the paths + key. restore (not the all-in-one cache action)
-      # so dev-start.sh mutating the tree can't trigger an all-in-one post(save)
-      # re-hash that errors and reds an otherwise-green run.
+      # The key is computed HERE (not passed in) because a reusable-workflow
+      # caller's `with:` has no runner/checkout, so it can't use runner/hashFiles
+      # — this job does. Restore-ONLY here — after disk cleanup, before the
+      # bring-up — so dev-start.sh compiles/installs against a warm cache instead
+      # of cold every run. The matching warm/save lives in the warm-cache job
+      # (main scope), exactly like the package-store: warming there makes the
+      # cache available to every PR, not just re-pushes of the same branch.
+      # restore (not the all-in-one cache action) so dev-start.sh mutating the
+      # tree can't trigger an all-in-one post(save) re-hash that reds the run.
+      - name: Compute dev cache key
+        id: dev_cache_meta
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
+        shell: bash
+        env:
+          KEY_FILES: ${{ inputs.dev_cache_key_files }}
+          KEY_PREFIX: ${{ inputs.dev_cache_key_prefix }}
+        run: |
+          shopt -s globstar nullglob
+          files=()
+          while IFS= read -r pat; do
+            [ -z "$pat" ] && continue
+            # shellcheck disable=SC2206  # intentional glob + word-split of the pattern
+            for f in $pat; do [ -f "$f" ] && files+=( "$f" ); done
+          done <<< "$KEY_FILES"
+          if [ ${#files[@]} -eq 0 ]; then
+            hash="nofiles"
+          else
+            hash=$(printf '%s\0' "${files[@]}" | sort -zu | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          fi
+          echo "key=${RUNNER_OS}-${KEY_PREFIX}-${hash}" >> "$GITHUB_OUTPUT"
+          echo "restore=${RUNNER_OS}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
       - name: Restore dev build cache
         id: dev_build_cache
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key != ''
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ inputs.dev_cache_paths }}
-          key: ${{ inputs.dev_cache_key }}
-          restore-keys: ${{ inputs.dev_cache_restore_keys }}
+          key: ${{ steps.dev_cache_meta.outputs.key }}
+          restore-keys: ${{ steps.dev_cache_meta.outputs.restore }}
 
       # Detached (setsid/nohup/disown) so the bring-up survives the step
       # boundary; the orchestrator polls /tmp/dev-env/rc + outputs.
@@ -736,22 +759,45 @@ jobs:
       # the package store above) so EVERY PR's functional job, which only
       # restores it, starts warm. restore → run the consumer's warm command
       # against the trusted BASE ref → save. Opt-in: the whole block is inert
-      # unless dev_cache_paths + dev_cache_key + dev_cache_warm_command are set.
-      # The warm command runs only on a cache miss (key rotated since the last
-      # warm), so steady-state this is a no-op — keeping the aggressive caching
-      # short-lived: entries churn only as fast as the cache key's hashFiles
-      # inputs change, and GitHub idle-evicts unused entries (7 days / 10 GB LRU).
+      # unless dev_cache_paths + dev_cache_key_files + dev_cache_warm_command are
+      # set. The warm command runs only on a cache miss (key rotated since the
+      # last warm), so steady-state this is a no-op — keeping the aggressive
+      # caching short-lived: entries churn only as fast as the key files change,
+      # and GitHub idle-evicts unused entries (7 days / 10 GB LRU). The key is
+      # computed here (base-ref checkout) the same way the functional job does.
+      - name: Compute dev cache key
+        id: dev_cache_meta
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != ''
+        shell: bash
+        env:
+          KEY_FILES: ${{ inputs.dev_cache_key_files }}
+          KEY_PREFIX: ${{ inputs.dev_cache_key_prefix }}
+        run: |
+          shopt -s globstar nullglob
+          files=()
+          while IFS= read -r pat; do
+            [ -z "$pat" ] && continue
+            # shellcheck disable=SC2206  # intentional glob + word-split of the pattern
+            for f in $pat; do [ -f "$f" ] && files+=( "$f" ); done
+          done <<< "$KEY_FILES"
+          if [ ${#files[@]} -eq 0 ]; then
+            hash="nofiles"
+          else
+            hash=$(printf '%s\0' "${files[@]}" | sort -zu | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          fi
+          echo "key=${RUNNER_OS}-${KEY_PREFIX}-${hash}" >> "$GITHUB_OUTPUT"
+          echo "restore=${RUNNER_OS}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
       - name: Restore dev build cache
         id: dev_cache_restore
-        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key != '' && inputs.dev_cache_warm_command != ''
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != ''
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ inputs.dev_cache_paths }}
-          key: ${{ inputs.dev_cache_key }}
-          restore-keys: ${{ inputs.dev_cache_restore_keys }}
+          key: ${{ steps.dev_cache_meta.outputs.key }}
+          restore-keys: ${{ steps.dev_cache_meta.outputs.restore }}
       - name: Warm dev build cache (base ref)
         id: dev_cache_warm
-        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'
         shell: bash
         env:
           # Caller-supplied (trusted consumer config), passed via env and quoted
@@ -765,8 +811,8 @@ jobs:
             echo "::warning::dev_cache_warm_command failed — cache warm is best-effort, reviews are unaffected."
           fi
       - name: Save dev build cache
-        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key != '' && steps.dev_cache_warm.outputs.warmed == 'true' && steps.dev_cache_restore.outputs.cache-hit != 'true'
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && steps.dev_cache_warm.outputs.warmed == 'true' && steps.dev_cache_restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ inputs.dev_cache_paths }}
-          key: ${{ inputs.dev_cache_key }}
+          key: ${{ steps.dev_cache_meta.outputs.key }}
