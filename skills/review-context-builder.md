@@ -181,7 +181,7 @@ SETUP_NOTES=""
 [ -f .github/claude-review/dev-start.sh ] || SETUP_NOTES="no \`.github/claude-review/dev-start.sh\` (functional testing unavailable)"
 if [ -f .github/review-config.md ]; then
   grep -q '^### Auth' .github/review-config.md || SETUP_NOTES="${SETUP_NOTES:+$SETUP_NOTES; }review-config.md lacks \`### Auth\`"
-  grep -q '^### Services' .github/review-config.md || SETUP_NOTES="${SETUP_NOTES:+$SETUP_NOTES; }review-config.md lacks \`### Services\`"
+  grep -qE '^### (Known service ports|Services)' .github/review-config.md || SETUP_NOTES="${SETUP_NOTES:+$SETUP_NOTES; }review-config.md lacks \`### Known service ports\`"
 fi
 echo "SETUP_NOTES=${SETUP_NOTES:-none}"
 cat /tmp/dev-env/outputs 2>/dev/null || echo "dev-env outputs not available yet"
