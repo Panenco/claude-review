@@ -177,11 +177,15 @@ fi
 for prd in $PRD_FILES; do [ -f "$prd" ] && { echo "<!-- $prd -->"; cat "$prd"; echo; } >> /tmp/prd-content.md; done
 
 # ── Config-gap detection (replaces the deleted workflow lint step) ──
+# Anchor to the consumer checkout ($GITHUB_WORKSPACE) — the Bash CWD here is the
+# pipeline install dir, so a relative `.github/...` resolves against claude-review's
+# own files and spuriously reports the consumer's dev-start.sh as missing.
+WS="${GITHUB_WORKSPACE:-.}"
 SETUP_NOTES=""
-[ -f .github/claude-review/dev-start.sh ] || SETUP_NOTES="no \`.github/claude-review/dev-start.sh\` (functional testing unavailable)"
-if [ -f .github/review-config.md ]; then
-  grep -q '^### Auth' .github/review-config.md || SETUP_NOTES="${SETUP_NOTES:+$SETUP_NOTES; }review-config.md lacks \`### Auth\`"
-  grep -qE '^### (Known service ports|Services)' .github/review-config.md || SETUP_NOTES="${SETUP_NOTES:+$SETUP_NOTES; }review-config.md lacks \`### Known service ports\`"
+[ -f "$WS/.github/claude-review/dev-start.sh" ] || SETUP_NOTES="no \`.github/claude-review/dev-start.sh\` (functional testing unavailable)"
+if [ -f "$WS/.github/review-config.md" ]; then
+  grep -q '^### Auth' "$WS/.github/review-config.md" || SETUP_NOTES="${SETUP_NOTES:+$SETUP_NOTES; }review-config.md lacks \`### Auth\`"
+  grep -qE '^### (Known service ports|Services)' "$WS/.github/review-config.md" || SETUP_NOTES="${SETUP_NOTES:+$SETUP_NOTES; }review-config.md lacks \`### Known service ports\`"
 fi
 echo "SETUP_NOTES=${SETUP_NOTES:-none}"
 cat /tmp/dev-env/outputs 2>/dev/null || echo "dev-env outputs not available yet"
