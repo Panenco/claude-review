@@ -16,19 +16,26 @@ match:
 | 1 | `label` | `skip-review` label present | `skip` | no |
 | 2 | `promotion` | release/promotion PR (e.g. `staging` → `main`) | `light` | no |
 | 3 | `oversized` | over the size ceiling (default 3000 lines / 60 files) | `skip` → blocking `REQUEST_CHANGES` (split the PR) | no |
-| 4 | `nonruntime` | only tests / docs / CI / lockfiles changed | `full` | no |
+| 4 | `nonruntime` | only tests / docs / lockfiles changed | `light` | no |
+| 4 | `nonruntime` | a `.github/` (CI/workflow) file is touched — supply-chain surface | `full` | no |
+| 4b | `tiny` | ≤ 10 non-generated lines, no sensitive paths | `light` | no |
 | 5 | `small` | ≤ 300 non-generated lines, no sensitive paths | `light` | yes |
 | 6 | `normal` | substantial, **or** touches a sensitive path | `full` | yes |
 
 - **`full`** — the dual-judge debate (Opus + Haiku, with rebuttal).
 - **`light`** — a single judge, no rebuttal. The fast path for the judge fan. At
-  `small` the single judge runs on Opus (high recall on the path that gets the
-  least scrutiny); at `promotion` it stays on Sonnet. Functional testing still
-  runs per the table, because runtime evidence is the review's centerpiece —
-  small UI fixes are exactly where one screenshot beats prose. The test planner
-  still scopes the run (a small diff with no user-observable surface plans `skip`;
-  a trivial one plans a 1-scenario `quick`), so the cost scales with the surface,
-  not the gate.
+  `small` and `tiny` the single judge runs on Opus (high recall on the path that
+  gets the least scrutiny); at `nonruntime` / `promotion` it stays on Sonnet.
+  Functional testing still runs at `small`, because runtime evidence is the
+  review's centerpiece — small UI fixes are exactly where one screenshot beats
+  prose. The test planner still scopes the run (a small diff with no
+  user-observable surface plans `skip`; a trivial one plans a 1-scenario `quick`),
+  so the cost scales with the surface, not the gate.
+- **`tiny`** — a ≤ 10-line, non-sensitive runtime fix. One Opus judge reviews it
+  statically; the functional **infra and run are skipped** (a trivial fix rarely
+  needs a smoke pass, and the runtime-evidence gate is exempt when functional is
+  off). Sensitive paths and `deep-review` still get the full review + functional.
+  On round 2, a trivial since-last delta is reviewed by a single judge too.
 - **`skip`** — no judges. For most skip reasons the reason is posted as a note;
   for `oversized` the orchestrator instead emits a blocking `REQUEST_CHANGES`
   asking to split the PR (no judge debate). The `deep-review` label overrides
@@ -82,6 +89,7 @@ Every knob is a `workflow_call` **input** with a safe default. Pass it in the
 | input | default | meaning |
 |-------|---------|---------|
 | `gate_small_ceiling` | `300` | non-generated lines at/under which a runtime PR is `small` (single judge) |
+| `gate_tiny_ceiling` | `10` | non-generated lines at/under which a runtime PR is `tiny` (single judge, functional skipped) |
 | `gate_size_ceiling` | `3000` | non-generated lines over which a PR is `oversized` |
 | `gate_file_ceiling` | `60` | changed files over which a PR is `oversized` |
 | `gate_sensitive_globs` | auth.* / oauth / authentication / authorization / security / payments / migrations | path globs that force `full` even when small |

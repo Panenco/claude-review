@@ -8,7 +8,7 @@
 # Output (KEY=value lines on stdout, ready to append to $GITHUB_OUTPUT):
 #   review_level=full|light|skip
 #   run_functional=true|false
-#   gate=normal|nonruntime|oversized|promotion|label|small
+#   gate=normal|nonruntime|oversized|promotion|label|small|tiny
 #   reason=<human-readable, single line>
 #
 # review_level (consumed by review-orchestrator.md):
@@ -25,7 +25,10 @@
 #   promotion   → light / functional off   (source already reviewed; cheap insurance)
 #   oversized   → skip  / functional off   (too big to review well — orchestrator returns a canned
 #                                           "split this PR" REQUEST_CHANGES; no judges. deep-review overrides)
-#   nonruntime  → full  / functional off   (tests/docs/CI/locks — judges yes, no app-driving)
+#   nonruntime  → light / functional off   (tests/docs/locks — one judge, no app-driving. A `.github/`
+#                                           touch (CI/supply-chain) keeps `full` dual-judge.)
+#   tiny        → light / functional off   (<= GATE_TINY_CEILING non-gen lines, no sensitive paths — a
+#                                           trivial fix; single judge, skip the functional infra+run)
 #   small       → light / functional on    (<= GATE_SMALL_CEILING non-gen lines, no sensitive paths;
 #                                           the test planner still picks skip/quick per surface)
 #   normal      → full  / functional on    (substantial, OR touches a sensitive path)
@@ -62,6 +65,7 @@ DEEP_LABEL="${GATE_DEEP_LABEL:-deep-review}"
 SIZE_CEILING="${GATE_SIZE_CEILING:-3000}"
 FILE_CEILING="${GATE_FILE_CEILING:-60}"
 SMALL_CEILING="${GATE_SMALL_CEILING:-300}"
+TINY_CEILING="${GATE_TINY_CEILING:-10}"
 PROMO_BASES="${GATE_PROMOTION_BASES:-main master production prod}"
 PROMO_HEADS="${GATE_PROMOTION_HEADS:-staging develop dev release hotfix}"
 SENSITIVE_GLOBS="${GATE_SENSITIVE_GLOBS:-*auth.* */oauth/* oauth.* */authentication/* authentication/* */authorization/* authorization/* */security/* security/* */payments/* payments/* */payment/* payment/* */migrations/* migrations/* */migration/* migration/*}"
@@ -142,11 +146,12 @@ is_sensitive() {
   return 1
 }
 
-ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true; has_sensitive=false
+ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true; has_sensitive=false; has_github=false
 while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
   total_files=$(( total_files + 1 ))
   is_nonruntime "$path" || all_nonruntime=false
+  case "$path" in .github/*) has_github=true ;; esac
   # Sensitivity is a property of the path (generated or not): a touch under a
   # sensitive glob forces a full review even if it doesn't count toward size.
   is_sensitive "$path" && has_sensitive=true
@@ -171,9 +176,22 @@ if [ "$FORCE_FULL" = false ] && [ "$oversized" = true ]; then
   exit 0
 fi
 
-# ── 4) All changed files non-runtime? Full review, but don't drive the app ──
+# ── 4) All changed files non-runtime? One judge, no app-driving — UNLESS a `.github/`
+#       file is touched (CI/workflow is a supply-chain surface; keep the dual-judge full). ──
 if [ "$total_files" -gt 0 ] && [ "$all_nonruntime" = true ]; then
-  emit "full" "false" "nonruntime" "All ${total_files} changed files are non-runtime (tests / docs / CI / lockfiles); running the judges but skipping functional app-testing."
+  if [ "$FORCE_FULL" = true ] || [ "$has_github" = true ]; then
+    emit "full" "false" "nonruntime" "All ${total_files} changed files are non-runtime; running the full dual-judge review (CI/workflow touch or deep-review label), no functional app-testing."
+  else
+    emit "light" "false" "nonruntime" "All ${total_files} changed files are non-runtime (tests / docs / lockfiles) — single-judge pass, no functional app-testing."
+  fi
+  exit 0
+fi
+
+# ── 4b) Tiny runtime change? A handful of non-generated lines, no sensitive paths — one
+#        judge is plenty and the functional infra+run isn't worth it for a trivial fix.
+#        Sensitive paths and deep-review fall through to full+functional. ──
+if [ "$ng_files" -gt 0 ] && [ "$FORCE_FULL" = false ] && [ "$has_sensitive" = false ] && [ "$ng_lines" -le "$TINY_CEILING" ]; then
+  emit "light" "false" "tiny" "Tiny runtime change (${ng_files} files, ${ng_lines} non-generated lines, at/under the ${TINY_CEILING}-line tiny ceiling; no sensitive paths) — single-judge pass, no functional run. Add the '$DEEP_LABEL' label to force a full review."
   exit 0
 fi
 

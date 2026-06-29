@@ -8,7 +8,7 @@ set -uo pipefail
 # emitted plan as "review_level run_functional gate". No gh / no LLM key required.
 #
 # review_level: full | light | skip   ·   run_functional: true | false
-# gate: normal | nonruntime | oversized | promotion | label | small
+# gate: normal | nonruntime | oversized | promotion | label | small | tiny
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$ROOT/scripts/review-plan.sh"
@@ -63,16 +63,21 @@ assert_plan "3200 changed lines (over the 3000 ceiling)" "skip false oversized" 
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t2200\t1000'
 assert_plan "2800 changed lines is under the raised 3000 ceiling → normal (was oversized at 2500)" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/big.ts\t1800\t1000'
-assert_plan "huge lockfile ALONE → not oversized (generated excluded)" "full false nonruntime" \
+assert_plan "huge lockfile ALONE → not oversized (generated excluded)" "light false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'pnpm-lock.yaml\t9000\t9000'
 
-# ── all non-runtime → full review, no functional ──
-assert_plan "test-only migration" "full false nonruntime" \
+# ── all non-runtime → single judge, no functional (docs/tests/locks); .github keeps full ──
+assert_plan "test-only migration → light" "light false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'apps/web/e2e/trajectories.cy.ts\t89\t52'
-assert_plan "docs-only" "full false nonruntime" \
+assert_plan "docs-only → light" "light false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'README.md\t10\t0'
-assert_plan "CI workflow only" "full false nonruntime" \
+assert_plan "docs + tests (no .github) → light" "light false nonruntime" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'README.md\t10\t0\nsrc/x.test.ts\t40\t0'
+# A .github/ touch is a CI/supply-chain surface → keep the full dual-judge review.
+assert_plan "CI workflow only → full (supply-chain)" "full false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'.github/workflows/deploy.yml\t6\t0'
+assert_plan "docs + a .github file → full (supply-chain)" "full false nonruntime" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'README.md\t10\t0\n.github/workflows/deploy.yml\t6\t0'
 
 # ── normal → full + functional (substantial runtime, incl. ambiguous cases) ──
 assert_plan "runtime source (large)" "full true normal" \
@@ -80,11 +85,24 @@ assert_plan "runtime source (large)" "full true normal" \
 assert_plan "mixed test + runtime (large)" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/page.tsx\t250\t100\nsrc/page.test.ts\t20\t0'
 
+# ── tiny runtime change (≤10 non-gen lines) → light/tiny, functional OFF [NEW] ──
+assert_plan "tiny runtime fix (8 lines)" "light false tiny" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t5\t3'
+assert_plan "exactly at the 10-line tiny ceiling → tiny" "light false tiny" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t6\t4'
+assert_plan "one line over the tiny ceiling (11) → small/functional-on" "light true small" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t6\t5'
+assert_plan "tsconfig (ambiguous → runtime, 4 lines → tiny)" "light false tiny" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'tsconfig.json\t3\t1'
+# A tiny change to a SENSITIVE path still gets the full review + functional (floor holds).
+assert_plan "tiny but sensitive (auth) → full+functional" "full true normal" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/services/auth.service.ts\t3\t1'
+assert_plan "deep-review on a tiny PR → full" "full true normal" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_LABELS=$'deep-review' GATE_FILES_TSV=$'src/util.ts\t5\t3'
+
 # ── small runtime change → light/small (single judge, quick functional) [NEW] ──
 assert_plan "small runtime source" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t40\t5'
-assert_plan "tsconfig (ambiguous → runtime, small)" "light true small" \
-  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'tsconfig.json\t3\t1'
 assert_plan "exactly at the 300 ceiling → still small" "light true small" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t200\t100'
 assert_plan "one line over the ceiling (301) → normal" "full true normal" \

@@ -109,11 +109,13 @@ Outputs: /tmp/functional-findings.json + /tmp/functional-meta.json. Screenshots:
 
 Phase B dispatch is EXACTLY ONE assistant response containing ALL Task calls — both judges AND the functional tester together. Never dispatch the tester in a later response than the judges: audited runs serialized them and paid 6+ minutes of pure wall-clock loss.
 
+**Round-2 trivial-delta shortcut:** when `ROUND ≥ 2` and the (since-last-scoped) `## Per-file diff index` is all non-runtime OR a single small runtime file (a handful of changed lines), dispatch ONE high-tier judge (`model: "${MODEL_HIGH}"`, [DESIGN] MANDATORY, `OUTPUT_PATH=/tmp/judge-light.json`) instead of the panel and skip Phase C — round 1 already reviewed the full PR with both judges, and the round-2 ladder runs identically on one judge. Functional follows the normal dispatch decision (a docs/trivial since-last delta already yields `## Strategy: skip`).
+
 1. **Judge-Opus** — `subagent_type: "general-purpose"`, `model: "${MODEL_HIGH}"`, prompt:
    ```
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-judge.md and follow it exactly. If bugbot.md exists at the repo root, Read it — its acceptance/exemption sections override the skill (drop matching findings). You are the Opus judge for PR #${PR_NUMBER}. context.md at the repo root is your index. MODE=initial OUTPUT_PATH=/tmp/judge-opus.json. The [DESIGN] pass is MANDATORY for you.
    ```
-2. **Judge-Haiku** — same prompt, `model: "${MODEL_FAST}"`, `OUTPUT_PATH=/tmp/judge-haiku.json`, and "The [DESIGN] pass is optional for you." At `light`: replace 1–2 with ONE judge — `model: "${MODEL_HIGH}"` when `GATE=small`, `model: "${MODEL_STANDARD}"` when `GATE=promotion` (any other GATE → `${MODEL_STANDARD}`) — `OUTPUT_PATH=/tmp/judge-light.json`, and "The [DESIGN] pass is MANDATORY for you."
+2. **Judge-Haiku** — same prompt, `model: "${MODEL_FAST}"`, `OUTPUT_PATH=/tmp/judge-haiku.json`, and "The [DESIGN] pass is optional for you." At `light`: replace 1–2 with ONE judge — `model: "${MODEL_HIGH}"` when `GATE` ∈ {`small`, `tiny`} (runtime code, just small — full single-judge quality), `model: "${MODEL_STANDARD}"` when `GATE=promotion` (any other GATE, incl. `nonruntime` → `${MODEL_STANDARD}`) — `OUTPUT_PATH=/tmp/judge-light.json`, and "The [DESIGN] pass is MANDATORY for you."
 3. **Functional tester** — per the decision above.
 
 Wait for every dispatched Task.
@@ -207,7 +209,7 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
 
 ### Inline comments (`comments[]`)
 
-- Inline-eligible: all critical/major findings + functional failures (any-severity findings with `type` ∈ {spec-mismatch from the tester, ui-regression, endpoint-failure, smoke-failure}) + **`minor` findings that carry a `path` + `line_start`** (a precise line anchor reads better inline than buried in the body). **`note`-severity findings, and any finding without a line anchor, always go to the body list.**
+- Inline-eligible: all critical/major findings + functional failures (any-severity findings with `type` ∈ {spec-mismatch from the tester, ui-regression, endpoint-failure, smoke-failure}) + **`minor` findings that carry a `path` + `line_start` AND whose `type` is NOT `design`/`consistency`** (a precise line anchor reads better inline). **`minor` `design`/`consistency` findings go to the body advisory list, never inline** — authors auto-apply inline comments unread, and a taste/refactor suggestion applied unread becomes unwanted churn (it is advisory, not a defect to fix in place). **`note`-severity findings, and any finding without a line anchor, always go to the body list.**
 - **REQUIRED, every path through this skill (degraded included): each critical/major finding with a `path` + `line_start` gets a `comments[]` entry.** Body-only majors are invalid output — the poster's hunk validation is the only thing allowed to demote one. (Minor inline is best-effort, not required — it yields to the cap.)
 - Max 12 inline. Fill strictly by severity — critical, then major, then minor — so majors never lose a slot to a minor; overflow (and every `note`/anchorless finding) moves to the body list. On nitpicky PRs this still caps inline noise at 12.
 - Each: `path`, `line` = `line_end // line_start`, `side` = finding's side (default RIGHT), `start_line` = `line_start` when the range spans >1 and ≤10 lines (else null), `body`:
@@ -237,6 +239,8 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
 **The body NEVER states where findings are posted** ("see inline comments above", "posted as inline comments") — the poster may relocate out-of-hunk comments into the body, making any such claim false.
 
 ### resolve_threads / bot_replies
+
+**Never claim runtime verification you didn't do.** Resolution and reply text may cite the fixing commit and what the diff changed, but MUST NOT assert it was exercised ("Functionally verified", "confirmed working", "tested and passing") unless `functional_validation.overall ∈ {PASS, WARN}` this round. A static re-read confirms the *code*, not its *behavior* — say "resolved in `<sha>`", not "verified working".
 
 - `resolve_threads`: one entry per context.md `## Thread resolution` row with status RESOLVED and source ∈ {own_bot, other_bot, human} — `thread_id` = the row's thread node id (`PRRT_…`), `reply` = `✅ Resolved as of <head-sha> — <the row's evidence one-liner>`. STILL_PRESENT / DISPUTED / NEW_CONTEXT rows get nothing.
 - `bot_replies`:

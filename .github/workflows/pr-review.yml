@@ -58,6 +58,10 @@ on:
         description: "Non-generated changed lines at/under which a runtime PR is `small`."
         type: number
         default: 300
+      gate_tiny_ceiling:
+        description: "Non-generated changed lines at/under which a runtime PR is `tiny` (single judge, functional skipped)."
+        type: number
+        default: 10
       gate_size_ceiling:
         description: "Non-generated changed lines over which a PR is `oversized`."
         type: number
@@ -268,6 +272,7 @@ jobs:
           GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
           GATE_DEEP_LABEL: ${{ inputs.gate_deep_label }}
           GATE_SMALL_CEILING: ${{ inputs.gate_small_ceiling }}
+          GATE_TINY_CEILING: ${{ inputs.gate_tiny_ceiling }}
           GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
           GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
           GATE_SENSITIVE_GLOBS: ${{ inputs.gate_sensitive_globs }}

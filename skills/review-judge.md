@@ -54,7 +54,7 @@ After the per-file pass, do one explicit cross-diff design pass. Look for:
 - **Stringly-typed domain values** — raw strings where the codebase (or the diff itself, ≥2 uses) wants an enum/branded type.
 - **Missing abstraction used ≥3×** — a pattern repeated three or more times in the diff that an existing or trivial abstraction would collapse.
 
-Default severity `minor` (non-blocking); escalate to blocking `major` only when the problem is systemic — it shapes the PR's main structure, not one spot (e.g. every new endpoint in the PR lands on the wrong controller, or the PR's core flow is built on a duplicated service). Each design finding still needs concrete evidence: name both duplicate sites, the layer the endpoint belongs on and the sibling that proves it, the existing API shape being diverged from. "Could be cleaner" is not a finding.
+A pure 2-site duplication or sibling-divergence with no concrete consequence (it merely "could be DRYer") is `note`, not `minor` — reserve `minor` for duplication that is systemic (≥3 sites, matching the bar above) or already causes a defect, keeping these consistent. Otherwise default severity `minor` (non-blocking); escalate to blocking `major` only when the problem is systemic — it shapes the PR's main structure, not one spot (e.g. every new endpoint in the PR lands on the wrong controller, or the PR's core flow is built on a duplicated service). Each design finding still needs concrete evidence: name both duplicate sites, the layer the endpoint belongs on and the sibling that proves it, the existing API shape being diverged from. "Could be cleaner" is not a finding.
 
 Design findings go through the same false-positive self-check as everything else — the design pass changes WHERE you look, not the evidence bar.
 
@@ -106,10 +106,10 @@ Before finalising ANY finding, verify all of:
 1. **Concrete evidence** — exact wrong lines quoted in `evidence` (and `code_quote`/`prd_quote` when citing code/spec verbatim). Speculation → drop.
 2. **Head-verification (mandatory)** — re-Read the relevant file region at HEAD before emitting. Never report from diff memory or from a chunk alone: the diff shows the change, the file shows the truth — a later hunk or commit may already fix what the chunk suggests is broken. If the defect isn't in the file as it exists NOW, there is no finding.
 3. **Refutation test** — could the author dismiss this in one sentence? Drop.
-4. **Senior-engineer test** — would an experienced engineer agree it's *objectively wrong*?
+4. **Senior-engineer test** — would an experienced engineer agree it's *objectively wrong*? In particular, if the changed code follows the SAME pattern as its siblings/peers in the same unit (they all do X), that pattern alone is not a `bug`/`major` — it's the local convention, not a defect introduced by this PR. Read a sibling before claiming an always-set/unconditional pattern is wrong.
 5. **Exact reference** — `spec-mismatch` quotes the exact rule; `bug` shows the failure path. "Generally bad practice" is not evidence.
 6. **Artifact exists** — references to a library/export/symbol must be verified by Read (`package.json`, the source file). Cannot verify → drop. An author dispute of a prior finding is NOT silently suppressed: it is ADJUDICATED under "Adjudicating disputed prior findings (round 2)" below. This rule only prevents opening a NEW duplicate thread for an UNCONTESTED still-open issue.
-7. **Impact test** — state the concrete bad outcome in one sentence. A bare convention-rule match with no stated outcome is noise. Process complaints about the PR description are not findings.
+7. **Impact test** — state the concrete bad outcome in one sentence. A bare convention-rule match with no stated outcome is noise. Process complaints about the PR description are not findings. **If you cannot name a concrete code change as the fix — your `expected` would read "no change required", "correct as-is", or "for future robustness" — it is not a finding; route the observation to `uncertain_observations`.**
 8. **Stale-snapshot guard** — before filing any finding that claims something is MISSING or ABSENT (a route, a config entry, a migration, a handler), check whether the BASE branch already provides it: `git show origin/<base>:<path>` or `git grep <symbol> origin/<base> -- <path-glob>` (base ref name is in context.md's PR metadata). If base provides it, there is no finding — the merge result has it. Audited failure: a CRITICAL "nginx.conf has no /api/fgo route" filed against a stale head whose base had already shipped the route.
 
 A clean `[]` is a confident, valuable review. When in doubt, drop the finding.
@@ -150,6 +150,8 @@ If `/tmp/other-bot-comments.json` is non-empty, Read it. For every HIGH/CRITICAL
 3. **Skip** — style-tooling territory (low-severity aikido nesting/extract-helper notes) or low severity. Do nothing.
 
 Corroborate-or-refute applies to HIGH/CRITICAL only. Never opine on every style note.
+
+**Security floor (no silent drops).** For a HIGH/CRITICAL `security` finding (auth/permission bypass, tenant/ownership isolation, injection, secrets), you may **Refute only with positive evidence from HEAD** that it is wrong — never via "pre-existing convention", "deferred to RLS/another layer", or "the codebase already does this". Absent such HEAD evidence, **Corroborate** (the safe default for a reachable security claim). Never **Skip** a HIGH/CRITICAL security finding. Mirrors the critical/major dispute floor below.
 
 ## Functional completeness (HIGHEST PRIORITY when a spec exists)
 
