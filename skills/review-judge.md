@@ -229,4 +229,4 @@ Verdict derivation:
 - `COMMENT` if findings exist but all are `minor`/`note`, OR `manual_spec_present` is false (the orchestrator's gate downgrades APPROVE anyway — be explicit so it sees your hypothetical).
 - `APPROVE` if zero findings, manual spec present, you have nothing to flag, AND you can confidently vouch for the change. If it is a consequential change you cannot fully stand behind despite finding nothing, set `requires_human_review` instead (the orchestrator downgrades it to COMMENT + the human-review banner — not a block).
 
-Write `[]` for empty findings. ALWAYS write the file before exiting. ALWAYS use the `OUTPUT_PATH` from your prompt.
+Write `[]` for empty findings. ALWAYS write the file before exiting. ALWAYS use the `OUTPUT_PATH` from your prompt. The free-text fields (`evidence`, `reasoning`, `expected`, `code_quote`, `prd_quote`) routinely quote real code — escape every `"`, newline, and backslash inside them so the file is valid JSON. An unparseable file is invisible to the orchestrator.

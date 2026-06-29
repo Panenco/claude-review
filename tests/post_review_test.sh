@@ -128,7 +128,8 @@ assert_contains "emits ::error::" "::error::" "$OUT"
 PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "")
 assert_contains "crash review posted" "<!-- claude-review-crash -->" "$PAYLOAD"
 assert_contains "crash review is COMMENT" '"event": "COMMENT"' "$PAYLOAD"
-assert_contains "generic crash message" "Claude Review — incomplete" "$PAYLOAD"
+assert_contains "no-output crash message" "Claude Review — incomplete" "$PAYLOAD"
+assert_not_contains "not the unreadable variant" "result unreadable" "$PAYLOAD"
 rm -rf "$W"
 
 # ── (b) quota grep → quota-specific banner ───────────────────────────────────
@@ -144,14 +145,19 @@ assert_contains "quota-specific banner" "Claude Review — quota exhausted" "$PA
 assert_contains "reset window surfaced" "resets 7pm" "$PAYLOAD"
 rm -rf "$W"
 
-# ── (c) invalid JSON → exit 1 ────────────────────────────────────────────────
+# ── (c) invalid JSON (output present) → unreadable banner, exit 1 ────────────
 echo ""
 echo "── (c) invalid review.json ──"
 W=$(mktemp -d)
-echo 'this is not json' > "$W/review.json"
+# Unescaped quote inside a string — the exact qiv#679 corruption.
+printf '%s\n' '{"verdict":"COMMENT","body":"shows a "bad" quote"}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "")
 assert_eq "exit 1" "1" "$RC"
-assert_contains "crash banner posted" "<!-- claude-review-crash -->" "$(cat "$W"/capture/* 2>/dev/null || echo "")"
+assert_contains "crash banner posted" "<!-- claude-review-crash -->" "$PAYLOAD"
+assert_contains "unreadable variant, not incomplete" "result unreadable" "$PAYLOAD"
+assert_contains "tells the human to re-run" "re-run the workflow" "$PAYLOAD"
+assert_not_contains "does not say human must review" "a human should review" "$PAYLOAD"
 rm -rf "$W"
 
 # ── (d) out-of-hunk comment moved to body ────────────────────────────────────

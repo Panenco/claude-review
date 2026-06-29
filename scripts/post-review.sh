@@ -42,50 +42,68 @@ supersede_crash_banners() {
   done <<< "$ids"
 }
 
-# crash_exit <context-message> — quota-aware crash banner + exit 1.
+# crash_exit <context-message> — posts the most accurate banner it can + exit 1.
+# Three kinds, in priority order:
+#   quota       — agent returned rate_limit (re-run after reset / rotate token).
+#   unreadable  — orchestrator output exists but is not usable JSON: the review
+#                 likely RAN to completion and was lost in serialization, so a
+#                 plain re-run usually recovers it. NOT "a human must review".
+#   no-output   — no orchestrator artifact at all: a genuine crash.
 crash_exit() {
-  local context="$1" quota_hit=false reset_phrase="" crash_msg payload
+  local context="$1" kind quota_hit=false reset_phrase="" crash_msg payload run_link=""
   if [ -f "$ORCH_LOG" ] && grep -qE 'hit your limit · resets|"error": *"rate_limit"' "$ORCH_LOG" 2>/dev/null; then
     quota_hit=true
     reset_phrase=$(grep -oE 'resets [^"\\]+' "$ORCH_LOG" 2>/dev/null | head -1 || true)
   fi
-
   if [ "$quota_hit" = "true" ]; then
-    if [ -n "$reset_phrase" ]; then
-      echo "::error::Claude OAuth quota exhausted ($reset_phrase) — review agent returned rate_limit before producing output."
-    else
-      echo "::error::Claude OAuth quota exhausted (rate_limit returned, no reset window in the agent log) — review agent could not produce output."
-    fi
-    echo "::error::Re-run after the quota resets, or rotate CLAUDE_CODE_OAUTH_TOKEN to a token with available quota."
-  elif [ "${ANALYZER_OUTCOME:-}" = "failure" ]; then
-    echo "::error::Analyzer agent crashed before completing the review ($context)."
-    echo "::error::Check the 'Review: orchestrate' step log — common causes: OAuth quota exhausted, OAuth token expired, network failure, max-turns limit hit, runner OOM."
+    kind=quota
+  elif [ -s "$REVIEW_JSON" ]; then
+    kind=unreadable
   else
-    echo "::error::$context"
+    kind=no-output
   fi
+  if [ -n "${GITHUB_SERVER_URL:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+    run_link="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+  fi
+
+  case "$kind" in
+    quota)
+      if [ -n "$reset_phrase" ]; then
+        echo "::error::Claude OAuth quota exhausted ($reset_phrase) — review agent returned rate_limit before producing output."
+      else
+        echo "::error::Claude OAuth quota exhausted (rate_limit returned, no reset window in the agent log) — review agent could not produce output."
+      fi
+      echo "::error::Re-run after the quota resets, or rotate CLAUDE_CODE_OAUTH_TOKEN to a token with available quota." ;;
+    unreadable)
+      echo "::error::Orchestrator output is present but unusable ($context). The review likely completed but its result was malformed — re-running the workflow usually recovers it." ;;
+    no-output)
+      echo "::error::$context"
+      echo "::error::Check the 'Review: orchestrate' step log — common causes: OAuth token expired, network failure, max-turns limit hit, runner OOM." ;;
+  esac
 
   if [ -n "${PR:-}" ] && [ -n "${REPO:-}" ]; then
     supersede_crash_banners
-    if [ "$quota_hit" = "true" ]; then
-      crash_msg="<!-- claude-review-crash -->"
-      crash_msg+=$'\n\n'"> **Claude Review — quota exhausted** :hourglass:"
-      crash_msg+=$'\n'">"
-      if [ -n "$reset_phrase" ]; then
-        crash_msg+=$'\n'"> The Claude OAuth token hit its limit ($reset_phrase)."
-      else
-        crash_msg+=$'\n'"> The Claude OAuth token returned rate_limit (the agent log did not include a reset window)."
-      fi
-      crash_msg+=$'\n'">"
-      crash_msg+=$'\n'"> **Action required:** re-run the workflow after the quota resets, or rotate \`CLAUDE_CODE_OAUTH_TOKEN\` to a token with available quota. No code review was produced for this push."
-    else
-      crash_msg="<!-- claude-review-crash -->"
-      crash_msg+=$'\n\n'"> **Claude Review — incomplete** :warning:"
-      crash_msg+=$'\n'">"
-      crash_msg+=$'\n'"> The automated review agent crashed before producing results."
-      crash_msg+=$'\n'"> Common causes: OAuth quota exhausted, max-turns budget exhausted, runner OOM."
-      crash_msg+=$'\n'">"
-      crash_msg+=$'\n'"> **Action required:** a human reviewer should check this PR. Re-running the workflow may also help if the cause was transient."
-    fi
+    crash_msg="<!-- claude-review-crash -->"$'\n\n'
+    case "$kind" in
+      quota)
+        crash_msg+="> **Claude Review — quota exhausted** :hourglass:"$'\n'">"$'\n'
+        if [ -n "$reset_phrase" ]; then
+          crash_msg+="> The Claude OAuth token hit its limit ($reset_phrase)."$'\n'
+        else
+          crash_msg+="> The Claude OAuth token returned rate_limit (the agent log did not include a reset window)."$'\n'
+        fi
+        crash_msg+=">"$'\n'
+        crash_msg+="> **Action required:** re-run the workflow after the quota resets, or rotate \`CLAUDE_CODE_OAUTH_TOKEN\` to a token with available quota. No code review was produced for this push." ;;
+      unreadable)
+        crash_msg+="> **Claude Review — result unreadable** :warning:"$'\n'">"$'\n'
+        crash_msg+="> The review agent ran and produced output, but the result could not be parsed, so no review was posted. This is almost always a transient serialization slip, not a problem with your PR."$'\n'">"$'\n'
+        crash_msg+="> **Action required:** re-run the workflow — it usually succeeds on retry. No human action is needed unless it recurs." ;;
+      no-output)
+        crash_msg+="> **Claude Review — incomplete** :warning:"$'\n'">"$'\n'
+        crash_msg+="> The automated review agent stopped before producing any output. Common causes: max-turns budget exhausted, network failure, runner OOM."$'\n'">"$'\n'
+        crash_msg+="> **Action required:** re-run the workflow — if it was transient this clears it. If it keeps failing, a human should review this PR and the run logs." ;;
+    esac
+    [ -n "$run_link" ] && crash_msg+=$'\n'">"$'\n'"> [Run logs]($run_link)"
     payload=$(jq -n --arg body "$crash_msg" '{event: "COMMENT", body: $body}')
     gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input - <<<"$payload" >/dev/null \
       || echo "::warning::Failed to post crash notification review"

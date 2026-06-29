@@ -34,7 +34,7 @@ Env (set by the workflow): `REVIEW_LEVEL`, `RUN_FUNCTIONAL`, `GATE`, `GATE_REASO
 ```
 
 Hard rules:
-- **ALWAYS write /tmp/review.json before exiting** — every failure path below defines its degraded shape. A missing file is the only thing the poster treats as a crash.
+- **ALWAYS write /tmp/review.json before exiting, and ALWAYS validate it parses (`jq empty`) before finishing** — every failure path below defines its degraded shape. The poster treats both a missing file AND invalid JSON as a crash, so a malformed write throws away a completed review just as surely as no write at all (see Phase D's final validate-and-repair step).
 - **No own findings.** Every `meta.findings` entry is a verbatim copy of a judge/tester entry (only `id` re-assigned, only `screenshot` grafted).
 - **Every finding appears EXACTLY ONCE across `body` + `comments` + `bot_replies`.** A finding is either one inline comment, or one body bullet, or one bot_reply — never two of these. A prior critical/major finding adjudicated this round on a thread carrier appears ONLY as its `bot_replies` entry (KEEP/DROP reasoning) — never also inline or body-bulleted.
 - `meta.findings[].severity` ∈ `critical|major|minor|note`; fields identical to v2 (`code_quote`/`prd_quote` copied through when present).
@@ -45,7 +45,7 @@ Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB
 
 **Turn 1 (Bash):** `printenv MODEL_HIGH MODEL_STANDARD MODEL_FAST REVIEW_LEVEL RUN_FUNCTIONAL GATE GATE_REASON ROUND PRIOR_VERDICT PRIOR_HEAD_SHA PR_NUMBER FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS PR_AUTHOR_IS_BOT; echo "PIPELINE_DIR=$CLAUDE_REVIEW_PIPELINE_DIR"` — keep every value. Each `${VAR}` in this skill means that LITERAL value. Task `model:` params MUST be the exact model ID read from env (e.g. `claude-opus-4-8`) — NEVER an alias like `opus`/`sonnet`/`haiku`: aliases resolve against the CLI's bundled table and silently demote the judge to an older model.
 **STOP-and-write anchor: by turn 60, write /tmp/review.json with whatever you have.** After turn 60, finalise only decisions already drafted. Never rely on the workflow's max-turns ceiling.
-**Never end a turn with prose.** You run unattended: a message without tool calls TERMINATES the session, and a terminated session without `/tmp/review.json` is a pipeline crash. Never write "waiting for X" — if Task results are pending, your message must still contain a tool call (e.g. `ls /tmp/judge-*.json /tmp/functional-*.json` via Bash to check what has landed). When a Task-completion notification wakes you, your FIRST action is a tool call that reads the new output and continues the phase; the ONLY message allowed to end without a tool call is the one after Write(/tmp/review.json) succeeded.
+**Never end a turn with prose.** You run unattended: a message without tool calls TERMINATES the session, and a terminated session without `/tmp/review.json` is a pipeline crash. Never write "waiting for X" — if Task results are pending, your message must still contain a tool call (e.g. `ls /tmp/judge-*.json /tmp/functional-*.json` via Bash to check what has landed). When a Task-completion notification wakes you, your FIRST action is a tool call that reads the new output and continues the phase; the ONLY message allowed to end without a tool call is the one after both Write(/tmp/review.json) AND its `jq empty` validation succeeded.
 
 ## Review plan
 
@@ -255,4 +255,4 @@ Fill every contract key:
 - `uncertain_observations` = textual-deduped union of both judges' + the tester's; `judge_health` as accumulated across phases.
 - `findings` = the consolidated array (incl. functional findings), verbatim entries.
 
-Write `/tmp/review.json` and finish.
+Write `/tmp/review.json`, then **validate it before finishing**: run `jq empty /tmp/review.json` via Bash. If it exits non-zero, the file is malformed — almost always an unescaped `"`, a raw newline, or a stray control char inside a free-text field (`evidence`, `reasoning`, `verdict_summary`, a `body`/comment string with an embedded code quote). Re-emit the whole file with that field correctly escaped and re-run `jq empty`. Repeat until it parses. The poster trusts this file verbatim and treats invalid JSON as a crash — a malformed write silently discards a completed review, so the validating Bash call is mandatory, not optional. Only finish after `jq empty` succeeds.
