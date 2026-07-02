@@ -16,6 +16,7 @@ PR="$PR_NUMBER"
 BOT="${REVIEW_BOT_USER:-github-actions[bot]}"
 REVIEW_JSON="${REVIEW_JSON:-/tmp/review.json}"
 ORCH_LOG="${ORCH_LOG:-/tmp/orchestrator-output.txt}"
+DEV_ENV_LOG="${DEV_ENV_LOG:-/tmp/dev-env/log}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 WORK=$(mktemp -d) || { echo "::error::mktemp failed"; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
@@ -301,6 +302,9 @@ LADDER_RULE=$(jq -r '.meta.ladder_rule_applied // empty' "$REVIEW_JSON")
 FN_STRATEGY=$(jq -r '.meta.functional_validation.strategy // "skip"' "$REVIEW_JSON")
 FN_OVERALL=$(jq -r '.meta.functional_validation.overall // "N/A"' "$REVIEW_JSON")
 FN_SHOTS=$(jq -r '.meta.functional_validation.screenshot_count // 0' "$REVIEW_JSON")
+DEV_ENV=$(jq -r '.meta.functional_validation.dev_env // empty' "$REVIEW_JSON")
+DEV_ENV_BROKEN=false
+case "$DEV_ENV" in ""|ready|n/a) ;; *) DEV_ENV_BROKEN=true ;; esac
 {
   echo "## Claude Review: $VERDICT"
   echo ""
@@ -318,7 +322,24 @@ FN_SHOTS=$(jq -r '.meta.functional_validation.screenshot_count // 0' "$REVIEW_JS
   fi
   if [ "$LADDER_RULE" = "runtime-evidence" ]; then
     echo ""
-    echo "> :no_entry: **Changes requested — no runtime evidence** (overall=\`$FN_OVERALL\`). This PR has runtime behaviour to exercise but the smoke run produced no PASS/WARN. Configure \`.github/claude-review/dev-start.sh\` to bring up the app, or fix what made the smoke run fail/crash."
+    echo "> :no_entry: **Changes requested — functional smoke failed** (overall=\`$FN_OVERALL\`). The smoke run against the live app failed — see the review body's Functional Validation section."
+  fi
+  if [ "$DEV_ENV_BROKEN" = "true" ]; then
+    echo ""
+    echo "> :wrench: **Review setup health: dev-env \`$DEV_ENV\`** — the functional smoke could not run; the review body's '⚙️ Review setup health' section has the fix."
+    if [ "$DEV_ENV" = "failed" ] && [ -s "$DEV_ENV_LOG" ]; then
+      echo ""
+      echo "<details><summary>dev-start.sh log tail</summary>"
+      echo ""
+      echo '```'
+      # Redacted: URL userinfo + TOKEN/SECRET/KEY/PASSWORD-shaped values (this
+      # summary is rendered outside Actions log masking).
+      tail -n 25 "$DEV_ENV_LOG" \
+        | sed -E -e 's#(://[^:/@[:space:]]+):[^@[:space:]]+@#\1:***@#g' \
+                 -e 's#([A-Za-z_]*(TOKEN|SECRET|PASSWORD|KEY)[A-Za-z_]*[=:] ?)[^[:space:]]+#\1***#g'
+      echo '```'
+      echo "</details>"
+    fi
   fi
   if [ "$FN_STRATEGY" != "skip" ]; then
     echo ""
@@ -328,6 +349,9 @@ FN_SHOTS=$(jq -r '.meta.functional_validation.screenshot_count // 0' "$REVIEW_JS
   echo ""
   echo "Review posted${REVIEW_ID:+ (review #$REVIEW_ID)} on \`${HEAD_SHA:-HEAD}\`."
 } >> "$SUMMARY"
+if [ "$DEV_ENV_BROKEN" = "true" ]; then
+  echo "::warning::Dev environment '$DEV_ENV' — the functional smoke could not run. See the review body's '⚙️ Review setup health' section; full bring-up log in the run artifacts (dev-env/log)."
+fi
 
 # ── 8. Exit code ─────────────────────────────────────────────────────────────
 case "$VERDICT" in

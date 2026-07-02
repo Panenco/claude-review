@@ -78,6 +78,14 @@ assert_plan "CI workflow only → full (supply-chain)" "full false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'.github/workflows/deploy.yml\t6\t0'
 assert_plan "docs + a .github file → full (supply-chain)" "full false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'README.md\t10\t0\n.github/workflows/deploy.yml\t6\t0'
+# Reviewer/agent config (.claude/**, bugbot.md) can't change app behaviour: same
+# treatment as .github — full dual-judge (supply-chain), no functional infra/run.
+assert_plan ".claude config only → full, no functional" "full false nonruntime" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'.claude/commands/deploy.md\t30\t0'
+assert_plan "bugbot.md only → full, no functional" "full false nonruntime" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'bugbot.md\t12\t3'
+assert_plan ".claude + runtime source stays a runtime PR" "light true small" \
+  GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'.claude/commands/deploy.md\t30\t0\nsrc/app.ts\t40\t5'
 
 # ── normal → full + functional (substantial runtime, incl. ambiguous cases) ──
 assert_plan "runtime source (large)" "full true normal" \

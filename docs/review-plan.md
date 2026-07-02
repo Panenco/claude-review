@@ -16,8 +16,8 @@ match:
 | 1 | `label` | `skip-review` label present | `skip` | no |
 | 2 | `promotion` | release/promotion PR (e.g. `staging` → `main`) | `light` | no |
 | 3 | `oversized` | over the size ceiling (default 3000 lines / 60 files) | `skip` → blocking `REQUEST_CHANGES` (split the PR) | no |
-| 4 | `nonruntime` | only tests / docs / lockfiles changed | `light` | no |
-| 4 | `nonruntime` | a `.github/` (CI/workflow) file is touched — supply-chain surface | `full` | no |
+| 4 | `nonruntime` | only tests / docs / lockfiles / reviewer config changed | `light` | no |
+| 4 | `nonruntime` | a supply-chain file is touched — `.github/` (CI/workflow), `.claude/`, `bugbot.md` (reviewer/agent config) | `full` | no |
 | 4b | `tiny` | ≤ 10 non-generated lines, no sensitive paths | `light` | no |
 | 5 | `small` | ≤ 300 non-generated lines, no sensitive paths | `light` | yes |
 | 6 | `normal` | substantial, **or** touches a sensitive path | `full` | yes |
@@ -38,20 +38,33 @@ match:
   On round 2, a trivial since-last delta is reviewed by a single judge too.
 - **`skip`** — no judges. For most skip reasons the reason is posted as a note;
   for `oversized` the orchestrator instead emits a blocking `REQUEST_CHANGES`
-  asking to split the PR (no judge debate). The `deep-review` label overrides
-  this and forces a full review.
+  asking to split the PR (no judge debate). While the PR stays oversized and
+  that block is the standing review, further pushes skip the review run
+  entirely (no duplicate block, no wasted compute); shrinking the PR below the
+  ceiling gets a real review. The `deep-review` label overrides this and
+  forces a full review.
 
 ### Runtime-evidence gate (applies across tiers)
 
 Independently of the tier above, any PR the test planner judged has runtime
 behaviour to exercise (`## Strategy ∈ {quick, functional}`) must produce smoke
-evidence. If the smoke run returns no `PASS`/`WARN` — no `dev-start.sh`, the
-bring-up failed or timed out, or the tester crashed — the orchestrator raises
-the verdict to a blocking `REQUEST_CHANGES` (it carries no findings, so a later
-round un-pins it once smoke runs). Docs-only / non-runtime PRs
-(`## Strategy: skip`, and the `nonruntime` / `promotion` / `label` gates) are
-exempt — there is nothing to test. On round 2, a deliberate `## Strategy: skip`
-inherits the prior round's `PASS`/`WARN`; a prior `FAIL` still blocks.
+evidence, and the verdict depends on how the smoke run ended:
+
+- **Ran and `FAIL`ed** — reproduced runtime evidence against the PR: the
+  orchestrator raises the verdict to a blocking `REQUEST_CHANGES` (it carries
+  no findings, so a later round un-pins it once the failure clears).
+- **Never ran** — no `dev-start.sh`, the bring-up failed or timed out, or the
+  tester crashed. That is a setup problem, not evidence against the PR: the
+  verdict is never raised, but `APPROVE` is withheld (capped at `COMMENT`) and
+  the review body's **⚙️ Review setup health** section states exactly what was
+  broken (missing vs present-but-failed, with the script's actual error) and
+  the one action that fixes it.
+- **`PASS`/`WARN`** — satisfied.
+
+Docs-only / non-runtime PRs (`## Strategy: skip`, and the `nonruntime` /
+`promotion` / `label` gates) are exempt — there is nothing to test. On round 2,
+a deliberate `## Strategy: skip` inherits the prior round's `PASS`/`WARN`; a
+prior `FAIL` still blocks.
 
 > Generated files (lockfiles, snapshots, `dist/`, `*.min.*`, `*.generated.*`, …)
 > don't count toward the size — a big lockfile bump alone won't push a small PR
@@ -127,8 +140,9 @@ with:
 |----|------|-----------|
 | 40-line bug fix in `src/` | `small` | single judge + quick functional check (screenshot of the touched surface) |
 | 2500-line feature | `normal` | full debate + functional (under the 3000 ceiling) |
-| 3500-line feature | `oversized` | blocked: `REQUEST_CHANGES` asking to split — no judges (add `deep-review` to force a full review) |
+| 3500-line feature | `oversized` | blocked: `REQUEST_CHANGES` asking to split — no judges, and re-pushes skip the run while it stays oversized (add `deep-review` to force a full review) |
 | 20-line change in `database/migrations/` | `normal` (sensitive) | full debate + functional |
 | `staging` → `main` release | `promotion` | single-judge `light`, no functional |
 | docs-only PR | `nonruntime` | judges run, no functional |
+| `.claude/` or `bugbot.md` config PR | `nonruntime` (supply-chain) | full dual-judge, no functional |
 | small but tricky PR you want fully reviewed | add `deep-review` | full debate + functional |

@@ -25,8 +25,8 @@
 #   promotion   → light / functional off   (source already reviewed; cheap insurance)
 #   oversized   → skip  / functional off   (too big to review well — orchestrator returns a canned
 #                                           "split this PR" REQUEST_CHANGES; no judges. deep-review overrides)
-#   nonruntime  → light / functional off   (tests/docs/locks — one judge, no app-driving. A `.github/`
-#                                           touch (CI/supply-chain) keeps `full` dual-judge.)
+#   nonruntime  → light / functional off   (tests/docs/locks — one judge, no app-driving. A supply-chain
+#                                           touch (.github/, .claude/, bugbot.md) keeps `full` dual-judge.)
 #   tiny        → light / functional off   (<= GATE_TINY_CEILING non-gen lines, no sensitive paths — a
 #                                           trivial fix; single judge, skip the functional infra+run)
 #   small       → light / functional on    (<= GATE_SMALL_CEILING non-gen lines, no sensitive paths;
@@ -120,14 +120,22 @@ is_generated() {
     *) return 1 ;;
   esac
 }
+# Supply-chain: CI/workflow and reviewer/agent config. Can't change app behavior
+# (non-runtime), but keeps the full dual-judge review.
+is_supply_chain() {
+  case "$1" in
+    .github/*|.claude/*|bugbot.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 # Non-runtime: a file that cannot change app behavior → functional testing pointless.
 # Conservative: only clearly-non-runtime paths. Ambiguous (tsconfig, *.config.*, app
 # yaml/json, source) is treated as runtime.
 is_nonruntime() {
+  is_supply_chain "$1" && return 0
   case "$1" in
     *.spec.*|*.test.*|*_test.*|*.cy.*|*/e2e/*|e2e/*|*/cypress/*|cypress/*|*/__tests__/*|*/tests/*|tests/*|*/test/*|test/*) return 0 ;;
     *.md|*.mdx|*.txt|docs/*|*/docs/*|LICENSE) return 0 ;;
-    .github/*) return 0 ;;
     *.lock|package-lock.json|pnpm-lock.yaml|*.snap) return 0 ;;
     *) return 1 ;;
   esac
@@ -146,12 +154,12 @@ is_sensitive() {
   return 1
 }
 
-ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true; has_sensitive=false; has_github=false
+ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true; has_sensitive=false; has_supply_chain=false
 while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
   total_files=$(( total_files + 1 ))
   is_nonruntime "$path" || all_nonruntime=false
-  case "$path" in .github/*) has_github=true ;; esac
+  is_supply_chain "$path" && has_supply_chain=true
   # Sensitivity is a property of the path (generated or not): a touch under a
   # sensitive glob forces a full review even if it doesn't count toward size.
   is_sensitive "$path" && has_sensitive=true
@@ -176,11 +184,12 @@ if [ "$FORCE_FULL" = false ] && [ "$oversized" = true ]; then
   exit 0
 fi
 
-# ── 4) All changed files non-runtime? One judge, no app-driving — UNLESS a `.github/`
-#       file is touched (CI/workflow is a supply-chain surface; keep the dual-judge full). ──
+# ── 4) All changed files non-runtime? One judge, no app-driving — UNLESS a supply-chain
+#       surface is touched (.github/ CI/workflow, .claude/ or bugbot.md reviewer/agent
+#       config; keep the dual-judge full). ──
 if [ "$total_files" -gt 0 ] && [ "$all_nonruntime" = true ]; then
-  if [ "$FORCE_FULL" = true ] || [ "$has_github" = true ]; then
-    emit "full" "false" "nonruntime" "All ${total_files} changed files are non-runtime; running the full dual-judge review (CI/workflow touch or deep-review label), no functional app-testing."
+  if [ "$FORCE_FULL" = true ] || [ "$has_supply_chain" = true ]; then
+    emit "full" "false" "nonruntime" "All ${total_files} changed files are non-runtime; running the full dual-judge review (CI/reviewer-config touch or deep-review label), no functional app-testing."
   else
     emit "light" "false" "nonruntime" "All ${total_files} changed files are non-runtime (tests / docs / lockfiles) — single-judge pass, no functional app-testing."
   fi

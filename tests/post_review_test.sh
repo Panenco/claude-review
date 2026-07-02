@@ -90,6 +90,7 @@ run_poster() {
     REVIEW_BOT_USER="claude-bot[bot]" ANALYZER_OUTCOME="${ANALYZER_OUTCOME:-success}" \
     HEAD_SHA=abc123 GITHUB_STEP_SUMMARY="$work/summary.md" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
+    DEV_ENV_LOG="${DEV_ENV_LOG:-/dev/null}" \
     bash "$POSTER" 2>&1)
   RC=$?
 }
@@ -249,21 +250,22 @@ assert_eq "no inline comments" "0" "$(echo "$PAYLOAD" | jq '.comments | length')
 assert_not_contains "no runtime-evidence banner" "no runtime evidence" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
-# ── (i) runtime-evidence → step-summary banner ───────────────────────────────
+# ── (i) runtime-evidence (smoke FAILED) → step-summary banner ────────────────
 echo ""
-echo "── (i) runtime-evidence renders the step-summary banner ──"
+echo "── (i) runtime-evidence (smoke FAILED) renders the step-summary banner ──"
 W=$(mktemp -d)
 cat > "$W/review.json" <<'EOF'
 {
   "verdict": "REQUEST_CHANGES",
-  "body": "## Claude PR Review\n\nNo runtime evidence — wire up dev-start.sh.",
+  "body": "## Claude PR Review\n\nThe functional smoke run failed.",
   "comments": [],
   "resolve_threads": [],
   "bot_replies": [],
   "meta": {
     "findings": [],
     "round": 1,
-    "ladder_rule_applied": "runtime-evidence"
+    "ladder_rule_applied": "runtime-evidence",
+    "functional_validation": {"strategy": "functional", "overall": "FAIL", "dev_env": "ready"}
   }
 }
 EOF
@@ -272,7 +274,38 @@ assert_eq "exit 0" "0" "$RC"
 PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
 assert_eq "event is REQUEST_CHANGES" "REQUEST_CHANGES" "$(echo "$PAYLOAD" | jq -r '.event')"
 assert_eq "no inline comments" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_contains "step summary has runtime-evidence banner" "no runtime evidence" "$(cat "$W/summary.md")"
+assert_contains "step summary has smoke-failed banner" "functional smoke failed" "$(cat "$W/summary.md")"
+assert_not_contains "healthy dev-env renders no setup-health note" "Review setup health" "$(cat "$W/summary.md")"
+rm -rf "$W"
+
+# ── (j) dev-env failed → setup-health summary note + warning + log tail ──────
+echo ""
+echo "── (j) dev-env failed surfaces setup health (COMMENT, no block) ──"
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude PR Review — COMMENT\n\n### ⚙️ Review setup health\n\n- dev-start.sh failed.",
+  "comments": [],
+  "resolve_threads": [],
+  "bot_replies": [],
+  "meta": {
+    "findings": [],
+    "round": 1,
+    "functional_validation": {"strategy": "skip", "overall": "SKIP_NO_DEVENV", "dev_env": "failed"}
+  }
+}
+EOF
+printf 'pnpm install ok\ncould not connect to postgres://app:S3cretPw@db:5432/app\nDATABASE_TOKEN=tok_abc123 rejected\nError: connect ECONNREFUSED 127.0.0.1:5432\n' > "$W/dev-env.log"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" DEV_ENV_LOG="$W/dev-env.log" run_poster "$W"
+assert_eq "exit 0" "0" "$RC"
+PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
+assert_eq "event is COMMENT (setup failure never blocks)" "COMMENT" "$(echo "$PAYLOAD" | jq -r '.event')"
+assert_contains "summary carries the setup-health note" "Review setup health: dev-env \`failed\`" "$(cat "$W/summary.md")"
+assert_contains "summary embeds the dev-start log tail" "ECONNREFUSED" "$(cat "$W/summary.md")"
+assert_not_contains "URL password is redacted from the tail" "S3cretPw" "$(cat "$W/summary.md")"
+assert_not_contains "token value is redacted from the tail" "tok_abc123" "$(cat "$W/summary.md")"
+assert_contains "actions log gets a ::warning::" "::warning::Dev environment 'failed'" "$OUT"
 rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"

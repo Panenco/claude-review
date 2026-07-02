@@ -222,27 +222,6 @@ jobs:
         if: github.repository != 'panenco/claude-review'
         uses: ./__claude-review-pipeline
 
-      # The token picker needs the CLI before claude-code-action installs it.
-      - name: Install Claude CLI (for OAuth token picker)
-        if: steps.actor_gate.outputs.proceed == 'true'
-        shell: bash
-        run: |
-          if [ -x "$HOME/.local/bin/claude" ]; then
-            echo "Claude CLI already installed: $("$HOME/.local/bin/claude" --version)"
-          else
-            curl -fsSL https://claude.ai/install.sh | bash
-            "$HOME/.local/bin/claude" --version
-          fi
-
-      - name: Pick Claude OAuth token
-        id: token_picker
-        if: steps.actor_gate.outputs.proceed == 'true'
-        shell: bash
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_CODE_OAUTH_TOKENS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKENS }}
-        run: .review-scripts/pick-oauth-token.sh
-
       - name: Detect code changes
         id: code_check
         shell: bash
@@ -400,6 +379,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
+          GATE: ${{ steps.review_plan.outputs.gate }}
         run: |
           set -uo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null \
@@ -426,8 +406,45 @@ jobs:
           if [ -z "$PRIOR_SHA" ] || ! git cat-file -e "${PRIOR_SHA}^{commit}" 2>/dev/null; then
             ROUND=1; PRIOR_SHA=""; PRIOR_VERDICT=""
           fi
+          # Oversized dedup: the size gate is a pure function of PR shape, so a
+          # push to a still-oversized PR would re-emit a byte-equivalent "split
+          # this PR" block. Skip the whole agent run and leave the standing
+          # review in place. Keyed on the orchestrator's hidden body marker
+          # (same convention as claude-review-crash). Manual dispatch always
+          # re-runs — it's the human escape hatch.
+          OVERSIZED_DUP=false
+          if [ "${GATE:-}" = "oversized" ] && [ "$PRIOR_STATE" = "CHANGES_REQUESTED" ] \
+             && [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ] \
+             && jq -e 'sort_by(.submitted_at) | last | (.body // "") | contains("<!-- claude-review-oversized -->")' /tmp/prior-reviews.json >/dev/null 2>&1; then
+            OVERSIZED_DUP=true
+            echo "::notice::PR is still oversized and the standing Claude review already requests a split — skipping a duplicate review run. The block re-evaluates when the PR shrinks below the ceiling or carries the deep-review label; re-run manually via workflow_dispatch to force a fresh post."
+          fi
+          echo "oversized_dup=$OVERSIZED_DUP" >> "$GITHUB_OUTPUT"
           printf 'prior_head_sha=%s\nprior_verdict=%s\nround=%s\n' "$PRIOR_SHA" "$PRIOR_VERDICT" "$ROUND" >> "$GITHUB_OUTPUT"
           echo "Round $ROUND (prior verdict: ${PRIOR_VERDICT:-none}, prior head: ${PRIOR_SHA:-none})"
+
+      # After prior_state on purpose: a deduped oversized re-run skips the CLI
+      # install and the per-token quota probes entirely. The token picker needs
+      # the CLI before claude-code-action installs it; nothing earlier uses either.
+      - name: Install Claude CLI (for OAuth token picker)
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
+        shell: bash
+        run: |
+          if [ -x "$HOME/.local/bin/claude" ]; then
+            echo "Claude CLI already installed: $("$HOME/.local/bin/claude" --version)"
+          else
+            curl -fsSL https://claude.ai/install.sh | bash
+            "$HOME/.local/bin/claude" --version
+          fi
+
+      - name: Pick Claude OAuth token
+        id: token_picker
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKENS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKENS }}
+        run: .review-scripts/pick-oauth-token.sh
 
       # Restore-only on purpose: the all-in-one cache's post(save) step re-runs
       # hashFiles after dev-start.sh mutates the tree, errors, and reds the
@@ -529,7 +546,7 @@ jobs:
       # workspace .claude/ on PR-head jobs; $HOME survives. The agent file
       # inline-defines mcpServers so Playwright spawns with the subagent.
       - name: Install functional-tester subagent
-        if: steps.actor_gate.outputs.proceed == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
         shell: bash
         env:
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
@@ -545,7 +562,7 @@ jobs:
       # written /tmp/review.json — the poster decides from the artifact.
       - name: "Review: orchestrate"
         id: claude_run
-        if: steps.actor_gate.outputs.proceed == 'true'
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@ac7e24bf2938964b8ab203e417a2773802392ddd # v1.0.146
         env:
