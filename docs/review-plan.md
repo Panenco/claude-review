@@ -15,20 +15,56 @@ match:
 |---|------|------|--------------|------------|
 | 1 | `label` | `skip-review` label present | `skip` | no |
 | 2 | `promotion` | release/promotion PR (e.g. `staging` → `main`) | `light` | no |
-| 3 | `oversized` | over the size ceiling (default 2500 lines / 60 files) | `light` | yes (quick smoke) |
-| 4 | `nonruntime` | only tests / docs / CI / lockfiles changed | `full` | no |
+| 3 | `oversized` | over the size ceiling (default 3000 lines / 60 files) | `skip` → blocking `REQUEST_CHANGES` (split the PR) | no |
+| 4 | `nonruntime` | only tests / docs / lockfiles / reviewer config changed | `light` | no |
+| 4 | `nonruntime` | a supply-chain file is touched — `.github/` (CI/workflow), `.claude/`, `bugbot.md` (reviewer/agent config) | `full` | no |
+| 4b | `tiny` | ≤ 10 non-generated lines, no sensitive paths | `light` | no |
 | 5 | `small` | ≤ 300 non-generated lines, no sensitive paths | `light` | yes |
 | 6 | `normal` | substantial, **or** touches a sensitive path | `full` | yes |
 
 - **`full`** — the dual-judge debate (Opus + Haiku, with rebuttal).
-- **`light`** — a single judge, no rebuttal. The fast path for the judge fan only:
-  functional testing still runs per the table, because runtime evidence is the
+- **`light`** — a single judge, no rebuttal. The fast path for the judge fan. At
+  `small` and `tiny` the single judge runs on Opus (high recall on the path that
+  gets the least scrutiny); at `nonruntime` / `promotion` it stays on Sonnet.
+  Functional testing still runs at `small`, because runtime evidence is the
   review's centerpiece — small UI fixes are exactly where one screenshot beats
-  prose, and oversized feature PRs are exactly where an APPROVE without runtime
-  evidence is riskiest. The test planner still scopes the run (a small diff with
-  no user-observable surface plans `skip`; a trivial one plans a 1-scenario
-  `quick`), so the cost scales with the surface, not the gate.
-- **`skip`** — no judges; the reason is posted as a note.
+  prose. The test planner still scopes the run (a small diff with no
+  user-observable surface plans `skip`; a trivial one plans a 1-scenario `quick`),
+  so the cost scales with the surface, not the gate.
+- **`tiny`** — a ≤ 10-line, non-sensitive runtime fix. One Opus judge reviews it
+  statically; the functional **infra and run are skipped** (a trivial fix rarely
+  needs a smoke pass, and the runtime-evidence gate is exempt when functional is
+  off). Sensitive paths and `deep-review` still get the full review + functional.
+  On round 2, a trivial since-last delta is reviewed by a single judge too.
+- **`skip`** — no judges. For most skip reasons the reason is posted as a note;
+  for `oversized` the orchestrator instead emits a blocking `REQUEST_CHANGES`
+  asking to split the PR (no judge debate). While the PR stays oversized and
+  that block is the standing review, further pushes skip the review run
+  entirely (no duplicate block, no wasted compute); shrinking the PR below the
+  ceiling gets a real review. The `deep-review` label overrides this and
+  forces a full review.
+
+### Runtime-evidence gate (applies across tiers)
+
+Independently of the tier above, any PR the test planner judged has runtime
+behaviour to exercise (`## Strategy ∈ {quick, functional}`) must produce smoke
+evidence, and the verdict depends on how the smoke run ended:
+
+- **Ran and `FAIL`ed** — reproduced runtime evidence against the PR: the
+  orchestrator raises the verdict to a blocking `REQUEST_CHANGES` (it carries
+  no findings, so a later round un-pins it once the failure clears).
+- **Never ran** — no `dev-start.sh`, the bring-up failed or timed out, or the
+  tester crashed. That is a setup problem, not evidence against the PR: the
+  verdict is never raised, but `APPROVE` is withheld (capped at `COMMENT`) and
+  the review body's **⚙️ Review setup health** section states exactly what was
+  broken (missing vs present-but-failed, with the script's actual error) and
+  the one action that fixes it.
+- **`PASS`/`WARN`** — satisfied.
+
+Docs-only / non-runtime PRs (`## Strategy: skip`, and the `nonruntime` /
+`promotion` / `label` gates) are exempt — there is nothing to test. On round 2,
+a deliberate `## Strategy: skip` inherits the prior round's `PASS`/`WARN`; a
+prior `FAIL` still blocks.
 
 > Generated files (lockfiles, snapshots, `dist/`, `*.min.*`, `*.generated.*`, …)
 > don't count toward the size — a big lockfile bump alone won't push a small PR
@@ -36,23 +72,18 @@ match:
 
 A `deep-review` label (see below) flips rungs 2, 3, and 5 to `full`.
 
-## Round 2: the plan follows the follow-up, not the PR
+## Round 2: same plan, scoped review
 
-Follow-up rounds are most of the fleet's volume, and a 10-line fix-up on an
-800-line PR doesn't need the full Opus + Haiku debate — round-2 judges are
-already scoped to the diff since the last review, the verdict ladder pins
-unresolved prior blockers, and the thread classifier runs regardless of judge
-count. So when prior review state exists, the plan is re-resolved against the
-**since-last diff shape** (`scripts/refine-review-plan.sh`):
-
-- Small, non-sensitive follow-up → `light` single judge + quick functional.
-- Empty since-last (same-SHA re-run) → `light`, no functional.
-- Large or sensitive-path follow-up → `full`, exactly as round 1.
-- `deep-review` label → full-PR plan, every round.
-- Escalation guard: if the PR as a whole warrants `full` and **no prior round
-  ran one** (the PR grew past the ceilings through small pushes), the round
-  escalates to the full-PR plan — a PR can never reach merge without at least
-  one full debate.
+The plan resolves **fresh each round** from the PR's overall shape — the table
+above, labels included, applies identically on every push. There is no separate
+round-2 plan refinement. What makes follow-up rounds cheap is **context
+scoping**, not a smaller plan: when a prior review exists (derived from the
+PR's own review history), the context builder scopes the diff index to the
+changes since the last reviewed commit, judges read only that, every open
+thread is classified against it, and functional scenarios are planned against
+the since-last diff (zero scenarios is a valid outcome for follow-ups with no
+user-observable surface). The verdict ladder still pins unresolved prior
+blockers regardless of how small the follow-up is.
 
 ## Labels
 
@@ -71,7 +102,8 @@ Every knob is a `workflow_call` **input** with a safe default. Pass it in the
 | input | default | meaning |
 |-------|---------|---------|
 | `gate_small_ceiling` | `300` | non-generated lines at/under which a runtime PR is `small` (single judge) |
-| `gate_size_ceiling` | `2500` | non-generated lines over which a PR is `oversized` |
+| `gate_tiny_ceiling` | `10` | non-generated lines at/under which a runtime PR is `tiny` (single judge, functional skipped) |
+| `gate_size_ceiling` | `3000` | non-generated lines over which a PR is `oversized` |
 | `gate_file_ceiling` | `60` | changed files over which a PR is `oversized` |
 | `gate_sensitive_globs` | auth.* / oauth / authentication / authorization / security / payments / migrations | path globs that force `full` even when small |
 | `gate_deep_label` | `deep-review` | label that forces a full review |
@@ -107,9 +139,10 @@ with:
 | PR | gate | what runs |
 |----|------|-----------|
 | 40-line bug fix in `src/` | `small` | single judge + quick functional check (screenshot of the touched surface) |
-| 2000-line feature | `normal` | full debate + functional (under the 2500 ceiling) |
-| 3000-line feature | `oversized` | single judge + quick functional smoke run |
+| 2500-line feature | `normal` | full debate + functional (under the 3000 ceiling) |
+| 3500-line feature | `oversized` | blocked: `REQUEST_CHANGES` asking to split — no judges, and re-pushes skip the run while it stays oversized (add `deep-review` to force a full review) |
 | 20-line change in `database/migrations/` | `normal` (sensitive) | full debate + functional |
 | `staging` → `main` release | `promotion` | single-judge `light`, no functional |
 | docs-only PR | `nonruntime` | judges run, no functional |
+| `.claude/` or `bugbot.md` config PR | `nonruntime` (supply-chain) | full dual-judge, no functional |
 | small but tricky PR you want fully reviewed | add `deep-review` | full debate + functional |

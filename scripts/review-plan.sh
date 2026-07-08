@@ -8,7 +8,7 @@
 # Output (KEY=value lines on stdout, ready to append to $GITHUB_OUTPUT):
 #   review_level=full|light|skip
 #   run_functional=true|false
-#   gate=normal|nonruntime|oversized|promotion|label|small
+#   gate=normal|nonruntime|oversized|promotion|label|small|tiny
 #   reason=<human-readable, single line>
 #
 # review_level (consumed by review-orchestrator.md):
@@ -23,9 +23,12 @@
 #   deep-review → full  / functional on    (label; forces full — suppresses promotion/oversized/small.
 #                                           Does NOT turn functional on for an all-nonruntime PR.)
 #   promotion   → light / functional off   (source already reviewed; cheap insurance)
-#   oversized   → light / functional on    (too big to debate well, but big features are exactly
-#                                           where runtime evidence matters most)
-#   nonruntime  → full  / functional off   (tests/docs/CI/locks — judges yes, no app-driving)
+#   oversized   → skip  / functional off   (too big to review well — orchestrator returns a canned
+#                                           "split this PR" REQUEST_CHANGES; no judges. deep-review overrides)
+#   nonruntime  → light / functional off   (tests/docs/locks — one judge, no app-driving. A supply-chain
+#                                           touch (.github/, .claude/, bugbot.md) keeps `full` dual-judge.)
+#   tiny        → light / functional off   (<= GATE_TINY_CEILING non-gen lines, no sensitive paths — a
+#                                           trivial fix; single judge, skip the functional infra+run)
 #   small       → light / functional on    (<= GATE_SMALL_CEILING non-gen lines, no sensitive paths;
 #                                           the test planner still picks skip/quick per surface)
 #   normal      → full  / functional on    (substantial, OR touches a sensitive path)
@@ -37,7 +40,7 @@
 #   GATE_LABELS          newline-separated PR label names
 #   GATE_SKIP_LABEL      label that forces a skip (default: skip-review)
 #   GATE_DEEP_LABEL      label that forces a full review (default: deep-review)
-#   GATE_SIZE_CEILING    non-generated changed lines → oversized (default 2500)
+#   GATE_SIZE_CEILING    non-generated changed lines → oversized (default 3000)
 #   GATE_FILE_CEILING    non-generated changed files → oversized (default 60)
 #   GATE_SMALL_CEILING   non-gen lines at/under which a runtime PR → small/light (default 300)
 #   GATE_SENSITIVE_GLOBS space-separated path globs that force full even when small
@@ -59,9 +62,10 @@ BASE_REF="${GATE_BASE_REF:-}"
 HEAD_REF="${GATE_HEAD_REF:-}"
 SKIP_LABEL="${GATE_SKIP_LABEL:-skip-review}"
 DEEP_LABEL="${GATE_DEEP_LABEL:-deep-review}"
-SIZE_CEILING="${GATE_SIZE_CEILING:-2500}"
+SIZE_CEILING="${GATE_SIZE_CEILING:-3000}"
 FILE_CEILING="${GATE_FILE_CEILING:-60}"
 SMALL_CEILING="${GATE_SMALL_CEILING:-300}"
+TINY_CEILING="${GATE_TINY_CEILING:-10}"
 PROMO_BASES="${GATE_PROMOTION_BASES:-main master production prod}"
 PROMO_HEADS="${GATE_PROMOTION_HEADS:-staging develop dev release hotfix}"
 SENSITIVE_GLOBS="${GATE_SENSITIVE_GLOBS:-*auth.* */oauth/* oauth.* */authentication/* authentication/* */authorization/* authorization/* */security/* security/* */payments/* payments/* */payment/* payment/* */migrations/* migrations/* */migration/* migration/*}"
@@ -116,14 +120,22 @@ is_generated() {
     *) return 1 ;;
   esac
 }
+# Supply-chain: CI/workflow and reviewer/agent config. Can't change app behavior
+# (non-runtime), but keeps the full dual-judge review.
+is_supply_chain() {
+  case "$1" in
+    .github/*|.claude/*|bugbot.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 # Non-runtime: a file that cannot change app behavior → functional testing pointless.
 # Conservative: only clearly-non-runtime paths. Ambiguous (tsconfig, *.config.*, app
 # yaml/json, source) is treated as runtime.
 is_nonruntime() {
+  is_supply_chain "$1" && return 0
   case "$1" in
     *.spec.*|*.test.*|*_test.*|*.cy.*|*/e2e/*|e2e/*|*/cypress/*|cypress/*|*/__tests__/*|*/tests/*|tests/*|*/test/*|test/*) return 0 ;;
     *.md|*.mdx|*.txt|docs/*|*/docs/*|LICENSE) return 0 ;;
-    .github/*) return 0 ;;
     *.lock|package-lock.json|pnpm-lock.yaml|*.snap) return 0 ;;
     *) return 1 ;;
   esac
@@ -142,11 +154,12 @@ is_sensitive() {
   return 1
 }
 
-ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true; has_sensitive=false
+ng_lines=0; ng_files=0; total_files=0; all_nonruntime=true; has_sensitive=false; has_supply_chain=false
 while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
   total_files=$(( total_files + 1 ))
   is_nonruntime "$path" || all_nonruntime=false
+  is_supply_chain "$path" && has_supply_chain=true
   # Sensitivity is a property of the path (generated or not): a touch under a
   # sensitive glob forces a full review even if it doesn't count toward size.
   is_sensitive "$path" && has_sensitive=true
@@ -163,16 +176,31 @@ if [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; t
   oversized=true
 fi
 
-# ── 3) Oversized (non-promotion)? Lightweight pass + a "split / label" note.
-#       deep-review (FORCE_FULL) suppresses this downgrade. ──
+# ── 3) Oversized (non-promotion)? Block with a "split this PR" request — reviewing a
+#       huge diff with a single judge is low-confidence. No judges run (review_level=skip);
+#       the orchestrator turns gate=oversized into a REQUEST_CHANGES. deep-review bypasses. ──
 if [ "$FORCE_FULL" = false ] && [ "$oversized" = true ]; then
-  emit "light" "true" "oversized" "PR too large for a full judge debate (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — single-judge pass + functional smoke run. Consider splitting (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
+  emit "skip" "false" "oversized" "PR too large to review well (${ng_files} files, ${ng_lines} non-generated lines; ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines) — returning REQUEST_CHANGES with a split request instead of a judge debate. Split into focused PRs (team limit: 400 lines), or add the '$SKIP_LABEL' label if this bundles already-reviewed work."
   exit 0
 fi
 
-# ── 4) All changed files non-runtime? Full review, but don't drive the app ──
+# ── 4) All changed files non-runtime? One judge, no app-driving — UNLESS a supply-chain
+#       surface is touched (.github/ CI/workflow, .claude/ or bugbot.md reviewer/agent
+#       config; keep the dual-judge full). ──
 if [ "$total_files" -gt 0 ] && [ "$all_nonruntime" = true ]; then
-  emit "full" "false" "nonruntime" "All ${total_files} changed files are non-runtime (tests / docs / CI / lockfiles); running the judges but skipping functional app-testing."
+  if [ "$FORCE_FULL" = true ] || [ "$has_supply_chain" = true ]; then
+    emit "full" "false" "nonruntime" "All ${total_files} changed files are non-runtime; running the full dual-judge review (CI/reviewer-config touch or deep-review label), no functional app-testing."
+  else
+    emit "light" "false" "nonruntime" "All ${total_files} changed files are non-runtime (tests / docs / lockfiles) — single-judge pass, no functional app-testing."
+  fi
+  exit 0
+fi
+
+# ── 4b) Tiny runtime change? A handful of non-generated lines, no sensitive paths — one
+#        judge is plenty and the functional infra+run isn't worth it for a trivial fix.
+#        Sensitive paths and deep-review fall through to full+functional. ──
+if [ "$ng_files" -gt 0 ] && [ "$FORCE_FULL" = false ] && [ "$has_sensitive" = false ] && [ "$ng_lines" -le "$TINY_CEILING" ]; then
+  emit "light" "false" "tiny" "Tiny runtime change (${ng_files} files, ${ng_lines} non-generated lines, at/under the ${TINY_CEILING}-line tiny ceiling; no sensitive paths) — single-judge pass, no functional run. Add the '$DEEP_LABEL' label to force a full review."
   exit 0
 fi
 

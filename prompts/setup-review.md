@@ -6,11 +6,12 @@ You are setting up the Panenco Claude PR review pipeline in this repository. Fol
 
 Your output must pass the pipeline's own review on the first commit — **no findings, verdict `APPROVE`**. To achieve that:
 
-1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. The validator step flags missing paths; don't let it.
+1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. A broken path fails the bring-up hard or feeds the reviewer wrong context; don't ship one.
 2. **Prefer fail-fast patterns over silent timeouts.** Every readiness wait loop must explicitly log and warn (or exit) when it times out, not just `break` out. "Silently succeeds on timeout" is the #1 bug the reviewer catches in review-configs.
-3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the "Validate review config" step greps for `^### Auth` and `^### Known service ports` to count detected sections, and getting the level wrong emits warnings and confuses readers. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
-4. **Track the `@v2` tag for the reusable workflow** so pipeline fixes auto-propagate, and declare the supply-chain trade-off as accepted in `bugbot.md` so the reviewer doesn't re-flag it on every PR (see Step 3 template). `@v1` is frozen and no longer receives fixes — new repos use `@v2`.
+3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the pipeline greps for them literally (the context builder's config-gap check looks for `^### Auth`, and the dev-env probe reads the ports table), and getting the level wrong surfaces a "⚙️ Review setup health" bullet in every review body. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
+4. **Track the `@v3` tag for the reusable workflow** so pipeline fixes auto-propagate, and declare the supply-chain trade-off as accepted in `bugbot.md` so the reviewer doesn't re-flag it on every PR (see Step 3 template). `@v1` is frozen and no longer receives fixes — new repos use `@v3`.
 5. **Match the exact phrasing the auto-extractor expects** for sign-in lines and auth methods (listed in Step 4 → `### Auth`).
+6. **A runtime repo must ship a working `dev-start.sh` — there is no clean judges-only mode.** If this repo runs an app, the bring-up is mandatory: a runtime PR with no smoke evidence can never be `APPROVE`d (capped at `COMMENT`), and every affected review carries a prominent "⚙️ Review setup health" section naming the gap until it's fixed. Don't treat "skip the script" as an escape hatch. Build the bring-up, make it cache-efficient, and prove it via the local loop + council review in Step 4.5 before committing. (Only genuinely non-runtime repos — pure-docs, lib-only — omit the file.)
 
 ## Step 1: Understand the repo
 
@@ -51,23 +52,57 @@ concurrency:
 jobs:
   review:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@v3
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      actions: read
+      packages: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
     secrets: inherit
 ```
+
+### Speeding up bring-up: the `dev_cache_*` inputs (wire these for repos with a runnable app)
+
+The functional tester runs `dev-start.sh` on a fresh runner every review, so any compiled/downloaded artefacts (a Gradle/Maven build, a Go module cache, a Rust `target`, a pip wheel cache) rebuild cold — often the single biggest chunk of bring-up wall-time. The pnpm/npm store is already cached for you; everything else is opt-in and stack-agnostic via four `with:` inputs. Wire them whenever Step 4.5 produced a `dev-start.sh` that compiles or downloads anything beyond the pnpm/npm store:
+
+```yaml
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      dev_cache_paths: |          # what to cache (newline-separated). Cache the dependency dir, NOT whole build trees.
+        ~/.gradle/caches/modules-2
+        ~/.gradle/wrapper
+      dev_cache_key_files: |      # files whose contents key the cache (globs, ** ok) — NOT a pre-hashed key
+        **/gradle/libs.versions.toml
+        **/*.gradle*
+        **/gradle-wrapper.properties
+      dev_cache_key_prefix: gradle
+      dev_cache_warm_command: cd backend/java && JAVA_HOME=$JAVA_HOME_21_X64 ./gradlew :api:dependencies --no-daemon
+```
+
+**Pass globs, not a pre-hashed key.** A reusable-workflow caller's `with:` has no runner or checkout, so `${{ runner.os }}` / `${{ hashFiles() }}` aren't available there (they fail at startup). The workflow computes the key — `<RUNNER_OS>-<prefix>-<hash of dev_cache_key_files>`, restore-keys `<RUNNER_OS>-<prefix>-` — inside the jobs, where a checkout exists.
+
+**Derive all four from the stack you detected in Step 1.** Point `dev_cache_paths` at the dependency dir your `dev-start.sh` cold-builds; point `dev_cache_key_files` (globs) at the lockfiles/build descriptors that should rotate the cache; set `dev_cache_key_prefix` per stack so unrelated caches don't collide; make `dev_cache_warm_command` a cheap, PR-code-free dependency *resolve/prefetch* (not a full build) — it runs in `main` scope against the trusted base ref, only on a cache miss, and is what makes the cache available to *every* PR, not just re-pushes of the same branch. The warm-cache job is a vanilla `ubuntu-latest` with only Node set up, so the warm command owns its toolchain (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, … or install what it needs).
+
+| Stack | `dev_cache_paths` | `dev_cache_key_files` | `dev_cache_key_prefix` | `dev_cache_warm_command` |
+|---|---|---|---|---|
+| Gradle | `~/.gradle/caches/modules-2`, `~/.gradle/wrapper` | `**/gradle/libs.versions.toml`, `**/*.gradle*`, `**/gradle-wrapper.properties` | `gradle` | `./gradlew :api:dependencies --no-daemon` |
+| Maven | `~/.m2/repository` | `**/pom.xml` | `maven` | `mvn -q dependency:go-offline` |
+| Go | `~/.cache/go-build`, `~/go/pkg/mod` | `**/go.sum` | `go` | `go mod download` |
+| Rust | `~/.cargo`, `target` | `**/Cargo.lock` | `rust` | `cargo fetch` |
+| pip | `~/.cache/pip` | `**/requirements*.txt`, `**/poetry.lock` | `pip` | `pip download -r requirements.txt -d /tmp/whl` |
+
+**Keep it short-lived.** The repo shares a 10 GB Actions-cache budget (LRU + 7-day idle eviction). Cache the dependency dir, not whole build trees, and let the key rotate via the lockfile globs so entries churn only when dependencies change. Omit `dev_cache_warm_command` (keep the other two) if your own main CI already writes a cache under the same prefix — caches are repo-scoped, so the functional job's restore reuses it. Leave all four unset to disable caching entirely.
 
 Note: the `concurrency:` block and the `if:` draft guard are required — omitting
 either causes recurring reviewer noise (cursor-style bots flag missing concurrency
 alongside all other repo workflows, and the pipeline re-runs on every `synchronize`
 against draft PRs, wasting budget). The `permissions:` block is also required;
 its omission is the #1 startup failure for repos in orgs with the GitHub-default
-read-only `GITHUB_TOKEN` scope (see inline comment above).
+read-only `GITHUB_TOKEN` scope (see inline comment above). `actions: read` is
+**not** needed: round-2 state comes from the PR's own review history, not from
+workflow artifacts — existing callers that still grant it are unaffected.
 
 **If `secrets: inherit` fails with `Secret CLAUDE_CODE_OAUTH_TOKEN is required, but not provided while calling`** — even though the secret is clearly set on the repo — swap `inherit` for the explicit form as a fallback:
 
@@ -103,10 +138,10 @@ Before reporting a finding that cites a library or component, confirm it exists:
 
 ## Accepted supply-chain trade-offs
 
-- `panenco/claude-review/.github/workflows/pr-review.yml@v2` with `secrets: inherit` is accepted. Upstream is first-party (Panenco org) and the mutable tag enables single-point propagation of pipeline fixes across every consumer repo. Do NOT flag this as a security finding — pinning to a SHA here was explicitly rejected in favor of easier upstream updates.
+- `panenco/claude-review/.github/workflows/pr-review.yml@v3` with `secrets: inherit` is accepted. Upstream is first-party (Panenco org) and the mutable tag enables single-point propagation of pipeline fixes across every consumer repo. Do NOT flag this as a security finding — pinning to a SHA here was explicitly rejected in favor of easier upstream updates.
 ```
 
-The "Accepted supply-chain trade-offs" line is what keeps the reviewer quiet about `@v2 + secrets: inherit`. Leave it in on every repo that uses `@v2`.
+The "Accepted supply-chain trade-offs" line is what keeps the reviewer quiet about `@v3 + secrets: inherit`. Leave it in on every repo that uses `@v3`.
 
 ### Optional: opt back into test-coverage / a11y emphasis
 
@@ -126,7 +161,7 @@ config files.
 Frontend changes that touch form labels, ARIA attributes, semantic markup, or
 keyboard handlers should run an axe-core WCAG 2.1 AA audit on the changed page.
 The functional tester picks this up via the test-plan's `a11y: true` flag — the
-test planner already sets it when the diff matches those triggers; no action
+context builder already sets it when the diff matches those triggers; no action
 needed here unless you want it ALWAYS on (in which case add: "Always treat the
 test plan as `a11y: true` regardless of diff").
 ```
@@ -174,101 +209,116 @@ Write 3-5 bullet points per area about what reviewers should watch for. Be speci
 
 The reviewer needs the prose; the pipeline needs the script. Do not duplicate the commands in both places — the script is the source of truth.
 
-## Step 4.5: Create .github/claude-review/dev-start.sh
+## Step 4.5: Determine the runtime surface, then build dev-start.sh
 
-This is the **first-class contract** the pipeline uses to bring up the dev environment. One file, one responsibility: install deps, start services, block until they respond. No heuristics, no stack guessing — just the commands this repo actually needs.
+Every repo with a runnable app **must** ship `.github/claude-review/dev-start.sh` — the first-class contract the pipeline uses to bring up the dev environment (install deps, start services, block until they respond). There is **no opt-out for app-bearing repos**: a runtime PR with no smoke evidence can never be `APPROVE`d, and every affected review nags with a "⚙️ Review setup health" section until the bring-up works. Build one that is **efficient (cache-enabled), locally verified, and council-reviewed** for THIS project.
 
-Create `.github/claude-review/dev-start.sh` and `chmod +x` it:
+### 4.5.0 — Determine the runtime surface (evidence-based, not a guess)
+
+Decide which of three cases this repo is in. Gather evidence, don't assume:
+- `ls` the repo root + app/package dirs. Read every `package.json` (root + sub-packages) for `dev` / `start` / `start:dev` / `serve` scripts. Check for `docker-compose.yml`, `Dockerfile`, `main.go`/`cmd/`, `manage.py`, `*.csproj`, `Cargo.toml` with a `[[bin]]`, or any long-running HTTP entrypoint.
+- Check for a bound port / health endpoint (NestJS, Express, Next.js, Django, FastAPI, Spring, Go net/http, …) or a service in compose.
+- Check `tests/` for executable `*.sh`.
+
+Classify:
+1. **Runnable app** (binds a port / serves requests) → 4.5.1 is MANDATORY. Case 1 takes precedence: if the repo BOTH binds a port AND has `tests/*.sh`, build the dev-start (case 1) — the tests are supplementary, not a substitute.
+2. **App-less but has executable `tests/*.sh`** → pipeline-self-test path, see 4.5.3.
+3. **Genuinely nothing runnable** (pure-docs / pure-library) → document explicitly, see 4.5.3. Do not invent an app.
+
+"I didn't find a dev script" is NOT a determination — prove there is no runnable surface before choosing case 2/3. Record the determination + evidence in your handoff.
+
+### 4.5.1 — Build an efficient, cache-enabled dev-start (mandatory for case 1)
+
+Create `.github/claude-review/dev-start.sh` and `chmod +x` it — the commands this repo actually needs, no stack guessing. The template below is Node/compose-shaped; **delete the steps your stack doesn't use** and substitute the real ones (a Go/Python/JVM repo won't have `corepack`/`pnpm`):
 
 ```bash
 #!/usr/bin/env bash
 set -uo pipefail
 
-# dev-start.sh — Bring up the dev environment for the Claude Code review
-# pipeline's functional tester. The pipeline runs this script (in a
-# subshell) and then probes URLs from review-config.md's Known service
-# ports table. Exit non-zero fails the Pre-start step hard — the whole
-# review stops. Only commit a dev-start.sh you've verified locally.
-# Repos with nothing to bring up (docs-only, lib-only) should not have
-# this file at all; its absence is the signal for degraded-mode
-# (core + sweep only, no functional tester).
+# dev-start.sh — Bring up the dev environment for the Claude review pipeline's
+# functional tester. The pipeline runs this in a subshell, then probes the URLs
+# in review-config.md's ### Known service ports table. Non-zero exit fails the
+# Pre-start step hard and stops the whole review. Build it to boot CLEANLY and
+# FAST from a clean checkout — the dev_cache_* inputs you wire in Step 2 restore
+# your build/dependency cache before this runs, so compile/install against it.
 
-# <Step 1 — e.g. Postgres>
+# <Step 1 — services, e.g. Postgres> — start, then block until ready with an
+# explicit fail-fast (no bare retry loop that silently falls through):
 docker compose up -d postgres
 READY=false
 for i in $(seq 1 30); do
-  if docker compose exec -T postgres pg_isready -U <user> -d <db> > /dev/null 2>&1; then
-    READY=true; break
-  fi
+  if docker compose exec -T postgres pg_isready -U <user> -d <db> >/dev/null 2>&1; then READY=true; break; fi
   sleep 2
 done
-if [ "$READY" != "true" ]; then
-  echo "::error::Postgres never became ready in 60s"
-  docker compose logs postgres | tail -50
-  exit 1
-fi
+[ "$READY" = true ] || { echo "::error::Postgres never became ready in 60s"; docker compose logs postgres | tail -50; exit 1; }
 
-# <Step 2 — install deps>
-# Activate the project-pinned package manager. The pipeline puts a default
-# pnpm on PATH so this script keeps working if you forget the preamble, but
-# you should pin your real version here — pnpm@9.x and pnpm@10.x have
-# different lockfile semantics and the fallback won't match yours.
-# Node ≥ 16.9 includes corepack; it reads package.json#packageManager.
+# <Step 2 — install deps> — pin the package manager (pnpm/yarn: set
+# packageManager in root package.json + corepack enable so lockfile semantics
+# match local). The pnpm/npm store is cached for you.
 corepack enable
 pnpm install --frozen-lockfile
 
-# <Step 3 — migrations / codegen>
-# Prisma:  pnpm exec prisma generate && pnpm exec prisma migrate deploy
-# Drizzle: pnpm exec drizzle-kit push
-# TypeORM: pnpm exec typeorm migration:run
-# Django:  python manage.py migrate
+# <Step 3 — migrations / codegen BEFORE the server> (else tsc/nest floods TS2307):
+# Prisma: pnpm exec prisma generate && pnpm exec prisma migrate deploy | Drizzle: drizzle-kit push
+# TypeORM: typeorm migration:run | Django: python manage.py migrate
 
 # <Step 4 — start services>
 pnpm run dev > /tmp/dev.log 2>&1 &
-DEV_PID=$!
 
-# <Step 5 — block until API is listening>
+# <Step 5 — block until API listens, fail fast>
 API_READY=false
 for i in $(seq 1 60); do
-  if curl -fsS http://localhost:<port>/<health-path> > /dev/null 2>&1; then
-    API_READY=true; break
-  fi
+  if curl -fsS http://localhost:<port>/<health> >/dev/null 2>&1; then API_READY=true; break; fi
   sleep 2
 done
-if [ "$API_READY" != "true" ]; then
-  echo "::error::API never became ready at http://localhost:<port>/<health-path> within 120s"
-  tail -n 200 /tmp/dev.log || true
-  kill "$DEV_PID" 2>/dev/null || true
-  exit 1
-fi
-echo "API ready at http://localhost:<port>/<health-path>"
+[ "$API_READY" = true ] || { echo "::error::API never came up at http://localhost:<port>/<health> in 120s"; tail -200 /tmp/dev.log; exit 1; }
+echo "API ready at http://localhost:<port>/<health>"
 ```
 
 Rules:
-- **Readiness loops must fail fast.** No bare `for ... && break; sleep ...; done` that silently falls through — always follow with `if [ "$READY" != "true" ]; then echo ::error:: ...; exit 1; fi`.
-- **Failure is hard, not soft.** If `dev-start.sh` is present and exits non-zero, the pipeline fails the Pre-start step and the whole review stops. That is intentional — if you wrote a bring-up and it doesn't work, functional findings would be misleading. To run in degraded mode (core + sweep only), delete the file entirely.
-- **No `set -e`** at the top. The subshell already propagates your explicit `exit N`; `set -e` adds surprise failures in idioms like `curl || true` or `grep` pipes that return 1 on no-match, without giving you anything back.
-- **One place, not two.** If you put commands here, keep `review-config.md`'s `## Functional validation` section as prose only (see Step 4). The script is the source of truth for *how* to bring things up; the markdown is the source of truth for *what* the tester should expect.
-- **Generated code matters.** If your tests import from a generated SDK / GraphQL client / `openapi-generator` output that isn't checked in, run the generator here *before* starting the dev server — otherwise `tsc --watch` / `nest start` floods the log with TS2307 noise (or, worse, the compile never settles). valcori's `dev-start.sh` runs `pnpm run generate-sdk` before `start:dev` for exactly this reason.
-- **Test it locally.** Run `bash .github/claude-review/dev-start.sh` from a clean checkout before committing and confirm the services bind on the ports you list in `### Known service ports`. If it doesn't boot locally, it won't boot in CI — this is where circular imports, missing codegen, and misconfigured `DATABASE_URL` surface.
-- **Pin your package manager.** The runner ships a default pnpm via `pnpm/action-setup`, but it won't necessarily match what you use locally. For pnpm/yarn projects, set `"packageManager"` in the root `package.json` (e.g. `"pnpm@10.33.0"`) and call `corepack enable` near the top of `dev-start.sh` — that activates the exact version you pinned. Skipping this works *most of the time* because the fallback is recent, but lockfile-version mismatches will surface as confusing install errors.
+- **Readiness loops fail fast** — every wait loop ends in `[ "$X" = true ] || { echo ::error:: …; exit 1; }`. No bare `for … && break; sleep; done` that silently falls through.
+- **No `set -e`** — the subshell propagates your explicit `exit N`; `set -e` adds surprise failures in `curl || true` / `grep` pipes.
+- **Generated code first** — if tests import a generated SDK/GraphQL client/`openapi-generator` output not checked in, run the generator before the server (valcori runs `pnpm run generate-sdk` before `start:dev` for this reason).
+- **One place** — commands live here; `review-config.md`'s `## Functional validation` stays prose only (Step 4).
+- **Make it FAST, not just correct** — cold Gradle/Maven/Go/Rust/pip builds are the biggest bring-up cost. You MUST wire the `dev_cache_*` inputs (Step 2) for this repo's stack so the build/dependency cache is restored before this runs. A dev-start that boots cold every run is not done.
 
-If the project has no services to start (pure-docs repo, lib-only package), do **not** create this file. Its absence triggers degraded mode (the orchestrator's two judges still run; no functional tester). An empty-but-present `dev-start.sh` will fail the step — either commit a real one or don't commit one at all.
+### 4.5.2 — Iterate to the optimal bring-up (local loop → council review until consensus)
+
+A `dev-start.sh` that merely boots is not the bar — the bar is the *optimal* bring-up for THIS project: correct, and as fast as the cache config makes it. Do not commit until both the loop and the council pass.
+
+**Loop locally until satisfied.** From a clean checkout (fresh install, empty build dir, no dev-server processes on the target ports), run `bash .github/claude-review/dev-start.sh`. It must exit 0 and the service must answer on every `### Known service ports` URL, and auth must come up (you can hit the sign-in path you documented in `### Auth`). Time it; if the slow part is dependency download or a non-PR compile, wire/confirm the `dev_cache_*` inputs (Step 2) cover those artefacts, then re-run and confirm the warm path is fast. Fix what breaks (circular imports, missing codegen, bad `DATABASE_URL`, unpinned package manager) and re-run from clean. Repeat until correctness AND speed satisfy you. If it doesn't boot locally it won't boot in CI.
+
+**The one sanctioned exception to local exit-0:** if the app boots only with credentials you don't have locally (a private registry token, cloud keys, a third-party API key), you cannot complete the local boot. Do NOT hardcode a placeholder to force a green run. Instead: write and statically verify the script, run the council on it, emit the `DEV_ENV_SECRETS` to-do listing the exact vars (see Secrets below), and document in your handoff "local boot blocked on secrets — validated by inspection + council only." Commit on that basis. This is the only case where committing without a green local boot is allowed.
+
+**Then convene a council.** Once it passes locally, dispatch **3 independent reviewers in parallel** (Task tool, `subagent_type: general-purpose`), each given the drafted `dev-start.sh`, the `dev_cache_*` block, `review-config.md`'s `## Functional validation` + `### Known service ports`, and the repo. One lens each:
+- **Correctness** — every readiness loop fails fast; codegen before the server; all `cp`/`source`/`cat` paths real (`ls` to prove); probed ports match what services bind; `set -e` absent; package manager pinned.
+- **Efficiency** — `dev_cache_paths` are dependency dirs not whole build trees; `dev_cache_key_files` globs cover the lockfiles/descriptors; the warm command is a cheap PR-code-free prefetch matching the stack; nothing the cache should carry is rebuilt cold.
+- **Project fit** — this is the bring-up THIS repo needs (right pm pin, migrations, seed/auth), no leftover stack-guessing or dead steps.
+
+Each reviewer returns **blocking flaws** (file:line) + optional notes. A **blocking flaw** is one that would make the bring-up fail, hang, silently pass, or rebuild a cacheable artefact cold — everything else (style, "could be marginally cheaper") is a note. **Consensus = a round where no reviewer raises a blocking flaw.** If any does, fix it and run another round. **Cap at 3 rounds**; if blocking flaws remain after the third, commit the best version and write the unresolved flaws into the PR description as known limitations (don't silently ship a worse script). Notes never hold a round. Only after a consensus round (or the cap) do you proceed to Step 5 and commit.
+
+### 4.5.3 — App-less repos (cases 2 and 3)
+
+Only after 4.5.0 PROVES no runnable app:
+- **Executable `tests/*.sh`** (case 2) → the pipeline runs them as a self-test; point `## Functional validation` prose at those tests; do not fabricate a server.
+- **Truly nothing runnable** (case 3, pure-docs/pure-library) → do NOT create `dev-start.sh`, and document explicitly in your handoff: "This repo has no runnable surface; its non-runtime PRs review cleanly, but any PR the planner judges to have runtime behaviour is capped at `COMMENT` with a setup-health nag — the intended forcing function. If a runnable surface is added later, a `dev-start.sh` becomes mandatory."
+
+An empty-but-present `dev-start.sh` always fails the step — commit a real one (cases 1/2) or none (case 3).
 
 ### Secrets for dev-start.sh
 
-If bring-up needs credentials that aren't checked-in defaults (private registry token, S3 keys for seeding, third-party API key the dev server requires at boot), do not hardcode them. Instead emit a to-do for the user:
+If bring-up needs creds that aren't checked-in defaults (private registry token, cloud SDK keys, a third-party API key the dev server needs at boot), don't hardcode them — emit a to-do:
 
-> "**Add a repo secret named `DEV_ENV_SECRETS`** with newline-separated `KEY=VALUE` pairs. The pipeline exports each line as an env var to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Pick names that match what your script reads. Example:
+> "**Add a repo secret named `DEV_ENV_SECRETS`** with newline-separated `KEY=VALUE` pairs. The pipeline exports each line as an env var to `dev-start.sh` (and the legacy `## Functional validation` bash blocks + `### Auth` eval). Example:
 > ```
 > NPM_TOKEN=npm_xxxxx
 > AWS_ACCESS_KEY_ID=AKIA...
 > AWS_SECRET_ACCESS_KEY=...
-> # values are exposed verbatim — do not wrap in quotes
+> # values exposed verbatim — do not wrap in quotes
 > ```
-> Without this, lines in `dev-start.sh` that reference these env vars will see them as empty and the script will fail at the first command that needs them — same fail-hard semantics as any other dev-start error."
+> Without it, `$VAR` references in `dev-start.sh` are empty and the script fails at the first command that needs them — same fail-hard semantics as any other dev-start error."
 
-Detect this need passively: grep the `dev-start.sh` you just drafted for `$VAR` references that aren't shell built-ins or values you already set inside the script. If any look like they should come from outside (registry creds, cloud SDK keys, anything ending in `_TOKEN` / `_KEY` / `_SECRET`), surface the to-do. If `dev-start.sh` is self-contained (compose-defined creds, no external API), skip this step.
+Detect this passively: grep the `dev-start.sh` you drafted for `$VAR` references that aren't shell built-ins or values you set inside the script. If any look external (anything ending `_TOKEN`/`_KEY`/`_SECRET`, registry/cloud creds), surface the to-do. If self-contained (compose-defined creds, no external API), skip it.
 
 ## Step 4.6: External issue tracker (optional)
 
@@ -294,7 +344,7 @@ Walk through this decision even if the project looks GitHub-only; confirm it exp
      <PROVIDER>_API_KEY=<your key>
      ```
      Get your key at `<the provider's API-key page URL>`."
-   - "**Create `.github/claude-review/fetch-issue.sh`**. It reads `$ISSUE_CANDIDATES_FILE` (pre-extracted ticket references), calls your tracker, and prints markdown to stdout. See the README section **External issue trackers** (`.github/claude-review/fetch-issue.sh`) for the full contract, the candidates-file schema, and a provider-neutral skeleton to adapt."
+   - "**Create `.github/claude-review/fetch-issue.sh`**. It reads the pre-extracted ticket references at `/tmp/external-issue-candidates.json`, calls your tracker, and prints markdown to stdout. See the README section **External issue trackers** (`.github/claude-review/fetch-issue.sh`) for the full contract, the candidates-file schema, and a provider-neutral skeleton to adapt."
    - "**Optional but recommended:** add a `Ticket: <url>` line to your PR template so authors paste the tracker URL into every PR — this gives the highest-confidence lookup (Tier-1 explicit marker)."
 
    Emphasize: `fetch-issue.sh` must be committed and `chmod +x`'d. Without `TRACKER_SECRETS` the hook runs but every env var the script references is empty, and the script will soft-fail on the first `curl` — the Actions log will show a `::warning::`.
@@ -315,7 +365,7 @@ Use the exact endpoints, credentials, and auth method you discovered in Step 1. 
 - Method: cookie | bearer | header | none
 ```
 
-**Important — exact phrasing matters for the functional tester's auth auto-detection.** Start the sign-in line with one of `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, or `Login:`. The functional tester scans for these prefixes and for a `POST <endpoint>` + `{JSON body}` to pre-build a browser auth snippet. If your app uses a different phrasing, the snippet just won't be pre-built — the agent will fall back to reading this section directly from `context.md`, which is fine but less efficient.
+**Be explicit and literal.** The context builder turns this section (plus the dev-env outputs) into a ready-made auth recipe so the functional tester spends zero budget rediscovering auth — exact endpoints, exact seeded credentials, exact method. A `Sign in:` line with a `POST <endpoint>` + `{JSON body}` is the canonical shape.
 
 For `header` or non-cookie auth (e.g., token in `x-auth` response header), document exactly how to capture and resend the token. Example:
 
@@ -340,7 +390,11 @@ List the actual ports you found in Step 1 (from `package.json` scripts, framewor
 | <name> | <URL you discovered> | <health endpoint if known> |
 ```
 
-**Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. The "Validate review config" step greps for `^### Auth` and `^### Known service ports` literally.
+### Known dev-env quirks (optional)
+
+If the dev environment has known failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths — list them under a `### Known dev-env quirks` section (same level-3, file-root placement as `### Auth`). The pipeline copies it verbatim into the functional tester's test plan, so matching failures are treated as expected instead of reported as findings.
+
+**Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. The pipeline greps for these headings literally (the context builder's config-gap check and the dev-env probe).
 
 Correct file outline — note heading levels:
 
@@ -358,21 +412,22 @@ Correct file outline — note heading levels:
 ### Known service ports      ← level 3, placed at file root after ## Functional validation
 ```
 
-Do **not** promote to `## Auth` / `## Known service ports` — the validator's `^### ` grep misses them and emits warnings. Do **not** nest them under `## Functional validation` either — when they live inside, the Functional-validation extractor picks up Auth code it shouldn't. Keep them exactly as **level-3 headings at the file's top level, immediately after the last `### Step N`**.
+Do **not** promote to `## Auth` / `## Known service ports` — the pipeline's `^### ` greps miss them and a "⚙️ Review setup health" bullet lands in every review body. Do **not** nest them under `## Functional validation` either — when they live inside, the Functional-validation extractor picks up Auth code it shouldn't. Keep them exactly as **level-3 headings at the file's top level, immediately after the last `### Step N`**.
 
 ## Step 5: Verify self-check
 
 Before committing, re-read your own `.github/review-config.md` and `.github/claude-review/dev-start.sh` and confirm:
 
-- [ ] `dev-start.sh` exists, is executable (`chmod +x`), AND has been run locally from a clean checkout (fresh `pnpm install`, empty `./build`, no lingering dev-server processes on the target ports). The script must exit 0 and the service must actually respond on the health URL you listed in `### Known service ports`. If it doesn't boot locally, it won't boot in CI and v1's fail-hard contract will block every PR until fixed.
+- [ ] `dev-start.sh` exists, is executable (`chmod +x`), boots from a clean checkout (exit 0, services answer on every `### Known service ports` URL), AND has passed a council-consensus round per Step 4.5 (no reviewer raised a blocking flaw, or the 3-round cap was hit with remaining flaws documented in the PR). If it doesn't boot locally it won't boot in CI, and a runtime PR with no working bring-up can never be `APPROVE`d — every review will carry a setup-health section quoting the bring-up error until it's fixed. (Exception: an app that boots only with creds you lack locally — verified by inspection + council, with a `DEV_ENV_SECRETS` to-do emitted, per Step 4.5.2.)
+- [ ] If bring-up rebuilds heavy non-PR artefacts cold (Gradle/Maven, Go modules, Rust `target`, an SDK generator), the `dev_cache_*` inputs are wired in the caller workflow and a warm re-run is measurably faster — cache key is your lockfile globs, cached paths are dependency dirs (not whole build trees).
 - [ ] If your repo generates code from an openapi spec / Prisma / Drizzle / GraphQL schema / etc. at dev-time, `dev-start.sh` runs that generator **before** the dev server. Missing codegen = TS errors = compile noise (and sometimes blocks boot outright — see valcori's historical `src/sdk` case).
 - [ ] `review-config.md`'s `## Functional validation` section is **prose only** — no fenced `bash` blocks. Commands live in `dev-start.sh`.
 - [ ] Every path appearing in a `cp`, `source`, or `cat` command (in either file) exists at the stated path. Run `ls <path>` to prove it.
 - [ ] Every readiness wait loop in `dev-start.sh` either exits non-zero on timeout OR logs a `::warning::`/`::error::`. No bare `for ... && break; sleep ...; done` patterns.
 - [ ] `### Auth` and `### Known service ports` sit at the top level of `review-config.md`, not nested inside `## Functional validation`.
-- [ ] Sign-in line starts with one of: `Sign in:`, `Sign-in:`, `Signin:`, `Log in:`, `Log-in:`, `Login:`.
+- [ ] `### Auth` documents the sign-in endpoint, seeded credentials, and method verbatim — a `Sign in:` line with `POST <endpoint>` + JSON body is the canonical shape.
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
-- [ ] The caller workflow tracks `@v2` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v2 + secrets: inherit` as accepted. Both are needed — the @v2 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
+- [ ] The caller workflow tracks `@v3` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v3 + secrets: inherit` as accepted. Both are needed — the @v3 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
 - [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}`, `cancel-in-progress: true`) AND a draft guard (`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false`). Missing either is reviewer noise every PR. `github.event_name` in the group key keeps `pull_request` and `pull_request_target` in separate groups so the warm-cache run doesn't cancel the review (or vice versa).
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
@@ -461,32 +516,43 @@ Single multiline secret with newline-separated `KEY=VALUE` pairs that your `fetc
 
 Single multiline secret with newline-separated `KEY=VALUE` pairs exposed as env vars to `.github/claude-review/dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot. Without it, references in `dev-start.sh` to these env vars are empty — the script will fail hard at the first command that depends on them, and the whole review stops (same fail-hard semantics as any other `dev-start.sh` error). Skip if your bring-up is self-contained.
 
+## What blocks a PR (v3 forcing-functions)
+
+Beyond a judge finding a `critical`/`major`, two structural gates can post a blocking `REQUEST_CHANGES` on their own, and two more withhold `APPROVE` — knowing them up front avoids surprise on a repo's first PRs:
+- **Oversized** (blocks) — > 3000 non-generated lines or > 60 files: no judges run, the bot returns a canned "split this PR" `REQUEST_CHANGES`. Override per-PR with the `deep-review` label; bypass a known-bundled PR with `skip-review`. While the PR stays oversized, re-pushes skip the review run entirely (the standing block holds); split it below the ceiling and the next push gets a real review.
+- **Failed smoke** (blocks) — the functional smoke ran against the live app and `FAIL`ed: blocking `REQUEST_CHANGES` with the failing scenario and evidence. Reproduced runtime failure is the one non-finding cause that blocks.
+- **No runtime evidence** (withholds APPROVE) — a PR the planner judged has runtime behaviour to exercise, where the smoke never ran (no `dev-start.sh`, bring-up failed/timed out, tester crashed): capped at `COMMENT`, never `APPROVE`, and the review body's "⚙️ Review setup health" section names the exact problem (missing vs present-but-failed, with the actual error) and the fix. This is why a repo shipping a running app MUST commit a working `dev-start.sh` (Step 4.5). Docs-only / non-runtime PRs are exempt; bots are NOT.
+- **No spec** (withholds APPROVE) — no linked issue, PRD, external-tracker spec, or substantive PR-body prose: APPROVE is withheld → `COMMENT` (not a hard block). Bot-authored PRs waive this. Link an issue or paste acceptance criteria to clear it.
+
+All of these resolve fresh each round — fix the cause and the next push re-evaluates.
+
 ## Step 7: Test
 
 Push the changes on a branch, open a PR, and verify the workflow triggers. Expected outcome:
 
 - "Install review pipeline" step succeeds (composite action)
-- "Validate review config" shows all six sections detected and no "references files that don't exist" warnings
+- The review body carries **no "⚙️ Review setup health" section** — the pipeline emits one when it detects config/dev-env problems (missing `dev-start.sh`, a failed bring-up with the error quoted, missing `review-config.md` or `### Auth`, a failing `fetch-issue.sh`); a correct config stays silent
 - Context builder produces `context.md` and `test-plan.md`
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
-- "Install functional-tester subagent definition" writes `.claude/agents/review-functional-tester.md` to the runner's checkout (this is what gives the functional tester its own scoped Playwright MCP server — don't commit this file to your repo, the workflow rewrites it on every run from the `inputs.model_functional` value)
-- Orchestrator runs the two judges (Opus + Haiku) in parallel and (when applicable) the functional tester. The judge debate produces a single, deduped findings list — there is no separate `core` / `sweep` step.
-- Functional testing runs on **every runtime diff**, including small PRs (single-judge `light` tier gets a quick 1-scenario pass) and oversized PRs (a quick 1-scenario smoke — not a full sweep). This is why `dev-start.sh` matters even for repos that mostly ship small PRs — without it, most day-to-day reviews carry no runtime evidence and refactor PRs can't reach APPROVE (smoke gate). The tester is bounded by a wall-clock budget (`functional_budget_seconds`, default 8 min) so it always writes findings before the job's time ceiling rather than getting cancelled mid-run.
+- "Install functional-tester subagent" copies the pipeline's static `agents/review-functional-tester.md` to `~/.claude/agents/` on the runner, templated with `inputs.model_functional` (this is what gives the functional tester its own scoped Playwright MCP server — don't commit such a file to your repo)
+- Orchestrator runs the judges in parallel and (when applicable) the functional tester. A **full** review runs two judges (Opus + Haiku) that debate to a single deduped findings list. A **light** review runs ONE judge: **Opus** on a small/tiny runtime PR, Sonnet on a docs/release/promotion PR — light is not a weaker review.
+- Functional testing runs on **every runtime diff** above the tiny ceiling (a `small` runtime PR gets the single-judge `light` tier — one **Opus** judge plus a quick functional smoke; the test planner picks `skip`/`quick` per surface). A **tiny** fix (≤ 10 non-generated lines, no sensitive paths) and a docs/tests-only (`nonruntime`) PR get a single Opus/Sonnet judge with **no functional run** — a trivial or non-runtime change rarely needs a smoke pass (a `.github/` CI, `.claude/`, or `bugbot.md` touch stays at the full dual-judge review). Oversized PRs (> 3000 non-generated lines or > 60 files) are different — they aren't lightly reviewed any more: the orchestrator returns a canned `REQUEST_CHANGES` asking to split the PR and runs no judges, and re-pushes skip the run while the PR stays oversized (add the `deep-review` label to force a full review instead). This is why `dev-start.sh` matters even for repos that mostly ship small PRs — without it, a runtime PR carries no smoke evidence, can never be `APPROVE`d, and every review nags with the setup-health section (docs-only / non-runtime PRs are exempt). The tester is bounded by a wall-clock budget (`functional_budget_seconds`, default 8 min) so it always writes findings before the job's time ceiling rather than getting cancelled mid-run.
 - A heavy `dev-start.sh` (Docker images + JDK/Gradle + a large monorepo's `node_modules`) can exhaust the hosted runner's ~14 GB free disk and fail the job with `No space left on device` after the review already ran. The workflow reclaims disk before the bring-up via the `free_disk_space` input: `safe` (default) clears tooling no Linux app needs (CodeQL/Haskell/Swift, ~12 GB) and is safe for every repo; set it to `aggressive` (also drops Android SDK + .NET, ~25 GB) **only if your `dev-start.sh` doesn't build Android or .NET**; `off` disables it.
 - PRs opened by bots (renovate, dependabot) are skipped cleanly by default — green check, no review, no crash banner. To review a bot's PRs, pass `allowed_bots: <login>` (without the `[bot]` suffix) on the caller's `with:` block; for dependabot also add the OAuth token to *Dependabot secrets*. Bot-authored PRs waive the manual-spec gate.
-- For PRs with UI surface, the functional tester's Turn 1 is an MCP smoke check (`mcp__playwright__browser_navigate` to `about:blank`). If MCP is unavailable, the run hard-fails with `overall: CRASH` and the verdict gate flags it as `requires_human_review`. Silent fallback to curl/psql is forbidden — a curl-only PASS on a UI fix is the bug we're guarding against.
+- For PRs with UI surface, the functional tester's Turn 1 is an MCP smoke check (`mcp__playwright__browser_navigate` to `about:blank`). If MCP is unavailable, the run hard-fails with `overall: CRASH` and the review is flagged `requires_human_review`. Silent fallback to curl/psql is forbidden — a curl-only PASS on a UI fix is the bug we're guarding against.
 - **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
 - The workflow check is **green whenever a review posted**, even on `REQUEST_CHANGES` — the verdict lives in the PR review (use branch protection's required reviews to make it block merges). A red check means the pipeline itself failed.
 
 ## Verdict ladder (round 2)
 
-When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. Small follow-ups get a lighter (single-judge) pass scoped to what changed — large or sensitive follow-ups get the full review again, and the `deep-review` label forces the full review every round. Verdict rules:
+When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. The previous round's verdict and reviewed commit come straight from the PR's own review history (no artifacts, no extra permissions), and the round-2 pass is scoped to what changed since — that scoping is what makes follow-up rounds cheap. The review plan itself resolves fresh each round from the PR's overall shape, and the `deep-review` label still forces a full review. Verdict rules:
 
 - New `critical` or `major` finding → `REQUEST_CHANGES`.
 - Prior `REQUEST_CHANGES` blocker still present → `REQUEST_CHANGES` (keeps until you actually fix it).
+- A prior block that carried **no findings** — an oversized "split this PR" or a failed-smoke block — is re-evaluated from scratch each round, not pinned. Split the PR (or fix the smoke failure and get a passing run) and the next push reaches its real verdict.
 - Prior `REQUEST_CHANGES` resolved + no new blockers → per-PR verdict (APPROVE if clean, COMMENT if minor findings remain).
 - Prior `COMMENT` + per-PR verdict APPROVE → `APPROVE`. The bot does NOT pin a follow-up to COMMENT just because the prior round was COMMENT — fixing the one issue the bot flagged should land you on green.
-- You dismissed the prior review → the bot treats it as if you'd accepted that round and evaluates the new commits independently.
-- You replied to a finding's thread disputing it (with a reason) and didn't change the code → the finding is classified `REBUTTED`: it stops blocking and the next review lists it under "Dropped after author rebuttal" instead of silently disappearing or nagging forever.
+- You dismissed the prior review → the bot drops its **minor/note** findings (your call on low-severity) but does NOT wave off a **critical/major**: those re-block if they still hold at HEAD unless the bot agrees they were wrong.
+- You disputed a finding with a reason (a thread reply, a general PR comment, or a review body) and didn't change the code → the bot **evaluates your explanation against the code at HEAD** rather than just accepting or ignoring it. A **minor/note** is dropped on any reasonable explanation; a **critical/major** is dropped only if the bot agrees it's actually wrong (a plausible-but-unverified claim, or "fixed in another PR" without the code, keeps it blocking). Either way the bot replies in-thread with its reasoning, and the next review lists the outcome under "Dropped after author rebuttal" or "Still present after your reply" — never silently disappearing or nagging forever.
 
-Severities matter: `critical` and `major` block; `minor` and `note` post inline but never gate APPROVE. A doc-only nit (typo, wrong package name in a paragraph) is `note` — it shows up in the review but won't hold the PR at COMMENT. If the bot grades a doc nit as `minor` or higher, that's a calibration bug worth flagging in feedback.
+Severities matter: `critical` and `major` block and are the only judge findings posted as inline comments (max 12, plus functional failures); `minor` and `note` appear as bullets in the review body and never gate APPROVE. A doc-only nit (typo, wrong package name in a paragraph) is `note` — it shows up in the review but won't hold the PR at COMMENT. If the bot grades a doc nit as `minor` or higher, that's a calibration bug worth flagging in feedback.

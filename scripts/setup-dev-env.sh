@@ -7,8 +7,9 @@ set -uo pipefail
 # Contract (first-class):
 #   .github/claude-review/dev-start.sh — an executable script in the
 #   consumer repo that installs deps, starts services, and blocks until
-#   they respond. If the script exits non-zero, we downgrade to a warning
-#   so the review still runs without functional testing.
+#   they respond. Non-zero exit → rc recorded, no functional testing;
+#   the orchestrator reads rc + this script's log, surfaces the failure
+#   in the review body's setup-health section, and withholds APPROVE.
 #
 # After bring-up, we probe URLs from review-config.md's `### Known service
 # ports` table (for functional-tester context) and run any auth setup from
@@ -116,15 +117,12 @@ echo "::group::Pre-start dev environment"
 if [ -f "$DEV_SCRIPT" ]; then
   echo "Running $DEV_SCRIPT (first-class dev-start contract)..."
   # Subshell isolation: the script is expected to block until services
-  # respond and exit 0. Exit non-zero is treated as a real failure —
-  # not a warning — because the consumer wrote a bring-up script and
-  # it failed, which means the functional tester has nothing to hit
-  # and review findings about functional behaviour would be misleading.
-  # This is a change from earlier v1 behaviour, which always downgraded
-  # to `::warning::`; that was masking real bugs (e.g. valcori's
-  # MikroORM entity circular import) and the user asked for fail-hard.
+  # respond and exit 0. Exit non-zero is a real failure, never silently
+  # downgraded (v1's warning-downgrade masked real bugs, e.g. valcori's
+  # MikroORM circular import): the exit code lands in /tmp/dev-env/rc and
+  # this log is what the orchestrator quotes in the review body.
   if ! ( bash "$DEV_SCRIPT" ); then
-    echo "::error::$DEV_SCRIPT exited non-zero — dev environment did not come up. See step log above for the script's own error output."
+    echo "ERROR: $DEV_SCRIPT exited non-zero — dev environment did not come up. The review continues statically; this failure is surfaced in the review body's setup-health section (full log: dev-env/log run artifact)."
     exit 1
   fi
 elif [ "$HAS_CONFIG" = "true" ]; then

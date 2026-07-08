@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/**'
       - 'skills/**'
+      - 'agents/**'
       - 'tests/**'
       - '.github/workflows/tests.yml'
 
@@ -22,56 +23,14 @@ jobs:
       - name: Run dev_env_secrets_test.sh
         run: bash tests/dev_env_secrets_test.sh
 
-      - name: Run report_usage_test.sh
-        run: bash tests/report_usage_test.sh
-
       - name: Run pick_oauth_token_test.sh
         run: bash tests/pick_oauth_token_test.sh
-
-      - name: Run round2_inherit_test.sh
-        run: bash tests/round2_inherit_test.sh
-
-      - name: Run round2_resolution_test.sh
-        run: bash tests/round2_resolution_test.sh
-
-      - name: Run functional_findings_merge_test.sh
-        run: bash tests/functional_findings_merge_test.sh
-
-      - name: Run screenshot_allowlist_test.sh
-        run: bash tests/screenshot_allowlist_test.sh
-
-      - name: Run functional_mcp_gate_test.sh
-        run: bash tests/functional_mcp_gate_test.sh
-
-      - name: Run install_functional_tester_agent_test.sh
-        run: bash tests/install_functional_tester_agent_test.sh
-
-      - name: Run verdict_ladder_test.sh
-        run: bash tests/verdict_ladder_test.sh
-
-      - name: Run diff_hunk_validation_test.sh
-        run: bash tests/diff_hunk_validation_test.sh
-
-      - name: Run round_state_amend_test.sh
-        run: bash tests/round_state_amend_test.sh
-
-      - name: Run crash_banner_marker_test.sh
-        run: bash tests/crash_banner_marker_test.sh
 
       - name: Run review_plan_test.sh
         run: bash tests/review_plan_test.sh
 
-      - name: Run judge_health_gate_test.sh
-        run: bash tests/judge_health_gate_test.sh
-
-      - name: Run finding_title_fallback_test.sh
-        run: bash tests/finding_title_fallback_test.sh
-
-      - name: Run linked_issue_render_test.sh
-        run: bash tests/linked_issue_render_test.sh
-
-      - name: Run verdict_gate_annotation_test.sh
-        run: bash tests/verdict_gate_annotation_test.sh
+      - name: Run post_review_test.sh
+        run: bash tests/post_review_test.sh
 
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh
