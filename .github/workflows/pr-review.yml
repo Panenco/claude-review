@@ -13,7 +13,7 @@ on:
       model_standard:
         description: "Standard-tier model (orchestrator, context builder)."
         type: string
-        default: "claude-sonnet-4-6"
+        default: "claude-sonnet-5"
       model_fast:
         description: "Cheap-tier model (Haiku judge)."
         type: string
@@ -21,7 +21,7 @@ on:
       model_functional:
         description: "Model for the functional tester (Playwright MCP + Bash)."
         type: string
-        default: "claude-sonnet-4-6"
+        default: "claude-sonnet-5"
       pipeline_ref:
         description: "Ref of panenco/claude-review to install skills/scripts from. Pin to a SHA or branch when testing pipeline changes."
         type: string
