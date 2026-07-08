@@ -25,7 +25,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     # This repo IS panenco/claude-review, so we call the reusable workflow
     # via its local path rather than `panenco/claude-review/.github/workflows/
-    # pr-review.yml@v2`. Two reasons:
+    # pr-review.yml@v3`. Two reasons:
     #   1. The `org/repo/...@tag` form trips a `startup_failure` here even
     #      with explicit secret mappings — the cross-repo treatment of
     #      same-repo reusable calls is the documented quirk in
@@ -48,9 +48,9 @@ jobs:
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       # Self-dogfood pin: install skills + scripts from THIS PR's head
-      # commit, not from @v2. Without this, every PR on panenco/claude-review
+      # commit, not from @v3. Without this, every PR on panenco/claude-review
       # tests its own pr-review.yml orchestration (because we use the local
-      # path above) but installs skills/scripts from the last released v2 —
+      # path above) but installs skills/scripts from the last released v3 —
       # so script-level changes never get exercised until after merge. With
       # the pin, any change to scripts/ or skills/ is dogfooded on the very
       # PR introducing it. `head.sha` covers pull_request events; `github.sha`
