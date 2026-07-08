@@ -25,7 +25,7 @@ on:
       pipeline_ref:
         description: "Ref of panenco/claude-review to install skills/scripts from. Pin to a SHA or branch when testing pipeline changes."
         type: string
-        default: "v2"
+        default: "v3"
       dev_env_timeout_seconds:
         description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up."
         type: number
