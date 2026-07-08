@@ -6,7 +6,7 @@ Reusable PR review pipeline powered by Claude Code. A single orchestrator agent 
 
 ### 1. Add the caller workflow
 
-Create `.github/workflows/claude-review.yml` in your repo. Track the `@v2` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v2 + secrets: inherit` on every PR. (If you're still on `@v1`, see [Migration: v1 → v2](#migration-v1--v2) — the bump requires one new permission and may change verdicts on refactor / auto-described PRs.)
+Create `.github/workflows/claude-review.yml` in your repo. Track the `@v3` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v3 + secrets: inherit` on every PR. (If you're still on `@v1` or `@v2`, see [Migration: v1 → v2](#migration-v1--v2) for the older bump, then move the tag to `@v3` — the latest tier requires a `dev-start.sh` for runtime PRs.)
 
 ```yaml
 name: Claude PR Review
@@ -22,7 +22,7 @@ on:
         type: string
 jobs:
   review:
-    uses: panenco/claude-review/.github/workflows/pr-review.yml@v2
+    uses: panenco/claude-review/.github/workflows/pr-review.yml@v3
     permissions:
       contents: write
       pull-requests: write
@@ -35,9 +35,9 @@ jobs:
 
 The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. `actions: read` is **no longer required** — round-2 state is derived from the PR's own review history, not from workflow artifacts; existing callers that still grant it are unaffected and can leave it in. See `prompts/setup-review.md` for the full troubleshooting flow.
 
-Why `@v2` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If _your_ repo has different trust needs, substitute a 40-char SHA for `@v2`.
+Why `@v3` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If _your_ repo has different trust needs, substitute a 40-char SHA for `@v3`.
 
-**Tag-resolution caveat.** The reusable workflow file and the install step resolve their refs at different moments of the job. Moving `v2` while a run is starting can cause a mismatch — push the `v2` tag at idle times, not while runs are in flight.
+**Tag-resolution caveat.** The reusable workflow file and the install step resolve their refs at different moments of the job. Moving `v3` while a run is starting can cause a mismatch — push the `v3` tag at idle times, not while runs are in flight.
 
 **Pinning to a non-default ref.** Pre-release dogfooding (testing pipeline changes against a real consumer repo before merging to `main`) needs both the workflow file and the install step at the same ref. Pass `pipeline_ref` so the install matches:
 
@@ -48,7 +48,7 @@ with:
   pipeline_ref: <branch-or-sha>
 ```
 
-Without `pipeline_ref`, the install defaults to `@v2` and consumers get new orchestration on old skills, which fails at max-turns. The `@v2` default is correct for normal use; only override during testing.
+Without `pipeline_ref`, the install defaults to `@v3` and consumers get new orchestration on old skills, which fails at max-turns. The `@v3` default is correct for normal use; only override during testing.
 
 **Allowing bot-opened PRs.** By default, runs triggered by a non-human actor (renovate, dependabot, automation bots) are skipped cleanly — a green check with a `::notice::`, no review, no crash banner. Opt in per-repo by passing `allowed_bots` (comma-separated bot logins, or `*` for all bots) on the caller's `with:` block. Use the login **without** the `[bot]` suffix — it matches `github.actor`:
 
@@ -517,30 +517,31 @@ The script uses your local `gh` auth (already cross-org), discovers repos via `g
 
 ## Versioning
 
-- `@v2` — current floating tag, always points to the latest v2.x release. Use this for auto-updates.
-- `@v2.0.0` — pinned tag. Use for critical stability.
-- `@v1` — frozen at the final v1 release (`b8223a98`, Apr 21 2026). No new fixes are backported here. Repos still on `@v1` continue to work; bump to `@v2` to receive new pipeline fixes (see [Migration: v1 → v2](#migration-v1--v2)).
+- `@v3` — current floating tag, always points to the latest v3.x release. Use this for auto-updates.
+- `@v3.0.0` — pinned tag. Use for critical stability.
+- `@v2` — previous major, frozen at the final v2 release. Repos still on `@v2` continue to work; bump to `@v3` to receive new pipeline fixes (the v3 tier requires a `dev-start.sh` for runtime PRs).
+- `@v1` — frozen at the final v1 release (`b8223a98`, Apr 21 2026). No new fixes are backported here. Repos still on `@v1` continue to work; bump to `@v3` to receive new pipeline fixes (see [Migration: v1 → v2](#migration-v1--v2) for the older bump).
 - Breaking changes (input/output format changes, new required permissions, new verdict gates) bump the major version.
 
 ### Releasing a new version (maintainers)
 
-There is **no release automation** — merging to `main` does not publish anything. Consumers pin the floating major tag (`@v2`), so a release is two steps: cut an immutable `vX.Y.Z` rollback anchor at the current `origin/main` tip, then move the floating major tag onto the same commit. Use the script:
+There is **no release automation** — merging to `main` does not publish anything. Consumers pin the floating major tag (`@v3`), so a release is two steps: cut an immutable `vX.Y.Z` rollback anchor at the current `origin/main` tip, then move the floating major tag onto the same commit. Use the script:
 
 ```bash
-scripts/release.sh v2.2.0            # publish (or: make release VERSION=v2.2.0)
-scripts/release.sh v2.2.0 --dry-run  # preview the four git commands without pushing
+scripts/release.sh v3.1.0            # publish (or: make release VERSION=v3.1.0)
+scripts/release.sh v3.1.0 --dry-run  # preview the four git commands without pushing
 ```
 
-It runs, in this order (immutable tag **first**, so the new tip keeps a stable name even if `v2` is later reverted):
+It runs, in this order (immutable tag **first**, so the new tip keeps a stable name even if `v3` is later reverted):
 
 ```bash
-git tag v2.2.0 origin/main      # immutable rollback anchor
-git tag -f v2 origin/main       # point floating major at the same tip
-git push origin v2.2.0
-git push origin v2 --force
+git tag v3.1.0 origin/main      # immutable rollback anchor
+git tag -f v3 origin/main       # point floating major at the same tip
+git push origin v3.1.0
+git push origin v3 --force
 ```
 
-**Choosing the number:** bump the **minor** for a new capability or config-affecting change, the **patch** for a pure fix. A breaking change bumps the **major** (`v3`) — never force-move the existing major onto a breaking change, since every consumer floats it.
+**Choosing the number:** bump the **minor** for a new capability or config-affecting change, the **patch** for a pure fix. A breaking change bumps the **major** (`v4`) — never force-move the existing major onto a breaking change, since every consumer floats it.
 
 **Before you publish:**
 
