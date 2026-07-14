@@ -6,6 +6,10 @@ on:
       pr_number:
         description: "PR number (auto-detected from PR event if omitted)"
         type: string
+      runner:
+        description: "Runner label for the review job. Defaults to GitHub-hosted; set to a self-hosted scale-set label to run reviews on your own fleet."
+        type: string
+        default: "ubuntu-latest"
       model_high:
         description: "Deep-reasoning model (Opus judge)."
         type: string
@@ -121,7 +125,7 @@ jobs:
   review:
     name: In-Depth Review
     if: github.event_name != 'pull_request_target'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 45
     # A push mid-review supersedes the in-flight run: cancel instead of
     # paying for two reviews of which one is already stale.
@@ -309,10 +313,28 @@ jobs:
       - name: Install Playwright + MCP
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         shell: bash
+        env:
+          PW_CACHE_HIT: ${{ steps.pw_cache.outputs.cache-hit }}
+          PW_CACHE_MATCHED_KEY: ${{ steps.pw_cache.outputs.cache-matched-key }}
         run: |
           set -uo pipefail
           mkdir -p /tmp/screenshots
-          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
+          # `playwright install --with-deps` shells out to apt-get as root, which a
+          # self-hosted (ARC) container running as non-root — or without apt egress —
+          # cannot do, and it takes that path even when the browsers are already on
+          # disk. So skip the install when chromium for the pinned version is already
+          # there: either the exact browser cache was restored (cache-hit — which is
+          # precisely what the cache step above exists for), or nothing was restored
+          # at all and the binaries are baked into the runner image. A partial
+          # (restore-keys) hit can carry a stale revision, so that case still installs,
+          # exactly as today.
+          PW_BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+          if compgen -G "${PW_BROWSERS_DIR}/chromium-*" >/dev/null \
+            && { [ "${PW_CACHE_HIT:-}" = "true" ] || [ -z "${PW_CACHE_MATCHED_KEY:-}" ]; }; then
+            echo "Chromium already present in ${PW_BROWSERS_DIR} — skipping 'playwright install --with-deps'."
+          else
+            npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
+          fi
           # Pre-warm @playwright/mcp so the subagent's stdio spawn doesn't pay
           # a cold install. Non-fatal: a miss only costs ~10-20s at first call.
           if npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 'process.exit(0)' >/dev/null 2>&1; then
@@ -707,6 +729,10 @@ jobs:
   # lands on the BASE ref and `pnpm fetch` reads only the lockfile.
   warm-cache:
     if: github.event_name == 'pull_request_target'
+    # Deliberately NOT parameterised with `inputs.runner`: this is the only
+    # pull_request_target-triggered job, and hardcoding the hosted label makes it
+    # structurally impossible for a pull_request_target job to land on a
+    # consumer's self-hosted fleet.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
