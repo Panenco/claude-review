@@ -319,19 +319,16 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p /tmp/screenshots
-          # `playwright install --with-deps` shells out to apt-get as root, which a
-          # self-hosted (ARC) container running as non-root — or without apt egress —
-          # cannot do, and it takes that path even when the browsers are already on
-          # disk. So skip the install when chromium for the pinned version is already
-          # there: either the exact browser cache was restored (cache-hit — which is
-          # precisely what the cache step above exists for), or nothing was restored
-          # at all and the binaries are baked into the runner image. A partial
-          # (restore-keys) hit can carry a stale revision, so that case still installs,
-          # exactly as today.
+          # `--with-deps` apt-installs system libs, which a non-root ARC container (or
+          # one without apt egress) cannot do — failing the job even when chromium is
+          # baked into the image. Skip it only when chromium for the pinned version is
+          # already on disk AND apt is genuinely unavailable. A partial (restore-keys)
+          # hit can carry a stale revision, so that case always installs.
           PW_BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
           if compgen -G "${PW_BROWSERS_DIR}/chromium-*" >/dev/null \
-            && { [ "${PW_CACHE_HIT:-}" = "true" ] || [ -z "${PW_CACHE_MATCHED_KEY:-}" ]; }; then
-            echo "Chromium already present in ${PW_BROWSERS_DIR} — skipping 'playwright install --with-deps'."
+            && { [ "${PW_CACHE_HIT:-}" = "true" ] || [ -z "${PW_CACHE_MATCHED_KEY:-}" ]; } \
+            && ! sudo -n true 2>/dev/null; then
+            echo "Chromium present in ${PW_BROWSERS_DIR} and apt unavailable — skipping 'playwright install --with-deps'."
           else
             npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
           fi
