@@ -7,7 +7,7 @@ on:
         description: "PR number (auto-detected from PR event if omitted)"
         type: string
       runner:
-        description: "Runner label for the review job. Defaults to GitHub-hosted; set to a self-hosted scale-set label to run reviews on your own fleet."
+        description: "Runner label for BOTH the review and warm-cache jobs. Defaults to GitHub-hosted; set to a self-hosted scale-set label to run reviews on your own fleet. Both jobs must share a fleet: cache keys are scoped by OS+arch, so a hosted warm-cache could never produce an entry an arm64 fleet can restore. Your fleet needs egress to the Actions cache service, else every review runs cold."
         type: string
         default: "ubuntu-latest"
       model_high:
@@ -91,11 +91,11 @@ on:
         type: string
         default: ""
       dev_cache_key_files:
-        description: "Newline-separated file globs whose contents key the cache. The workflow computes the key itself — `<RUNNER_OS>-<prefix>-<sha of these files>` — inside the jobs where a checkout + runner exist, so you pass globs (not a pre-hashed key): a reusable-workflow caller's `with:` has no runner/checkout, so `runner`/`hashFiles` can't be used there. Point it at the lockfiles/build descriptors that should rotate the cache, e.g. for Gradle: `backend/java/gradle/libs.versions.toml` + `backend/java/**/*.gradle*` + `backend/java/**/gradle-wrapper.properties`. Globs support `**` (globstar). Required when dev_cache_paths is set; if empty the cache is skipped."
+        description: "Newline-separated file globs whose contents key the cache. The workflow computes the key itself — `<RUNNER_OS>-<RUNNER_ARCH>-<prefix>-<sha of these files>` — inside the jobs where a checkout + runner exist, so you pass globs (not a pre-hashed key): a reusable-workflow caller's `with:` has no runner/checkout, so `runner`/`hashFiles` can't be used there. Point it at the lockfiles/build descriptors that should rotate the cache, e.g. for Gradle: `backend/java/gradle/libs.versions.toml` + `backend/java/**/*.gradle*` + `backend/java/**/gradle-wrapper.properties`. Globs support `**` (globstar). Required when dev_cache_paths is set; if empty the cache is skipped."
         type: string
         default: ""
       dev_cache_key_prefix:
-        description: "Optional cache-key prefix (default 'devcache'). The computed key is `<RUNNER_OS>-<prefix>-<hash of dev_cache_key_files>`, and restore-keys fall back to `<RUNNER_OS>-<prefix>-` (so a cold PR prefix-matches the latest main-scope entry; caches are repo-scoped, so a cache your main CI writes under the same prefix is reused too). Set it per stack (e.g. 'gradle') so unrelated caches don't collide."
+        description: "Optional cache-key prefix (default 'devcache'). The computed key is `<RUNNER_OS>-<RUNNER_ARCH>-<prefix>-<hash of dev_cache_key_files>`, and restore-keys fall back to `<RUNNER_OS>-<RUNNER_ARCH>-<prefix>-` (so a cold PR prefix-matches the latest main-scope entry; caches are repo-scoped, so a cache your main CI writes under the same prefix is reused too). Set it per stack (e.g. 'gradle') so unrelated caches don't collide. Note the arch scoping: a cache your main CI writes under the same prefix is only reused if that CI runs on the same OS+arch."
         type: string
         default: "devcache"
       dev_cache_warm_command:
@@ -306,9 +306,9 @@ jobs:
           path: |
             ~/.cache/ms-playwright
             ~/.npm/_npx
-          key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
           restore-keys: |
-            ${{ runner.os }}-pw-
+            ${{ runner.os }}-${{ runner.arch }}-pw-
 
       - name: Install Playwright + MCP
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
@@ -475,9 +475,9 @@ jobs:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
-          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-pkg-store-
+            ${{ runner.os }}-${{ runner.arch }}-pkg-store-
 
       # A heavy dev-start.sh can ENOSPC the post steps and lose a complete
       # review; reclaim tooling no app bring-up needs.
@@ -526,8 +526,8 @@ jobs:
           else
             hash=$(printf '%s\0' "${files[@]}" | sort -zu | xargs -0 sha256sum | sha256sum | cut -c1-16)
           fi
-          echo "key=${RUNNER_OS}-${KEY_PREFIX}-${hash}" >> "$GITHUB_OUTPUT"
-          echo "restore=${RUNNER_OS}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
+          echo "key=${RUNNER_OS}-${RUNNER_ARCH}-${KEY_PREFIX}-${hash}" >> "$GITHUB_OUTPUT"
+          echo "restore=${RUNNER_OS}-${RUNNER_ARCH}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
       - name: Restore dev build cache
         id: dev_build_cache
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
@@ -724,13 +724,16 @@ jobs:
 
   # pull_request_target writes cache to main scope. PR-code-free: checkout
   # lands on the BASE ref and `pnpm fetch` reads only the lockfile.
+  #
+  # Runs on `inputs.runner` alongside the review job, and must: cache keys are
+  # scoped by OS+arch, so warming on a hosted x64 runner would write entries an
+  # arm64 fleet can never restore — every review would run cold. Safe to place on
+  # a consumer's fleet precisely because it executes no PR-head code.
   warm-cache:
     if: github.event_name == 'pull_request_target'
-    # Deliberately NOT parameterised with `inputs.runner`: this is the only
-    # pull_request_target-triggered job, and hardcoding the hosted label makes it
-    # structurally impossible for a pull_request_target job to land on a
-    # consumer's self-hosted fleet.
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -743,7 +746,7 @@ jobs:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
-          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
           lookup-only: true
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         if: steps.store_probe.outputs.cache-hit != 'true'
@@ -755,9 +758,9 @@ jobs:
           path: |
             ~/.cache/ms-playwright
             ~/.npm/_npx
-          key: ${{ runner.os }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
           restore-keys: |
-            ${{ runner.os }}-pw-
+            ${{ runner.os }}-${{ runner.arch }}-pw-
       - if: steps.store_probe.outputs.cache-hit != 'true'
         run: |
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
@@ -772,9 +775,9 @@ jobs:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
-          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-pkg-store-
+            ${{ runner.os }}-${{ runner.arch }}-pkg-store-
       - name: Fetch base-lockfile packages into the store
         id: store_fetch
         if: steps.store_probe.outputs.cache-hit != 'true'
@@ -798,7 +801,7 @@ jobs:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
-          key: ${{ runner.os }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
 
       # Generic dev build/dependency cache — warmed here in main scope (same as
       # the package store above) so EVERY PR's functional job, which only
@@ -830,8 +833,8 @@ jobs:
           else
             hash=$(printf '%s\0' "${files[@]}" | sort -zu | xargs -0 sha256sum | sha256sum | cut -c1-16)
           fi
-          echo "key=${RUNNER_OS}-${KEY_PREFIX}-${hash}" >> "$GITHUB_OUTPUT"
-          echo "restore=${RUNNER_OS}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
+          echo "key=${RUNNER_OS}-${RUNNER_ARCH}-${KEY_PREFIX}-${hash}" >> "$GITHUB_OUTPUT"
+          echo "restore=${RUNNER_OS}-${RUNNER_ARCH}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
       - name: Restore dev build cache
         id: dev_cache_restore
         if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != ''
