@@ -95,6 +95,20 @@ The functional tester runs `dev-start.sh` on a fresh runner every review, so any
 
 **Keep it short-lived.** The repo shares a 10 GB Actions-cache budget (LRU + 7-day idle eviction). Cache the dependency dir, not whole build trees, and let the key rotate via the lockfile globs so entries churn only when dependencies change. Omit `dev_cache_warm_command` (keep the other two) if your own main CI already writes a cache under the same prefix — caches are repo-scoped, so the functional job's restore reuses it. Leave all four unset to disable caching entirely.
 
+### Self-hosted runners: the `runner` input (omit unless the user asks for it)
+
+**Default: do not set `runner`.** Reviews run on GitHub-hosted `ubuntu-latest`, which is right for almost every repo. Only wire this input if the user explicitly tells you they have a self-hosted fleet (an ARC scale set, for example) and want reviews on it. Don't infer it from the presence of other self-hosted workflows in the repo — ask.
+
+```yaml
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      runner: arc-gar-review   # the user's self-hosted scale-set label
+```
+
+One input sets `runs-on` for **both** the review job and the warm-cache job, and that is deliberate: the Actions cache is a repo-scoped remote service, so a self-hosted job can restore what a hosted job saved, but the keys are scoped by `runner.os` **and** `runner.arch` — a hosted x64 warm-cache with an arm64 review fleet would never match keys and every review would run cold. Never try to split the two.
+
+If the user does opt in, tell them their fleet needs **network egress to the GitHub Actions cache service** (without it, caching silently degrades to always-cold — reviews still work, just slower), and that the runner image should **bake in Playwright's chromium browsers**: when they're present the pipeline skips `playwright install --with-deps`, which needs apt as root and fails in a non-root container. The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction (checkout on the base ref, `pnpm fetch` reads only the lockfile, `dev_cache_warm_command` is trusted caller config), so it is safe on their own fleet.
+
 Note: the `concurrency:` block and the `if:` draft guard are required — omitting
 either causes recurring reviewer noise (cursor-style bots flag missing concurrency
 alongside all other repo workflows, and the pipeline re-runs on every `synchronize`

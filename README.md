@@ -80,7 +80,7 @@ You pass **globs, not a pre-hashed key**: a reusable-workflow caller's `with:` h
 
 Other stacks are the same shape — Go: `~/go/pkg/mod`, key files `**/go.sum`, warm `go mod download`; Maven: `~/.m2/repository`, key files `**/pom.xml`, warm `mvn -q dependency:go-offline`; Rust: `~/.cargo`, key files `**/Cargo.lock`, warm `cargo fetch`.
 
-> The warm-cache job is a vanilla `ubuntu-latest` with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
+> The warm-cache job is a vanilla runner (`ubuntu-latest` unless you set `runner`) with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
 
 How it works and how far the warmth reaches:
 - **`dev_cache_warm_command`** runs in the warm-cache job — `main` scope, against the trusted **base ref** (never PR head). Because it writes to `main` scope, **every** PR's functional job restores it, not just re-pushes of the same branch. It runs **only on a cache miss** (i.e. after the key rotates), so steady-state it's a no-op. Keep it cheap and PR-code-free — a dependency *resolve/prefetch*, not a full build.
@@ -89,6 +89,21 @@ How it works and how far the warmth reaches:
 - Leave all of it unset to disable caching entirely — no cache step runs.
 
 **Keep it short-lived.** Build caches are large and the repo shares a 10 GB Actions-cache budget (LRU-evicted, plus 7-day idle eviction). Two habits keep it bounded: cache the **dependency** dir, not whole build trees (`~/.gradle/caches/modules-2`, not `~/.gradle` — the latter drags in transient daemon/build state), and let the **key rotate via `hashFiles`** of your lockfiles so entries churn only when dependencies actually change. The warm-on-miss design means a new entry is written only when the key rotates, not on every PR.
+
+**Self-hosted runners / ARC (`runner`).** Reviews run on GitHub-hosted `ubuntu-latest` by default. Repos with their own runner fleet (an Actions Runner Controller scale set, say) can move both jobs onto it with a single input:
+
+```yaml
+uses: panenco/claude-review/.github/workflows/pr-review.yml@v3
+with:
+  pr_number: ${{ inputs.pr_number || '' }}
+  runner: arc-gar-review   # your self-hosted scale-set label
+```
+
+`runner` sets `runs-on` for **both** the review job and the warm-cache job — one input, deliberately, because the two must land on the same fleet. The Actions cache is a repo-scoped remote service, so a self-hosted job *can* restore what a hosted job saved, but cache keys are scoped by `runner.os` **and** `runner.arch`: a warm-cache job on hosted x64 and a review job on an arm64 fleet would never match keys, and every review would run cold.
+
+Two things your fleet needs. It must have **network egress to the GitHub Actions cache service** — without it, caching silently degrades to always-cold (reviews still work, just slower). And the image should **bake in Playwright's chromium browsers**: when they're already present the pipeline skips `playwright install --with-deps`, which needs apt as root and fails in a non-root container.
+
+The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Leaving `runner` unset is a complete no-op: everything keeps running on GitHub-hosted `ubuntu-latest`.
 
 ### 2. Set secrets
 
