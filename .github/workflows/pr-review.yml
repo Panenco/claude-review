@@ -339,6 +339,31 @@ jobs:
           else
             echo "::warning::@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} pre-warm failed — functional tester will cold-install on first call (~10-20s)."
           fi
+          # @playwright/mcp bundles its OWN playwright-core, which may pin a different
+          # chromium build than PLAYWRIGHT_VERSION (e.g. mcp 0.0.75 → playwright
+          # 1.61.0-alpha → chromium-1224, while PLAYWRIGHT_VERSION 1.60.0 → chromium-1223).
+          # The functional tester launches the MCP's browser, so the 'playwright install'
+          # above is NOT enough: on a runner whose store lacks the MCP's build, the
+          # tester's browser_navigate dies with "Executable doesn't exist at .../
+          # chromium_headless_shell-1224/..." and the review silently degrades (functional
+          # testing marked CRASH). Install exactly what the MCP will launch, using the
+          # MCP's own playwright-core, so this works on ANY runner without coupling the
+          # pipeline's mcp version to the runner image's pre-baked browser.
+          # Idempotent: a no-op when the build is already present (baked), a quick install
+          # otherwise (version drift / a runner that didn't pre-bake it). Installs into
+          # PLAYWRIGHT_BROWSERS_PATH if set, else playwright's default ~/.cache/ms-playwright.
+          # Non-fatal: a failure here (read-only baked store on an un-upgraded self-hosted
+          # image, transient network) becomes a ::warning:: and the tester CRASH-degrades
+          # exactly as it does today — it must never hard-fail the review job.
+          if MCPDIR="$(mktemp -d)" \
+            && ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
+                 && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
+            && MCP_PW_VER="$(node -e "console.log(require('$MCPDIR/node_modules/playwright-core/package.json').version)")" \
+            && node "$MCPDIR/node_modules/playwright-core/cli.js" install chromium chromium-headless-shell 2>&1 | tail -5; then
+            echo "MCP browser ready: installed/verified chromium + chromium-headless-shell for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} (bundled playwright-core ${MCP_PW_VER:-unknown}) in ${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}."
+          else
+            echo "::warning::Could not install the @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} browser build (read-only store, un-upgraded self-hosted image, or transient network). The functional tester may CRASH-degrade if the runner image did not pre-bake the MCP's exact chromium build. Pipeline continues."
+          fi
           echo "Playwright ${PLAYWRIGHT_VERSION} + @playwright/mcp ${PLAYWRIGHT_MCP_VERSION} ready"
 
       # Optional GitHub App review identity; falls back to github-actions[bot].
@@ -765,6 +790,18 @@ jobs:
         run: |
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
           npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0
+          # Also warm the browser build @playwright/mcp's OWN playwright-core wants
+          # (may differ from PLAYWRIGHT_VERSION's — see the review job's install step),
+          # so the saved cache carries the exact chromium the functional tester launches.
+          # Non-fatal: warming is best-effort and must never fail the warm-cache job.
+          MCPDIR="$(mktemp -d)"
+          if ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
+               && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
+             && node "$MCPDIR/node_modules/playwright-core/cli.js" install chromium chromium-headless-shell; then
+            echo "Warmed MCP browser build for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION}."
+          else
+            echo "::warning::Could not warm the @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} browser build; the review job will install it at runtime."
+          fi
       # Restore/save split so a FAILED fetch never saves a poisoned store
       # under the exact lockfile key.
       - name: Restore package-manager store
