@@ -339,30 +339,34 @@ jobs:
           else
             echo "::warning::@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} pre-warm failed — functional tester will cold-install on first call (~10-20s)."
           fi
-          # @playwright/mcp bundles its OWN playwright-core, which may pin a different
-          # chromium build than PLAYWRIGHT_VERSION (e.g. mcp 0.0.75 → playwright
-          # 1.61.0-alpha → chromium-1224, while PLAYWRIGHT_VERSION 1.60.0 → chromium-1223).
-          # The functional tester launches the MCP's browser, so the 'playwright install'
-          # above is NOT enough: on a runner whose store lacks the MCP's build, the
-          # tester's browser_navigate dies with "Executable doesn't exist at .../
-          # chromium_headless_shell-1224/..." and the review silently degrades (functional
-          # testing marked CRASH). Install exactly what the MCP will launch, using the
-          # MCP's own playwright-core, so this works on ANY runner without coupling the
-          # pipeline's mcp version to the runner image's pre-baked browser.
-          # Idempotent: a no-op when the build is already present (baked), a quick install
-          # otherwise (version drift / a runner that didn't pre-bake it). Installs into
-          # PLAYWRIGHT_BROWSERS_PATH if set, else playwright's default ~/.cache/ms-playwright.
-          # Non-fatal: a failure here (read-only baked store on an un-upgraded self-hosted
-          # image, transient network) becomes a ::warning:: and the tester CRASH-degrades
-          # exactly as it does today — it must never hard-fail the review job.
+          # @playwright/mcp launches the **chrome CHANNEL** — branded Google Chrome at
+          # /opt/google/chrome/chrome (channel:"chrome", its default) — NOT a bundled
+          # chromium build. (`@playwright/mcp --browser` accepts only
+          # chrome|firefox|webkit|msedge; there is no `chromium` value.) So the
+          # 'playwright install chromium' above is NOT enough: on a runner without the
+          # chrome channel the tester's browser_navigate dies with
+          #   "browserType.launch: Chromium distribution 'chrome' is not found at
+          #    /opt/google/chrome/chrome — Run npx playwright install chrome"
+          # and the review silently degrades (functional testing marked CRASH). Install
+          # the chrome channel using the MCP's OWN playwright-core, so the Chrome tracks
+          # exactly what the MCP will launch on ANY runner — no coupling to the image's
+          # pre-baked browser. (This corrects the prior self-heal, which installed the
+          # bundled `chromium chromium-headless-shell` — the WRONG browser.)
+          # The chrome channel is a SYSTEM install to /opt/google (google-chrome-stable
+          # via apt), so it needs root → use sudo when available.
+          # Idempotent: a no-op when Chrome is already present (the baked image has it).
+          # Non-fatal: a runner without sudo/apt-egress cannot install it; that becomes a
+          # ::warning:: and the tester CRASH-degrades exactly as it does today — it must
+          # never hard-fail the review job.
+          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -E"; fi
           if MCPDIR="$(mktemp -d)" \
             && ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
                  && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
             && MCP_PW_VER="$(node -e "console.log(require('$MCPDIR/node_modules/playwright-core/package.json').version)")" \
-            && node "$MCPDIR/node_modules/playwright-core/cli.js" install chromium chromium-headless-shell 2>&1 | tail -5; then
-            echo "MCP browser ready: installed/verified chromium + chromium-headless-shell for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} (bundled playwright-core ${MCP_PW_VER:-unknown}) in ${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}."
+            && $MCP_SUDO node "$MCPDIR/node_modules/playwright-core/cli.js" install chrome 2>&1 | tail -5; then
+            echo "MCP browser ready: installed/verified the chrome channel (Google Chrome at /opt/google/chrome) for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} (bundled playwright-core ${MCP_PW_VER:-unknown})."
           else
-            echo "::warning::Could not install the @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} browser build (read-only store, un-upgraded self-hosted image, or transient network). The functional tester may CRASH-degrade if the runner image did not pre-bake the MCP's exact chromium build. Pipeline continues."
+            echo "::warning::Could not install the chrome channel @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} launches (no sudo / no apt egress, or transient network). The functional tester may CRASH-degrade if the runner image did not pre-bake the chrome channel. Pipeline continues."
           fi
           echo "Playwright ${PLAYWRIGHT_VERSION} + @playwright/mcp ${PLAYWRIGHT_MCP_VERSION} ready"
 
@@ -790,17 +794,21 @@ jobs:
         run: |
           npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
           npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0
-          # Also warm the browser build @playwright/mcp's OWN playwright-core wants
-          # (may differ from PLAYWRIGHT_VERSION's — see the review job's install step),
-          # so the saved cache carries the exact chromium the functional tester launches.
+          # Also install the chrome CHANNEL @playwright/mcp actually launches
+          # (channel:"chrome", branded Google Chrome at /opt/google/chrome — NOT a
+          # bundled chromium build; see the review job's install step). This corrects
+          # the prior self-heal that installed the bundled `chromium chromium-headless-shell`
+          # (the WRONG browser). The chrome channel is a SYSTEM install to /opt/google
+          # via apt, so it needs root → use sudo when available.
           # Non-fatal: warming is best-effort and must never fail the warm-cache job.
+          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -E"; fi
           MCPDIR="$(mktemp -d)"
           if ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
                && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
-             && node "$MCPDIR/node_modules/playwright-core/cli.js" install chromium chromium-headless-shell; then
-            echo "Warmed MCP browser build for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION}."
+             && $MCP_SUDO node "$MCPDIR/node_modules/playwright-core/cli.js" install chrome; then
+            echo "Installed the chrome channel for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION}."
           else
-            echo "::warning::Could not warm the @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} browser build; the review job will install it at runtime."
+            echo "::warning::Could not install the chrome channel for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} (no sudo/apt egress); the review job will install it at runtime."
           fi
       # Restore/save split so a FAILED fetch never saves a poisoned store
       # under the exact lockfile key.
