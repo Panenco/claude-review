@@ -16,7 +16,7 @@ mcpServers:
   - playwright:
       type: stdio
       command: npx
-      args: ["--yes", "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}", "--headless", "--output-dir", "/tmp/screenshots"]
+      args: ["--yes", "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}", "--isolated", "--headless", "--output-dir", "/tmp/screenshots"]
 ---
 
 Read ${CLAUDE_REVIEW_PIPELINE_DIR}/skills/review-functional-tester.md and follow it exactly. The orchestrator's Task prompt carries your per-run instructions: DEADLINE_EPOCH, environment URLs, the auth recipe, and the P0/P1/P2 scenarios. Your first turn MUST be the MCP smoke check from the skill (browser_navigate about:blank, up to 3 attempts, 5s apart) — never silently fall back to curl/psql when MCP is unavailable.
