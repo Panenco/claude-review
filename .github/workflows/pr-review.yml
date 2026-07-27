@@ -358,7 +358,12 @@ jobs:
           # Non-fatal: a runner without sudo/apt-egress cannot install it; that becomes a
           # ::warning:: and the tester CRASH-degrades exactly as it does today — it must
           # never hard-fail the review job.
-          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -E"; fi
+          # HOME is overridden because plain `sudo -E` keeps HOME=/home/runner, so the
+          # deb install root-owns paths under the runner's home and the later
+          # `claude.ai/install.sh` step dies with EACCES on ~/.local/share/claude.
+          # Only set when sudo is actually used: without it the command runs unprivileged
+          # and must keep the caller's own HOME.
+          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -E env HOME=/root"; fi
           if MCPDIR="$(mktemp -d)" \
             && ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
                  && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
@@ -801,7 +806,9 @@ jobs:
           # (the WRONG browser). The chrome channel is a SYSTEM install to /opt/google
           # via apt, so it needs root → use sudo when available.
           # Non-fatal: warming is best-effort and must never fail the warm-cache job.
-          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -E"; fi
+          # HOME override: see the review job's install step. Plain `sudo -E` root-owns
+          # paths under the runner's home and breaks the later Claude CLI install.
+          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -E env HOME=/root"; fi
           MCPDIR="$(mktemp -d)"
           if ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
                && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
