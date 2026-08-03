@@ -47,6 +47,13 @@ jobs:
       packages: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      # MUST stay explicit. The `runner` default is `panenco-claude-review`,
+      # whose org runner group is created with `allows_public_repositories:
+      # false` — and THIS repo is public. It can never place a job on that
+      # fleet, and ARC fails closed rather than falling back: inheriting the
+      # default here would queue every review for GitHub's 24h timeout and
+      # then fail. Any other public consumer needs this same line.
+      runner: ubuntu-latest
       # Self-dogfood pin: install skills + scripts from THIS PR's head
       # commit, not from @v3. Without this, every PR on panenco/claude-review
       # tests its own pr-review.yml orchestration (because we use the local
