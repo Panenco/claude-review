@@ -207,6 +207,7 @@ jobs:
         with:
           ref: ${{ steps.pr_sha.outputs.sha }}
           fetch-depth: 0
+          filter: blob:none
 
       # DOGFOOD installs from the local checkout; DOWNSTREAM installs at
       # pipeline_ref (a reusable workflow can't observe its own ref).
