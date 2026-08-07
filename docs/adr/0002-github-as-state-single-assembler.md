@@ -53,3 +53,33 @@ findings are assembled once, by the agent that judged them.
   files; the poster trusts it verbatim.
 - Ladder/merge behavior now lives in prompts, so it is exercised by dogfood
   runs rather than bash unit tests; poster tests cover the deterministic rim.
+
+## Amendment (2026-08-07)
+
+Reading state from GitHub means "reviews the bot posted" — which is not the same
+set as "rounds that judged the diff". A `review_level=skip` early-return posts a
+real review having read nothing, and counting it as a round scoped the *next*
+run to the since-last diff (Panenco/qit#7534: a `deep-review` label on an
+oversized PR produced an APPROVE over a 7-line delta, with 4251 lines never
+read). The derivation now lives in `scripts/prior-review-state.sh` and keeps two
+lists: all standing bot reviews (for the oversized re-run dedup, which must see
+the block) and judged-only reviews (for round / prior SHA / prior verdict).
+Non-judging reviews are identified by a hidden body marker; the guard in
+`tests/prior_review_state_test.sh` fails the build if a skip gate ships without
+one.
+
+Two corollaries, both load-bearing once non-judging reviews are filtered out:
+
+- **The same filter must apply everywhere the prior review is resolved.** The
+  context builder resolves its own copy (it needs the body to reconstruct prior
+  findings), so it excludes the same markers and pins to `PRIOR_HEAD_SHA`.
+  Otherwise the workflow anchors round 2 on the judged review while the CB reads
+  the skip note posted after it, reconstructs zero prior findings, and the ladder
+  forgives the previous round's blockers. The marker guard covers both files.
+- **A non-judging post must not dismiss a standing review.** `post-review.sh`
+  dismisses its own prior blocking reviews before each post; suppressed for
+  skip-marked bodies. Without that, adding `skip-review` clears a standing
+  REQUEST_CHANGES, and the next judged round reads its prior verdict off a
+  `DISMISSED` review. A dismissal is also no longer read as an approval — the
+  verdict is recovered from the review body and the orchestrator's
+  `prior-dismiss-drops-low-sev` rung decides what a dismissal may drop.

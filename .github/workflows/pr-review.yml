@@ -436,46 +436,21 @@ jobs:
           GATE: ${{ steps.review_plan.outputs.gate }}
         run: |
           set -uo pipefail
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" 2>/dev/null \
-            | jq -s --arg bot "$REVIEW_BOT_USER" '
-                (add // [])
-                | [.[] | select(
-                    .user.login == $bot
-                    and ((.body // "") | length > 0)
-                    and ((.body | contains("<!-- claude-review-crash -->")) | not)
-                    and ((.body | contains("<!-- claude-review-superseded -->")) | not)
-                  )]' > /tmp/prior-reviews.json 2>/dev/null || echo '[]' > /tmp/prior-reviews.json
-          jq -e 'type == "array"' /tmp/prior-reviews.json >/dev/null 2>&1 || echo '[]' > /tmp/prior-reviews.json
-          COUNT=$(jq 'length' /tmp/prior-reviews.json)
-          PRIOR_SHA=$(jq -r 'sort_by(.submitted_at) | last | .commit_id // empty' /tmp/prior-reviews.json)
-          PRIOR_STATE=$(jq -r 'sort_by(.submitted_at) | last | .state // empty' /tmp/prior-reviews.json)
-          case "$PRIOR_STATE" in
-            APPROVED) PRIOR_VERDICT=APPROVE ;;
-            CHANGES_REQUESTED) PRIOR_VERDICT=REQUEST_CHANGES ;;
-            COMMENTED) PRIOR_VERDICT=COMMENT ;;
-            DISMISSED) PRIOR_VERDICT=APPROVE ;; # author opt-out — never re-enforce
-            *) PRIOR_VERDICT="" ;;
-          esac
-          ROUND=$((COUNT + 1))
-          if [ -z "$PRIOR_SHA" ] || ! git cat-file -e "${PRIOR_SHA}^{commit}" 2>/dev/null; then
-            ROUND=1; PRIOR_SHA=""; PRIOR_VERDICT=""
+          STATE=$(.review-scripts/prior-review-state.sh)
+          echo "Prior review state:"; echo "$STATE" | sed 's/^/  /'
+          # No `-e` here (repo rule), and the step's last statement is an `if` —
+          # so a failed derivation would set NO outputs and still go green,
+          # handing the orchestrator an empty ROUND (that env has no `|| '1'`
+          # fallback) and pinning the pipeline to round 1 with no error signal.
+          # Fail loudly instead: an unknown round must never review as round 1.
+          if ! grep -qE '^round=[0-9]+$' <<< "$STATE"; then
+            echo "::error::prior-review-state.sh produced no usable state — refusing to run with an unknown round (would silently review as round 1)."
+            exit 1
           fi
-          # Oversized dedup: the size gate is a pure function of PR shape, so a
-          # push to a still-oversized PR would re-emit a byte-equivalent "split
-          # this PR" block. Skip the whole agent run and leave the standing
-          # review in place. Keyed on the orchestrator's hidden body marker
-          # (same convention as claude-review-crash). Manual dispatch always
-          # re-runs — it's the human escape hatch.
-          OVERSIZED_DUP=false
-          if [ "${GATE:-}" = "oversized" ] && [ "$PRIOR_STATE" = "CHANGES_REQUESTED" ] \
-             && [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ] \
-             && jq -e 'sort_by(.submitted_at) | last | (.body // "") | contains("<!-- claude-review-oversized -->")' /tmp/prior-reviews.json >/dev/null 2>&1; then
-            OVERSIZED_DUP=true
+          grep -E '^(round|prior_head_sha|prior_verdict|oversized_dup)=' <<< "$STATE" >> "$GITHUB_OUTPUT"
+          if grep -qx 'oversized_dup=true' <<< "$STATE"; then
             echo "::notice::PR is still oversized and the standing Claude review already requests a split — skipping a duplicate review run. The block re-evaluates when the PR shrinks below the ceiling or carries the deep-review label; re-run manually via workflow_dispatch to force a fresh post."
           fi
-          echo "oversized_dup=$OVERSIZED_DUP" >> "$GITHUB_OUTPUT"
-          printf 'prior_head_sha=%s\nprior_verdict=%s\nround=%s\n' "$PRIOR_SHA" "$PRIOR_VERDICT" "$ROUND" >> "$GITHUB_OUTPUT"
-          echo "Round $ROUND (prior verdict: ${PRIOR_VERDICT:-none}, prior head: ${PRIOR_SHA:-none})"
 
       # After prior_state on purpose: a deduped oversized re-run skips the CLI
       # install and the per-token quota probes entirely. The token picker needs

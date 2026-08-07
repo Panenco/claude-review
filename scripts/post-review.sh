@@ -23,13 +23,17 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Crash banners can't be deleted (no review-delete API); PATCH them to a
 # benign superseded form. The superseded marker shares no substring with the
-# crash marker, so a superseded review is never re-matched.
+# crash marker, so a superseded review is never re-matched. Matched on the
+# body's FIRST LINE (where crash_exit stamps it), never with contains(): this
+# function REWRITES the bodies it matches, so an unanchored match would clobber
+# a real review that merely quotes the marker in a finding.
 supersede_crash_banners() {
   local ids body
   ids=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
     | jq -s --arg bot "$BOT" '
         (add // [])
-        | [.[] | select(.user.login == $bot and ((.body // "") | contains("<!-- claude-review-crash -->"))) | .id]
+        | [.[] | select(.user.login == $bot
+                        and (((.body // "") | split("\n") | (.[0] // "") | sub("\\s+$"; "")) == "<!-- claude-review-crash -->")) | .id]
         | .[]' 2>/dev/null || true)
   [ -z "$ids" ] && { echo "No prior crash banners to supersede."; return 0; }
   body=$'<!-- claude-review-superseded -->\n\n_Superseded by a newer Claude review run on this PR._'
@@ -188,12 +192,30 @@ echo "Inline comments: $(jq 'length' "$WORK/comments.json")"
 echo "::endgroup::"
 
 # ── 3. Dismiss own stale blocking reviews (keep COMMENTED for audit trail) ──
+# Only a review that JUDGED the diff may clear a standing one. A skip-marked
+# body (skip-review note, oversized split-request) read no code, so dismissing
+# on its way in would (a) un-block a PR nobody re-reviewed — adding the
+# `skip-review` label would silently clear a REQUEST_CHANGES — and (b) leave the
+# next judged round reading `prior_verdict` off a DISMISSED review, which means
+# "the author opted out" (see prior-review-state.sh). Leave it standing; the
+# skip note posts alongside it.
+#
+# Matched on the FIRST LINE only (where the orchestrator stamps it). An
+# unanchored grep also matches a JUDGED review that quotes a marker — in a
+# finding, or in the out-of-hunk appendix step 2 already appended below — and
+# would then leave the stale review it is supposed to dismiss standing.
 echo "::group::Dismiss stale reviews"
-STALE_IDS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
-  | jq -s --arg bot "$BOT" '
-      (add // [])
-      | [.[] | select(.user.login == $bot and (.state == "CHANGES_REQUESTED" or .state == "APPROVED")) | .id]
-      | .[]' 2>/dev/null || true)
+if head -n1 "$WORK/body.md" 2>/dev/null \
+     | grep -qE '^[[:space:]]*<!-- claude-review-(skipped|oversized) -->[[:space:]]*$'; then
+  echo "Skip-marked review (judged nothing) — leaving standing reviews in place."
+  STALE_IDS=""
+else
+  STALE_IDS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
+    | jq -s --arg bot "$BOT" '
+        (add // [])
+        | [.[] | select(.user.login == $bot and (.state == "CHANGES_REQUESTED" or .state == "APPROVED")) | .id]
+        | .[]' 2>/dev/null || true)
+fi
 while IFS= read -r id; do
   [ -z "$id" ] && continue
   echo "Dismissing review $id"

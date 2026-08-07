@@ -224,6 +224,63 @@ assert_contains "superseded marker in PUT body" "claude-review-superseded" "$GH_
 assert_contains "prior blocking review dismissed" "reviews/778/dismissals" "$GH_CALLS"
 rm -rf "$W" "$REVIEWS_FIXTURE"
 
+# ── (g2) a skip-marked review must NOT dismiss the standing block ────────────
+# It judged nothing: dismissing would un-block a PR nobody re-reviewed, and the
+# next judged round would read its prior verdict off a DISMISSED review.
+echo ""
+echo "── (g2) skip-marked review leaves the standing block alone ──"
+for marker in "<!-- claude-review-skipped -->" "<!-- claude-review-oversized -->"; do
+  W=$(mktemp -d)
+  jq -n --arg body "$marker"$'\n\n## Claude PR Review — COMMENT\n\nSkipped.' \
+    '{verdict: "COMMENT", body: $body, comments: [], resolve_threads: [], bot_replies: [],
+      meta: {findings: [], round: 1}}' > "$W/review.json"
+  REVIEWS_FIXTURE=$(mktemp)
+  cat > "$REVIEWS_FIXTURE" <<'EOF'
+[
+  {"id": 778, "user": {"login": "claude-bot[bot]"}, "state": "CHANGES_REQUESTED",
+   "body": "## Claude PR Review — REQUEST_CHANGES\n\nprior round", "commit_id": "old2",
+   "submitted_at": "2026-06-02T00:00:00Z"}
+]
+EOF
+  FIXTURE_REVIEWS="$REVIEWS_FIXTURE" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  assert_eq "exit 0 ($marker)" "0" "$RC"
+  assert_not_contains "standing block NOT dismissed ($marker)" "dismissals" "$(cat "$W/gh.log")"
+  rm -rf "$W" "$REVIEWS_FIXTURE"
+done
+
+# ── (g3) a JUDGED review that quotes a marker still dismisses ────────────────
+# The skip guard is anchored to the body's first line. This repo reviews itself,
+# so a finding quoting a marker is a live case — an unanchored grep would read a
+# real review as a skip and leave the stale block standing. Same for the crash
+# marker, which supersede_crash_banners uses to REWRITE bodies it matches.
+echo ""
+echo "── (g3) judged review quoting markers still dismisses/does not clobber ──"
+W=$(mktemp -d)
+jq -n --arg body '## Claude PR Review — REQUEST_CHANGES
+
+### Blocking findings
+- **[major]** `skills/review-orchestrator.md:53` — spec stamps `<!-- claude-review-skipped -->`
+  but the oversized branch stamps `<!-- claude-review-oversized -->`.' \
+  '{verdict: "REQUEST_CHANGES", body: $body, comments: [], resolve_threads: [], bot_replies: [],
+    meta: {findings: [], round: 2}}' > "$W/review.json"
+REVIEWS_FIXTURE=$(mktemp)
+cat > "$REVIEWS_FIXTURE" <<'EOF'
+[
+  {"id": 778, "user": {"login": "claude-bot[bot]"}, "state": "CHANGES_REQUESTED",
+   "body": "## Claude PR Review — REQUEST_CHANGES\n\nprior round", "commit_id": "old2",
+   "submitted_at": "2026-06-02T00:00:00Z"},
+  {"id": 779, "user": {"login": "claude-bot[bot]"}, "state": "COMMENTED",
+   "body": "## Claude PR Review — COMMENT\n\nquotes <!-- claude-review-crash --> in a finding",
+   "commit_id": "old3", "submitted_at": "2026-06-03T00:00:00Z"}
+]
+EOF
+FIXTURE_REVIEWS="$REVIEWS_FIXTURE" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+GH_CALLS=$(cat "$W/gh.log")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "stale block still dismissed" "reviews/778/dismissals" "$GH_CALLS"
+assert_not_contains "crash-quoting review not superseded" "reviews/779" "$GH_CALLS"
+rm -rf "$W" "$REVIEWS_FIXTURE"
+
 # ── (h) reject-oversized → body-only REQUEST_CHANGES ─────────────────────────
 echo ""
 echo "── (h) reject-oversized posts body-only REQUEST_CHANGES ──"
