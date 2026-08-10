@@ -118,8 +118,8 @@ on:
 # Pinned Playwright stack, decoupled from consumer-lockfile churn so the
 # browser-binary cache hits every run that doesn't bump these.
 env:
-  PLAYWRIGHT_VERSION: "1.60.0"
-  PLAYWRIGHT_MCP_VERSION: "0.0.75"
+  PLAYWRIGHT_VERSION: "1.62.1"
+  PLAYWRIGHT_MCP_VERSION: "0.0.79"
 
 jobs:
   review:
