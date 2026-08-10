@@ -106,9 +106,26 @@ gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$
 
 # Prior reviews (round 2): dismissal + prior functional result, from GitHub —
 # GitHub is the state store; there is no state artifact.
+# The filter MUST match scripts/prior-review-state.sh: same crash/superseded
+# exclusions AND the same skip markers, then pinned to $PRIOR_HEAD_SHA. That
+# script derived ROUND/PRIOR_HEAD_SHA/PRIOR_VERDICT from the JUDGED list; if this
+# resolves to a different review (e.g. an oversized block posted after the last
+# judged round) the round-2 ladder reconstructs the wrong prior findings — zero
+# of them — and silently forgives the prior round's blockers. Markers are matched
+# on the body's FIRST LINE, where they are stamped — contains() would also drop a
+# judged review that merely quotes one in a finding, with the same effect.
+# tests/prior_review_state_test.sh fails the build if a skip marker is missing here.
 if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
   gh api --paginate "repos/$REPO/pulls/$PR/reviews" | jq -s 'add // []' > /tmp/pr-reviews.json
-  jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot) | select((.body // "") | length > 0) | select(.body | contains("<!-- claude-review-crash -->") | not) | select(.body | contains("<!-- claude-review-superseded -->") | not)] | sort_by(.submitted_at) | last // {}' \
+  jq --arg bot "$BOT_USER" --arg sha "$PRIOR_HEAD_SHA" '
+    def first_line: ((. // "") | split("\n") | (.[0] // "") | sub("\\s+$"; ""));
+    [.[] | select(.user.login == $bot) | select((.body // "") | length > 0)
+         | select((.body | first_line) != "<!-- claude-review-crash -->")
+         | select((.body | first_line) != "<!-- claude-review-superseded -->")
+         | select((.body | first_line) != "<!-- claude-review-oversized -->")
+         | select((.body | first_line) != "<!-- claude-review-skipped -->")]
+    | sort_by(.submitted_at) as $judged
+    | (($judged | map(select(.commit_id == $sha)) | last) // ($judged | last) // {})' \
     /tmp/pr-reviews.json > /tmp/prior-review.json
   echo "prior review: state=$(jq -r '.state // "none"' /tmp/prior-review.json) commit=$(jq -r '.commit_id // ""' /tmp/prior-review.json)"
   grep -oE 'Functional Validation — (PASS|WARN|FAIL|CRASH)' <(jq -r '.body // ""' /tmp/prior-review.json) | head -1 || echo "prior functional: none"

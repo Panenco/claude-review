@@ -28,7 +28,7 @@ runs:
           ls -la "$PIPELINE_DIR/skills/" "$PIPELINE_DIR/agents/" 2>&1 || true
           exit 1
         fi
-        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh; do
+        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1

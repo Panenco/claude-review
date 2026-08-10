@@ -77,13 +77,25 @@ A `deep-review` label (see below) flips rungs 2, 3, and 5 to `full`.
 The plan resolves **fresh each round** from the PR's overall shape — the table
 above, labels included, applies identically on every push. There is no separate
 round-2 plan refinement. What makes follow-up rounds cheap is **context
-scoping**, not a smaller plan: when a prior review exists (derived from the
-PR's own review history), the context builder scopes the diff index to the
+scoping**, not a smaller plan: when a prior **judged** review exists (derived
+from the PR's own review history), the context builder scopes the diff index to the
 changes since the last reviewed commit, judges read only that, every open
 thread is classified against it, and functional scenarios are planned against
 the since-last diff (zero scenarios is a valid outcome for follow-ups with no
 user-observable surface). The verdict ladder still pins unresolved prior
 blockers regardless of how small the follow-up is.
+
+A round the plan **skipped** (`skip-review` label, or the oversized
+split-request) is not a round: no judge read the diff, so there is nothing to
+scope against. Those reviews carry a hidden skip marker and are excluded from
+the round count — the next push resumes from the last review that *did* judge,
+whatever came after it. With no judged round yet, that means a fresh full-scope
+round 1: this is what makes `deep-review` on an oversized PR work, since it
+would otherwise "resume" from a block that reviewed nothing and judge only the
+newest commit. With a judged round behind it, the skip is simply transparent —
+the next push is the next round, scoped to that judged round's SHA, with its
+verdict and its unresolved blockers still pinned. A skip never launders a
+standing block: the skip review does not dismiss it either.
 
 ## Labels
 
