@@ -7,9 +7,9 @@ on:
         description: "PR number (auto-detected from PR event if omitted)"
         type: string
       runner:
-        description: "Runner label for BOTH the review and warm-cache jobs. Defaults to GitHub-hosted; set to a self-hosted scale-set label to run reviews on your own fleet. Both jobs must share a fleet: cache keys are scoped by OS+arch, so a hosted warm-cache could never produce an entry an arm64 fleet can restore. Your fleet needs egress to the Actions cache service, else every review runs cold."
+        description: "Runner label for BOTH the review and warm-cache jobs. Defaults to the `panenco-claude-review` ARC scale set. Set `ubuntu-latest` to run on GitHub-hosted instead — REQUIRED for any repo that is not a member of the `claude-review` org runner group, because ARC fails closed: an unreachable label does not fall back, it queues for GitHub's 24h timeout and then fails. Both jobs must share a fleet: cache keys are scoped by OS+arch, so a hosted warm-cache could never produce an entry an arm64 fleet can restore. Your fleet needs egress to the Actions cache service, else every review runs cold."
         type: string
-        default: "ubuntu-latest"
+        default: "panenco-claude-review"
       model_high:
         description: "Deep-reasoning model (Opus judge)."
         type: string
@@ -99,7 +99,7 @@ on:
         type: string
         default: "devcache"
       dev_cache_warm_command:
-        description: "Optional. Shell command the warm-cache job runs (in main scope, against the trusted BASE ref — never PR head) to populate dev_cache_paths, then saves under the computed key. This is what makes the cache available to EVERY PR rather than only re-pushes of the same branch. Keep it cheap and PR-code-free — a dependency resolve/prefetch, not a full build. It runs only on a cache miss (i.e. after the key rotates), so steady-state cost is one prefetch per dependency change. The warm-cache job is a vanilla ubuntu-latest with only Node set up, so the command owns its own toolchain — use the runner's preinstalled versions (e.g. JAVA_HOME_21_X64 / GOROOT_1_22_X64) or install what it needs. Example: 'cd backend/java && JAVA_HOME=$JAVA_HOME_21_X64 ./gradlew :api:dependencies --no-daemon'. Leave empty to skip main-scope warming (the functional job still restores whatever exists under the key/prefix, e.g. a cache your own main CI writes)."
+        description: "Optional. Shell command the warm-cache job runs (in main scope, against the trusted BASE ref — never PR head) to populate dev_cache_paths, then saves under the computed key. This is what makes the cache available to EVERY PR rather than only re-pushes of the same branch. Keep it cheap and PR-code-free — a dependency resolve/prefetch, not a full build. It runs only on a cache miss (i.e. after the key rotates), so steady-state cost is one prefetch per dependency change. The warm-cache job has only Node set up and runs on whatever `runner` resolves to, so the command owns its own toolchain — use the runner's preinstalled versions (e.g. JAVA_HOME_21_X64 / GOROOT_1_22_X64) or install what it needs. Example: 'cd backend/java && JAVA_HOME=$JAVA_HOME_21_X64 ./gradlew :api:dependencies --no-daemon'. Leave empty to skip main-scope warming (the functional job still restores whatever exists under the key/prefix, e.g. a cache your own main CI writes)."
         type: string
         default: ""
     secrets:
