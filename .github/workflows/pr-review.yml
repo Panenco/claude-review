@@ -203,7 +203,7 @@ jobs:
       # Full clone: round-2 needs `git diff PRIOR_HEAD...HEAD` to always be
       # computable, so since-last scoping never degrades to a full re-review.
       - name: Checkout PR head
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.pr_sha.outputs.sha }}
           fetch-depth: 0
@@ -217,7 +217,7 @@ jobs:
 
       - name: Checkout review pipeline at pipeline_ref (downstream)
         if: github.repository != 'panenco/claude-review'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: panenco/claude-review
           ref: ${{ inputs.pipeline_ref }}
@@ -282,7 +282,7 @@ jobs:
 
       - name: Set up Node
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true'
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "lts/*"
 
@@ -302,7 +302,7 @@ jobs:
       - name: Cache Playwright assets
         id: pw_cache
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/ms-playwright
@@ -399,7 +399,7 @@ jobs:
       - name: Create GitHub App token
         id: app_token
         if: steps.review_token.outputs.has_app == 'true'
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
@@ -484,7 +484,7 @@ jobs:
       # check. The warm-cache job below is the saver.
       - name: Restore package-manager store
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.local/share/pnpm/store
@@ -545,7 +545,7 @@ jobs:
       - name: Restore dev build cache
         id: dev_build_cache
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.run_functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.dev_cache_paths }}
           key: ${{ steps.dev_cache_meta.outputs.key }}
@@ -710,7 +710,7 @@ jobs:
       - name: Upload usage record
         if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
         continue-on-error: true
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: claude-review-usage
           path: /tmp/usage.json
@@ -720,7 +720,7 @@ jobs:
 
       - name: Upload review artifacts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: claude-review-${{ github.event.pull_request.number || inputs.pr_number }}
           path: |
@@ -750,23 +750,23 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # lookup-only probe: when the store is already warm for this lockfile,
       # skip the whole fetch+save path and land in seconds.
       - name: Check store cache
         id: store_probe
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
           key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
           lookup-only: true
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.store_probe.outputs.cache-hit != 'true'
         with:
           node-version: "lts/*"
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.store_probe.outputs.cache-hit != 'true'
         with:
           path: |
@@ -801,7 +801,7 @@ jobs:
       - name: Restore package-manager store
         id: store_restore
         if: steps.store_probe.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.local/share/pnpm/store
@@ -827,7 +827,7 @@ jobs:
           fi
       - name: Save package-manager store
         if: steps.store_probe.outputs.cache-hit != 'true' && steps.store_fetch.outputs.fetched == 'true' && steps.store_restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.local/share/pnpm/store
@@ -869,7 +869,7 @@ jobs:
       - name: Restore dev build cache
         id: dev_cache_restore
         if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != ''
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.dev_cache_paths }}
           key: ${{ steps.dev_cache_meta.outputs.key }}
@@ -891,7 +891,7 @@ jobs:
           fi
       - name: Save dev build cache
         if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && steps.dev_cache_warm.outputs.warmed == 'true' && steps.dev_cache_restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.dev_cache_paths }}
           key: ${{ steps.dev_cache_meta.outputs.key }}
