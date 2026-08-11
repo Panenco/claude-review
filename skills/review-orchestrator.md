@@ -216,6 +216,11 @@ BASE_SHA=$(gh api "repos/$R/git/refs/heads/review-assets" --jq '.object.sha' 2>/
 BASE_TREE=""; [ -n "$BASE_SHA" ] && BASE_TREE=$(gh api "repos/$R/git/commits/$BASE_SHA" --jq '.tree.sha')
 ENTRIES="[]"
 for img in /tmp/screenshots/*.png; do
+  # The MCP spills a long browser_evaluate result into this directory under a .png name. Publishing
+  # one embeds a broken image in the review, so upload only what is actually a PNG. If `file` is
+  # unavailable the check passes, because dropping every screenshot is the worse failure.
+  MIME=$(file -b --mime-type "$img" 2>/dev/null || echo image/png)
+  [ "$MIME" = "image/png" ] || continue
   B=$(basename "$img")
   # stdin --input, not -f content= — the argv form silently drops blobs >~200 KB
   SHA=$(base64 -w0 < "$img" | jq -Rs '{content: ., encoding: "base64"}' \

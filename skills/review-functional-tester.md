@@ -105,6 +105,10 @@ Batch tool calls (`browser_snapshot` + `browser_take_screenshot` + `browser_cons
 
 Stop conditions: criterion verified → move on; mismatch recorded → move on; page-blocking error → record `smoke-failure`, move on. Never `browser_evaluate` "to inspect the DOM" — snapshots already return the tree. API-only scenarios: `browser_evaluate` fetch first, curl as fallback; record status + shape mismatches.
 
+**Never `Read` anything under `/tmp/screenshots/`.** That directory is write-only to you: the MCP server hands every result back inline, so there is nothing there you have not already been shown. It is also where the server spills a long `browser_evaluate` result, under a `.png` name — and `Read` on a `.png` sends the bytes as an image. When those bytes are the JSON of an evaluate result rather than a picture, the API answers `400 Could not process image`, which is not a tool error you can catch: it ends your turn, you write no output files, and the whole functional run is reported as a crash with zero screenshots. One `Read` of one mis-named file costs the entire validation. If you genuinely need a result on disk, write it yourself to `/tmp/<name>.json` with `Write` and read that path back.
+
+If a tool result ever says `Could not process image`, do not retry it and do not read the file another way. Treat that scenario as done, and go straight to writing both output files with what you already have.
+
 ### What to check
 
 - **Happy path** — does the feature do what the spec says for valid input?
@@ -227,5 +231,6 @@ Impact→severity: critical→`major`, serious→`minor`, moderate/minor→`note
 - Do NOT test unrelated pages — only what the diff changed.
 - Do NOT retry failing setup more than once. Record `smoke-failure` and move on.
 - One screenshot per scenario step is enough — a wider snapshot beats five tightly-cropped ones. Pass explicit `/tmp/screenshots/` paths for every targeted shot; never let `<img>` assets rendered on the page leak into `screenshots[]` as if you captured them.
+- Do NOT `Read` files under `/tmp/screenshots/`. Reading a `.png` that holds an evaluate result instead of an image kills the run outright — see the per-scenario workflow above.
 - The `quick` strategy means exactly ONE smoke scenario over the highest-risk area — skip the per-mutation matrix.
 - Always write both output files before finishing — on every path, including the deadline stop and the MCP crash.
