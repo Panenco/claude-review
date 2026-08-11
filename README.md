@@ -1,6 +1,6 @@
 # Claude PR Review Pipeline
 
-Reusable PR review pipeline powered by Claude Code. A single orchestrator agent runs two independent judges in parallel (Opus for deep reasoning, Haiku for cheap broad coverage), reconciles them through a debate loop, and dispatches an end-to-end functional tester (Sonnet + Playwright) when the diff has user-observable surface.
+Reusable PR review pipeline powered by Claude Code. A single orchestrator agent runs two independent judges in parallel (Opus for deep reasoning, Haiku for cheap broad coverage), reconciles them through a debate loop, and dispatches an end-to-end functional tester (Sonnet driving a real browser) when the diff has user-observable surface.
 
 ## Quick Start
 
@@ -13,7 +13,7 @@ name: Claude PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_target: # warms Playwright cache in main scope
+  pull_request_target: # warms the browser cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -103,7 +103,7 @@ with:
 
 `runner` sets `runs-on` for **both** the review job and the warm-cache job — one input, deliberately, because the two must land on the same fleet. The Actions cache is a repo-scoped remote service, so a self-hosted job *can* restore what a hosted job saved, but cache keys are scoped by `runner.os` **and** `runner.arch`: a warm-cache job on hosted x64 and a review job on an arm64 fleet would never match keys, and every review would run cold.
 
-Two things your fleet needs. It must have **network egress to the GitHub Actions cache service** — without it, caching silently degrades to always-cold (reviews still work, just slower). And the image should **bake in Playwright's chromium browsers**: when they're already present the pipeline skips `playwright install --with-deps`, which needs apt as root and fails in a non-root container.
+Two things your fleet needs. It must have **network egress to the GitHub Actions cache service** — without it, caching silently degrades to always-cold (reviews still work, just slower). And the image should carry **Chrome's shared libraries** (`libnss3`, `libatk1.0-0t64`, `libgbm1`, `libasound2t64`, … — what `playwright install --with-deps` or `agent-browser install --with-deps` apt-installs): the browser binary itself unpacks into `$HOME` and needs no root, but those libs do, and a non-root container cannot apt-install them at review time. The pipeline preflights the browser and warns rather than failing when they're missing; the functional tester then reports `CRASH` instead of testing.
 
 The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Note that it inherits `runner` too, so a caller that wires the `pull_request_target` trigger lands a `secrets: inherit` job on the fleet; callers that would rather keep that combination off self-hosted infrastructure simply omit the trigger.
 
@@ -138,12 +138,11 @@ PR opened / updated
 [Plan]  Deterministic resolver → review_level (full | light | skip)
         + run_functional. See docs/review-plan.md.
     |
-[Setup] Node/pnpm, pinned Playwright + MCP (cached), disk reclaim,
-        full clone, dev-env launched in background (overlaps with the
-        context-build phase), prior review state derived from the PR's
-        own review history, functional-tester subagent installed to
-        ~/.claude/agents/ (inline `mcpServers` — Playwright starts when
-        the subagent spawns, not at orchestrator start).
+[Setup] Node/pnpm, pinned agent-browser + Chrome (cached), browser
+        launch preflight, disk reclaim, full clone, dev-env launched in
+        background (overlaps with the context-build phase), prior review
+        state derived from the PR's own review history, functional-tester
+        subagent installed to ~/.claude/agents/.
     |
 [One agent: Review: orchestrate]  (anthropics/claude-code-action)
     A single Sonnet orchestrator runs end-to-end and dispatches
@@ -157,7 +156,7 @@ PR opened / updated
       Phase B — Parallel Task fan (single assistant response):
                   Judge-Opus  (model_high)              ─┐
                   Judge-Haiku (model_fast)              ├ all parallel
-                  Functional tester (Playwright MCP,    ─┘
+                  Functional tester (real browser,      ─┘
                     wall-clock budget)
                 Light tier: ONE Sonnet judge instead of the pair.
                 Trivial PRs early-exit before any judge dispatch.
@@ -620,13 +619,13 @@ If you have a polished config for a stack not covered here (e.g. Python/FastAPI,
 
 The pipeline consists of:
 
-- **Reusable workflow** (`.github/workflows/pr-review.yml`) — review-plan resolution, dev-env setup, pinned Playwright + @playwright/mcp install (cached, decoupled from the consumer repo), prior-state derivation from the PR's review history, functional-tester subagent installation, the single `claude-code-action` invocation, the deterministic poster
+- **Reusable workflow** (`.github/workflows/pr-review.yml`) — review-plan resolution, dev-env setup, pinned agent-browser + Chrome install and launch preflight (cached, decoupled from the consumer repo), prior-state derivation from the PR's review history, functional-tester subagent installation, the single `claude-code-action` invocation, the deterministic poster
 - **4 skill files** (`skills/`) — prompt templates defining review methodology:
   - `review-orchestrator` — the single top-level Claude Code agent; dispatches the context builder, judges, and functional tester via the `Task` tool, runs the debate, consolidates + dedups, applies the verdict ladder and gates, assembles the review, and writes the single output artifact `/tmp/review.json`
   - `review-context-builder` — Task subagent; gathers PR metadata, diff index, spec sources (linked issue / PRD / external tracker), the functional test plan + auth recipe, and — on round 2 — the classification of every open thread (own bot, other bots, **humans**) as RESOLVED / STILL_PRESENT / DISPUTED / NEW_CONTEXT (a `DISPUTED` finding is then adjudicated on its merits by the high-tier judge), into `context.md` + `test-plan.md`
   - `review-judge` — Task subagent skill used by both the Opus and Haiku judges (correctness, security, spec, design, consistency, performance, tests)
-  - `review-functional-tester` — drives the live app via Playwright MCP under a wall-clock budget; first turn is an MCP smoke check that hard-fails the run as `overall: CRASH` if MCP is unavailable — silent fallback to curl is forbidden
-- **Static subagent definition** (`agents/review-functional-tester.md`) — installed to `~/.claude/agents/` at job start; its inline `mcpServers` block scopes Playwright MCP to this subagent, so the server starts when it spawns rather than relying on parent inheritance
+  - `review-functional-tester` — drives the live app with the `agent-browser` CLI under a wall-clock budget; first turn is a browser smoke check that hard-fails the run as `overall: CRASH` if Chrome can't launch — silent fallback to curl is forbidden
+- **Static subagent definition** (`agents/review-functional-tester.md`) — installed to `~/.claude/agents/` at job start; it pins the tester's model and points at its skill. There is no MCP server: the browser is a CLI the subagent drives through Bash, which the workflow installs and preflights before the agent starts
 - **Deterministic poster** (`scripts/post-review.sh`) — validates `/tmp/review.json`, hunk-validates inline comments against the PR diff, dismisses stale reviews, supersedes crash banners, posts the review atomically, resolves threads; its exit code is the check
 
 There is **one top-level Claude Code agent** for the entire review, and one handoff: the orchestrator owns all judgment AND assembly and writes `/tmp/review.json`; the poster only validates and POSTs it. See [ADR 0002](docs/adr/0002-github-as-state-single-assembler.md) for why.
