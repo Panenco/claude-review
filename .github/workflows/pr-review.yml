@@ -456,6 +456,7 @@ jobs:
       # install and the per-token quota probes entirely. The token picker needs
       # the CLI before claude-code-action installs it; nothing earlier uses either.
       - name: Install Claude CLI (for OAuth token picker)
+        id: baked_cli
         if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
         shell: bash
         run: |
@@ -468,6 +469,29 @@ jobs:
           else
             curl -fsSL https://claude.ai/install.sh | bash
             "$HOME/.local/bin/claude" --version
+          fi
+
+          # Hand whatever we ended up with to claude-code-action, instead of letting it
+          # install its own. Unhinted, the action downloads a native build from
+          # downloads.claude.ai on EVERY job — 574 MB, measured at ~141 GB/day across the
+          # fleet, and nothing can cache it.
+          #
+          # FAIL-OPEN BY CONSTRUCTION. The action does NOT stat this path: a wrong value
+          # is fail-CLOSED, the job dies later trying to exec it. So probe with -x and
+          # emit an EMPTY string on a miss — empty makes the action install exactly as it
+          # does today. Do not collapse these into an unconditional echo.
+          if [ -x "$HOME/.local/bin/claude" ]; then
+            echo "claude_path=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
+          else
+            echo "claude_path=" >> "$GITHUB_OUTPUT"
+          fi
+          # Same for Bun. The runner image bakes it, but the action still runs setup-bun
+          # unless handed a path, and its tool-cache restore is only ~64% reliable across
+          # pods — so this makes the existing bake deterministic rather than probabilistic.
+          if [ -x "$HOME/.local/bin/bun" ]; then
+            echo "bun_path=$HOME/.local/bin/bun" >> "$GITHUB_OUTPUT"
+          else
+            echo "bun_path=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Pick Claude OAuth token
@@ -634,6 +658,9 @@ jobs:
             --disallowedTools Edit,WebFetch,WebSearch
             --max-turns 100
           show_full_output: "true"
+          # Empty when the runner has no baked binary — see the probes in `baked_cli`.
+          path_to_claude_code_executable: ${{ steps.baked_cli.outputs.claude_path }}
+          path_to_bun_executable: ${{ steps.baked_cli.outputs.bun_path }}
 
       # This step's exit code IS the check: green = a review reached the PR
       # (REQUEST_CHANGES included — the blocking signal is the PR review, not
