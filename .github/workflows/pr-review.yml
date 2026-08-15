@@ -456,6 +456,7 @@ jobs:
       # install and the per-token quota probes entirely. The token picker needs
       # the CLI before claude-code-action installs it; nothing earlier uses either.
       - name: Install Claude CLI (for OAuth token picker)
+        id: claude_cli
         if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
         shell: bash
         run: |
@@ -468,6 +469,26 @@ jobs:
           else
             curl -fsSL https://claude.ai/install.sh | bash
             "$HOME/.local/bin/claude" --version
+          fi
+          # Hand the baked Bun to claude-code-action. It installs one via
+          # `oven-sh/setup-bun` unless given `path_to_bun_executable`, which fetches a
+          # release tarball from GitHub every job; objects.githubusercontent.com was
+          # ~11% of the fleet's metered Cloud NAT bytes (github-action-runners#96).
+          # Sampling after the bake shipped showed setup-bun's tool-cache restore
+          # landing on only ~64% of jobs, so 4 in 11 still pulled bun-linux-x64.zip
+          # despite the binary being present — this makes it deterministic.
+          #
+          # NO version-skew risk, unlike the CLI handover in #86: the image bakes
+          # exactly the version the action's own `bun-version:` pins, which is why
+          # BUN_VERSION is pinned in versions.env rather than tracking latest.
+          #
+          # Emitted only when the binary is really there. The action does NOT stat
+          # this path — a wrong value is fail-CLOSED — so on any runner without the
+          # bake (ubuntu-latest, an older image) the output stays unset, the input
+          # resolves empty, and the action runs setup-bun exactly as it does today.
+          if [ -x "$HOME/.local/bin/bun" ]; then
+            echo "bun=$HOME/.local/bin/bun" >> "$GITHUB_OUTPUT"
+            echo "Baked Bun: $("$HOME/.local/bin/bun" --version)"
           fi
 
       - name: Pick Claude OAuth token
@@ -634,6 +655,9 @@ jobs:
             --disallowedTools Edit,WebFetch,WebSearch
             --max-turns 100
           show_full_output: "true"
+          # Empty on any runner that does not bake Bun, which restores the action's
+          # own setup-bun step rather than breaking it. See the probe above.
+          path_to_bun_executable: ${{ steps.claude_cli.outputs.bun }}
 
       # This step's exit code IS the check: green = a review reached the PR
       # (REQUEST_CHANGES included — the blocking signal is the PR review, not
