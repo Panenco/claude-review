@@ -1126,8 +1126,8 @@ jobs:
           fi
 
       # The token picker probes each token with the CLI, so the CLI has to exist
-      # before claude-code-action installs its own. Nothing else here needs it — in
-      # particular the binary is NOT handed to the action (see #86 note below).
+      # before claude-code-action installs its own. It is ALSO handed to the action
+      # now (see the note on the step below) so the action skips its own download.
       - name: Install Claude CLI (for OAuth token picker)
         id: claude_cli
         if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true' && steps.review_plan.outputs.review_level != 'skip'
@@ -1142,6 +1142,12 @@ jobs:
           else
             curl -fsSL https://claude.ai/install.sh | bash
             "$HOME/.local/bin/claude" --version
+          fi
+          # Same handover the review job does, and emitted the same way: only when
+          # the binary is really executable, so a skipped or failed install leaves
+          # the input empty and the action installs for itself exactly as before.
+          if [ -x "$HOME/.local/bin/claude" ]; then
+            echo "path=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
           fi
 
       # REQUIRED, not an optimisation. Consumers may configure only the
@@ -1323,11 +1329,40 @@ jobs:
           # held to this same allowlist. An agent definition's `tools:` frontmatter
           # can only NARROW what the session permits, never widen it.
           #
-          # Deliberately NO `path_to_claude_code_executable`: PR #86 proved that
+          # HANDOVER RE-ENABLED (was deliberately off). The note here used to read:
+          # "Deliberately NO path_to_claude_code_executable: PR #86 proved that
           # handing the action a CLI newer than the one it pins makes the top-level
           # agent end a turn with prose and no tool call, which terminates the
-          # session and crashes the job. The CLI installed above is for the token
-          # picker only — do not "optimise" it into this step.
+          # session and crashes the job." That was correct while #86 was unmerged
+          # and unguarded. #96 then made the yield impossible to end a review
+          # silently (scripts/require-review-json.sh, a Stop hook), #86 landed, and
+          # v3.5.0 shipped both — verified on a live review: the In-Depth job
+          # downloaded nothing, the orchestrator did not yield, and the PR got an
+          # APPROVED review.
+          #
+          # WHY IT IS WORTH RE-ENABLING: without it this job still pulls the action's
+          # pinned 2.1.175 on every review, ~520 MB over Cloud NAT. Measured on the
+          # first v3.5.0 run, `Installing Claude Code v2.1.175` appeared exactly once
+          # in the whole workflow — from THIS job — so it is roughly half of the
+          # ~$193/month #86 was worth (Panenco/github-action-runners#96).
+          #
+          # THE RESIDUAL RISK, STATED HONESTLY, because it is NOT the same as the
+          # review job's. #96's Stop hook is registered in the `review` job only, and
+          # it works by requiring /tmp/review.json — an artifact THIS job does not
+          # produce. `Native review` is also the last step here, with no gate after
+          # it, so where a yield crashed the In-Depth job LOUDLY (Post review + gate
+          # failed on the missing artifact), a yield here would be SILENT: fewer
+          # comments, green job. No guard was invented for it because `/code-review`
+          # may legitimately post nothing, and asserting otherwise would red the
+          # pipeline on a false positive — a worse failure than the one being fixed.
+          #
+          # What makes that acceptable rather than ignored: this job is the SECOND
+          # OPINION, not the gate — the In-Depth review is what blocks a merge, and
+          # it is the one that is guarded. A degraded second opinion is a quality
+          # regression, not a correctness one. If native reviews start looking thin,
+          # this input is the first thing to revert, and reverting it costs only the
+          # bytes.
+          path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           claude_args: |
             --permission-mode dontAsk
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
