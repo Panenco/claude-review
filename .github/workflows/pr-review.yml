@@ -750,7 +750,24 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
+      # Checks out ONLY what the two cache KEYS are computed from, blobless, so the
+      # steady-state run — both caches warm, nothing to do — stops paying for a full
+      # working tree it never opens. On a large consumer repo that is 2.2 MB here
+      # against ~122 MB before. The `Widen checkout` steps below restore the full
+      # tree on either cache miss, BEFORE anything that reads it.
+      #
+      # The sparse set is exactly the hashFiles() patterns of the two keys, so both
+      # keys hash identically to a full checkout — the lockfile globs below, plus
+      # `dev_cache_key_files` which is what `Compute dev cache key` globs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            **/pnpm-lock.yaml
+            **/package-lock.json
+            ${{ inputs.dev_cache_key_files }}
+          sparse-checkout-cone-mode: false
       # lookup-only probe: when the store is already warm for this lockfile,
       # skip the whole fetch+save path and land in seconds.
       - name: Check store cache
@@ -809,6 +826,14 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-pkg-store-
+      # `pnpm fetch` reads the lockfile, but the store warm is best-effort across
+      # arbitrary consumer layouts (workspace manifests, .npmrc, packageManager
+      # pins). Widen to the full tree rather than guess which of them it needs —
+      # this only runs on a store miss, which is the rare path.
+      - name: Widen checkout for the store warm
+        if: steps.store_probe.outputs.cache-hit != 'true'
+        run: git sparse-checkout disable
+
       - name: Fetch base-lockfile packages into the store
         id: store_fetch
         if: steps.store_probe.outputs.cache-hit != 'true'
@@ -874,6 +899,13 @@ jobs:
           path: ${{ inputs.dev_cache_paths }}
           key: ${{ steps.dev_cache_meta.outputs.key }}
           restore-keys: ${{ steps.dev_cache_meta.outputs.restore }}
+      # dev_cache_warm_command is consumer-supplied and arbitrary (a Gradle compile,
+      # a go mod download, ...), so it needs the whole tree. Idempotent: the store
+      # warm above may already have widened.
+      - name: Widen checkout for the dev warm
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'
+        run: git sparse-checkout disable
+
       - name: Warm dev build cache (base ref)
         id: dev_cache_warm
         if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'
