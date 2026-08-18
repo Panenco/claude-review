@@ -327,7 +327,7 @@ A single functional tester agent executes this plan; the orchestrator pastes you
 
 ## Auth recipe
 - Seeded credentials: <email/password or token, from review-config.md ### Auth and /tmp/dev-env/outputs AUTH_* keys>
-- Browser login: <exact steps or the exact browser_evaluate fetch snippet — method, full path, JSON body, credentials:'include'>
+- Browser login: <exact steps or the exact in-browser fetch snippet — method, full path, JSON body, credentials:'include'>
 - Token endpoint: <POST path + body, when bearer/header auth>
 - Cookies: /tmp/test-cookies.txt exists for curl -b (only when dev-env outputs say AUTH_READY=true)
 - Seed data: <command or approach, if documented>
