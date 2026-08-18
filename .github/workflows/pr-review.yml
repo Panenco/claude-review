@@ -886,10 +886,16 @@ jobs:
         shell: bash
         env:
           APP_CLIENT_ID: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
+          APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
         run: |
-          if [ -n "$APP_CLIENT_ID" ]; then
+          # BOTH secrets, because that is exactly what the review job's `Generate
+          # review token` step requires before it sets has_app=true. Testing
+          # CLIENT_ID alone is a WEAKER condition than the one that actually
+          # decides our reviewer's login, so a half-configured App (client id set,
+          # slug missing) would let this job run believing the identities differ.
+          if [ -n "$APP_CLIENT_ID" ] && [ -n "$APP_SLUG" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Native reviewer will post as github-actions[bot]; our reviewer posts as the review App — identities are distinct."
+            echo "Native reviewer will post as github-actions[bot]; our reviewer posts as ${APP_SLUG}[bot] — identities are distinct."
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Native review skipped: without the CLAUDE_REVIEW_APP_* secrets this pipeline posts as github-actions[bot], which is the only identity the native pass can use here — sharing it would corrupt round-2 state reconstruction. Configure the review App (see prompts/setup-review.md, Step 6) to enable the second opinion, or set native_review: off to silence this notice."
@@ -1086,13 +1092,26 @@ jobs:
           # Read-only tool set (plus the inline-comment MCP tool) — this job reviews,
           # it never writes to the tree.
           #
+          # Deliberately NO `Bash(gh api:*)`, even though the hr4cast job this is
+          # modelled on grants it. This agent's entire input is attacker-controlled:
+          # a PR's diff, file contents, title, body and comments all come from
+          # whoever opened it, which is precisely where a prompt-injection payload
+          # lives. `gh api` is a raw passthrough to any REST/GraphQL call, so with
+          # this job's `pull-requests: write` + `issues: write` it would reach far
+          # past posting comments — closing PRs, rewriting titles or base branches,
+          # dismissing reviews, editing labels, commenting on unrelated issues.
+          # Nothing the prompt asks for needs it: the inline-comment MCP tool and
+          # `gh pr comment` cover every documented write, and `gh pr view/diff/list`
+          # + `gh search` cover the reads. Found by the native pass reviewing its own
+          # PR (#94) — do not add it back.
+          #
           # Deliberately NO `path_to_claude_code_executable`: PR #86 proved that
           # handing the action a CLI newer than the one it pins makes the top-level
           # agent end a turn with prose and no tool call, which terminates the
           # session and crashes the job. The CLI installed above is for the token
           # picker only — do not "optimise" it into this step.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(gh api:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
             --model ${{ inputs.model_standard }}
 
   # pull_request_target writes cache to main scope. PR-code-free: checkout
