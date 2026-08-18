@@ -23,7 +23,7 @@ on:
         type: string
         default: "claude-haiku-4-5"
       model_functional:
-        description: "Model for the functional tester (Playwright MCP + Bash)."
+        description: "Model for the functional tester (drives a real browser via the agent-browser CLI over Bash)."
         type: string
         default: "claude-sonnet-5"
       pipeline_ref:
@@ -115,11 +115,20 @@ on:
       DEV_ENV_SECRETS:
         description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/dev-start.sh."
 
-# Pinned Playwright stack, decoupled from consumer-lockfile churn so the
-# browser-binary cache hits every run that doesn't bump these.
+# Pinned browser stack, decoupled from consumer-lockfile churn so the
+# browser-binary cache hits every run that doesn't bump it.
+#
+# ONE pin, not two. agent-browser is a single static binary that downloads its
+# own Chrome for Testing build, and `agent-browser install` takes no --version:
+# the Chrome build is determined by the CLI version. So this key covers the CLI
+# and the browser together, and there is no second spec (the old
+# @playwright/mcp pin) that can drift away from it.
+#
+# LOCKSTEP with Panenco/github-action-runners images/versions.env
+# (AGENT_BROWSER_VERSION, image G). A mismatch is SILENT: reviews still pass,
+# they just re-download the binary instead of using the prebake.
 env:
-  PLAYWRIGHT_VERSION: "1.62.1"
-  PLAYWRIGHT_MCP_VERSION: "0.0.79"
+  AGENT_BROWSER_VERSION: "0.34.0"
 
 jobs:
   review:
@@ -299,82 +308,106 @@ jobs:
             echo "pnpm via npm: $(pnpm --version)"
           fi
 
-      - name: Cache Playwright assets
-        id: pw_cache
+      - name: Cache browser assets
+        id: ab_cache
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
+          # agent-browser keeps browsers, daemon sockets and state under
+          # ~/.agent-browser — deliberately NOT under ~/.cache, which the
+          # panenco-claude-review scale set masks with a scratch emptyDir. The
+          # cache path and the path agent-browser actually looks in are the same
+          # directory, so a restore here is a restore the browser will see.
           path: |
-            ~/.cache/ms-playwright
-            ~/.npm/_npx
-          key: ${{ runner.os }}-${{ runner.arch }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+            ~/.agent-browser/browsers
+            ~/.local/bin/agent-browser
+          key: ${{ runner.os }}-${{ runner.arch }}-ab-${{ env.AGENT_BROWSER_VERSION }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-pw-
+            ${{ runner.os }}-${{ runner.arch }}-ab-
 
-      - name: Install Playwright + MCP
+      - name: Install agent-browser
         if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
         shell: bash
-        env:
-          PW_CACHE_HIT: ${{ steps.pw_cache.outputs.cache-hit }}
-          PW_CACHE_MATCHED_KEY: ${{ steps.pw_cache.outputs.cache-matched-key }}
         run: |
           set -uo pipefail
-          mkdir -p /tmp/screenshots
-          # `--with-deps` apt-installs system libs, which a non-root ARC container (or
-          # one without apt egress) cannot do — failing the job even when chromium is
-          # baked into the image. Skip it only when chromium for the pinned version is
-          # already on disk AND apt is genuinely unavailable. A partial (restore-keys)
-          # hit can carry a stale revision, so that case always installs.
-          PW_BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
-          if compgen -G "${PW_BROWSERS_DIR}/chromium-*" >/dev/null \
-            && { [ "${PW_CACHE_HIT:-}" = "true" ] || [ -z "${PW_CACHE_MATCHED_KEY:-}" ]; } \
-            && ! sudo -n true 2>/dev/null; then
-            echo "Chromium present in ${PW_BROWSERS_DIR} and apt unavailable — skipping 'playwright install --with-deps'."
+          mkdir -p /tmp/screenshots "$HOME/.local/bin"
+          # ~/.local/bin is NOT on PATH on the fleet image (the Claude CLI lives
+          # there behind an explicit probe, not a PATH lookup) — put it on PATH
+          # for every later step, whether we installed the binary or the image
+          # baked it.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # The npm package is a fat tarball carrying a prebuilt static binary per
+          # platform. We extract ONLY the linux-x64 one and skip the JS launcher
+          # shim entirely, so nothing here needs Node (the package's
+          # `engines: node>=24` gates only that shim). The fleet is amd64
+          # throughout — GKE nodes are amd64 and image G hardcodes the /x64
+          # toolcache path. Chrome for Testing publishes no linux-arm64 build, so
+          # an arm64 runner would need a system Chromium via --executable-path.
+          if command -v agent-browser >/dev/null 2>&1 \
+            && [ "$(agent-browser --version 2>/dev/null | awk '{print $2}')" = "${AGENT_BROWSER_VERSION}" ]; then
+            echo "agent-browser ${AGENT_BROWSER_VERSION} already present (prebaked or cache-restored)."
           else
-            npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps 2>&1 | tail -5
+            ABTMP="$(mktemp -d)"
+            if curl -fsSL "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz" \
+                 | tar xz -C "$ABTMP" package/bin/agent-browser-linux-x64 \
+               && install -m755 "$ABTMP/package/bin/agent-browser-linux-x64" "$HOME/.local/bin/agent-browser"; then
+              echo "Installed agent-browser ${AGENT_BROWSER_VERSION}."
+            else
+              echo "::warning::Could not install agent-browser ${AGENT_BROWSER_VERSION}. The functional tester will CRASH-degrade; the review continues."
+            fi
+            rm -rf "$ABTMP"
           fi
-          # Pre-warm @playwright/mcp so the subagent's stdio spawn doesn't pay
-          # a cold install. Non-fatal: a miss only costs ~10-20s at first call.
-          if npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 'process.exit(0)' >/dev/null 2>&1; then
-            echo "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} tarball cached for the subagent's spawn path."
+
+          # Downloads Chrome for Testing into ~/.agent-browser/browsers. Needs no
+          # root: unlike the chrome CHANNEL this replaces (a system apt install to
+          # /opt/google/chrome), this is a plain unpack into $HOME. Idempotent —
+          # ~0.15s no-op when the image baked it or the cache restored it. The
+          # download comes from storage.googleapis.com, which the cluster reaches
+          # over Private Google Access rather than the NAT path.
+          #
+          # `--with-deps` is deliberately NOT passed: it apt-installs Chrome's
+          # shared libs and needs root, and image G already inherits them from
+          # image B's `playwright install --with-deps`. A runner that lacks them
+          # fails the preflight below rather than silently degrading.
+          agent-browser install 2>&1 | tail -3 || \
+            echo "::warning::agent-browser install failed — the preflight below will report what is missing."
+
+      # Preflight the EXACT path the functional tester takes: does a real headless
+      # Chrome launch on this runner? Today's equivalent failure is discovered six
+      # turns into the subagent, after the budget is spent; this discovers it here.
+      # Non-fatal on purpose — matches the old chrome-channel step's posture: the
+      # tester CRASH-degrades and the review still posts.
+      - name: Preflight browser
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.run_functional == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          DOC="$(agent-browser doctor --json 2>/dev/null)" || DOC=""
+          if [ -z "$DOC" ]; then
+            echo "::warning::agent-browser doctor produced no output — functional testing may CRASH-degrade."
+            exit 0
+          fi
+          FAILED="$(printf '%s' "$DOC" | jq -r '
+            [.checks[] | select(.id == "chrome.installed" or .id == "launch.elapsed")
+                       | select(.status != "pass") | "\(.id): \(.message)"] | join("; ")')"
+          if [ -n "$FAILED" ]; then
+            # Chrome's sandbox is the usual container-side culprit. The pod does
+            # support it (image G's build-time assertion disables it only because
+            # buildkit does not), so this is a fallback, not the default.
+            echo "Launch preflight failed ($FAILED) — retrying with --no-sandbox."
+            export AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage"
+            if agent-browser open about:blank >/dev/null 2>&1; then
+              echo "AGENT_BROWSER_ARGS=--no-sandbox,--disable-dev-shm-usage" >> "$GITHUB_ENV"
+              agent-browser close --all >/dev/null 2>&1 || true
+              echo "Browser ready with --no-sandbox."
+            else
+              echo "::warning::agent-browser cannot launch Chrome on this runner ($FAILED). The functional tester will report CRASH; the review continues."
+            fi
           else
-            echo "::warning::@playwright/mcp@${PLAYWRIGHT_MCP_VERSION} pre-warm failed — functional tester will cold-install on first call (~10-20s)."
+            echo "Browser ready: $(printf '%s' "$DOC" | jq -r '.checks[] | select(.id == "chrome.installed") | .message')"
           fi
-          # @playwright/mcp launches the **chrome CHANNEL** — branded Google Chrome at
-          # /opt/google/chrome/chrome (channel:"chrome", its default) — NOT a bundled
-          # chromium build. (`@playwright/mcp --browser` accepts only
-          # chrome|firefox|webkit|msedge; there is no `chromium` value.) So the
-          # 'playwright install chromium' above is NOT enough: on a runner without the
-          # chrome channel the tester's browser_navigate dies with
-          #   "browserType.launch: Chromium distribution 'chrome' is not found at
-          #    /opt/google/chrome/chrome — Run npx playwright install chrome"
-          # and the review silently degrades (functional testing marked CRASH). Install
-          # the chrome channel using the MCP's OWN playwright-core, so the Chrome tracks
-          # exactly what the MCP will launch on ANY runner — no coupling to the image's
-          # pre-baked browser. (This corrects the prior self-heal, which installed the
-          # bundled `chromium chromium-headless-shell` — the WRONG browser.)
-          # The chrome channel is a SYSTEM install to /opt/google (google-chrome-stable
-          # via apt), so it needs root → use sudo when available.
-          # Idempotent: a no-op when Chrome is already present (the baked image has it).
-          # Non-fatal: a runner without sudo/apt-egress cannot install it; that becomes a
-          # ::warning:: and the tester CRASH-degrades exactly as it does today — it must
-          # never hard-fail the review job.
-          # -H is load-bearing: with plain `sudo -E` root inherits HOME=/home/runner,
-          # and the chrome install script's closing `google-chrome --version` then
-          # creates a ROOT-OWNED ~/.local/share/applications. That makes ~/.local/share
-          # unwritable for the runner user and the Claude CLI install two steps later
-          # dies with `EACCES: permission denied, mkdir ~/.local/share/claude`.
-          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -EH"; fi
-          if MCPDIR="$(mktemp -d)" \
-            && ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
-                 && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
-            && MCP_PW_VER="$(node -e "console.log(require('$MCPDIR/node_modules/playwright-core/package.json').version)")" \
-            && $MCP_SUDO node "$MCPDIR/node_modules/playwright-core/cli.js" install chrome 2>&1 | tail -5; then
-            echo "MCP browser ready: installed/verified the chrome channel (Google Chrome at /opt/google/chrome) for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} (bundled playwright-core ${MCP_PW_VER:-unknown})."
-          else
-            echo "::warning::Could not install the chrome channel @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} launches (no sudo / no apt egress, or transient network). The functional tester may CRASH-degrade if the runner image did not pre-bake the chrome channel. Pipeline continues."
-          fi
-          echo "Playwright ${PLAYWRIGHT_VERSION} + @playwright/mcp ${PLAYWRIGHT_MCP_VERSION} ready"
 
       # Optional GitHub App review identity; falls back to github-actions[bot].
       # APP_SLUG is required because installation tokens can't query /user.
@@ -487,6 +520,26 @@ jobs:
           if [ -x "$HOME/.local/bin/claude" ]; then
             echo "path=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
           fi
+          # Hand the baked Bun to claude-code-action. It installs one via
+          # `oven-sh/setup-bun` unless given `path_to_bun_executable`, which fetches a
+          # release tarball from GitHub every job; objects.githubusercontent.com was
+          # ~11% of the fleet's metered Cloud NAT bytes (github-action-runners#96).
+          # Sampling after the bake shipped showed setup-bun's tool-cache restore
+          # landing on only ~64% of jobs, so 4 in 11 still pulled bun-linux-x64.zip
+          # despite the binary being present — this makes it deterministic.
+          #
+          # NO version-skew risk, unlike the CLI handover in #86: the image bakes
+          # exactly the version the action's own `bun-version:` pins, which is why
+          # BUN_VERSION is pinned in versions.env rather than tracking latest.
+          #
+          # Emitted only when the binary is really there. The action does NOT stat
+          # this path — a wrong value is fail-CLOSED — so on any runner without the
+          # bake (ubuntu-latest, an older image) the output stays unset, the input
+          # resolves empty, and the action runs setup-bun exactly as it does today.
+          if [ -x "$HOME/.local/bin/bun" ]; then
+            echo "bun=$HOME/.local/bin/bun" >> "$GITHUB_OUTPUT"
+            echo "Baked Bun: $("$HOME/.local/bin/bun" --version)"
+          fi
 
       - name: Pick Claude OAuth token
         id: token_picker
@@ -594,8 +647,9 @@ jobs:
           echo "Background dev-env launched: PID=$PID (process group leader)"
 
       # User scope is REQUIRED: claude-code-action's restore-config wipes the
-      # workspace .claude/ on PR-head jobs; $HOME survives. The agent file
-      # inline-defines mcpServers so Playwright spawns with the subagent.
+      # workspace .claude/ on PR-head jobs; $HOME survives. The file now only
+      # pins the tester's model and points at its skill — the browser is a CLI
+      # the subagent drives through Bash, so there is no MCP server to define.
       - name: Install functional-tester subagent
         if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
         shell: bash
@@ -603,7 +657,7 @@ jobs:
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
         run: |
           mkdir -p "$HOME/.claude/agents"
-          envsubst '$MODEL_FUNCTIONAL $PLAYWRIGHT_MCP_VERSION $CLAUDE_REVIEW_PIPELINE_DIR' \
+          envsubst '$MODEL_FUNCTIONAL $CLAUDE_REVIEW_PIPELINE_DIR' \
             < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-functional-tester.md" \
             > "$HOME/.claude/agents/review-functional-tester.md"
           echo "Installed review-functional-tester subagent (model=$MODEL_FUNCTIONAL)"
@@ -634,6 +688,10 @@ jobs:
           MODEL_FAST: ${{ inputs.model_fast }}
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
           FUNCTIONAL_BUDGET_SECONDS: ${{ inputs.functional_budget_seconds }}
+          # Forces every capture into the one directory the orchestrator
+          # publishes from, so a bare `agent-browser screenshot` cannot drop
+          # a PNG in the CWD and vanish from the gallery.
+          AGENT_BROWSER_SCREENSHOT_DIR: /tmp/screenshots
           REVIEW_LEVEL: ${{ steps.review_plan.outputs.review_level }}
           RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
           GATE: ${{ steps.review_plan.outputs.gate }}
@@ -648,15 +706,27 @@ jobs:
           # restores the action's stock behaviour rather than breaking it.
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it owns Playwright MCP directly. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it drives the browser itself with the `agent-browser` CLI over Bash. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
             --setting-sources user
-            --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch,mcp__playwright
+            --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch
             --disallowedTools Edit,WebFetch,WebSearch
             --max-turns 100
           show_full_output: "true"
+          # Empty on any runner that does not bake Bun, which restores the action's
+          # own setup-bun step rather than breaking it. See the probe above.
+          path_to_bun_executable: ${{ steps.claude_cli.outputs.bun }}
+
+      # The agent-browser daemon outlives the process that started it and idles
+      # for an hour by default. This pod requests 8Gi and the pool is Spot: a
+      # browser held past the review's end is exactly the saturation
+      # `alert-scaleset-at-max-runners` reports. Always, never fatal.
+      - name: Stop browser daemon
+        if: always()
+        shell: bash
+        run: agent-browser close --all >/dev/null 2>&1 || true
 
       # This step's exit code IS the check: green = a review reached the PR
       # (REQUEST_CHANGES included — the blocking signal is the PR review, not
@@ -773,7 +843,24 @@ jobs:
       contents: read
     timeout-minutes: 15
     steps:
+      # Checks out ONLY what the two cache KEYS are computed from, blobless, so the
+      # steady-state run — both caches warm, nothing to do — stops paying for a full
+      # working tree it never opens. On a large consumer repo that is 2.2 MB here
+      # against ~122 MB before. The `Widen checkout` steps below restore the full
+      # tree on either cache miss, BEFORE anything that reads it.
+      #
+      # The sparse set is exactly the hashFiles() patterns of the two keys, so both
+      # keys hash identically to a full checkout — the lockfile globs below, plus
+      # `dev_cache_key_files` which is what `Compute dev cache key` globs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            **/pnpm-lock.yaml
+            **/package-lock.json
+            ${{ inputs.dev_cache_key_files }}
+          sparse-checkout-cone-mode: false
       # lookup-only probe: when the store is already warm for this lockfile,
       # skip the whole fetch+save path and land in seconds.
       - name: Check store cache
@@ -793,32 +880,29 @@ jobs:
         if: steps.store_probe.outputs.cache-hit != 'true'
         with:
           path: |
-            ~/.cache/ms-playwright
-            ~/.npm/_npx
-          key: ${{ runner.os }}-${{ runner.arch }}-pw-${{ env.PLAYWRIGHT_VERSION }}-mcp-${{ env.PLAYWRIGHT_MCP_VERSION }}
+            ~/.agent-browser/browsers
+            ~/.local/bin/agent-browser
+          key: ${{ runner.os }}-${{ runner.arch }}-ab-${{ env.AGENT_BROWSER_VERSION }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-pw-
+            ${{ runner.os }}-${{ runner.arch }}-ab-
       - if: steps.store_probe.outputs.cache-hit != 'true'
+        shell: bash
         run: |
-          npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium --with-deps
-          npx --yes -p "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" -- node -e 0
-          # Also install the chrome CHANNEL @playwright/mcp actually launches
-          # (channel:"chrome", branded Google Chrome at /opt/google/chrome — NOT a
-          # bundled chromium build; see the review job's install step). This corrects
-          # the prior self-heal that installed the bundled `chromium chromium-headless-shell`
-          # (the WRONG browser). The chrome channel is a SYSTEM install to /opt/google
-          # via apt, so it needs root → use sudo when available.
-          # Non-fatal: warming is best-effort and must never fail the warm-cache job.
-          # -H keeps root out of the runner's HOME; see the review job's install step.
-          MCP_SUDO=""; if sudo -n true 2>/dev/null; then MCP_SUDO="sudo -EH"; fi
-          MCPDIR="$(mktemp -d)"
-          if ( cd "$MCPDIR" && npm init -y >/dev/null 2>&1 \
-               && npm install --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" >/dev/null 2>&1 ) \
-             && $MCP_SUDO node "$MCPDIR/node_modules/playwright-core/cli.js" install chrome; then
-            echo "Installed the chrome channel for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION}."
-          else
-            echo "::warning::Could not install the chrome channel for @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} (no sudo/apt egress); the review job will install it at runtime."
+          # Best-effort warming: this job must never fail on the browser stack.
+          # No --with-deps (needs root; image B already carries Chrome's libs) and
+          # no preflight — the review job owns the launch check.
+          set -uo pipefail
+          mkdir -p "$HOME/.local/bin"
+          export PATH="$HOME/.local/bin:$PATH"
+          if ! command -v agent-browser >/dev/null 2>&1; then
+            ABTMP="$(mktemp -d)"
+            curl -fsSL "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz" \
+              | tar xz -C "$ABTMP" package/bin/agent-browser-linux-x64 \
+              && install -m755 "$ABTMP/package/bin/agent-browser-linux-x64" "$HOME/.local/bin/agent-browser" \
+              || echo "::warning::Could not warm agent-browser ${AGENT_BROWSER_VERSION}."
+            rm -rf "$ABTMP"
           fi
+          agent-browser install 2>&1 | tail -2 || echo "::warning::Chrome warm failed; the review job installs it at runtime."
       # Restore/save split so a FAILED fetch never saves a poisoned store
       # under the exact lockfile key.
       - name: Restore package-manager store
@@ -832,6 +916,14 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-pkg-store-
+      # `pnpm fetch` reads the lockfile, but the store warm is best-effort across
+      # arbitrary consumer layouts (workspace manifests, .npmrc, packageManager
+      # pins). Widen to the full tree rather than guess which of them it needs —
+      # this only runs on a store miss, which is the rare path.
+      - name: Widen checkout for the store warm
+        if: steps.store_probe.outputs.cache-hit != 'true'
+        run: git sparse-checkout disable
+
       - name: Fetch base-lockfile packages into the store
         id: store_fetch
         if: steps.store_probe.outputs.cache-hit != 'true'
@@ -897,6 +989,13 @@ jobs:
           path: ${{ inputs.dev_cache_paths }}
           key: ${{ steps.dev_cache_meta.outputs.key }}
           restore-keys: ${{ steps.dev_cache_meta.outputs.restore }}
+      # dev_cache_warm_command is consumer-supplied and arbitrary (a Gradle compile,
+      # a go mod download, ...), so it needs the whole tree. Idempotent: the store
+      # warm above may already have widened.
+      - name: Widen checkout for the dev warm
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'
+        run: git sparse-checkout disable
+
       - name: Warm dev build cache (base ref)
         id: dev_cache_warm
         if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'

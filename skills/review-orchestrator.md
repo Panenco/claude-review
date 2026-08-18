@@ -7,7 +7,7 @@ description: Single top-level agent for the entire review pipeline. Dispatches t
 
 You are the only top-level agent. You never review the diff yourself — you dispatch subagents via Task and own judgment-consolidation + assembly. Your single deliverable is `/tmp/review.json`; the deterministic poster (`post-review.sh`) trusts it verbatim.
 
-Tools: `Read`, `Write`, `Bash`, `Glob`, `Grep`, `Task`. No Playwright — the `review-functional-tester` custom subagent owns its own inline MCP server.
+Tools: `Read`, `Write`, `Bash`, `Glob`, `Grep`, `Task`. You never drive a browser — the `review-functional-tester` custom subagent does that itself, with the `agent-browser` CLI.
 
 Env (set by the workflow): `REVIEW_LEVEL`, `RUN_FUNCTIONAL`, `GATE`, `GATE_REASON`, `MODEL_HIGH`, `MODEL_STANDARD`, `MODEL_FAST`, `FUNCTIONAL_BUDGET_SECONDS`, `DEV_ENV_TIMEOUT_SECONDS`, `PRIOR_HEAD_SHA`, `PRIOR_VERDICT`, `ROUND`, `REVIEW_BOT_USER`, `GITHUB_REPO_TOKEN`, `PR_AUTHOR_IS_BOT`, plus `PR_NUMBER`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`.
 
@@ -114,7 +114,7 @@ Compute `DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))` 
 
 ### Composing the functional Task prompt (no helper script — you write it)
 
-Use the `DEADLINE_EPOCH` computed in the dev-env sync turn. Dispatch `subagent_type: "review-functional-tester"` (custom subagent; its file defines model + inline Playwright MCP — never pass MCP config or tool overrides) with a prompt containing, in order:
+Use the `DEADLINE_EPOCH` computed in the dev-env sync turn. Dispatch `subagent_type: "review-functional-tester"` (custom subagent; its file pins the model and the browser is a CLI it drives over Bash — never pass MCP config or tool overrides) with a prompt containing, in order:
 
 ```
 Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-functional-tester.md and follow it exactly. PR #${PR_NUMBER}.
@@ -207,7 +207,7 @@ The runtime-evidence gate runs first and may RAISE the verdict to REQUEST_CHANGE
 
 ### Screenshot publishing (only when image files exist)
 
-Copy any screenshot path referenced by `/tmp/functional-meta.json`/`-findings.json` that exists outside `/tmp/screenshots/` into it (basename match against `/tmp/playwright-mcp-output`, `.playwright-mcp`, repo root). Then run exactly:
+Copy any screenshot path referenced by `/tmp/functional-meta.json`/`-findings.json` that exists outside `/tmp/screenshots/` into it (basename match against the repo root). `AGENT_BROWSER_SCREENSHOT_DIR=/tmp/screenshots` makes strays rare, but a tester that passed an explicit path elsewhere still needs sweeping. Then run exactly:
 
 ```bash
 R="$GITHUB_REPOSITORY"; export GH_TOKEN="$GITHUB_REPO_TOKEN"
@@ -216,6 +216,11 @@ BASE_SHA=$(gh api "repos/$R/git/refs/heads/review-assets" --jq '.object.sha' 2>/
 BASE_TREE=""; [ -n "$BASE_SHA" ] && BASE_TREE=$(gh api "repos/$R/git/commits/$BASE_SHA" --jq '.tree.sha')
 ENTRIES="[]"
 for img in /tmp/screenshots/*.png; do
+  # A capture that failed mid-write leaves a truncated or empty file behind. Publishing one embeds
+  # a broken image in the review, so upload only what is actually a PNG. If `file` is unavailable
+  # the check passes, because dropping every screenshot is the worse failure.
+  MIME=$(file -b --mime-type "$img" 2>/dev/null || echo image/png)
+  [ "$MIME" = "image/png" ] || continue
   B=$(basename "$img")
   # stdin --input, not -f content= — the argv form silently drops blobs >~200 KB
   SHA=$(base64 -w0 < "$img" | jq -Rs '{content: ., encoding: "base64"}' \
