@@ -5,7 +5,10 @@ set -uo pipefail
 #
 # The script is a Claude Code `Stop` hook: it decides whether the review
 # orchestrator is allowed to end its session. Allowed = exit 0 with no stdout.
-# Refused = exit 0 with a JSON block decision on stdout.
+# Refused = a TOP-LEVEL {"decision":"block","reason":...} on stdout AND the reason
+# on stderr AND exit 2 — two independent block channels, because the CLI moves
+# under this pipeline on every job. See the schema regression guard below for why
+# the documented `hookSpecificOutput` nesting is NOT used.
 #
 # The regression this file exists for (#86, 2026-08-12): handing the fleet's
 # newer CLI to claude-code-action gave the orchestrator backgrounded agents, so
@@ -28,14 +31,15 @@ trap 'rm -rf "$WORK"' EXIT
 # feeding the real shape keeps the test honest if that ever changes.
 EVENT='{"session_id":"abc123","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"I will pause here and wait for the background judge agents."}'
 
-# run <review-json-path> <counter-path> [max] → sets OUT and RC.
-# NOT `run ...`: command substitution runs in a subshell, so an RC set
-# inside it never reaches the caller. Capture via a file and assign in-process.
+# run <review-json-path> <counter-path> [max] → sets OUT, ERR and RC.
+# NOT `out=$(run ...)`: command substitution runs in a subshell, so an RC set
+# inside it never reaches the caller. Capture via files and assign in-process.
 run() {
   REVIEW_JSON="$1" STOP_BLOCK_COUNTER="$2" MAX_STOP_BLOCKS="${3:-3}" \
-    bash "$HOOK" <<<"$EVENT" >"$WORK/out" 2>/dev/null
+    bash "$HOOK" <<<"$EVENT" >"$WORK/out" 2>"$WORK/err"
   RC=$?
   OUT=$(cat "$WORK/out")
+  ERR=$(cat "$WORK/err")
 }
 
 check() { # check <label> <expected> <actual>
@@ -48,18 +52,31 @@ check() { # check <label> <expected> <actual>
 }
 
 # --- 1. missing artifact → refuse the stop ---------------------------------
+# SCHEMA REGRESSION GUARD. The first cut of this hook nested decision/reason under
+# `hookSpecificOutput`, which is what code.claude.com/docs/en/hooks documents — and
+# which Claude Code does NOT read for Stop. Measured on the real CLI (2.1.234) by
+# registering a hook that blocks once and counting invocations: nested = 1 call and
+# the session ENDED; top-level = 2 calls and it CONTINUED; stderr + exit 2 = 2 calls
+# and it CONTINUED. The nested form fails OPEN — installed, and enforcing nothing.
+# These assertions pin the two forms that actually work.
 run "$WORK/missing.json" "$WORK/c1"
-check "missing review.json blocks the stop" "block" \
-  "$(jq -r '.hookSpecificOutput.decision' <<<"$OUT" 2>/dev/null)"
-check "missing review.json exits 0 (block is via JSON, not exit code)" "0" "$RC"
+check "missing review.json blocks via TOP-LEVEL decision" "block" \
+  "$(jq -r '.decision' <<<"$OUT" 2>/dev/null)"
+check "block decision is NOT nested under hookSpecificOutput (fails open)" "null" \
+  "$(jq -r '.hookSpecificOutput.decision // "null"' <<<"$OUT" 2>/dev/null)"
+check "missing review.json exits 2 (the second, independent block channel)" "2" "$RC"
+check "reason is also on stderr, which is what exit 2 feeds back" "yes" \
+  "$(grep -q 'STOP BLOCKED' <<<"$ERR" && echo yes || echo no)"
+check "stderr carries the same instruction as the JSON, not a stub" "yes" \
+  "$(grep -qi 'do not yield' <<<"$ERR" && echo yes || echo no)"
 check "block names the artifact" "yes" \
   "$(grep -q '/missing.json' <<<"$OUT" && echo yes || echo no)"
 
 # The reason must actively counter the observed failure, not just say "continue".
 check "reason forbids yielding for background agents" "yes" \
-  "$(jq -r '.hookSpecificOutput.reason' <<<"$OUT" | grep -qi 'do not yield' && echo yes || echo no)"
+  "$(jq -r '.reason' <<<"$OUT" | grep -qi 'do not yield' && echo yes || echo no)"
 check "reason offers the degraded-write escape hatch" "yes" \
-  "$(jq -r '.hookSpecificOutput.reason' <<<"$OUT" | grep -qi 'degraded' && echo yes || echo no)"
+  "$(jq -r '.reason' <<<"$OUT" | grep -qi 'degraded' && echo yes || echo no)"
 
 # --- 2. valid artifact → allow the stop ------------------------------------
 echo '{"verdict":"APPROVE","findings":[]}' > "$WORK/good.json"
@@ -72,7 +89,8 @@ check "valid review.json exits 0" "0" "$RC"
 printf '{"verdict":"APPROVE",' > "$WORK/truncated.json"
 run "$WORK/truncated.json" "$WORK/c3"
 check "truncated review.json blocks the stop" "block" \
-  "$(jq -r '.hookSpecificOutput.decision' <<<"$OUT" 2>/dev/null)"
+  "$(jq -r '.decision' <<<"$OUT" 2>/dev/null)"
+check "truncated review.json also exits 2" "2" "$RC"
 
 # --- 4. bounded: stops nudging after MAX_STOP_BLOCKS ------------------------
 # Blocking forever would burn --max-turns and produce no review AND no banner.

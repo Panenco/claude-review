@@ -27,10 +27,25 @@ set -uo pipefail
 # rule that holds only while the CLI happens to lack background agents is not a
 # rule. This makes the harness enforce what the prompt could only ask for.
 #
-# CONTRACT (code.claude.com/docs/en/hooks): stdin carries the Stop event as JSON.
-# Exit 0 printing {"hookSpecificOutput":{"hookEventName":"Stop","decision":"block",
-# "reason":"..."}} refuses the stop and feeds `reason` back to the model. Exit 0
-# with no stdout allows the stop. `Stop` takes no matcher — it fires every time.
+# CONTRACT — VERIFIED AGAINST THE CLI, NOT THE DOCS, BECAUSE THE DOCS ARE WRONG
+# HERE. code.claude.com/docs/en/hooks documents the block decision as nested under
+# `hookSpecificOutput`. It is not read there for `Stop`. Measured against the real
+# CLI (2.1.234) by registering a hook that blocks once and counting invocations:
+#
+#   {"hookSpecificOutput":{...,"decision":"block",...}}  -> 1 call, session ENDED
+#   {"decision":"block","reason":"..."}                  -> 2 calls, session CONTINUED
+#   reason on stderr + exit 2                            -> 2 calls, session CONTINUED
+#
+# The nested form fails OPEN and silently enforces nothing, which is the worst
+# possible failure for this script — it would look installed and do nothing.
+#
+# So the block is emitted BOTH ways on purpose: top-level `decision`/`reason` on
+# stdout AND the reason on stderr with exit 2. Either mechanism alone blocks on
+# 2.1.234; together they survive the CLI moving under us, which it does on every
+# job via the npm refresh. The combination was verified too (2 calls, continued).
+#
+# Allowing the stop is exit 0 with no stdout. `Stop` takes no matcher — it always
+# fires.
 #
 # Env overrides exist for the fixture test: REVIEW_JSON, STOP_BLOCK_COUNTER,
 # MAX_STOP_BLOCKS.
@@ -84,6 +99,8 @@ If you are waiting on Task results, poll them with a tool call instead:
 
 If the results you need are already there, continue the phase. If they are not going to arrive, write a DEGRADED ${REVIEW_JSON} now from what you do have and validate it with \`jq empty\` — a degraded review is a successful pipeline run; no file is a crash."
 
-jq -nc --arg r "$REASON" \
-  '{hookSpecificOutput: {hookEventName: "Stop", decision: "block", reason: $r}}'
-exit 0
+# Both channels — see the CONTRACT note above. Top-level keys, NOT nested under
+# hookSpecificOutput: the nested form parses fine and blocks nothing.
+jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
+printf '%s\n' "$REASON" >&2
+exit 2
