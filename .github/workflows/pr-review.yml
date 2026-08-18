@@ -1149,6 +1149,15 @@ jobs:
           if [ -x "$HOME/.local/bin/claude" ]; then
             echo "path=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
           fi
+          # The other half of the same handover. Wiring only the CLI would leave
+          # this job re-downloading bun-linux-x64.zip every run while its sibling
+          # does not — measured on this PR's own review, where setup-bun still ran.
+          # NO version-skew risk here, unlike the CLI: the image bakes exactly the
+          # version the action's `bun-version:` pins (BUN_VERSION in versions.env).
+          if [ -x "$HOME/.local/bin/bun" ]; then
+            echo "bun=$HOME/.local/bin/bun" >> "$GITHUB_OUTPUT"
+            echo "Baked Bun: $("$HOME/.local/bin/bun" --version)"
+          fi
 
       # REQUIRED, not an optimisation. Consumers may configure only the
       # CLAUDE_CODE_OAUTH_TOKENS pool and never the single CLAUDE_CODE_OAUTH_TOKEN
@@ -1363,6 +1372,9 @@ jobs:
           # this input is the first thing to revert, and reverting it costs only the
           # bytes.
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
+          # Empty on any runner that does not bake Bun, which restores the action's
+          # own setup-bun step rather than breaking it. See the probe above.
+          path_to_bun_executable: ${{ steps.claude_cli.outputs.bun }}
           claude_args: |
             --permission-mode dontAsk
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
