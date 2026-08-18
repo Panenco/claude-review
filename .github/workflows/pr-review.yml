@@ -1113,9 +1113,10 @@ jobs:
             change, using mcp__github_inline_comment__create_inline_comment. Post the
             summary as a single PR comment, and pass the PR number explicitly:
             `gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body "..."`.
-            Passing the number is required — a bare `gh pr comment` is denied, and
-            your summary would be lost. Only comment on lines this PR actually
-            modified.
+            That exact shape is the ONLY permitted form: the number first, then
+            `--body`. `-b`, a leading `--repo`, or a bare `gh pr comment` are all
+            denied and your summary would be lost. (`--body-file` is fine — it shares
+            the `--body` prefix.) Only comment on lines this PR actually modified.
           # Read-only tool set (plus the inline-comment MCP tool) — this job reviews,
           # it never writes to the tree.
           #
@@ -1149,18 +1150,20 @@ jobs:
           # steer the one write verb it holds onto an unrelated PR in the repo, under
           # a `pull-requests: write` token. The number is already known at dispatch.
           #
-          # KNOWN RESIDUAL, measured — do not "fix" it with a space. These patterns
-          # are PREFIX matches, so `gh pr comment 94:*` also matches `gh pr comment
-          # 940`, `941`, `9400` — any PR whose number starts with this one's. The
-          # obvious boundary fix, `... 94 :*`, was tried on this PR (f207b96) and
-          # measured on run 32174248048: the matcher does not treat the trailing
-          # space as an argument boundary, the write was denied under `dontAsk`, and
-          # the summary comment silently vanished while inline comments (posted via
-          # the MCP tool, which is unaffected) still landed. Reverted deliberately.
+          # The boundary is `--body`, NOT a space. These patterns match on command
+          # PREFIX, so the bare `gh pr comment 94:*` also matched `gh pr comment 940`,
+          # `941`, `9400` — any PR whose number merely extends this one's. Folding the
+          # next literal flag in gives a real boundary: `gh pr comment 940 --body …`
+          # does not start with `gh pr comment 94 --body`. The cost is that the agent
+          # must emit that exact shape, which the prompt above mandates.
           #
-          # So the pin narrows the target set from "any PR" to "PRs whose number is a
-          # numeric extension of this one's" — strictly better than unpinned, not
-          # airtight.
+          # Do NOT "simplify" this back to a trailing space. That was tried (f207b96)
+          # and measured on run 32174248048: the matcher does not treat a trailing
+          # space as an argument boundary, so the write was denied under `dontAsk` and
+          # the summary comment silently VANISHED — while inline comments, which go
+          # through the MCP tool, kept posting. The job stayed green and lost half its
+          # output. Reverted in accc8b0. Any change to this pattern must be verified by
+          # confirming a summary comment actually appears on the next run.
           #
           # THE ROBUST FIX — drop the Bash write verb entirely and post the summary
           # through a PR-scoped MCP tool — WAS INVESTIGATED AT THE PINNED ACTION SHA
@@ -1214,7 +1217,7 @@ jobs:
           # picker only — do not "optimise" it into this step.
           claude_args: |
             --permission-mode dontAsk
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }}:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
             --disallowedTools "Bash(gh api:*),WebFetch,WebSearch,Edit,Write"
             --model ${{ inputs.model_standard }}
 
