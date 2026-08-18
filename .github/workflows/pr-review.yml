@@ -1105,13 +1105,31 @@ jobs:
           # + `gh search` cover the reads. Found by the native pass reviewing its own
           # PR (#94) — do not add it back.
           #
+          # `--permission-mode dontAsk` is what makes that allowlist BIND, and it is
+          # not optional. Without it the session runs in Manual mode, where
+          # `--allowedTools` merely AUTO-APPROVES what it lists: anything unlisted
+          # falls through to a `canUseTool` callback, which claude-code-action never
+          # supplies. Under `dontAsk` that step is skipped and the call is denied
+          # outright. The review job above has always set this; the narrowing here is
+          # decorative without it. `--disallowedTools` then pins the few we most want
+          # unreachable — deny rules are evaluated before allow rules and cannot be
+          # widened by anything downstream.
+          #
+          # `Task`/`Agent` stay unrestricted on purpose. The `code-review` plugin fans
+          # out to several subagents and does not work without them, and they are not
+          # an escape hatch: tool calls are authorised session-wide, so a subagent is
+          # held to this same allowlist. An agent definition's `tools:` frontmatter
+          # can only NARROW what the session permits, never widen it.
+          #
           # Deliberately NO `path_to_claude_code_executable`: PR #86 proved that
           # handing the action a CLI newer than the one it pins makes the top-level
           # agent end a turn with prose and no tool call, which terminates the
           # session and crashes the job. The CLI installed above is for the token
           # picker only — do not "optimise" it into this step.
           claude_args: |
+            --permission-mode dontAsk
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
+            --disallowedTools "Bash(gh api:*),WebFetch,WebSearch,Edit,Write"
             --model ${{ inputs.model_standard }}
 
   # pull_request_target writes cache to main scope. PR-code-free: checkout
