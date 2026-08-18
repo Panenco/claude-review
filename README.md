@@ -107,6 +107,27 @@ Two things your fleet needs. It must have **network egress to the GitHub Actions
 
 The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Note that it inherits `runner` too, so a caller that wires the `pull_request_target` trigger lands a `secrets: inherit` job on the fleet; callers that would rather keep that combination off self-hosted infrastructure simply omit the trigger.
 
+**Second opinion: the native `code-review` pass (`native_review`).** Every review runs **two** reviewers in parallel. The first is this pipeline (the `In-Depth Review` job — orchestrator, two judges, functional tester). The second is the `Native Review` job: the official Claude `code-review` plugin, run exactly as Anthropic ships it, on the same PR head. It is on by default and needs no caller change — its permissions (`contents: read`, `pull-requests: write`, `issues: write`) are a strict subset of what the caller already grants.
+
+```yaml
+with:
+  pr_number: ${{ inputs.pr_number || '' }}
+  native_review: "off"                 # default "on" — disables the second pass
+  native_review_runner: ubuntu-latest  # default "" — falls back to `runner`
+  native_review_scope: |               # default "" — reviews the whole diff
+    only review changes under `apps/api/` and `apps/web/`; ignore everything else
+```
+
+Why two reviewers rather than one better one: they fail differently. On `Panenco/hr4cast`, where both ran side by side, the native pass caught a missing authorization guard, a Postgres privilege-management regression, silently removed abuse limits and a deploy-breaking unique migration that our own reviewer walked past. It runs **in parallel** — no `needs:` — so total wall-clock does not grow.
+
+How the two connect. The native job posts under **`github-actions[bot]`**, deliberately distinct from this pipeline's review identity (`<app-slug>[bot]`, from the `CLAUDE_REVIEW_APP_*` secrets). That distinction does two things: it keeps its comments from being mistaken for our own prior findings during round-2 state reconstruction, and it makes them eligible for the other-bot machinery this pipeline already has — the context builder collects every other bot's inline comments, and the judge cross-checks them (see `skills/review-judge.md`, "Cross-check other bots"), corroborating HIGH/CRITICAL security findings into the verdict.
+
+**It therefore requires the review App secrets.** Without `CLAUDE_REVIEW_APP_*` this pipeline itself posts as `github-actions[bot]`, the two identities collide, and the native pass's review would be counted as one of ours — inflating the round counter and hijacking the prior verdict. Rather than corrupt that state, the job detects the case and skips itself with a `::notice::`. (Upstream posts as `claude[bot]` by exchanging a GitHub OIDC token for the Claude App token; a reusable workflow cannot request `id-token: write` without breaking every caller that does not grant it, so that identity is out of reach here.)
+
+**That corroboration lands on the _next_ review round, not the same one.** The native pass typically finishes after our context builder has already snapshotted the PR's comments, so its findings are visible to the judge on the following push. This is a known, accepted property of running the two in parallel — the alternative (serialising them) would double wall-clock to buy one round of latency.
+
+What it costs, and the two knobs for it. A second concurrent job per PR **doubles pod demand** on your fleet: the default `panenco-claude-review` ARC scale set is capped at `maxRunners: 8`, and a job blocked by that cap never becomes a pod — it raises no scale-set alert, it just queues until GitHub's 24 h timeout and then fails. On a busy fleet set `native_review_runner` to a different pool (another scale set, or `ubuntu-latest`); unlike `runner`, this job shares no cache with any other job, so a different OS/arch is fine. Both jobs also draw on the **same 5-hour Claude subscription window**, so per-PR token consumption roughly doubles — add a token to the `CLAUDE_CODE_OAUTH_TOKENS` pool, or set `native_review: "off"`. On a monorepo, `native_review_scope` is free-text injected into the native reviewer's prompt; the plugin knows nothing about this pipeline's gate rules, so scope it away from generated and vendored paths or it will spend its budget there.
+
 ### 2. Set secrets
 
 Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo or org secret. Generate it with:
