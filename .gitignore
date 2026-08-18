@@ -9,3 +9,6 @@ docs/review-pipeline-snapshot.md
 docs/prds/review-cost-reduction.md
 docs/metrics/
 .metrics.env
+
+# macOS junk
+.DS_Store
