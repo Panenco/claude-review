@@ -660,6 +660,50 @@ jobs:
       # Single top-level agent; all subagents dispatch via Task inside this
       # one invocation. continue-on-error: a max-turns exit may still have
       # written /tmp/review.json — the poster decides from the artifact.
+      # Register the Stop hook that ENFORCES "always write /tmp/review.json".
+      # The orchestrator skill and the prompt below both already ask for it; on
+      # 2026-08-12 asking stopped working (the CLI gained backgrounded agents and
+      # the orchestrator yielded with a prose-only turn, ending the session with
+      # no artifact). scripts/require-review-json.sh refuses that stop.
+      #
+      # USER SCOPE, NOT THE WORKSPACE, and that is load-bearing twice over:
+      # claude-code-action restores `.claude/` for untrusted PR heads and would
+      # wipe a workspace-local hook (the same reason action.yml keeps skills in
+      # the action dir), and `--setting-sources user` below is precisely what
+      # makes ~/.claude/settings.json the scope that gets read.
+      #
+      # MERGED, never overwritten: the image may ship its own user settings, and
+      # clobbering them would be an invisible regression in something unrelated.
+      - name: Enforce review.json on session end
+        id: stop_hook
+        if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
+        shell: bash
+        env:
+          HOOK: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/scripts/require-review-json.sh
+        run: |
+          set -uo pipefail
+          if [ ! -f "$HOOK" ]; then
+            echo "::error::stop hook missing at $HOOK — pipeline install is incomplete"
+            exit 1
+          fi
+          chmod +x "$HOOK" 2>/dev/null || true
+          # A stale counter from a previous run on a reused runner would spend
+          # this review's nudge budget before it starts.
+          rm -f /tmp/review-stop-blocks /tmp/review.json 2>/dev/null || true
+          mkdir -p "$HOME/.claude"
+          S="$HOME/.claude/settings.json"
+          [ -s "$S" ] || echo '{}' > "$S"
+          if ! jq empty "$S" >/dev/null 2>&1; then
+            echo "::warning::$S was not valid JSON; replacing it with the hook config only"
+            echo '{}' > "$S"
+          fi
+          jq --arg cmd "$HOOK" \
+            '.hooks.Stop = [{"hooks": [{"type": "command", "command": $cmd}]}]' \
+            "$S" > "$S.tmp" && mv "$S.tmp" "$S" || {
+              echo "::error::failed to register the Stop hook in $S"; exit 1; }
+          echo "Stop hook registered: $HOOK"
+          jq -c '.hooks' "$S"
+
       - name: "Review: orchestrate"
         id: claude_run
         if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
