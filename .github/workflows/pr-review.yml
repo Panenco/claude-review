@@ -515,6 +515,23 @@ jobs:
             curl -fsSL https://claude.ai/install.sh | bash
             "$HOME/.local/bin/claude" --version
           fi
+          # Hand this exact binary to claude-code-action below so it does not fetch a
+          # SECOND copy. Its base-action installs unconditionally otherwise:
+          #   CLAUDE_CODE_VERSION="2.1.175"
+          #   curl -fsSL https://claude.ai/install.sh | bash -s -- $CLAUDE_CODE_VERSION
+          # which is ~500MB/job from downloads.claude.ai and was, when measured on the
+          # Panenco fleet on 2026-08-12, 5.7% of ALL inbound bytes and the single
+          # largest source on the Cloud NAT meter (github-action-runners#96).
+          #
+          # This is NOT what DISABLE_AUTOUPDATER covers. That switches off the CLI's
+          # own updater; this download is an explicit install step in the action, and
+          # it ran on every review even though the self-hosted image bakes the CLI.
+          #
+          # Emitted only when the binary is really there, so a failure upstream leaves
+          # the input empty and the action falls back to installing for itself.
+          if [ -x "$HOME/.local/bin/claude" ]; then
+            echo "path=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
+          fi
           # Hand the baked Bun to claude-code-action. It installs one via
           # `oven-sh/setup-bun` unless given `path_to_bun_executable`, which fetches a
           # release tarball from GitHub every job; objects.githubusercontent.com was
@@ -739,6 +756,11 @@ jobs:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
           allowed_bots: ${{ inputs.allowed_bots }}
+          # Reuse the CLI the step above already guaranteed instead of letting the
+          # action download its own pinned copy — see that step for the measurement.
+          # Empty when that step was skipped (deduped oversized re-run), which
+          # restores the action's stock behaviour rather than breaking it.
+          path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
             Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it drives the browser itself with the `agent-browser` CLI over Bash. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
           claude_args: |
