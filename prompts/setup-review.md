@@ -134,6 +134,27 @@ workflow artifacts — existing callers that still grant it are unaffected.
 
 This has been observed on same-repo PRs in at least one external org and is likely caused by an org-level policy interacting with `inherit`. The explicit form unblocks the run; root cause can be investigated later.
 
+### The second-opinion pass: the `native_review*` inputs (leave them alone unless asked)
+
+The workflow runs **two** reviewers on every PR in parallel: this pipeline's own `In-Depth Review` job, and a `Native Review` job that runs the official Claude `code-review` plugin as an independent second opinion. The second one is **on by default and needs no caller change** — its permissions (`contents: read`, `pull-requests: write`, `issues: write`) are a strict subset of the `permissions:` block you already wrote above, so nothing new has to be granted. Do not add `id-token: write` for it; the job deliberately does not request it (a reusable workflow's permissions are capped by the caller's, and requesting more than the caller grants is a `startup_failure`).
+
+It posts as `github-actions[bot]`, deliberately separate from the review App identity this pipeline uses. **That separation is why the job requires the `CLAUDE_REVIEW_APP_*` secrets from Step 6**: without them our own reviewer is also `github-actions[bot]`, the two collide, and the native pass's review would be miscounted as one of ours (inflating the round counter, hijacking the prior verdict) — so the job detects that case and skips itself with a `::notice::` rather than corrupt the state. Do not try to give it the App token to "fix" the notice; that is the collision. Our judge cross-checks its HIGH/CRITICAL security findings via the existing other-bot machinery, and because the native pass usually finishes after our context builder has snapshotted the PR's comments, that corroboration shows up on the **next** review round rather than the same one. Expected; do not "fix" it.
+
+Three optional inputs, all of which you should leave unset unless the user asks:
+
+```yaml
+    with:
+      pr_number: ${{ inputs.pr_number || '' }}
+      native_review: "off"                 # default "on"; "off" disables the second pass
+      native_review_runner: ubuntu-latest  # default ""; empty falls back to `runner`
+      native_review_scope: |               # default ""; empty reviews the whole diff
+        only review changes under `apps/api/` and `apps/web/`; ignore everything else
+```
+
+- `native_review: "off"` — only when the user wants a single reviewer. Two jobs draw on the same 5-hour Claude subscription window, so per-PR token consumption roughly doubles; the usual fix is another token in the `CLAUDE_CODE_OAUTH_TOKENS` pool, not turning the pass off.
+- `native_review_runner` — only relevant when the user is on a self-hosted fleet (see the `runner` section above). A second concurrent job per PR doubles pod demand, and the default `panenco-claude-review` scale set is capped at `maxRunners: 8`; a job blocked by that cap never becomes a pod, so it never alerts — it queues until GitHub's 24 h timeout and fails. On a busy fleet point this at a different pool. It shares no cache with any other job, so a different OS/arch is fine here (unlike `runner`).
+- `native_review_scope` — free text injected verbatim into the native reviewer's prompt. Wire it on a monorepo where much of a typical diff is generated or vendored: the plugin knows nothing about this pipeline's gate rules and will otherwise spend its budget and comment quota on paths nobody wants reviewed. Derive the paths from the runtime surface you determined in Step 1.
+
 ## Step 3: Create bugbot.md
 
 Create `bugbot.md` at the repo root with project-specific review rules. Keep it short — under 15 items. Focus on patterns that are:
