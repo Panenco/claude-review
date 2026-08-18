@@ -1124,6 +1124,13 @@ jobs:
           # reads attacker-controlled content by design, so an injected payload could
           # steer the one write verb it holds onto an unrelated PR in the repo, under
           # a `pull-requests: write` token. The number is already known at dispatch.
+          #
+          # The SPACE before `:*` is load-bearing, not a typo. These patterns are
+          # PREFIX matches, so the unspaced `gh pr comment 94:*` would also match
+          # `gh pr comment 940`, `941`, `9400` — every PR whose number merely STARTS
+          # with this one's. On a repo with four-digit PR numbers that is a wide
+          # door. The trailing space forces an argument boundary so only the exact
+          # number matches. The prompt passes the number in that exact form.
           # The reads are deliberately NOT pinned: cross-PR reads are worth nothing to
           # an attacker who, post fork-guard, is already a collaborator on this repo.
           #
@@ -1140,7 +1147,7 @@ jobs:
           # picker only — do not "optimise" it into this step.
           claude_args: |
             --permission-mode dontAsk
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }}:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} :*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
             --disallowedTools "Bash(gh api:*),WebFetch,WebSearch,Edit,Write"
             --model ${{ inputs.model_standard }}
 
