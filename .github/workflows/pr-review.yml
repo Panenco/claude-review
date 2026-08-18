@@ -1062,6 +1062,30 @@ jobs:
           # and why `claude[bot]` is out of reach without `id-token: write`.
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # Installs the official `code-review` plugin so `/code-review` exists in CI.
+          #
+          # UNPINNED ON PURPOSE — an ACCEPTED trade-off, declared in `bugbot.md`
+          # ("Accepted supply-chain trade-offs"). Do not re-flag it every round, and
+          # do not "fix" it by inventing a ref suffix: the action REJECTS one.
+          #
+          # Every other third-party reference in this file is SHA-pinned, and
+          # `.github/review-config.md` requires that of new Actions YAML. This input
+          # is the one place it cannot be honoured today, verified against the pinned
+          # action at ac7e24bf (base-action/src/install-plugins.ts):
+          #   * `MARKETPLACE_URL_REGEX` is anchored `/^https:\/\/[...]+\.git$/`, so
+          #     `...public.git@<sha>`, `...public.git#<ref>` and `...public.git?ref=`
+          #     all fail validation with "Invalid marketplace URL format".
+          #   * `addMarketplace()` shells out to exactly `claude plugin marketplace
+          #     add <url>` — no ref argument is passed and the action exposes no input
+          #     for one. `claude plugin marketplace add --help` (CLI 2.1.234) offers
+          #     only `--scope` and `--sparse`; there is no `--ref`/`--sha`.
+          #   * Claude Code's docs state git-based MARKETPLACE sources support `ref`
+          #     (branch/tag) but not `sha`, and `ref` only exists in the
+          #     `extraKnownMarketplaces` object form in settings.json, which this
+          #     input cannot express.
+          #   * `anthropics/claude-plugins-public` publishes no tags and no releases,
+          #     so even `ref` would only buy another moving pointer.
+          # Revisit when the action grows a ref/sha input (or the marketplace starts
+          # tagging releases) — then pin here in the usual `# v1.2.3` house style.
           plugin_marketplaces: |
             https://github.com/anthropics/claude-plugins-public.git
           plugins: |
@@ -1136,10 +1160,44 @@ jobs:
           #
           # So the pin narrows the target set from "any PR" to "PRs whose number is a
           # numeric extension of this one's" — strictly better than unpinned, not
-          # airtight. The robust fix is to stop granting a Bash write verb at all and
-          # post the summary through a PR-scoped MCP tool instead (the action's
-          # `use_sticky_comment` machinery is the likely route); that needs its own
-          # validation and is tracked as follow-up, not smuggled in here.
+          # airtight.
+          #
+          # THE ROBUST FIX — drop the Bash write verb entirely and post the summary
+          # through a PR-scoped MCP tool — WAS INVESTIGATED AT THE PINNED ACTION SHA
+          # (ac7e24bf) AND IS NOT REACHABLE FROM THIS JOB. Do not re-propose it
+          # without re-reading the source; the trail is:
+          #   * The action ships exactly one summary-comment tool,
+          #     `mcp__github_comment__update_claude_comment`
+          #     (src/mcp/github-comment-server.ts). The full MCP inventory across
+          #     src/mcp/ is that tool plus `create_inline_comment`, `commit_files`,
+          #     `delete_files` and three read-only CI tools — there is NO tool that
+          #     creates a new general PR comment.
+          #   * That tool UPDATES a pre-existing tracking comment addressed by the
+          #     `CLAUDE_COMMENT_ID` env var, and throws
+          #     "CLAUDE_COMMENT_ID environment variable is required" without it.
+          #   * This job runs in AGENT mode (it passes `prompt:` on a `pull_request`
+          #     event — src/modes/detector.ts), and agent mode passes
+          #     `claudeCommentId: undefined  // No tracking comment in agent mode`
+          #     (src/modes/agent/index.ts:104), so install-mcp-server.ts never sets
+          #     the env var. The server is still registered — that is why naming the
+          #     tool in `--allowedTools` LOOKS like it works — but every call errors.
+          #   * `use_sticky_comment` (action.yml:112) is read only by
+          #     createInitialComment() (github/operations/comments/create-initial.ts),
+          #     which is called only from src/modes/tag/index.ts. It is inert in agent
+          #     mode; setting it here would change nothing.
+          #   * The only route to tag mode on a `pull_request` event is
+          #     `track_progress: true`, and it is strictly WORSE than this residual:
+          #     tag mode injects its own `--permission-mode acceptEdits` plus an
+          #     `--allowedTools` list containing `Bash(git add:*)`,
+          #     `Bash(git commit:*)`, the git-push wrapper and `Bash(git rm:*)`
+          #     (src/modes/tag/index.ts:123-175) — write verbs this job deliberately
+          #     withholds — it runs `checkHumanActor` and `setupBranch`, and it
+          #     demotes the prompt below to a `<custom_instructions>` appendix on the
+          #     action's own default tag-mode prompt
+          #     (src/create-prompt/index.ts:466-474). Trading a prefix-match residual
+          #     for auto-approved edits and git write verbs is a net loss.
+          # Residual accepted and declared in `bugbot.md`; revisit if the action ever
+          # exposes a comment id (or a create-PR-comment tool) to agent mode.
           # The reads are deliberately NOT pinned: cross-PR reads are worth nothing to
           # an attacker who, post fork-guard, is already a collaborator on this repo.
           #
