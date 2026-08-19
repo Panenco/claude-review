@@ -51,15 +51,11 @@ on:
         type: string
         default: ""
       native_review:
-        description: "Second-opinion pass: runs the OFFICIAL Claude `code-review` plugin as an independent job alongside this pipeline's own reviewer. DEFAULT IS NOW `off`. It was briefly `on` (v3.4.0-v3.5.1) and that default was withdrawn on 2026-08-19 after two measured problems in production: it needs a SECOND concurrent runner per PR, and a job blocked by an ARC scale set's maxRunners never becomes a pod, so it raises no alert and simply queues — one review on `orthogroup-prototype` sat queued for 8.7 hours (created 21:25:32Z, started 06:06:27Z). It is also a second full draw on the same 5-hour Claude subscription window, and quota exhaustion was observed across the org the same night. Set `on` only if you have spare fleet capacity AND spare token quota. A single-job replacement, which runs the same plugin in-session with no extra runner and consolidates its findings into the one review comment, is in progress."
+        description: "Second-opinion pass: `off` by default — set `on` to run the OFFICIAL Claude `code-review` plugin (from Anthropic's `claude-plugins-public` marketplace) as the `review-native` subagent INSIDE the existing review session; `off` disables it. It is a different reviewer, not a second copy of ours — Anthropic's prompt is read verbatim at runtime from the installed plugin and followed as written, including its own >=80 confidence filter. It costs NO extra runner and NO second checkout: it is dispatched by the orchestrator in the same response as the context builder, so it runs concurrently with the judges and the functional tester and adds no wall-clock. Its findings are written to a file, deduped against the judges' findings and folded into the SINGLE consolidated review comment this pipeline posts — the plugin's own 'comment on the PR' step is overridden in the skill AND denied at session level (`Bash(gh pr comment:*)`), so it can never post separately. It runs only on `full` reviews: it is a second complete review pass and the token draw on the shared 5-hour Claude window is real, so `light`/`small`/`tiny` PRs do not pay for it. Turn it `off` if that draw is scarce."
         type: string
         default: "off"
-      native_review_runner:
-        description: "Runner label for the native-review job ONLY. Empty (default) falls back to `runner`. This exists because the default `panenco-claude-review` ARC scale set is capped at `maxRunners: 8`, and a second concurrent job per PR doubles pod demand: a job blocked by that cap never becomes a pod, so it triggers no scale-set alert and simply sits in `Queued` until GitHub's 24 h timeout, then fails. On a busy fleet point this at a different pool (another scale set, or `ubuntu-latest`) so the second opinion cannot starve the review it is meant to complement. Unlike `runner`, this job shares no Actions cache with any other job, so it is free to live on a different OS/arch fleet."
-        type: string
-        default: ""
       native_review_scope:
-        description: "Optional free-text path-scoping instruction injected verbatim into the native reviewer's prompt, e.g. \"only review changes under `apps/api/` and `apps/web/`; ignore everything else\". Empty (default) reviews the whole diff. Wire it on monorepos where much of a typical diff is generated, vendored or out of scope: the plugin knows nothing about this pipeline's gate rules and will otherwise spend its budget and its comment quota on paths nobody wants reviewed."
+        description: "Optional free-text path-scoping instruction injected verbatim into the `review-native` subagent's prompt, e.g. \"only review changes under `apps/api/` and `apps/web/`; ignore everything else\". Empty (default) reviews the whole diff. Ignored entirely when `native_review` is `off` or the review plan is not `full`. Wire it on monorepos where much of a typical diff is generated, vendored or out of scope: Anthropic's plugin prompt knows nothing about this pipeline's gate rules and will otherwise spend its budget on paths nobody wants reviewed."
         type: string
         default: ""
       gate_skip_label:
@@ -658,21 +654,35 @@ jobs:
           echo "$PID" > /tmp/dev-env/pid
           echo "Background dev-env launched: PID=$PID (process group leader)"
 
-      # User scope is REQUIRED: claude-code-action's restore-config wipes the
-      # workspace .claude/ on PR-head jobs; $HOME survives. The file now only
-      # pins the tester's model and points at its skill — the browser is a CLI
-      # the subagent drives through Bash, so there is no MCP server to define.
-      - name: Install functional-tester subagent
+      # User scope is REQUIRED for BOTH files: claude-code-action's restore-config
+      # wipes the workspace .claude/ on PR-head jobs; $HOME survives. Each file only
+      # pins its subagent's model and points at its skill. The tester needs no MCP
+      # server — the browser is a CLI the subagent drives through Bash.
+      - name: Install review subagents
         if: steps.actor_gate.outputs.proceed == 'true' && steps.prior_state.outputs.oversized_dup != 'true'
         shell: bash
         env:
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
+          MODEL_STANDARD: ${{ inputs.model_standard }}
         run: |
           mkdir -p "$HOME/.claude/agents"
           envsubst '$MODEL_FUNCTIONAL $CLAUDE_REVIEW_PIPELINE_DIR' \
             < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-functional-tester.md" \
             > "$HOME/.claude/agents/review-functional-tester.md"
           echo "Installed review-functional-tester subagent (model=$MODEL_FUNCTIONAL)"
+          # Same USER-scope reasoning as above. This one carries the OFFICIAL
+          # `code-review` plugin pass: it locates the plugin's own command file at
+          # runtime and follows Anthropic's prompt verbatim, writing findings to
+          # /tmp/native-findings.json instead of posting them. Its `tools:` line
+          # MUST keep `Task` — the plugin prompt fans out to ~10 subagents and does
+          # nothing without it. That is not an escape hatch: tool calls are
+          # authorised session-wide, so those subagents are held to the same
+          # allowlist as this session, and an agent definition's `tools:` frontmatter
+          # can only NARROW what the session permits, never widen it.
+          envsubst '$MODEL_STANDARD $CLAUDE_REVIEW_PIPELINE_DIR' \
+            < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-native.md" \
+            > "$HOME/.claude/agents/review-native.md"
+          echo "Installed review-native subagent (model=$MODEL_STANDARD)"
 
       # Single top-level agent; all subagents dispatch via Task inside this
       # one invocation. continue-on-error: a max-turns exit may still have
@@ -752,23 +762,80 @@ jobs:
           RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.run_functional }}
           GATE: ${{ steps.review_plan.outputs.gate }}
           GATE_REASON: ${{ steps.review_plan.outputs.reason }}
+          # Read by the orchestrator's Phase A gate for the `review-native` pass
+          # (dispatched only when REVIEW_LEVEL=full and NATIVE_REVIEW != off).
+          NATIVE_REVIEW: ${{ inputs.native_review }}
+          NATIVE_REVIEW_SCOPE: ${{ inputs.native_review_scope }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
           allowed_bots: ${{ inputs.allowed_bots }}
+          # Installs the OFFICIAL `code-review` plugin into this session so the
+          # `review-native` subagent can read Anthropic's own command prompt at
+          # runtime (~/.claude/plugins/**/code-review/commands/code-review.md) and
+          # follow it verbatim. We deliberately do NOT vendor a copy of that prompt:
+          # reading the installed file keeps Anthropic's rubric canonical and lets it
+          # update itself. Both inputs verified present on the pinned action SHA
+          # ac7e24bf (action.yml: `plugins`, `plugin_marketplaces`). A failure to
+          # install is not fatal to the review — the skill writes an `unavailable`
+          # findings file and the orchestrator proceeds without it.
+          #
+          # UNPINNED ON PURPOSE — an ACCEPTED trade-off, declared in `bugbot.md`
+          # ("Accepted supply-chain trade-offs"). Do not re-flag it every round, and
+          # do not "fix" it by inventing a ref suffix: the action REJECTS one.
+          #
+          # Every other third-party reference in this file is SHA-pinned, and
+          # `.github/review-config.md` requires that of new Actions YAML. This input
+          # is the one place it cannot be honoured today, verified against the pinned
+          # action at ac7e24bf (base-action/src/install-plugins.ts):
+          #   * `MARKETPLACE_URL_REGEX` is anchored `/^https:\/\/[...]+\.git$/`, so
+          #     `...public.git@<sha>`, `...public.git#<ref>` and `...public.git?ref=`
+          #     all fail validation with "Invalid marketplace URL format".
+          #   * `addMarketplace()` shells out to exactly `claude plugin marketplace
+          #     add <url>` — no ref argument is passed and the action exposes no input
+          #     for one. `claude plugin marketplace add --help` (CLI 2.1.234) offers
+          #     only `--scope` and `--sparse`; there is no `--ref`/`--sha`.
+          #   * Claude Code's docs state git-based MARKETPLACE sources support `ref`
+          #     (branch/tag) but not `sha`, and `ref` only exists in the
+          #     `extraKnownMarketplaces` object form in settings.json, which this
+          #     input cannot express.
+          #   * `anthropics/claude-plugins-public` publishes no tags and no releases,
+          #     so even `ref` would only buy another moving pointer.
+          # Revisit when the action grows a ref/sha input (or the marketplace starts
+          # tagging releases) — then pin here in the usual `# v1.2.3` house style.
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-plugins-public.git
+          plugins: |
+            code-review@claude-plugins-official
           # Reuse the CLI the step above already guaranteed instead of letting the
           # action download its own pinned copy — see that step for the measurement.
           # Empty when that step was skipped (deduped oversized re-run), which
           # restores the action's stock behaviour rather than breaking it.
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it drives the browser itself with the `agent-browser` CLI over Bash. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it drives the browser itself with the `agent-browser` CLI over Bash. The official Claude `code-review` plugin pass is pre-installed as the custom subagent type `review-native` — dispatch it via the Task tool in the SAME response as the context builder (per NATIVE_REVIEW / REVIEW_LEVEL) so it runs concurrently with everything else; it writes /tmp/native-findings.json and NEVER posts to the PR. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
+          # `--disallowedTools` gains `Bash(gh pr comment:*)`, and that entry is
+          # LOAD-BEARING, not tidiness. Step 8 of the official `code-review` plugin
+          # prompt — which the `review-native` subagent reads verbatim and is told to
+          # follow — instructs the model to `gh pr comment` its findings onto the PR.
+          # We override that in `skills/review-native.md` (write a file instead), but
+          # an instruction is only an instruction: this deny rule makes the override
+          # STRUCTURAL, so a stray post cannot bypass the single-consolidated-comment
+          # contract even if the plugin's wording wins a turn. Deny rules are
+          # evaluated BEFORE allow rules and cannot be widened by anything downstream
+          # — not by a subagent, not by an agent definition's `tools:` frontmatter —
+          # and `--permission-mode dontAsk` is what makes the whole list BIND rather
+          # than merely auto-approve (in Manual mode `--allowedTools` only
+          # AUTO-APPROVES what it lists, and unlisted calls fall through to a
+          # `canUseTool` callback claude-code-action never supplies). This pipeline
+          # posts exactly ONE review, and `scripts/post-review.sh` is the only thing
+          # allowed to post it.
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
             --setting-sources user
             --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch
-            --disallowedTools Edit,WebFetch,WebSearch
+            --disallowedTools "Edit,WebFetch,WebSearch,Bash(gh pr comment:*)"
             --max-turns 100
           show_full_output: "true"
           # Empty on any runner that does not bake Bun, which restores the action's
@@ -884,502 +951,6 @@ jobs:
             /tmp/dev-env/log
           if-no-files-found: ignore
           retention-days: 7
-
-  # Second, INDEPENDENT opinion on the same PR: the official Claude `code-review`
-  # plugin, run the way Anthropic ships it. It exists because it fails differently
-  # from the bespoke pipeline above — on Panenco/hr4cast, where both ran side by
-  # side, this pass caught a missing `if (!userId)` authz guard, a Postgres
-  # privilege-management regression, silently removed abuse limits and a
-  # deploy-breaking unique migration that our own reviewer walked past.
-  #
-  # It runs in PARALLEL with `review` (deliberately no `needs:`), so adding it does
-  # not grow total wall-clock. It posts under a bot identity distinct from this
-  # pipeline's reviewer (see the long note on the `Resolve native reviewer identity`
-  # step for which one, and why it cannot be `claude[bot]` here), which is what makes
-  # our existing other-bot machinery pick it up for free:
-  # skills/review-context-builder.md collects every inline comment whose author is
-  # a Bot other than our own review identity into /tmp/other-bot-comments.json, and
-  # skills/review-judge.md ("Cross-check other bots") corroborates HIGH/CRITICAL
-  # security findings from it. Because this job typically finishes AFTER our
-  # context builder has already snapshotted comments, that corroboration lands on
-  # the NEXT review round rather than the same one — a known, accepted property.
-  native-review:
-    name: Native Review
-    # Same event guard as the review job: callers wire `pull_request_target` only so
-    # warm-cache can write the cache in main scope. Running PR-head code in main
-    # scope with `secrets: inherit` would be a privilege-escalation path, so this
-    # job — which checks out and reasons over PR-head code — must never run there.
-    if: github.event_name != 'pull_request_target' && inputs.native_review != 'off'
-    # Falls back to `runner` when native_review_runner is empty. Split the two when
-    # the fleet is near its cap — a job blocked by ARC's maxRunners never becomes a
-    # pod, so it raises no scale-set alert and just queues (see the input docs).
-    runs-on: ${{ inputs.native_review_runner != '' && inputs.native_review_runner || inputs.runner }}
-    timeout-minutes: 30
-    # ITS OWN concurrency group, NOT the review job's `claude-review-pr-<n>`.
-    # Sharing that key would make the two jobs cancel each other the moment both
-    # are in flight for the same PR — hr4cast hit exactly this class of bug
-    # (commit 7fb94c5e). Same cancel-the-stale-run behaviour, separate namespace.
-    concurrency:
-      group: claude-native-review-pr-${{ github.event.pull_request.number || inputs.pr_number }}
-      cancel-in-progress: true
-    # Deliberately NO `id-token: write`, even though the hr4cast job this is modelled
-    # on sets it. A reusable workflow's job permissions are CAPPED by the caller's;
-    # existing callers grant contents/pull-requests/issues/packages and nothing else,
-    # so requesting id-token here would turn every consumer's review into a
-    # `startup_failure` with no logs. It is unnecessary anyway — we authenticate with
-    # a Claude OAuth token, not OIDC. This set is a strict subset of what callers
-    # already grant, so no caller change is required to adopt this job.
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-
-    steps:
-      # Verbatim copy of the review job's gate (minus its `/tmp/job-start` stamp,
-      # which only feeds that job's usage reporting): disallowed bot actors skip
-      # cleanly — green check, one ::notice::, no crash banner. A reusable workflow
-      # cannot gate a whole job on a step output, so EVERY step below carries the
-      # `steps.actor_gate.outputs.proceed == 'true'` condition instead.
-      - name: Bot-actor gate
-        id: actor_gate
-        shell: bash
-        env:
-          ACTOR: ${{ github.actor }}
-          ALLOWED_BOTS: ${{ inputs.allowed_bots }}
-        run: |
-          PROCEED=true
-          case "$ACTOR" in
-            *"[bot]")
-              LOGIN="${ACTOR%\[bot\]}"
-              PROCEED=false
-              if [ "$ALLOWED_BOTS" = "*" ]; then
-                PROCEED=true
-              else
-                IFS=',' read -ra ALLOW <<< "$ALLOWED_BOTS"
-                for b in "${ALLOW[@]}"; do
-                  b="$(echo "$b" | tr -d '[:space:]')"
-                  if [ "$b" = "$LOGIN" ] || [ "$b" = "$ACTOR" ]; then PROCEED=true; fi
-                done
-              fi
-              if [ "$PROCEED" = "false" ]; then
-                echo "::notice::Run triggered by bot '$ACTOR', which is not in allowed_bots — skipping the review (no crash banner, no red check). Add '$LOGIN' to the caller's allowed_bots input to review this bot's PRs."
-              fi
-              ;;
-          esac
-          echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
-
-      # WHY THIS JOB DOES NOT POST AS `claude[bot]`, and why it self-disables here.
-      #
-      # claude-code-action ALWAYS resolves a GitHub identity (src/github/token.ts,
-      # setupGitHubToken): with `github_token` unset it exchanges a GitHub **OIDC**
-      # token for the Claude App token and posts as `claude[bot]`. That is what the
-      # hr4cast job does — and why it grants `id-token: write`. This workflow cannot:
-      # a reusable workflow's job permissions are CAPPED by the caller's, existing
-      # callers grant no `id-token`, and requesting it here would turn every
-      # consumer's review into a `startup_failure`. Without it the OIDC fetch throws
-      # ("Could not fetch an OIDC token") and there is no fallback — so we hand the
-      # action the runner's GITHUB_TOKEN instead and it posts as `github-actions[bot]`.
-      #
-      # That identity MUST differ from our own reviewer's or the second opinion
-      # poisons the first: scripts/prior-review-state.sh counts every PR review whose
-      # `.user.login == $REVIEW_BOT_USER` as one of OUR rounds — a native pass posts a
-      # COMMENTED review that matches none of the skip markers, so it would inflate
-      # ROUND and hijack PRIOR_HEAD_SHA/PRIOR_VERDICT — and scripts/post-review.sh
-      # dismisses stale reviews by the same match. Our reviewer is `<app-slug>[bot]`
-      # when the CLAUDE_REVIEW_APP_* secrets are configured and `github-actions[bot]`
-      # when they are not, so the collision is exactly the App-less case. Skip there,
-      # loudly: a corrupted round state is far worse than a missing second opinion.
-      # (It is also the only case where the judge could not use the findings anyway —
-      # skills/review-context-builder.md collects other bots' comments by
-      # `login != $BOT_USER`.) Placed before the checkout on purpose: a skip then
-      # costs nothing — no clone, no CLI install, no token-quota probe.
-      - name: Resolve native reviewer identity
-        id: identity
-        if: steps.actor_gate.outputs.proceed == 'true'
-        shell: bash
-        env:
-          APP_CLIENT_ID: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
-          APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
-        run: |
-          # BOTH secrets, because that is exactly what the review job's `Generate
-          # review token` step requires before it sets has_app=true. Testing
-          # CLIENT_ID alone is a WEAKER condition than the one that actually
-          # decides our reviewer's login, so a half-configured App (client id set,
-          # slug missing) would let this job run believing the identities differ.
-          if [ -n "$APP_CLIENT_ID" ] && [ -n "$APP_SLUG" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Native reviewer will post as github-actions[bot]; our reviewer posts as ${APP_SLUG}[bot] — identities are distinct."
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Native review skipped: without the CLAUDE_REVIEW_APP_* secrets this pipeline posts as github-actions[bot], which is the only identity the native pass can use here — sharing it would corrupt round-2 state reconstruction. Configure the review App (see prompts/setup-review.md, Step 6) to enable the second opinion, or set native_review: off to silence this notice."
-          fi
-
-      # workflow_dispatch's github.sha is NOT the PR head — resolve via API
-      # and re-verify the head lives in this repo (fork guard for dispatch).
-      - name: Resolve PR head SHA
-        id: pr_sha
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-        run: |
-          set -euo pipefail
-          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid,headRepositoryOwner,headRepository,author)
-          SHA=$(jq -r '.headRefOid // empty' <<< "$PR_JSON")
-          HEAD_OWNER=$(jq -r '.headRepositoryOwner.login // empty' <<< "$PR_JSON")
-          HEAD_NAME=$(jq -r '.headRepository.name // empty' <<< "$PR_JSON")
-          HEAD_REPO="$HEAD_OWNER/$HEAD_NAME"
-
-          if [ -z "$SHA" ]; then
-            echo "::error::Could not resolve PR head SHA for PR #$PR_NUMBER"
-            exit 1
-          fi
-          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
-            echo "::error::PR #$PR_NUMBER head is in $HEAD_REPO, not $GITHUB_REPOSITORY. Fork PRs are not supported — the PR head must be in the same repository."
-            exit 1
-          fi
-
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "Resolved PR #$PR_NUMBER head SHA: $SHA (origin $HEAD_REPO)"
-
-      # fetch-depth: 0 is load-bearing here, not copied habit: the `code-review`
-      # plugin reads `git log` and `git blame` to judge intent and ownership, and a
-      # shallow clone degrades that SILENTLY — the tools succeed, they just see one
-      # commit. `filter: blob:none` matches the review job's checkout: history is
-      # complete, and the few historical blobs a blame actually touches are
-      # backfilled on demand.
-      - name: Checkout PR head
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.pr_sha.outputs.sha }}
-          fetch-depth: 0
-          filter: blob:none
-
-      # Both install variants are replicated because this job needs exactly one
-      # thing from the pipeline — `.review-scripts/pick-oauth-token.sh` — and a
-      # reusable workflow cannot observe its own ref: DOGFOOD installs from the
-      # local checkout, DOWNSTREAM installs at pipeline_ref.
-      - name: Install review pipeline (dogfood — local checkout)
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true' && github.repository == 'panenco/claude-review'
-        uses: ./
-
-      - name: Checkout review pipeline at pipeline_ref (downstream)
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true' && github.repository != 'panenco/claude-review'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: panenco/claude-review
-          ref: ${{ inputs.pipeline_ref }}
-          path: __claude-review-pipeline
-
-      - name: Install review pipeline (downstream — at pipeline_ref)
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true' && github.repository != 'panenco/claude-review'
-        uses: ./__claude-review-pipeline
-
-      # Honour the SAME deterministic gate the review job runs, so the two reviewers
-      # agree about what is worth reviewing at all: a human who labels a PR
-      # `gate_skip_label` (default `skip-review`) silences BOTH, and a PR over the
-      # oversized ceilings — which our own reviewer refuses with a canned "split this
-      # PR" — does not quietly burn a native pass either. Same script, no
-      # reimplementation: `.review-scripts/review-plan.sh` is the single source of
-      # truth for the gate and is unit-tested in tests/review_plan_test.sh.
-      #
-      # Placed AFTER the pipeline install (that is where the script lands) and BEFORE
-      # the CLI install and token picker, so a skipped PR pays for neither the ~500 MB
-      # CLI download nor a quota probe against the subscription window.
-      #
-      # DELIBERATELY gates on `review_level == skip` ONLY. `light`/`nonruntime` — a
-      # docs-or-tests PR — still gets the native pass: it is cheap, and a second
-      # opinion on a "just docs" PR that turns out to touch a workflow or a lockfile
-      # is exactly where a cheap pass earns its keep. Do not widen this to `light`.
-      - name: Resolve review plan
-        id: review_plan
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
-          GATE_DEEP_LABEL: ${{ inputs.gate_deep_label }}
-          GATE_SMALL_CEILING: ${{ inputs.gate_small_ceiling }}
-          GATE_TINY_CEILING: ${{ inputs.gate_tiny_ceiling }}
-          GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
-          GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
-          GATE_SENSITIVE_GLOBS: ${{ inputs.gate_sensitive_globs }}
-          GATE_PROMOTION_BASES: ${{ inputs.gate_promotion_bases }}
-          GATE_PROMOTION_HEADS: ${{ inputs.gate_promotion_heads }}
-        run: |
-          set -uo pipefail
-          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --json files,baseRefName,headRefName,labels)
-          GATE_FILES_TSV=$(jq -r '.files[] | "\(.path)\t\(.additions)\t\(.deletions)"' <<< "$PR_JSON")
-          GATE_BASE_REF=$(jq -r '.baseRefName // ""' <<< "$PR_JSON")
-          GATE_HEAD_REF=$(jq -r '.headRefName // ""' <<< "$PR_JSON")
-          GATE_LABELS=$(jq -r '.labels[].name' <<< "$PR_JSON")
-          export GATE_FILES_TSV GATE_BASE_REF GATE_HEAD_REF GATE_LABELS
-          PLAN=$(.review-scripts/review-plan.sh)
-          echo "Review plan:"; echo "$PLAN" | sed 's/^/  /'
-          grep -E '^review_level=' <<< "$PLAN" >> "$GITHUB_OUTPUT"
-          if [ "$(grep -E '^review_level=' <<< "$PLAN" | cut -d= -f2-)" = "skip" ]; then
-            echo "::notice::Native review skipped: the review plan resolved to review_level=skip ($(grep '^reason=' <<< "$PLAN" | cut -d= -f2-)). The same gate skips this pipeline's own reviewer, so both reviewers are silent on this PR by design."
-          fi
-
-      # The token picker probes each token with the CLI, so the CLI has to exist
-      # before claude-code-action installs its own. It is ALSO handed to the action
-      # now (see the note on the step below) so the action skips its own download.
-      - name: Install Claude CLI (for OAuth token picker)
-        id: claude_cli
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true' && steps.review_plan.outputs.review_level != 'skip'
-        shell: bash
-        run: |
-          # Self-heal a root-owned ~/.local (a root-run step that inherited $HOME, or a
-          # runner image that ships one) — the installer only surfaces it as EACCES.
-          mkdir -p "$HOME/.local/share" 2>/dev/null || true
-          [ -w "$HOME/.local/share" ] || sudo -n chown -R "$(id -u):$(id -g)" "$HOME/.local" 2>/dev/null || true
-          if [ -x "$HOME/.local/bin/claude" ]; then
-            echo "Claude CLI already installed: $("$HOME/.local/bin/claude" --version)"
-          else
-            curl -fsSL https://claude.ai/install.sh | bash
-            "$HOME/.local/bin/claude" --version
-          fi
-          # Same handover the review job does, and emitted the same way: only when
-          # the binary is really executable, so a skipped or failed install leaves
-          # the input empty and the action installs for itself exactly as before.
-          if [ -x "$HOME/.local/bin/claude" ]; then
-            echo "path=$HOME/.local/bin/claude" >> "$GITHUB_OUTPUT"
-          fi
-          # The other half of the same handover. Wiring only the CLI would leave
-          # this job re-downloading bun-linux-x64.zip every run while its sibling
-          # does not — measured on this PR's own review, where setup-bun still ran.
-          # NO version-skew risk here, unlike the CLI: the image bakes exactly the
-          # version the action's `bun-version:` pins (BUN_VERSION in versions.env).
-          if [ -x "$HOME/.local/bin/bun" ]; then
-            echo "bun=$HOME/.local/bin/bun" >> "$GITHUB_OUTPUT"
-            echo "Baked Bun: $("$HOME/.local/bin/bun" --version)"
-          fi
-
-      # REQUIRED, not an optimisation. Consumers may configure only the
-      # CLAUDE_CODE_OAUTH_TOKENS pool and never the single CLAUDE_CODE_OAUTH_TOKEN
-      # secret, so reading that secret raw would hand the action an empty token and
-      # fail the job. The picker probes the pool and exports the chosen token to
-      # $GITHUB_ENV, which the action step below reads.
-      #
-      # Budget note: both review jobs now draw on the SAME 5-hour subscription
-      # window, so per-PR token consumption roughly doubles. If reviews start
-      # hitting the window, add a token to the pool or set `native_review: off`.
-      - name: Pick Claude OAuth token
-        id: token_picker
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true' && steps.review_plan.outputs.review_level != 'skip'
-        shell: bash
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_CODE_OAUTH_TOKENS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKENS }}
-        run: .review-scripts/pick-oauth-token.sh
-
-      - name: Native review
-        if: steps.actor_gate.outputs.proceed == 'true' && steps.identity.outputs.run == 'true' && steps.review_plan.outputs.review_level != 'skip'
-        uses: anthropics/claude-code-action@ac7e24bf2938964b8ab203e417a2773802392ddd # v1.0.146
-        with:
-          # Exported to $GITHUB_ENV by the picker step above — same wiring as the
-          # review job. Never `secrets.CLAUDE_CODE_OAUTH_TOKEN` directly.
-          claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
-          # The runner's own token — NEVER `steps.review_identity`-style App token
-          # from the review job. It has to be a login DIFFERENT from ours: see the
-          # long note on the identity step above for why (round-state corruption)
-          # and why `claude[bot]` is out of reach without `id-token: write`.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Installs the official `code-review` plugin so `/code-review` exists in CI.
-          #
-          # UNPINNED ON PURPOSE — an ACCEPTED trade-off, declared in `bugbot.md`
-          # ("Accepted supply-chain trade-offs"). Do not re-flag it every round, and
-          # do not "fix" it by inventing a ref suffix: the action REJECTS one.
-          #
-          # Every other third-party reference in this file is SHA-pinned, and
-          # `.github/review-config.md` requires that of new Actions YAML. This input
-          # is the one place it cannot be honoured today, verified against the pinned
-          # action at ac7e24bf (base-action/src/install-plugins.ts):
-          #   * `MARKETPLACE_URL_REGEX` is anchored `/^https:\/\/[...]+\.git$/`, so
-          #     `...public.git@<sha>`, `...public.git#<ref>` and `...public.git?ref=`
-          #     all fail validation with "Invalid marketplace URL format".
-          #   * `addMarketplace()` shells out to exactly `claude plugin marketplace
-          #     add <url>` — no ref argument is passed and the action exposes no input
-          #     for one. `claude plugin marketplace add --help` (CLI 2.1.234) offers
-          #     only `--scope` and `--sparse`; there is no `--ref`/`--sha`.
-          #   * Claude Code's docs state git-based MARKETPLACE sources support `ref`
-          #     (branch/tag) but not `sha`, and `ref` only exists in the
-          #     `extraKnownMarketplaces` object form in settings.json, which this
-          #     input cannot express.
-          #   * `anthropics/claude-plugins-public` publishes no tags and no releases,
-          #     so even `ref` would only buy another moving pointer.
-          # Revisit when the action grows a ref/sha input (or the marketplace starts
-          # tagging releases) — then pin here in the usual `# v1.2.3` house style.
-          plugin_marketplaces: |
-            https://github.com/anthropics/claude-plugins-public.git
-          plugins: |
-            code-review@claude-plugins-official
-          # Same bot-actor policy as the review job, enforced inside the action too.
-          allowed_bots: ${{ inputs.allowed_bots }}
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-
-            Run /code-review on this pull request.
-
-            Note: the PR branch is already checked out in the current working directory.
-
-            ${{ inputs.native_review_scope != '' && format('Scope: {0}', inputs.native_review_scope) || '' }}
-
-            Weight this pass toward security and correctness — that is the class of
-            defect this second opinion exists to catch. Look hardest at missing or
-            weakened authorization checks, tenant and ownership isolation, injection
-            (SQL, command, template, path), secret and credential handling, database
-            privilege management in migrations, and abuse or rate limits dropped as
-            collateral of an unrelated change.
-
-            Place your findings as inline comments on the exact lines that have to
-            change, using mcp__github_inline_comment__create_inline_comment. Post the
-            summary as a single PR comment, and pass the PR number explicitly:
-            `gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body "..."`.
-            That exact shape is the ONLY permitted form: the number first, then
-            `--body`. `-b`, a leading `--repo`, or a bare `gh pr comment` are all
-            denied and your summary would be lost. (`--body-file` is fine — it shares
-            the `--body` prefix.) Only comment on lines this PR actually modified.
-          # Read-only tool set (plus the inline-comment MCP tool) — this job reviews,
-          # it never writes to the tree.
-          #
-          # Deliberately NO `Bash(gh api:*)`, even though the hr4cast job this is
-          # modelled on grants it. This agent's entire input is attacker-controlled:
-          # a PR's diff, file contents, title, body and comments all come from
-          # whoever opened it, which is precisely where a prompt-injection payload
-          # lives. `gh api` is a raw passthrough to any REST/GraphQL call, so with
-          # this job's `pull-requests: write` + `issues: write` it would reach far
-          # past posting comments — closing PRs, rewriting titles or base branches,
-          # dismissing reviews, editing labels, commenting on unrelated issues.
-          # Nothing the prompt asks for needs it: the inline-comment MCP tool and
-          # `gh pr comment` cover every documented write, and `gh pr view/diff/list`
-          # + `gh search` cover the reads. Found by the native pass reviewing its own
-          # PR (#94) — do not add it back.
-          #
-          # `--permission-mode dontAsk` is what makes that allowlist BIND, and it is
-          # not optional. Without it the session runs in Manual mode, where
-          # `--allowedTools` merely AUTO-APPROVES what it lists: anything unlisted
-          # falls through to a `canUseTool` callback, which claude-code-action never
-          # supplies. Under `dontAsk` that step is skipped and the call is denied
-          # outright. The review job above has always set this; the narrowing here is
-          # decorative without it. `--disallowedTools` then pins the few we most want
-          # unreachable — deny rules are evaluated before allow rules and cannot be
-          # widened by anything downstream.
-          #
-          # `gh pr comment` is pinned to THIS PR's number, not left open as
-          # `Bash(gh pr comment:*)`. Bash allow-patterns match on command prefix, so
-          # the unpinned form leaves the PR number as a free argument — and this job
-          # reads attacker-controlled content by design, so an injected payload could
-          # steer the one write verb it holds onto an unrelated PR in the repo, under
-          # a `pull-requests: write` token. The number is already known at dispatch.
-          #
-          # The boundary is `--body`, NOT a space. These patterns match on command
-          # PREFIX, so the bare `gh pr comment 94:*` also matched `gh pr comment 940`,
-          # `941`, `9400` — any PR whose number merely extends this one's. Folding the
-          # next literal flag in gives a real boundary: `gh pr comment 940 --body …`
-          # does not start with `gh pr comment 94 --body`. The cost is that the agent
-          # must emit that exact shape, which the prompt above mandates.
-          #
-          # Do NOT "simplify" this back to a trailing space. That was tried (f207b96)
-          # and measured on run 32174248048: the matcher does not treat a trailing
-          # space as an argument boundary, so the write was denied under `dontAsk` and
-          # the summary comment silently VANISHED — while inline comments, which go
-          # through the MCP tool, kept posting. The job stayed green and lost half its
-          # output. Reverted in accc8b0. Any change to this pattern must be verified by
-          # confirming a summary comment actually appears on the next run.
-          #
-          # THE ROBUST FIX — drop the Bash write verb entirely and post the summary
-          # through a PR-scoped MCP tool — WAS INVESTIGATED AT THE PINNED ACTION SHA
-          # (ac7e24bf) AND IS NOT REACHABLE FROM THIS JOB. Do not re-propose it
-          # without re-reading the source; the trail is:
-          #   * The action ships exactly one summary-comment tool,
-          #     `mcp__github_comment__update_claude_comment`
-          #     (src/mcp/github-comment-server.ts). The full MCP inventory across
-          #     src/mcp/ is that tool plus `create_inline_comment`, `commit_files`,
-          #     `delete_files` and three read-only CI tools — there is NO tool that
-          #     creates a new general PR comment.
-          #   * That tool UPDATES a pre-existing tracking comment addressed by the
-          #     `CLAUDE_COMMENT_ID` env var, and throws
-          #     "CLAUDE_COMMENT_ID environment variable is required" without it.
-          #   * This job runs in AGENT mode (it passes `prompt:` on a `pull_request`
-          #     event — src/modes/detector.ts), and agent mode passes
-          #     `claudeCommentId: undefined  // No tracking comment in agent mode`
-          #     (src/modes/agent/index.ts:104), so install-mcp-server.ts never sets
-          #     the env var. The server is still registered — that is why naming the
-          #     tool in `--allowedTools` LOOKS like it works — but every call errors.
-          #   * `use_sticky_comment` (action.yml:112) is read only by
-          #     createInitialComment() (github/operations/comments/create-initial.ts),
-          #     which is called only from src/modes/tag/index.ts. It is inert in agent
-          #     mode; setting it here would change nothing.
-          #   * The only route to tag mode on a `pull_request` event is
-          #     `track_progress: true`, and it is strictly WORSE than this residual:
-          #     tag mode injects its own `--permission-mode acceptEdits` plus an
-          #     `--allowedTools` list containing `Bash(git add:*)`,
-          #     `Bash(git commit:*)`, the git-push wrapper and `Bash(git rm:*)`
-          #     (src/modes/tag/index.ts:123-175) — write verbs this job deliberately
-          #     withholds — it runs `checkHumanActor` and `setupBranch`, and it
-          #     demotes the prompt below to a `<custom_instructions>` appendix on the
-          #     action's own default tag-mode prompt
-          #     (src/create-prompt/index.ts:466-474). Trading a prefix-match residual
-          #     for auto-approved edits and git write verbs is a net loss.
-          # Residual accepted and declared in `bugbot.md`; revisit if the action ever
-          # exposes a comment id (or a create-PR-comment tool) to agent mode.
-          # The reads are deliberately NOT pinned: cross-PR reads are worth nothing to
-          # an attacker who, post fork-guard, is already a collaborator on this repo.
-          #
-          # `Task`/`Agent` stay unrestricted on purpose. The `code-review` plugin fans
-          # out to several subagents and does not work without them, and they are not
-          # an escape hatch: tool calls are authorised session-wide, so a subagent is
-          # held to this same allowlist. An agent definition's `tools:` frontmatter
-          # can only NARROW what the session permits, never widen it.
-          #
-          # HANDOVER RE-ENABLED (was deliberately off). The note here used to read:
-          # "Deliberately NO path_to_claude_code_executable: PR #86 proved that
-          # handing the action a CLI newer than the one it pins makes the top-level
-          # agent end a turn with prose and no tool call, which terminates the
-          # session and crashes the job." That was correct while #86 was unmerged
-          # and unguarded. #96 then made the yield impossible to end a review
-          # silently (scripts/require-review-json.sh, a Stop hook), #86 landed, and
-          # v3.5.0 shipped both — verified on a live review: the In-Depth job
-          # downloaded nothing, the orchestrator did not yield, and the PR got an
-          # APPROVED review.
-          #
-          # WHY IT IS WORTH RE-ENABLING: without it this job still pulls the action's
-          # pinned 2.1.175 on every review, ~520 MB over Cloud NAT. Measured on the
-          # first v3.5.0 run, `Installing Claude Code v2.1.175` appeared exactly once
-          # in the whole workflow — from THIS job — so it is roughly half of the
-          # ~$193/month #86 was worth (Panenco/github-action-runners#96).
-          #
-          # THE RESIDUAL RISK, STATED HONESTLY, because it is NOT the same as the
-          # review job's. #96's Stop hook is registered in the `review` job only, and
-          # it works by requiring /tmp/review.json — an artifact THIS job does not
-          # produce. `Native review` is also the last step here, with no gate after
-          # it, so where a yield crashed the In-Depth job LOUDLY (Post review + gate
-          # failed on the missing artifact), a yield here would be SILENT: fewer
-          # comments, green job. No guard was invented for it because `/code-review`
-          # may legitimately post nothing, and asserting otherwise would red the
-          # pipeline on a false positive — a worse failure than the one being fixed.
-          #
-          # What makes that acceptable rather than ignored: this job is the SECOND
-          # OPINION, not the gate — the In-Depth review is what blocks a merge, and
-          # it is the one that is guarded. A degraded second opinion is a quality
-          # regression, not a correctness one. If native reviews start looking thin,
-          # this input is the first thing to revert, and reverting it costs only the
-          # bytes.
-          path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
-          # Empty on any runner that does not bake Bun, which restores the action's
-          # own setup-bun step rather than breaking it. See the probe above.
-          path_to_bun_executable: ${{ steps.claude_cli.outputs.bun }}
-          claude_args: |
-            --permission-mode dontAsk
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Task,Agent,Bash(gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh search:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*),Bash(git show:*),Bash(git rev-parse:*)"
-            --disallowedTools "Bash(gh api:*),WebFetch,WebSearch,Edit,Write"
-            --model ${{ inputs.model_standard }}
 
   # pull_request_target writes cache to main scope. PR-code-free: checkout
   # lands on the BASE ref and `pnpm fetch` reads only the lockfile.

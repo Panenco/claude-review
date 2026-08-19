@@ -11,16 +11,18 @@ runs:
 
         # Verify the action download is complete — catch a broken release here
         # instead of a cryptic "skill not found" mid-review.
-        EXPECTED_SKILLS="review-context-builder review-orchestrator review-judge review-functional-tester"
+        EXPECTED_SKILLS="review-context-builder review-orchestrator review-judge review-functional-tester review-native"
         MISSING=""
         for s in $EXPECTED_SKILLS; do
           if [ ! -f "$PIPELINE_DIR/skills/${s}.md" ]; then
             MISSING="$MISSING skills/${s}.md"
           fi
         done
-        if [ ! -f "$PIPELINE_DIR/agents/review-functional-tester.md" ]; then
-          MISSING="$MISSING agents/review-functional-tester.md"
-        fi
+        for a in review-functional-tester review-native; do
+          if [ ! -f "$PIPELINE_DIR/agents/${a}.md" ]; then
+            MISSING="$MISSING agents/${a}.md"
+          fi
+        done
         if [ -n "$MISSING" ]; then
           echo "::error::panenco/claude-review install is incomplete — missing:$MISSING"
           echo "::error::Action download path: $PIPELINE_DIR"

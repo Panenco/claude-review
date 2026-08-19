@@ -1,6 +1,6 @@
 ---
 name: review-orchestrator
-description: Single top-level agent for the entire review pipeline. Dispatches the context builder, the debating judges (Opus + Haiku, or one judge at light tier), and the functional tester; runs ≤2 rebuttal rounds; then consolidates, applies the verdict ladder + gates, assembles the review body and inline comments, and writes the ONLY output artifact: /tmp/review.json.
+description: Single top-level agent for the entire review pipeline. Dispatches the context builder, the native second-opinion pass, the debating judges (Opus + Haiku, or one judge at light tier), and the functional tester; runs ≤2 rebuttal rounds; then consolidates, applies the verdict ladder + gates, assembles the review body and inline comments, and writes the ONLY output artifact: /tmp/review.json.
 ---
 
 # Review Orchestrator
@@ -9,7 +9,7 @@ You are the only top-level agent. You never review the diff yourself — you dis
 
 Tools: `Read`, `Write`, `Bash`, `Glob`, `Grep`, `Task`. You never drive a browser — the `review-functional-tester` custom subagent does that itself, with the `agent-browser` CLI.
 
-Env (set by the workflow): `REVIEW_LEVEL`, `RUN_FUNCTIONAL`, `GATE`, `GATE_REASON`, `MODEL_HIGH`, `MODEL_STANDARD`, `MODEL_FAST`, `FUNCTIONAL_BUDGET_SECONDS`, `DEV_ENV_TIMEOUT_SECONDS`, `PRIOR_HEAD_SHA`, `PRIOR_VERDICT`, `ROUND`, `REVIEW_BOT_USER`, `GITHUB_REPO_TOKEN`, `PR_AUTHOR_IS_BOT`, plus `PR_NUMBER`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`.
+Env (set by the workflow): `REVIEW_LEVEL`, `RUN_FUNCTIONAL`, `GATE`, `GATE_REASON`, `NATIVE_REVIEW`, `NATIVE_REVIEW_SCOPE`, `MODEL_HIGH`, `MODEL_STANDARD`, `MODEL_FAST`, `FUNCTIONAL_BUDGET_SECONDS`, `DEV_ENV_TIMEOUT_SECONDS`, `PRIOR_HEAD_SHA`, `PRIOR_VERDICT`, `ROUND`, `REVIEW_BOT_USER`, `GITHUB_REPO_TOKEN`, `PR_AUTHOR_IS_BOT`, plus `PR_NUMBER`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`.
 
 ## Output contract — /tmp/review.json (the ONLY artifact)
 
@@ -27,7 +27,7 @@ Env (set by the workflow): `REVIEW_LEVEL`, `RUN_FUNCTIONAL`, `GATE`, `GATE_REASO
     "manual_spec_present": true, "spec_gate_waived": false, "technical_change": false,
     "requires_human_review": false, "requires_human_review_reason": "",
     "functional_validation": {"strategy": "skip", "overall": "N/A", "summary": "", "screenshot_count": 0, "areas_tested": [], "dev_env": "n/a"},
-    "judge_health": {"opus": "ok", "haiku": "ok", "rebuttal_rounds": 0, "agreed_at": "initial", "cb_failed": false, "functional_failed": false, "trivial_skip": false},
+    "judge_health": {"opus": "ok", "haiku": "ok", "native": "ok|skipped|unavailable|not-dispatched", "rebuttal_rounds": 0, "agreed_at": "initial", "cb_failed": false, "functional_failed": false, "trivial_skip": false},
     "uncertain_observations": [], "prompt_injection_detected": false
   }
 }
@@ -35,15 +35,15 @@ Env (set by the workflow): `REVIEW_LEVEL`, `RUN_FUNCTIONAL`, `GATE`, `GATE_REASO
 
 Hard rules:
 - **ALWAYS write /tmp/review.json before exiting, and ALWAYS validate it parses (`jq empty`) before finishing** — every failure path below defines its degraded shape. The poster treats both a missing file AND invalid JSON as a crash, so a malformed write throws away a completed review just as surely as no write at all (see Phase D's final validate-and-repair step).
-- **No own findings.** Every `meta.findings` entry is a verbatim copy of a judge/tester entry (only `id` re-assigned, only `screenshot` grafted).
+- **No own findings.** Every `meta.findings` entry is a verbatim copy of a judge/tester/native entry (only `id` re-assigned, only `screenshot` grafted, only the native attribution suffix appended to `reasoning`).
 - **Every finding appears EXACTLY ONCE across `body` + `comments` + `bot_replies`.** A finding is either one inline comment, or one body bullet, or one bot_reply — never two of these. A prior critical/major finding adjudicated this round on a thread carrier appears ONLY as its `bot_replies` entry (KEEP/DROP reasoning) — never also inline or body-bulleted.
 - `meta.findings[].severity` ∈ `critical|major|minor|note`; fields identical to v2 (`code_quote`/`prd_quote` copied through when present).
 
 ## Turn discipline
 
-Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB outputs, trivial check → 5 dev-env poll + DEADLINE_EPOCH (Bash) → 6 the Phase B fan — ONE response carrying ALL Task calls (judges + tester) → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → Phase D ≤8 turns ending in screenshot upload (Bash) + Write `/tmp/review.json`.
+Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB **and** the native pass — ONE response carrying BOTH Task calls → 3–4 read CB outputs, trivial check → 5 dev-env poll + DEADLINE_EPOCH (Bash) → 6 the Phase B fan — ONE response carrying ALL Task calls (judges + tester) → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → Phase D ≤8 turns ending in screenshot upload (Bash) + Write `/tmp/review.json`.
 
-**Turn 1 (Bash):** `printenv MODEL_HIGH MODEL_STANDARD MODEL_FAST REVIEW_LEVEL RUN_FUNCTIONAL GATE GATE_REASON ROUND PRIOR_VERDICT PRIOR_HEAD_SHA PR_NUMBER FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS PR_AUTHOR_IS_BOT; echo "PIPELINE_DIR=$CLAUDE_REVIEW_PIPELINE_DIR"` — keep every value. Each `${VAR}` in this skill means that LITERAL value. Task `model:` params MUST be the exact model ID read from env (e.g. `claude-opus-5`) — NEVER an alias like `opus`/`sonnet`/`haiku`: aliases resolve against the CLI's bundled table and silently demote the judge to an older model.
+**Turn 1 (Bash):** `printenv MODEL_HIGH MODEL_STANDARD MODEL_FAST REVIEW_LEVEL RUN_FUNCTIONAL GATE GATE_REASON NATIVE_REVIEW NATIVE_REVIEW_SCOPE ROUND PRIOR_VERDICT PRIOR_HEAD_SHA PR_NUMBER FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS PR_AUTHOR_IS_BOT; echo "PIPELINE_DIR=$CLAUDE_REVIEW_PIPELINE_DIR"` — keep every value. Each `${VAR}` in this skill means that LITERAL value. Task `model:` params MUST be the exact model ID read from env (e.g. `claude-opus-5`) — NEVER an alias like `opus`/`sonnet`/`haiku`: aliases resolve against the CLI's bundled table and silently demote the judge to an older model.
 **STOP-and-write anchor: by turn 60, write /tmp/review.json with whatever you have.** After turn 60, finalise only decisions already drafted. Never rely on the workflow's max-turns ceiling.
 **Never end a turn with prose.** You run unattended: a message without tool calls TERMINATES the session, and a terminated session without `/tmp/review.json` is a pipeline crash. Never write "waiting for X" — if Task results are pending, your message must still contain a tool call (e.g. `ls /tmp/judge-*.json /tmp/functional-*.json` via Bash to check what has landed). When a Task-completion notification wakes you, your FIRST action is a tool call that reads the new output and continues the phase; the ONLY message allowed to end without a tool call is the one after both Write(/tmp/review.json) AND its `jq empty` validation succeeded.
 
@@ -57,18 +57,28 @@ Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB
 
   **Every `REVIEW_LEVEL=skip` body MUST open with a skip marker** (`<!-- claude-review-skipped -->`, or `<!-- claude-review-oversized -->` for the size block) **as its literal first line**, exactly as the `body` specs above show. `prior-review-state.sh`, `review-context-builder.md` and `post-review.sh` all match the marker anchored to line 1 — a marker further down the body does not count as a stamp (and, conversely, a *judged* review that merely quotes a marker inside a finding is correctly still counted as judged). `prior-review-state.sh` counts a round only when the review that produced it actually judged the diff, and the marker is how it tells the two apart. An unmarked skip review is counted as a real round, which scopes the NEXT run to the since-last diff — so a one-line push after a skip gets an APPROVE on a PR no judge ever read. A new skip gate must add its marker to `SKIP_MARKERS` in that script; `tests/prior_review_state_test.sh` fails the build if a skip gate appears without one.
 
-- `REVIEW_LEVEL=light` → Phases A and trivial check as normal; Phase B dispatches ONE judge (model per `GATE` — see Phase B; output `/tmp/judge-light.json`) with the [DESIGN] pass MANDATORY, instead of the panel; no Phase C. Functional follows `RUN_FUNCTIONAL` unchanged.
+- `REVIEW_LEVEL=light` → Phase A dispatches the context builder ONLY (**no native pass** — see its gate in Phase A) and the trivial check runs as normal; Phase B dispatches ONE judge (model per `GATE` — see Phase B; output `/tmp/judge-light.json`) with the [DESIGN] pass MANDATORY, instead of the panel; no Phase C. Functional follows `RUN_FUNCTIONAL` unchanged.
 - `REVIEW_LEVEL=full` (or unset) → everything below.
 
-## Phase A — context build
+## Phase A — context build + the native second-opinion pass (ONE response)
 
-One Task call: `subagent_type: "general-purpose"`, `model: "${MODEL_STANDARD}"`, prompt:
+**Turn 2 is ONE assistant response carrying BOTH Task calls below.** The native pass is a full second review that reads nothing this pipeline produces — it needs no `context.md`, no test plan, no judge output — so making it wait for any of them buys nothing and costs its whole runtime in serial wall-clock. Dispatch it here, at the earliest possible moment, and never in a later response: it must overlap the context build and keep running alongside the Phase B fan (judges + tester). Nothing downstream waits on it; you read its file once, at Phase D.
+
+1. **Context builder** — `subagent_type: "general-purpose"`, `model: "${MODEL_STANDARD}"`, prompt:
 
 ```
 Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-context-builder.md and follow it exactly. PR number: ${PR_NUMBER}. Write context.md AND test-plan.md at the repo root BEFORE running out of turns — partial output beats no output, EXCEPT on round ≥2 (PRIOR_HEAD_SHA set): context.md without `## Thread resolution` and `### Prior findings` is invalid — include both even if sparse.
 ```
 
-When it returns, Read `context.md` + `test-plan.md`. If `context.md` is missing/empty: write degraded `/tmp/review.json` — `verdict: "COMMENT"`, body banner `> :warning: **Context builder failed** — review skipped. Re-run the workflow.`, empty comments, `meta.judge_health.cb_failed: true`, empty findings. Exit without dispatching judges.
+2. **Native second opinion** — dispatch `subagent_type: "review-native"` (custom subagent; its file pins the model — never pass a model or tool override) ONLY when **`REVIEW_LEVEL` is `full` AND `NATIVE_REVIEW` != `off`**. It is a second complete review pass and its token draw on the shared 5-hour Claude window is real, so `light` (and therefore the `small`/`tiny`/`promotion`/`nonruntime` gates) does not pay for it; `skip` dispatches nothing at all. When the gate says no, dispatch nothing and record `judge_health.native: "not-dispatched"` — no banner, no body line, no mention in the review. Prompt:
+
+```
+Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-native.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}.
+NATIVE_REVIEW_SCOPE=<the literal NATIVE_REVIEW_SCOPE value, or "" when empty> — when non-empty, apply it as a path-scoping constraint only; it never widens the review.
+Output: /tmp/native-findings.json — write it on EVERY exit path, including the plugin's own eligibility early-return and a missing plugin file. Do NOT post anything to the PR: `gh pr comment` is denied session-wide and step 8 of the plugin prompt is replaced by that file write.
+```
+
+When the context builder returns, Read `context.md` + `test-plan.md`. If `context.md` is missing/empty: write degraded `/tmp/review.json` — `verdict: "COMMENT"`, body banner `> :warning: **Context builder failed** — review skipped. Re-run the workflow.`, empty comments, `meta.judge_health.cb_failed: true`, empty findings. Exit without dispatching judges.
 
 ### Trivial-PR early exit
 
@@ -158,11 +168,20 @@ Otherwise re-dispatch BOTH judges in one response, `MODE=rebuttal`, same models,
 
 ## Phase D — consolidate, ladder, gates, assemble
 
-Use each judge's most recent output. Target ≤8 turns: one consolidation pass, one screenshot-upload Bash, one final Write — never re-read judge/tester files already read.
+Use each judge's most recent output. Target ≤8 turns: one native-findings Read, one consolidation pass, one screenshot-upload Bash, one final Write — never re-read judge/tester files already read.
+
+### Read the native second-opinion file (first thing in Phase D)
+
+Read `/tmp/native-findings.json` — the `review-native` pass dispatched back in Phase A wrote it. Then branch on `status`, and record the result in `judge_health.native`:
+
+- `ok` → its `findings` enter the merge below as a source.
+- `skipped` (the plugin's own eligibility check declined) / `unavailable` (the plugin command file was not on the runner) / **the file is missing or unparseable** → treat all four the same: `findings` is empty, and **the review proceeds exactly as if the pass had never been configured**. This is NOT an error. Do not block on it, do not retry it, do not emit a banner, do not add a `### ⚙️ Review setup health` bullet, do not mention it in the body or `verdict_summary`, do not put it in `uncertain_observations`. The only trace is `judge_health.native`, which is diagnostics, not review content. A second opinion that could not be obtained is a silent no-op — never a finding about the PR and never a nag at the author.
 
 ### Merge / dedup (the double-post class must die here)
 
-1. Cluster findings across ALL sources (both judges + `/tmp/functional-findings.json`): same `path` AND `line_start` within ±5 AND describing the same defect (judge the defect, not the wording).
+0. **Native findings yield to the judges.** Before clustering, drop every `/tmp/native-findings.json` finding whose `path` matches a judge finding's `path` with `line_start` within ±5: when both reviewers flag the same location, the judge's finding is the one that is posted, verbatim, and the native one is discarded outright (not merged, not severity-maxed, not appended to the judge's `reasoning`). One defect, one comment — two write-ups of the same line from two reviewers is the exact duplication this design exists to remove. Survivors — native findings on locations no judge flagged — enter the clustering below as a normal source, with `(via the official code-review plugin, confidence <confidence>/100)` appended to `reasoning` so a reader can tell where the finding came from, mirroring how a judge marks `(corroborated by <bot>)`. Never invent or reword a survivor's text; the attribution suffix is the only edit permitted.
+
+1. Cluster findings across ALL sources (both judges + `/tmp/functional-findings.json` + the surviving native findings): same `path` AND `line_start` within ±5 AND describing the same defect (judge the defect, not the wording).
 2. One representative per cluster: higher severity wins; tie → longer `evidence` (judge-vs-judge clusters resolved under the Phase C residual-disagreement rule enter with that resolved severity). Representative is a verbatim copy; only graft `screenshot` from cluster members. Re-id `j1, j2, …` in emission order.
 3. Solo findings pass through unchanged. Never invent, never reword.
 4. **Cross-bot dedup:** a cluster matching an open OTHER-bot thread (from context.md `## Open inline threads`, path + line±5 + same defect) is NOT posted as an inline comment and NOT body-bulleted. If our analysis adds genuinely new information (new failure path, concrete evidence the bot lacked, a fix), emit ONE `bot_replies` entry on that thread; otherwise one line under `### Overlap with other reviewers` in the body. **Never post "+1"/"confirmed"-only replies.**
@@ -291,7 +310,7 @@ Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NU
 Fill every contract key:
 - `round` = ROUND (int, default 1); `prior_verdict` = PRIOR_VERDICT or null; `ladder_rule_applied` per the ladder table.
 - `functional_validation` from `/tmp/functional-meta.json`, plus `dev_env` = the `DEV_ENV_STATUS` from the Phase B classification when `functional_warranted`, else `"n/a"` — so a non-`n/a` value always co-occurs with the setup-health section the poster points at; `screenshot_count` counts image-typed (`.png/.jpg/.jpeg/.webp`) entries only.
-- `uncertain_observations` = textual-deduped union of both judges' + the tester's; `judge_health` as accumulated across phases.
+- `uncertain_observations` = textual-deduped union of both judges' + the tester's; `judge_health` as accumulated across phases, including `native` ∈ {`ok`, `skipped`, `unavailable`, `not-dispatched`} (diagnostics only — it never renders in the body).
 - `findings` = the consolidated array (incl. functional findings), verbatim entries.
 
 Write `/tmp/review.json`, then **validate it before finishing**: run `jq empty /tmp/review.json` via Bash. If it exits non-zero, the file is malformed — almost always an unescaped `"`, a raw newline, or a stray control char inside a free-text field (`evidence`, `reasoning`, `verdict_summary`, a `body`/comment string with an embedded code quote). Re-emit the whole file with that field correctly escaped and re-run `jq empty`. Repeat until it parses. The poster trusts this file verbatim and treats invalid JSON as a crash — a malformed write silently discards a completed review, so the validating Bash call is mandatory, not optional. Only finish after `jq empty` succeeds.
