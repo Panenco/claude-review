@@ -41,7 +41,7 @@ Hard rules:
 
 ## Turn discipline
 
-Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB **and** the native pass — ONE response carrying BOTH Task calls → 3–4 read CB outputs, trivial check → 5 dev-env poll + DEADLINE_EPOCH (Bash) → 6 the Phase B fan — ONE response carrying ALL Task calls (judges + tester) → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → Phase D ≤8 turns ending in screenshot upload (Bash) + Write `/tmp/review.json`.
+Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB (Task) → 3–4 read CB outputs, trivial check → 5 dev-env poll + DEADLINE_EPOCH (Bash) → 6 the Phase B fan — ONE response carrying ALL Task calls (judges + tester + native) → 7–12 read outputs, agreement check → 13–22 rebuttal (only on disagreement) → Phase D ≤8 turns ending in screenshot upload (Bash) + Write `/tmp/review.json`.
 
 **Turn 1 (Bash):** `printenv MODEL_HIGH MODEL_STANDARD MODEL_FAST REVIEW_LEVEL RUN_FUNCTIONAL GATE GATE_REASON NATIVE_REVIEW NATIVE_REVIEW_SCOPE ROUND PRIOR_VERDICT PRIOR_HEAD_SHA PR_NUMBER FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS PR_AUTHOR_IS_BOT; echo "PIPELINE_DIR=$CLAUDE_REVIEW_PIPELINE_DIR"` — keep every value. Each `${VAR}` in this skill means that LITERAL value. Task `model:` params MUST be the exact model ID read from env (e.g. `claude-opus-5`) — NEVER an alias like `opus`/`sonnet`/`haiku`: aliases resolve against the CLI's bundled table and silently demote the judge to an older model.
 **STOP-and-write anchor: by turn 60, write /tmp/review.json with whatever you have.** After turn 60, finalise only decisions already drafted. Never rely on the workflow's max-turns ceiling.
@@ -57,25 +57,15 @@ Target ≤30 turns: 1 env read (Bash) → 2 dispatch CB **and** the native pass 
 
   **Every `REVIEW_LEVEL=skip` body MUST open with a skip marker** (`<!-- claude-review-skipped -->`, or `<!-- claude-review-oversized -->` for the size block) **as its literal first line**, exactly as the `body` specs above show. `prior-review-state.sh`, `review-context-builder.md` and `post-review.sh` all match the marker anchored to line 1 — a marker further down the body does not count as a stamp (and, conversely, a *judged* review that merely quotes a marker inside a finding is correctly still counted as judged). `prior-review-state.sh` counts a round only when the review that produced it actually judged the diff, and the marker is how it tells the two apart. An unmarked skip review is counted as a real round, which scopes the NEXT run to the since-last diff — so a one-line push after a skip gets an APPROVE on a PR no judge ever read. A new skip gate must add its marker to `SKIP_MARKERS` in that script; `tests/prior_review_state_test.sh` fails the build if a skip gate appears without one.
 
-- `REVIEW_LEVEL=light` → Phase A dispatches the context builder ONLY (**no native pass** — see its gate in Phase A) and the trivial check runs as normal; Phase B dispatches ONE judge (model per `GATE` — see Phase B; output `/tmp/judge-light.json`) with the [DESIGN] pass MANDATORY, instead of the panel; no Phase C. Functional follows `RUN_FUNCTIONAL` unchanged.
+- `REVIEW_LEVEL=light` → Phases A and trivial check as normal; Phase B dispatches ONE judge (model per `GATE` — see Phase B; output `/tmp/judge-light.json`) with the [DESIGN] pass MANDATORY, instead of the panel, **and no native pass** (see its gate in the Phase B fan); no Phase C. Functional follows `RUN_FUNCTIONAL` unchanged.
 - `REVIEW_LEVEL=full` (or unset) → everything below.
 
-## Phase A — context build + the native second-opinion pass (ONE response)
+## Phase A — context build
 
-**Turn 2 is ONE assistant response carrying BOTH Task calls below.** The native pass is a full second review that reads nothing this pipeline produces — it needs no `context.md`, no test plan, no judge output — so making it wait for any of them buys nothing and costs its whole runtime in serial wall-clock. Dispatch it here, at the earliest possible moment, and never in a later response: it must overlap the context build and keep running alongside the Phase B fan (judges + tester). Nothing downstream waits on it; you read its file once, at Phase D.
-
-1. **Context builder** — `subagent_type: "general-purpose"`, `model: "${MODEL_STANDARD}"`, prompt:
+One Task call: `subagent_type: "general-purpose"`, `model: "${MODEL_STANDARD}"`, prompt:
 
 ```
 Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-context-builder.md and follow it exactly. PR number: ${PR_NUMBER}. Write context.md AND test-plan.md at the repo root BEFORE running out of turns — partial output beats no output, EXCEPT on round ≥2 (PRIOR_HEAD_SHA set): context.md without `## Thread resolution` and `### Prior findings` is invalid — include both even if sparse.
-```
-
-2. **Native second opinion** — dispatch `subagent_type: "review-native"` (custom subagent; its file pins the model — never pass a model or tool override) ONLY when **`REVIEW_LEVEL` is `full` AND `NATIVE_REVIEW` != `off`**. It is a second complete review pass and its token draw on the shared 5-hour Claude window is real, so `light` (and therefore the `small`/`tiny`/`promotion`/`nonruntime` gates) does not pay for it; `skip` dispatches nothing at all. When the gate says no, dispatch nothing and record `judge_health.native: "not-dispatched"` — no banner, no body line, no mention in the review. Prompt:
-
-```
-Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-native.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}.
-NATIVE_REVIEW_SCOPE=<the literal NATIVE_REVIEW_SCOPE value, or "" when empty> — when non-empty, apply it as a path-scoping constraint only; it never widens the review.
-Output: /tmp/native-findings.json — write it on EVERY exit path, including the plugin's own eligibility early-return and a missing plugin file. Do NOT post anything to the PR: `gh pr comment` is denied session-wide and step 8 of the plugin prompt is replaced by that file write.
 ```
 
 When the context builder returns, Read `context.md` + `test-plan.md`. If `context.md` is missing/empty: write degraded `/tmp/review.json` — `verdict: "COMMENT"`, body banner `> :warning: **Context builder failed** — review skipped. Re-run the workflow.`, empty comments, `meta.judge_health.cb_failed: true`, empty findings. Exit without dispatching judges.
@@ -141,7 +131,9 @@ Outputs: /tmp/functional-findings.json + /tmp/functional-meta.json. Screenshots:
 
 ### The Task fan (one assistant response, multiple Task calls)
 
-Phase B dispatch is EXACTLY ONE assistant response containing ALL Task calls — both judges AND the functional tester together. Never dispatch the tester in a later response than the judges: audited runs serialized them and paid 6+ minutes of pure wall-clock loss.
+Phase B dispatch is EXACTLY ONE assistant response containing ALL Task calls — both judges AND the functional tester AND the native second-opinion pass, together. Never dispatch any of them in a later response than the others: audited runs serialized the tester behind the judges and paid 6+ minutes of pure wall-clock loss.
+
+**Why the native pass is dispatched HERE and not at Phase A.** It reads nothing this pipeline produces — no `context.md`, no test plan, no judge output — so it *could* start at turn 2. It must not. Task calls issued in one response return together, so dispatching it alongside the context builder would hold the entire Phase B fan behind the slower of the two: wall clock becomes `max(CB, native) + max(judges, tester)` (~4 + ~8 → ~20 min against a ~15 min baseline), and the review gets LONGER — the one outcome this whole design exists to avoid. In the fan it overlaps the work that already dominates the run: `CB + max(judges, tester, native)` ≈ 16 min. That holds whether or not the running CLI backgrounds subagents, which is version-dependent and is precisely the assumption that crashed the pipeline on 2026-08-12. Do not "optimise" this back to turn 2.
 
 **Round-2 trivial-delta shortcut:** when `ROUND ≥ 2` and the (since-last-scoped) `## Per-file diff index` is all non-runtime OR a single small runtime file (a handful of changed lines), dispatch ONE high-tier judge (`model: "${MODEL_HIGH}"`, [DESIGN] MANDATORY, `OUTPUT_PATH=/tmp/judge-light.json`) instead of the panel and skip Phase C — round 1 already reviewed the full PR with both judges, and the round-2 ladder runs identically on one judge. Functional follows the normal dispatch decision (a docs/trivial since-last delta already yields `## Strategy: skip`).
 
@@ -151,6 +143,12 @@ Phase B dispatch is EXACTLY ONE assistant response containing ALL Task calls —
    ```
 2. **Judge-Haiku** — same prompt, `model: "${MODEL_FAST}"`, `OUTPUT_PATH=/tmp/judge-haiku.json`, and "The [DESIGN] pass is optional for you." At `light`: replace 1–2 with ONE judge — `model: "${MODEL_HIGH}"` when `GATE` ∈ {`small`, `tiny`} (runtime code, just small — full single-judge quality), `model: "${MODEL_STANDARD}"` when `GATE=promotion` (any other GATE, incl. `nonruntime` → `${MODEL_STANDARD}`) — `OUTPUT_PATH=/tmp/judge-light.json`, and "The [DESIGN] pass is MANDATORY for you."
 3. **Functional tester** — per the decision above.
+4. **Native second opinion** — dispatch `subagent_type: "review-native"` (custom subagent; its file pins the model — never pass a model or tool override) ONLY when **`REVIEW_LEVEL` is `full` AND `NATIVE_REVIEW` != `off`**. It is a second complete review pass and its token draw on the shared 5-hour Claude window is real, so `light` (and therefore the `small`/`tiny`/`promotion`/`nonruntime` gates) does not pay for it; `skip` dispatches nothing at all. When the gate says no, dispatch nothing and record `judge_health.native: "not-dispatched"` — no banner, no body line, no mention in the review. Prompt:
+   ```
+   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-native.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}.
+   NATIVE_REVIEW_SCOPE=<the literal NATIVE_REVIEW_SCOPE value, or "" when empty> — when non-empty, apply it as a path-scoping constraint only; it never widens the review.
+   Output: /tmp/native-findings.json — write it on EVERY exit path, including the plugin's own eligibility early-return and a missing plugin file. Do NOT post anything to the PR: `gh pr comment` is denied session-wide and step 8 of the plugin prompt is replaced by that file write.
+   ```
 
 Wait for every dispatched Task.
 
@@ -172,7 +170,7 @@ Use each judge's most recent output. Target ≤8 turns: one native-findings Read
 
 ### Read the native second-opinion file (first thing in Phase D)
 
-Read `/tmp/native-findings.json` — the `review-native` pass dispatched back in Phase A wrote it. Then branch on `status`, and record the result in `judge_health.native`:
+Read `/tmp/native-findings.json` — the `review-native` pass dispatched in the Phase B fan wrote it. Then branch on `status`, and record the result in `judge_health.native`:
 
 - `ok` → its `findings` enter the merge below as a source.
 - `skipped` (the plugin's own eligibility check declined) / `unavailable` (the plugin command file was not on the runner) / **the file is missing or unparseable** → treat all four the same: `findings` is empty, and **the review proceeds exactly as if the pass had never been configured**. This is NOT an error. Do not block on it, do not retry it, do not emit a banner, do not add a `### ⚙️ Review setup health` bullet, do not mention it in the body or `verdict_summary`, do not put it in `uncertain_observations`. The only trace is `judge_health.native`, which is diagnostics, not review content. A second opinion that could not be obtained is a silent no-op — never a finding about the PR and never a nag at the author.

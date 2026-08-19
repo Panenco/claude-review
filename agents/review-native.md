@@ -16,7 +16,7 @@
 # `Bash(gh pr comment:*)`), and this `tools:` frontmatter can only NARROW what the
 # session permits, never widen it.
 name: review-native
-description: Runs the OFFICIAL Anthropic `code-review` plugin prompt as an in-session second-opinion pass. Spawned by the review orchestrator alongside the context builder, the judges and the functional tester. Locates the installed plugin command file at runtime, follows its steps 1-7 verbatim (including the >=80 confidence filter), and writes /tmp/native-findings.json instead of commenting on the PR.
+description: Runs the OFFICIAL Anthropic `code-review` plugin prompt as an in-session second-opinion pass. Spawned by the review orchestrator in the Phase B fan, alongside the judges and the functional tester. Locates the installed plugin command file at runtime, follows its steps 1-7 verbatim (including the >=80 confidence filter), and writes /tmp/native-findings.json instead of commenting on the PR.
 model: ${MODEL_STANDARD}
 tools: Bash, Read, Write, Glob, Grep, Task
 ---
