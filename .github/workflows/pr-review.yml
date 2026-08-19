@@ -814,28 +814,59 @@ jobs:
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
             Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ github.event.pull_request.number || inputs.pr_number }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it drives the browser itself with the `agent-browser` CLI over Bash. The official Claude `code-review` plugin pass is pre-installed as the custom subagent type `review-native` — dispatch it via the Task tool in the SAME response as the judges and the functional tester (the Phase B fan, per NATIVE_REVIEW / REVIEW_LEVEL) so it overlaps them and adds no wall-clock; it writes /tmp/native-findings.json and NEVER posts to the PR. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
-          # `--disallowedTools` gains `Bash(gh pr comment:*)`, and that entry is
-          # LOAD-BEARING, not tidiness. Step 8 of the official `code-review` plugin
-          # prompt — which the `review-native` subagent reads verbatim and is told to
-          # follow — instructs the model to `gh pr comment` its findings onto the PR.
-          # We override that in `skills/review-native.md` (write a file instead), but
-          # an instruction is only an instruction: this deny rule makes the override
-          # STRUCTURAL, so a stray post cannot bypass the single-consolidated-comment
-          # contract even if the plugin's wording wins a turn. Deny rules are
-          # evaluated BEFORE allow rules and cannot be widened by anything downstream
-          # — not by a subagent, not by an agent definition's `tools:` frontmatter —
-          # and `--permission-mode dontAsk` is what makes the whole list BIND rather
-          # than merely auto-approve (in Manual mode `--allowedTools` only
-          # AUTO-APPROVES what it lists, and unlisted calls fall through to a
-          # `canUseTool` callback claude-code-action never supplies). This pipeline
-          # posts exactly ONE review, and `scripts/post-review.sh` is the only thing
-          # allowed to post it.
+          # ── THE SANDBOX. `--disallowedTools` is the ONLY thing standing between
+          # this job's write scopes and an untrusted prompt. ──
+          #
+          # This job holds `contents: write` + `pull-requests: write` +
+          # `issues: write`, and it runs the OFFICIAL `code-review` plugin prompt
+          # (the `review-native` subagent) — fetched at run time from an UNPINNABLE
+          # marketplace ref, fanned out over ~10 subagents, reading
+          # attacker-controlled PR titles, bodies, diffs and comments. Until this
+          # list was tightened, the deleted separate `Native Review` job's
+          # `contents: read` + narrow allowlist was the thing that made that safe;
+          # moving the plugin in-session lost that posture, and this list restores
+          # it. `gh pr review/edit/close`, `gh issue comment` and raw API writes
+          # were all reachable before.
+          #
+          # WHY IT CAN NOW DENY THE RAW API SUBCOMMAND. `--disallowedTools` is
+          # SESSION-WIDE: it cannot be scoped to one subagent, so it could not deny
+          # the raw `gh` API verb while OUR OWN agents still used it (12 call sites:
+          # 5 reads in `skills/review-context-builder.md`, 7 screenshot-upload writes
+          # in `skills/review-orchestrator.md`). Those are now extracted verbatim
+          # into `scripts/fetch-pr-threads.sh` and `scripts/upload-screenshots.sh`,
+          # invoked as `.review-scripts/<name>.sh` — reviewed, in-repo, and running
+          # as a plain shell command that no deny pattern for a `gh` subcommand
+          # matches. No agent in this pipeline needs the raw API verb any more, so
+          # nothing legitimate is caught.
+          #
+          # WHAT STAYS REACHABLE, on purpose: `gh pr view/diff/list`,
+          # `gh issue view`, `gh search`, `git log/blame/diff/show`. The plugin
+          # prompt's own notes tell it to use `gh` rather than web fetch, and the
+          # judges and context builder read the PR the same way. Denying those would
+          # break the review; denying the write verbs does not.
+          #
+          # WHY THE `gh pr comment` ENTRY IS LOAD-BEARING SPECIFICALLY: step 8 of the
+          # plugin prompt instructs the model to `gh pr comment` its findings onto
+          # the PR. `skills/review-native.md` overrides that (write a file instead),
+          # but an instruction is only an instruction — the deny rule makes the
+          # override STRUCTURAL, so a stray post cannot bypass the
+          # single-consolidated-comment contract even if the plugin's wording wins a
+          # turn. This pipeline posts exactly ONE review, and
+          # `scripts/post-review.sh` is the only thing allowed to post it.
+          #
+          # MECHANICS, so nobody "simplifies" this: deny rules are evaluated BEFORE
+          # allow rules and cannot be widened by anything downstream — not by a
+          # subagent, not by an agent definition's `tools:` frontmatter — and
+          # `--permission-mode dontAsk` is what makes the whole list BIND rather than
+          # merely auto-approve (in Manual mode `--allowedTools` only AUTO-APPROVES
+          # what it lists, and unlisted calls fall through to a `canUseTool` callback
+          # claude-code-action never supplies).
           claude_args: |
             --model ${{ inputs.model_standard }}
             --permission-mode dontAsk
             --setting-sources user
             --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch
-            --disallowedTools "Edit,WebFetch,WebSearch,Bash(gh pr comment:*)"
+            --disallowedTools "Edit,WebFetch,WebSearch,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr merge:*),Bash(gh pr ready:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue close:*),Bash(gh release:*),Bash(git push:*)"
             --max-turns 100
           show_full_output: "true"
           # Empty on any runner that does not bake Bun, which restores the action's

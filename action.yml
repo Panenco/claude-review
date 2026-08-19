@@ -34,7 +34,14 @@ runs:
         # ~/.claude/settings.json. It is checked here with the rest because a
         # missing hook fails OPEN — the review would run, yield, and crash with
         # no artifact, which is the exact 2026-08-12 failure it exists to stop.
-        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh require-review-json.sh; do
+        #
+        # fetch-pr-threads.sh and upload-screenshots.sh hold EVERY raw GitHub
+        # REST/GraphQL call the pipeline makes. They are checked here because the
+        # review session's `--disallowedTools` denies the raw `gh` API subcommand
+        # outright: without these files the context builder and the screenshot
+        # publisher have no fallback path at all, and the failure would surface as
+        # a mid-review "command not found" rather than an install error.
+        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh require-review-json.sh fetch-pr-threads.sh upload-screenshots.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1

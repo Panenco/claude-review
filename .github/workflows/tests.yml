@@ -8,6 +8,13 @@ on:
       - 'agents/**'
       - 'tests/**'
       - '.github/workflows/tests.yml'
+      # The suite asserts on the pipeline's WIRING too — that the workflow
+      # registers both stop hooks, that its deny list denies the raw `gh` API
+      # subcommand without catching the reads the plugin needs, and that
+      # action.yml verifies every script is installed. A wiring test that does
+      # not run when the wiring changes is not a test.
+      - 'action.yml'
+      - '.github/workflows/pr-review.yml'
 
 jobs:
   shell:
@@ -34,6 +41,15 @@ jobs:
 
       - name: Run post_review_test.sh
         run: bash tests/post_review_test.sh
+
+      - name: Run require_review_json_test.sh
+        run: bash tests/require_review_json_test.sh
+
+      - name: Run fetch_pr_threads_test.sh
+        run: bash tests/fetch_pr_threads_test.sh
+
+      - name: Run upload_screenshots_test.sh
+        run: bash tests/upload_screenshots_test.sh
 
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh

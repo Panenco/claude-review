@@ -229,29 +229,14 @@ The runtime-evidence gate runs first and may RAISE the verdict to REQUEST_CHANGE
 Copy any screenshot path referenced by `/tmp/functional-meta.json`/`-findings.json` that exists outside `/tmp/screenshots/` into it (basename match against the repo root). `AGENT_BROWSER_SCREENSHOT_DIR=/tmp/screenshots` makes strays rare, but a tester that passed an explicit path elsewhere still needs sweeping. Then run exactly:
 
 ```bash
-R="$GITHUB_REPOSITORY"; export GH_TOKEN="$GITHUB_REPO_TOKEN"
-ls /tmp/screenshots/*.png >/dev/null 2>&1 || exit 0
-BASE_SHA=$(gh api "repos/$R/git/refs/heads/review-assets" --jq '.object.sha' 2>/dev/null || true)
-BASE_TREE=""; [ -n "$BASE_SHA" ] && BASE_TREE=$(gh api "repos/$R/git/commits/$BASE_SHA" --jq '.tree.sha')
-ENTRIES="[]"
-for img in /tmp/screenshots/*.png; do
-  # A capture that failed mid-write leaves a truncated or empty file behind. Publishing one embeds
-  # a broken image in the review, so upload only what is actually a PNG. If `file` is unavailable
-  # the check passes, because dropping every screenshot is the worse failure.
-  MIME=$(file -b --mime-type "$img" 2>/dev/null || echo image/png)
-  [ "$MIME" = "image/png" ] || continue
-  B=$(basename "$img")
-  # stdin --input, not -f content= — the argv form silently drops blobs >~200 KB
-  SHA=$(base64 -w0 < "$img" | jq -Rs '{content: ., encoding: "base64"}' \
-    | gh api "repos/$R/git/blobs" --method POST --input - --jq '.sha') || continue
-  ENTRIES=$(echo "$ENTRIES" | jq --arg p "pr-${PR_NUMBER}/$B" --arg s "$SHA" '. + [{path:$p,mode:"100644",type:"blob",sha:$s}]')
-done
-[ "$(echo "$ENTRIES" | jq length)" -gt 0 ] || exit 0
-TREE=$(echo "$ENTRIES" | jq -c --arg bt "$BASE_TREE" 'if $bt == "" then {tree:.} else {base_tree:$bt,tree:.} end' \
-  | gh api "repos/$R/git/trees" --method POST --input - --jq '.sha')
-COMMIT=$(gh api "repos/$R/git/commits" --method POST -f message="Review screenshots (auto-replaced)" -f tree="$TREE" --jq '.sha')
-if [ -n "$BASE_SHA" ]; then gh api "repos/$R/git/refs/heads/review-assets" --method PATCH -f sha="$COMMIT" -F force=true >/dev/null
-else gh api "repos/$R/git/refs" --method POST -f ref="refs/heads/review-assets" -f sha="$COMMIT" >/dev/null; fi
+# The ONLY privileged GitHub API surface this pipeline has, and the reason the
+# raw-API `gh` subcommand is DENIED session-wide (see the deny list in
+# pr-review.yml): the official `code-review` plugin's prompt runs in THIS
+# session over attacker-controlled PR content, and a deny rule is the only
+# thing that binds the ~10 subagents it fans out to. The helper keeps the PNG
+# guard, the >200 KB-safe stdin blob upload, and the review-assets
+# create-vs-update split; it exits silently when there is nothing to publish.
+"${GITHUB_WORKSPACE:-.}/.review-scripts/upload-screenshots.sh"
 ```
 
 Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NUMBER}/<basename>` — this exact form renders on private repos; never use raw.githubusercontent.com. A finding whose screenshot failed to upload renders `*see [build artifacts](https://github.com/$R/actions/runs/$GITHUB_RUN_ID)*` instead of an image. Failure of this whole block is non-fatal — proceed without embeds.
