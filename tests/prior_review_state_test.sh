@@ -18,7 +18,10 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$ROOT/scripts/prior-review-state.sh"
 PLAN_SCRIPT="$ROOT/scripts/review-plan.sh"
 ORCHESTRATOR="$ROOT/skills/review-orchestrator.md"
-CONTEXT_BUILDER="$ROOT/skills/review-context-builder.md"
+# The context builder's prior-review filter moved out of the skill and into a
+# reviewed helper when the raw `gh` API subcommand was denied session-wide — the
+# markers now live in the script, so that is what this suite checks.
+CONTEXT_BUILDER="$ROOT/scripts/fetch-pr-threads.sh"
 POSTER="$ROOT/scripts/post-review.sh"
 fail=0
 
@@ -266,7 +269,7 @@ while IFS= read -r gate; do
   # it doesn't exclude the same markers, it resolves to a review that judged
   # nothing and reconstructs zero prior findings — forgiving real blockers.
   elif ! grep -qF "$marker" "$CONTEXT_BUILDER"; then
-    echo "FAIL: gate '$gate' marker $marker is not excluded by review-context-builder.md's prior-review filter"
+    echo "FAIL: gate '$gate' marker $marker is not excluded by fetch-pr-threads.sh's prior-review filter"
     fail=$((fail + 1))
   else
     echo "OK:   skip gate '$gate' → $marker (stamped, filtered by both consumers)"

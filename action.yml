@@ -11,16 +11,18 @@ runs:
 
         # Verify the action download is complete — catch a broken release here
         # instead of a cryptic "skill not found" mid-review.
-        EXPECTED_SKILLS="review-context-builder review-orchestrator review-judge review-functional-tester"
+        EXPECTED_SKILLS="review-context-builder review-orchestrator review-judge review-functional-tester review-native"
         MISSING=""
         for s in $EXPECTED_SKILLS; do
           if [ ! -f "$PIPELINE_DIR/skills/${s}.md" ]; then
             MISSING="$MISSING skills/${s}.md"
           fi
         done
-        if [ ! -f "$PIPELINE_DIR/agents/review-functional-tester.md" ]; then
-          MISSING="$MISSING agents/review-functional-tester.md"
-        fi
+        for a in review-functional-tester review-native; do
+          if [ ! -f "$PIPELINE_DIR/agents/${a}.md" ]; then
+            MISSING="$MISSING agents/${a}.md"
+          fi
+        done
         if [ -n "$MISSING" ]; then
           echo "::error::panenco/claude-review install is incomplete — missing:$MISSING"
           echo "::error::Action download path: $PIPELINE_DIR"
@@ -28,11 +30,19 @@ runs:
           ls -la "$PIPELINE_DIR/skills/" "$PIPELINE_DIR/agents/" 2>&1 || true
           exit 1
         fi
-        # require-review-json.sh is the Stop hook the workflow registers in
-        # ~/.claude/settings.json. It is checked here with the rest because a
+        # require-review-json.sh (Stop) and require-native-findings.sh
+        # (SubagentStop) are the hooks the workflow registers in
+        # ~/.claude/settings.json. They are checked here with the rest because a
         # missing hook fails OPEN — the review would run, yield, and crash with
-        # no artifact, which is the exact 2026-08-12 failure it exists to stop.
-        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh require-review-json.sh; do
+        # no artifact, which is the exact 2026-08-12 failure they exist to stop.
+        #
+        # fetch-pr-threads.sh and upload-screenshots.sh hold EVERY raw GitHub
+        # REST/GraphQL call the pipeline makes. They are checked here because the
+        # review session's `--disallowedTools` denies the raw `gh` API subcommand
+        # outright: without these files the context builder and the screenshot
+        # publisher have no fallback path at all, and the failure would surface as
+        # a mid-review "command not found" rather than an install error.
+        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh require-review-json.sh require-native-findings.sh fetch-pr-threads.sh upload-screenshots.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1
