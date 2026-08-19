@@ -54,6 +54,16 @@ on:
         description: "Second-opinion pass: `off` by default — set `on` to run the OFFICIAL Claude `code-review` plugin (from Anthropic's `claude-plugins-public` marketplace) as the `review-native` subagent INSIDE the existing review session; `off` disables it. It is a different reviewer, not a second copy of ours — Anthropic's prompt is read verbatim at runtime from the installed plugin and followed as written, including its own >=80 confidence filter. It costs NO extra runner and NO second checkout: it is dispatched by the orchestrator in the same response as the judges and the functional tester, so it overlaps the work that already dominates the run and adds no wall-clock. Its findings are written to a file, deduped against the judges' findings and folded into the SINGLE consolidated review comment this pipeline posts — the plugin's own 'comment on the PR' step is overridden in the skill AND denied at session level (`Bash(gh pr comment:*)`), so it can never post separately. It runs only on `full` reviews: it is a second complete review pass and the token draw on the shared 5-hour Claude window is real, so `light`/`small`/`tiny` PRs do not pay for it. Turn it `off` if that draw is scarce."
         type: string
         default: "off"
+      # DEPRECATED NO-OP — DO NOT DELETE. Shipped in v3.4.0/v3.5.0/v3.5.1 and
+      # printed in the README's copy-paste block, so consumers on `@v3` are still
+      # passing it. A reusable workflow that DROPS an input a caller still supplies
+      # fails the whole run with `startup_failure` — not a warning, not a skipped
+      # job — so removing it would break every one of those repos on their next PR
+      # push. It is declared, ignored, and referenced nowhere below.
+      native_review_runner:
+        description: "DEPRECATED — has NO EFFECT. The native second-opinion pass no longer runs as a separate job; it is the `review-native` subagent, dispatched inside the existing review session, so there is no second runner to place. Delete this input from your caller workflow. It is still declared only so callers that have not yet removed it do not fail with `startup_failure`."
+        type: string
+        default: ""
       native_review_scope:
         description: "Optional free-text path-scoping instruction injected verbatim into the `review-native` subagent's prompt, e.g. \"only review changes under `apps/api/` and `apps/web/`; ignore everything else\". Empty (default) reviews the whole diff. Ignored entirely when `native_review` is `off` or the review plan is not `full`. Wire it on monorepos where much of a typical diff is generated, vendored or out of scope: Anthropic's plugin prompt knows nothing about this pipeline's gate rules and will otherwise spend its budget on paths nobody wants reviewed."
         type: string

@@ -117,6 +117,8 @@ with:
     only review changes under `apps/api/` and `apps/web/`; ignore everything else
 ```
 
+**`native_review_runner` is deprecated and does nothing.** It placed the old separate `Native Review` job on its own runner; there is no second job any more, so the input is a declared no-op. **Delete it from your caller workflow** — it is kept only so callers that still pass it do not fail with `startup_failure` (a reusable workflow that drops an input a caller supplies fails the whole run).
+
 Why two reviewers rather than one better one: they fail differently. On `Panenco/hr4cast`, where both ran side by side, the native pass caught a missing authorization guard, a Postgres privilege-management regression, silently removed abuse limits and a deploy-breaking unique migration that our own reviewer walked past.
 
 **One PR, one review comment.** The plugin's own prompt ends by telling the model to `gh pr comment` its findings onto the PR. That step is overridden: the subagent writes `/tmp/native-findings.json` instead, and the orchestrator folds those findings into the single consolidated review this pipeline posts. Findings the judges already flagged at the same line are dropped in favour of the judges' write-up (one defect, one comment); the survivors are attributed inline — `(via the official code-review plugin, confidence 90/100)` — so you can see which reviewer caught what. The override is structural, not just a wording preference: `Bash(gh pr comment:*)` is on the session's `--disallowedTools` list, deny rules beat allow rules, and that binds every subagent — so a stray post cannot happen.
