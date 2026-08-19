@@ -707,16 +707,36 @@ jobs:
         shell: bash
         env:
           HOOK: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/scripts/require-review-json.sh
+          # Same enforcement, one level down. The `review-native` subagent follows a
+          # plugin prompt that fans out to ~10 Task subagents, and on the first
+          # dogfood run of the in-session design it yielded waiting on subagents that
+          # had already returned — the #86 failure, inside a subagent. This hook
+          # refuses that stop while /tmp/native-findings.json is missing, unparseable
+          # or stamped with another PR's number. `SubagentStop` takes no matcher, so
+          # the script identifies the native pass from the event payload and FAILS
+          # OPEN when it cannot: it must never nudge a judge or the tester.
+          SUBAGENT_HOOK: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/scripts/require-native-findings.sh
         run: |
           set -uo pipefail
-          if [ ! -f "$HOOK" ]; then
-            echo "::error::stop hook missing at $HOOK — pipeline install is incomplete"
-            exit 1
-          fi
-          chmod +x "$HOOK" 2>/dev/null || true
+          for h in "$HOOK" "$SUBAGENT_HOOK"; do
+            if [ ! -f "$h" ]; then
+              echo "::error::stop hook missing at $h — pipeline install is incomplete"
+              exit 1
+            fi
+            chmod +x "$h" 2>/dev/null || true
+          done
           # A stale counter from a previous run on a reused runner would spend
           # this review's nudge budget before it starts.
-          rm -f /tmp/review-stop-blocks /tmp/review.json 2>/dev/null || true
+          #
+          # /tmp/native-findings.json is deleted here for a DIFFERENT reason and it
+          # is not cosmetic: this fleet reuses runners and /tmp survives between
+          # jobs, so a leftover file from a previous PR would be read by the
+          # orchestrator's Phase D as this PR's second opinion — another PR's
+          # findings posted as inline comments on this one. The file also carries a
+          # `pr_number` that Phase D and the hook above both check, so this delete is
+          # the first of two independent guards, not the only one.
+          rm -f /tmp/review-stop-blocks /tmp/review.json \
+                /tmp/native-stop-blocks /tmp/native-findings.json 2>/dev/null || true
           mkdir -p "$HOME/.claude"
           S="$HOME/.claude/settings.json"
           [ -s "$S" ] || echo '{}' > "$S"
@@ -724,11 +744,13 @@ jobs:
             echo "::warning::$S was not valid JSON; replacing it with the hook config only"
             echo '{}' > "$S"
           fi
-          jq --arg cmd "$HOOK" \
-            '.hooks.Stop = [{"hooks": [{"type": "command", "command": $cmd}]}]' \
+          jq --arg cmd "$HOOK" --arg sub "$SUBAGENT_HOOK" \
+            '.hooks.Stop = [{"hooks": [{"type": "command", "command": $cmd}]}]
+             | .hooks.SubagentStop = [{"hooks": [{"type": "command", "command": $sub}]}]' \
             "$S" > "$S.tmp" && mv "$S.tmp" "$S" || {
-              echo "::error::failed to register the Stop hook in $S"; exit 1; }
+              echo "::error::failed to register the Stop hooks in $S"; exit 1; }
           echo "Stop hook registered: $HOOK"
+          echo "SubagentStop hook registered: $SUBAGENT_HOOK"
           jq -c '.hooks' "$S"
 
       - name: "Review: orchestrate"

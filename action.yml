@@ -30,10 +30,11 @@ runs:
           ls -la "$PIPELINE_DIR/skills/" "$PIPELINE_DIR/agents/" 2>&1 || true
           exit 1
         fi
-        # require-review-json.sh is the Stop hook the workflow registers in
-        # ~/.claude/settings.json. It is checked here with the rest because a
+        # require-review-json.sh (Stop) and require-native-findings.sh
+        # (SubagentStop) are the hooks the workflow registers in
+        # ~/.claude/settings.json. They are checked here with the rest because a
         # missing hook fails OPEN — the review would run, yield, and crash with
-        # no artifact, which is the exact 2026-08-12 failure it exists to stop.
+        # no artifact, which is the exact 2026-08-12 failure they exist to stop.
         #
         # fetch-pr-threads.sh and upload-screenshots.sh hold EVERY raw GitHub
         # REST/GraphQL call the pipeline makes. They are checked here because the
@@ -41,7 +42,7 @@ runs:
         # outright: without these files the context builder and the screenshot
         # publisher have no fallback path at all, and the failure would surface as
         # a mid-review "command not found" rather than an install error.
-        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh require-review-json.sh fetch-pr-threads.sh upload-screenshots.sh; do
+        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh require-review-json.sh require-native-findings.sh fetch-pr-threads.sh upload-screenshots.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1

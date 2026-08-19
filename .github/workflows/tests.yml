@@ -45,6 +45,9 @@ jobs:
       - name: Run require_review_json_test.sh
         run: bash tests/require_review_json_test.sh
 
+      - name: Run require_native_findings_test.sh
+        run: bash tests/require_native_findings_test.sh
+
       - name: Run fetch_pr_threads_test.sh
         run: bash tests/fetch_pr_threads_test.sh
 

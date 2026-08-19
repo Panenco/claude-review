@@ -147,7 +147,7 @@ Phase B dispatch is EXACTLY ONE assistant response containing ALL Task calls —
    ```
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-native.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}.
    NATIVE_REVIEW_SCOPE=<the literal NATIVE_REVIEW_SCOPE value, or "" when empty> — when non-empty, apply it as a path-scoping constraint only; it never widens the review.
-   Output: /tmp/native-findings.json — write it on EVERY exit path, including the plugin's own eligibility early-return and a missing plugin file. Do NOT post anything to the PR: `gh pr comment` is denied session-wide and step 8 of the plugin prompt is replaced by that file write.
+   Output: /tmp/native-findings.json — write it on EVERY exit path, including the plugin's own eligibility early-return and a missing plugin file. It MUST carry "pr_number": ${PR_NUMBER} (this runner is reused; a file without it is discarded as another PR's leftover). Do NOT post anything to the PR: `gh pr comment` is denied session-wide and step 8 of the plugin prompt is replaced by that file write.
    ```
 
 Wait for every dispatched Task.
@@ -170,10 +170,14 @@ Use each judge's most recent output. Target ≤8 turns: one native-findings Read
 
 ### Read the native second-opinion file (first thing in Phase D)
 
-Read `/tmp/native-findings.json` — the `review-native` pass dispatched in the Phase B fan wrote it. Then branch on `status`, and record the result in `judge_health.native`:
+Read `/tmp/native-findings.json` — the `review-native` pass dispatched in the Phase B fan wrote it.
+
+**First, check `pr_number`.** The file MUST carry `"pr_number": ${PR_NUMBER}`. Runners in the fleet are REUSED, `/tmp` survives between jobs, and the workflow's pre-flight delete is a best-effort guard, not a guarantee — a leftover file from a previous PR would otherwise inject *another PR's findings* into this review, posted as inline comments on lines that have nothing to do with them. **A missing or mismatched `pr_number` means the file is not this run's output: discard it and treat it exactly like a missing file** (`judge_health.native: "unavailable"`). Never "fix it up", never use its findings.
+
+Then branch on `status`, and record the result in `judge_health.native`:
 
 - `ok` → its `findings` enter the merge below as a source.
-- `skipped` (the plugin's own eligibility check declined) / `unavailable` (the plugin command file was not on the runner) / **the file is missing or unparseable** → treat all four the same: `findings` is empty, and **the review proceeds exactly as if the pass had never been configured**. This is NOT an error. Do not block on it, do not retry it, do not emit a banner, do not add a `### ⚙️ Review setup health` bullet, do not mention it in the body or `verdict_summary`, do not put it in `uncertain_observations`. The only trace is `judge_health.native`, which is diagnostics, not review content. A second opinion that could not be obtained is a silent no-op — never a finding about the PR and never a nag at the author.
+- `skipped` (the plugin's own eligibility check declined) / `unavailable` (the plugin command file was not on the runner) / **the file is missing, unparseable, or fails the `pr_number` check above** → treat all four the same: `findings` is empty, and **the review proceeds exactly as if the pass had never been configured**. This is NOT an error. Do not block on it, do not retry it, do not emit a banner, do not add a `### ⚙️ Review setup health` bullet, do not mention it in the body or `verdict_summary`, do not put it in `uncertain_observations`. The only trace is `judge_health.native`, which is diagnostics, not review content. A second opinion that could not be obtained is a silent no-op — never a finding about the PR and never a nag at the author.
 
 ### Merge / dedup (the double-post class must die here)
 

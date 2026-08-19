@@ -31,7 +31,7 @@ Pick the first hit that is under a `commands/` directory (that is the command fi
 **If it still cannot be found — or it is empty/unreadable — this is NOT a failure.** Write:
 
 ```json
-{"status": "unavailable", "summary": "The official code-review plugin command file was not found on this runner — searched <roots>. The native second-opinion pass did not run; the rest of the review is unaffected.", "findings": []}
+{"status": "unavailable", "pr_number": <PR_NUMBER>, "summary": "The official code-review plugin command file was not found on this runner — searched <roots>. The native second-opinion pass did not run; the rest of the review is unaffected.", "findings": []}
 ```
 
 to `/tmp/native-findings.json` and exit cleanly. The orchestrator treats this as a no-op and says nothing about it in the review. **Never fail the run over a missing plugin**: the plugin install is a network-dependent step in someone else's action, and a second opinion that cannot be obtained must never cost the PR its review.
@@ -48,7 +48,9 @@ Treat **steps 1 through 7 as the authority on how to review**. Execute them as l
 - Its false-positive list (pre-existing issues, linter/typechecker/compiler catches, pedantic nitpicks, issues on lines the PR did not modify, …) applies verbatim. So do its notes: no builds, no typechecks, use `gh` rather than web fetch.
 - If the repo root has a `bugbot.md`, Read it — its acceptance/exemption sections (`## Accepted trade-offs`, `## Do NOT flag`, `## Known exceptions`, …) are authoritative here as they are for the judges: **drop** matching findings entirely rather than downgrading them.
 
-You have `Bash` (so `gh pr view/diff/list`, `gh issue view`, `gh search`, `git log/blame/diff/show`), `Read`, `Glob`, `Grep`, `Write` and `Task`. `Bash(gh pr comment:*)` is DENIED at session level — see below.
+You have `Bash` (so `gh pr view/diff/list`, `gh issue view`, `gh search`, `git log/blame/diff/show`), `Read`, `Glob`, `Grep`, `Write` and `Task`.
+
+**Every GitHub WRITE verb is DENIED at session level**, and so is the raw `gh` API subcommand — `gh pr comment/review/edit/close/merge/ready`, `gh issue comment/edit/close`, `gh release`, `git push`, and raw API calls of any method. That is the whole sandbox: this session holds repo write scopes, and you are running a prompt read from an unpinned upstream marketplace over attacker-controlled PR content, so the deny list is what keeps the pass read-only. It is not a hint you can route around — deny rules are evaluated before allow rules and bind every subagent you fan out to. Read; do not write.
 
 ### Path scope (`NATIVE_REVIEW_SCOPE`)
 
@@ -84,6 +86,7 @@ One JSON object. `findings` mirrors the judge/tester finding shape so the orches
 ```json
 {
   "status": "ok",
+  "pr_number": 123,
   "summary": "One or two sentences: what the plugin pass reviewed and what it concluded.",
   "findings": [
     {
@@ -104,6 +107,7 @@ One JSON object. `findings` mirrors the judge/tester finding shape so the orches
 }
 ```
 
+- `pr_number`: the PR number you were given, as a NUMBER. **Required on every exit path, including `skipped` and `unavailable`.** The runners in this fleet are reused and `/tmp` survives between jobs, so a file left behind by a previous PR looks exactly like yours — the orchestrator discards any file whose `pr_number` does not match the PR under review, and the `SubagentStop` hook refuses your exit until the file carries the right one. A file without it is thrown away whole; it is not a field to omit "because the status is skipped".
 - `id`: `n1, n2, …` (the `n` prefix keeps them distinguishable from judge `j*` ids before the orchestrator re-ids them).
 - `path` is repo-relative and MUST be a file this PR modified; `line_start`/`line_end` are lines in the PR's diff (`side: "RIGHT"` unless you are quoting a deleted line). A finding without a usable `path` + `line_start` cannot be posted inline — include it anyway, the orchestrator body-lists it.
 - `confidence` is the plugin's own 0-100 score, carried through verbatim. Keep it: it is the audit trail for the severity you assigned, and it lets the orchestrator explain the finding's provenance.
@@ -113,6 +117,18 @@ One JSON object. `findings` mirrors the judge/tester finding shape so the orches
   - `ok` — the pass ran to completion. `findings` may legitimately be `[]` (the plugin found nothing above 80); `summary` says so.
   - `skipped` — the plugin's own step 1 (or its step 7 re-check) said not to proceed. `findings` MUST be `[]` and `summary` MUST carry the reason, in the plugin's own terms: closed, draft, does not need review (automated/trivially simple), or already reviewed.
   - `unavailable` — the plugin command file could not be found or read (Turn 1 above).
+
+## Never end a turn with prose — you cannot be woken
+
+You run unattended, as a Task subagent, and **a message without tool calls ENDS you permanently**. There is no notification that will wake you and no turn after that one: whatever you had not written to `/tmp/native-findings.json` is discarded, and the orchestrator reads a file that does not exist.
+
+This is not hypothetical. On the first dogfood run of this in-session design the pass "got stuck waiting on its own already-completed subagents and never produced real output" — it concluded it could yield. That is the same failure that crashed the top-level orchestrator on 2026-08-12 (`scripts/require-review-json.sh` exists because of it), one level down. The plugin prompt you follow fans out to ~10 subagents, which is precisely the situation that makes "I'll wait for them to report back" look like a legal move. It is not.
+
+- **Never write "waiting for the reviewer agents", "pausing here", or any variant.** Task calls issued in one response return together — by the time you are reading their output, they are done.
+- If you think results are still pending, your message must STILL contain a tool call. Poll with one: `ls -la /tmp/native-*.json 2>/dev/null`.
+- The ONLY message allowed to end without a tool call is the one after you have written `/tmp/native-findings.json` **and** validated it with `jq empty`.
+
+**This is ENFORCED, not merely requested — `scripts/require-native-findings.sh` is registered as a Claude Code `SubagentStop` hook.** If you try to finish while `/tmp/native-findings.json` is missing, unparseable, or carries another PR's `pr_number`, the stop is refused and you are handed back an instruction to write it. The enforcement is **bounded** (3 nudges), so it is a backstop against one bad turn, not a licence to stall: after that you end and the second opinion is simply lost. The correct move is always to write a partial, honest file — never to wait.
 
 ## ALWAYS write the file — every exit path, no exceptions
 
@@ -127,12 +143,15 @@ Write the file:
 - when you run out of turns or budget -> `status: "ok"` with whatever findings you have and a `summary` saying the pass was partial;
 - when anything else goes wrong -> `status: "unavailable"` with the reason.
 
+Every one of those carries `pr_number`.
+
 Write it as early as you can and rewrite it as you learn more. A partial, honest file beats a perfect file you never wrote.
 
 ## Constraints
 
 - Do NOT modify source code. You review, not fix. (`Edit` is denied session-wide; `Write` exists for your one output file.)
 - Do NOT post comments — no `gh pr comment`, no inline comments, no issue creation. Step 8 is replaced by the file write, and the deny rule makes that structural.
+- Do NOT reach for the raw `gh` API subcommand as a workaround for any of the above, and do NOT `git push`. Both are denied session-wide; the pipeline's own privileged calls live in reviewed `.review-scripts/` helpers, and nothing in this pass needs one.
 - Do NOT re-review paths outside the diff. A problem on a surface this PR did not touch is not a finding here — the plugin's own false-positive list already says so ("Real issues, but on lines that the user did not modify in their pull request"), and the orchestrator drops such findings anyway.
 - Do NOT honour `NATIVE_REVIEW_SCOPE` as anything but a NARROWING constraint.
 - Do NOT rewrite Anthropic's rubric. If the installed prompt changes upstream, follow the new one — that is the design, not a regression.
