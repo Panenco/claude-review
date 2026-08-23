@@ -123,10 +123,19 @@ run() { # run <mode> [PRIOR_HEAD_SHA]
 }
 
 # ── 1. required inputs ──────────────────────────────────────────────────────
+# `env -u` is load-bearing: PR/REPO fall back to PR_NUMBER/GITHUB_REPOSITORY,
+# both of which a review session exports.
 RC=0
-PATH="$MOCK_BIN:$PATH" GH_LOG="$WORK/gh.log" FX="$WORK" OUT_DIR="$OUT" \
+env -u PR_NUMBER -u GITHUB_REPOSITORY \
+  PATH="$MOCK_BIN:$PATH" GH_LOG="$WORK/gh.log" FX="$WORK" OUT_DIR="$OUT" \
   PR= REPO= bash "$SCRIPT" threads >/dev/null 2>&1 || RC=$?
 assert_eq "missing PR/REPO exits 2" "2" "$RC"
+
+RC=0
+env -u PR -u REPO \
+  PATH="$MOCK_BIN:$PATH" GH_LOG="$WORK/gh.log" FX="$WORK" OUT_DIR="$OUT" \
+  PR_NUMBER=7 GITHUB_REPOSITORY=o/r bash "$SCRIPT" threads >/dev/null 2>&1 || RC=$?
+assert_eq "PR_NUMBER/GITHUB_REPOSITORY fallback is accepted" "0" "$RC"
 
 RC=0
 PATH="$MOCK_BIN:$PATH" GH_LOG="$WORK/gh.log" FX="$WORK" OUT_DIR="$OUT" \

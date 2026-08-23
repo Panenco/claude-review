@@ -136,7 +136,7 @@ This has been observed on same-repo PRs in at least one external org and is like
 
 ### The second-opinion pass: the `native_review*` inputs (leave them alone unless asked)
 
-On every `full` review the pipeline runs **two** reviewers: its own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin. The second one is **not a separate job** — it is the `review-native` subagent, dispatched inside the same review session alongside the judges and the functional tester, so it costs no extra runner, no second checkout and no extra wall-clock. It is **on by default and needs no caller change**: it introduces no new permission requirement beyond the `permissions:` block you already wrote above. Do not add `id-token: write` for it (a reusable workflow's permissions are capped by the caller's, and requesting more than the caller grants is a `startup_failure`).
+A `full` review can run **two** reviewers: its own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin. The second one is **not a separate job** — it is the `review-native` subagent, dispatched inside the same review session alongside the judges and the functional tester, so it costs no extra runner, no second checkout and no extra wall-clock. It is **`off` by default**: enable it with `native_review: "on"`. It introduces no new permission requirement beyond the `permissions:` block you already wrote above — do not add `id-token: write` for it (a reusable workflow's permissions are capped by the caller's, and requesting more than the caller grants is a `startup_failure`).
 
 **There is only one review comment.** The plugin's own prompt ends by telling the model to post its findings with `gh pr comment`; the pipeline overrides that — the subagent writes its findings to a file, the orchestrator dedupes them against the judges' findings (the judges win on a shared line) and folds the survivors into the single consolidated review, attributed inline. The override is structural: `Bash(gh pr comment:*)` is denied session-wide, so a second bot comment cannot appear. If the user reports "two review comments", the second one is a different tool, not this.
 
@@ -147,13 +147,13 @@ Two optional inputs, both of which you should leave unset unless the user asks:
 ```yaml
     with:
       pr_number: ${{ inputs.pr_number || '' }}
-      native_review: "off"    # default "on"; "off" disables the second pass
+      native_review: "on"     # default "off"; "on" enables the second pass
       native_review_scope: |  # default ""; empty reviews the whole diff
         only review changes under `apps/api/` and `apps/web/`; ignore everything else
 ```
 
-- `native_review: "off"` — only when the user wants a single reviewer. It costs no runner, but it is a second full review pass drawing on the same 5-hour Claude subscription window, so per-PR token consumption is meaningfully higher; the usual fix is another token in the `CLAUDE_CODE_OAUTH_TOKENS` pool, not turning the pass off.
-- `native_review_scope` — free text injected verbatim into the native reviewer's prompt as a *narrowing* constraint. Wire it on a monorepo where much of a typical diff is generated or vendored: the plugin knows nothing about this pipeline's gate rules and will otherwise spend its budget on paths nobody wants reviewed. Derive the paths from the runtime surface you determined in Step 1.
+- `native_review: "on"` — only when the user asks for the second opinion. It costs no runner, but it is a second full review pass drawing on the same 5-hour Claude subscription window, so per-PR token consumption is meaningfully higher; budget for another token in the `CLAUDE_CODE_OAUTH_TOKENS` pool before turning it on.
+- `native_review_scope` — only meaningful with `native_review: "on"`. Free text injected verbatim into the native reviewer's prompt as a *narrowing* constraint. Wire it on a monorepo where much of a typical diff is generated or vendored: the plugin knows nothing about this pipeline's gate rules and will otherwise spend its budget on paths nobody wants reviewed. Derive the paths from the runtime surface you determined in Step 1.
 
 
 ## Step 3: Create bugbot.md

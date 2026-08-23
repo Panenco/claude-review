@@ -107,12 +107,12 @@ Two things your fleet needs. It must have **network egress to the GitHub Actions
 
 The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Note that it inherits `runner` too, so a caller that wires the `pull_request_target` trigger lands a `secrets: inherit` job on the fleet; callers that would rather keep that combination off self-hosted infrastructure simply omit the trigger.
 
-**Second opinion: the native `code-review` pass (`native_review`).** Every `full` review runs **two** reviewers: this pipeline's own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin, run exactly as Anthropic ships it. The second one is not a separate job — it is the `review-native` subagent, dispatched by the orchestrator **inside the existing review session**, in the same response as the judges and the functional tester. It therefore costs **no extra runner, no second checkout, no second Claude CLI install and no second OAuth probe**, and it adds no wall-clock: it overlaps the judges and the functional tester, which already dominate the run. It is on by default and needs no caller change.
+**Second opinion: the native `code-review` pass (`native_review`).** With `native_review: "on"`, a `full` review runs **two** reviewers: this pipeline's own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin, run exactly as Anthropic ships it. The second one is not a separate job — it is the `review-native` subagent, dispatched by the orchestrator **inside the existing review session**, in the same response as the judges and the functional tester. It therefore costs **no extra runner, no second checkout, no second Claude CLI install and no second OAuth probe**, and it adds no wall-clock: it overlaps the judges and the functional tester, which already dominate the run. It is **`off` by default** — the infra cost is gone, but the token draw on the shared 5-hour Claude window is not, so enabling it is the caller's call.
 
 ```yaml
 with:
   pr_number: ${{ inputs.pr_number || '' }}
-  native_review: "off"    # default "on" — disables the second pass
+  native_review: "on"     # default "off" — enables the second pass
   native_review_scope: |  # default "" — reviews the whole diff
     only review changes under `apps/api/` and `apps/web/`; ignore everything else
 ```
@@ -129,7 +129,7 @@ Why two reviewers rather than one better one: they fail differently. On `Panenco
 
 Confidence maps onto this pipeline's severities as: 95-100 in the security/data-loss class → `critical`; 95-100 otherwise → `major`; 80-94 → `minor`; below 80 the plugin's own filter has already dropped it.
 
-**`full` reviews only.** It is a second complete review pass, and although it costs no runner it does draw on the **same 5-hour Claude subscription window** as everything else, so per-PR token consumption is meaningfully higher. `light`-tier reviews (the `small`, `tiny`, `promotion` and `nonruntime` gates) skip it, and `skip` runs nothing at all — so the `gate_skip_label` (default `skip-review`) and the oversized ceilings silence **both** reviewers, not just one. If the token draw is still scarce, add a token to the `CLAUDE_CODE_OAUTH_TOKENS` pool or set `native_review: "off"`. On a monorepo, `native_review_scope` is free text injected into the native reviewer's prompt as a *narrowing* constraint; the plugin knows nothing about this pipeline's gate rules, so scope it away from generated and vendored paths or it will spend its budget there.
+**`full` reviews only.** It is a second complete review pass, and although it costs no runner it does draw on the **same 5-hour Claude subscription window** as everything else, so per-PR token consumption is meaningfully higher. `light`-tier reviews (the `small`, `tiny`, `promotion` and `nonruntime` gates) skip it, and `skip` runs nothing at all — so the `gate_skip_label` (default `skip-review`) and the oversized ceilings silence **both** reviewers, not just one. If the token draw is scarce, add a token to the `CLAUDE_CODE_OAUTH_TOKENS` pool or leave the pass `off`. On a monorepo, `native_review_scope` is free text injected into the native reviewer's prompt as a *narrowing* constraint; the plugin knows nothing about this pipeline's gate rules, so scope it away from generated and vendored paths or it will spend its budget there.
 
 
 ### 2. Set secrets

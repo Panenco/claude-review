@@ -63,4 +63,10 @@ jobs:
       # PR introducing it. `head.sha` covers pull_request events; `github.sha`
       # is the fallback for `workflow_dispatch` (where head.sha is empty).
       pipeline_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Dogfood the second-opinion pass. The workflow input defaults to `off`
+      # (the token draw on the shared 5-hour window is a consumer's call), but
+      # this repo OWNS that pass — if we do not run it here, neither the plugin
+      # install nor the `gh pr comment` deny rule is ever exercised before a
+      # consumer turns it on.
+      native_review: "on"
     secrets: inherit

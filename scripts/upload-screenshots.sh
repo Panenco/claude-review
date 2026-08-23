@@ -45,11 +45,11 @@ set -uo pipefail
 # design: the orchestrator proceeds without embeds. It therefore never exits
 # non-zero for an upload problem, only for missing required inputs.
 
-R="${GITHUB_REPOSITORY:-}"
+REPO="${GITHUB_REPOSITORY:-}"
 PR="${PR_NUMBER:-}"
 DIR="${SCREENSHOT_DIR:-/tmp/screenshots}"
 
-if [ -z "$R" ] || [ -z "$PR" ]; then
+if [ -z "$REPO" ] || [ -z "$PR" ]; then
   echo "upload-screenshots: GITHUB_REPOSITORY and PR_NUMBER are required" >&2
   exit 2
 fi
@@ -67,9 +67,9 @@ ls "$DIR"/*.png >/dev/null 2>&1 || exit 0
 
 # The branch may not exist yet (first review ever on this repo). An absent ref is
 # not an error — it selects the "create" arm at the bottom.
-BASE_SHA=$(gh api "repos/$R/git/refs/heads/review-assets" --jq '.object.sha' 2>/dev/null || true)
+BASE_SHA=$(gh api "repos/$REPO/git/refs/heads/review-assets" --jq '.object.sha' 2>/dev/null || true)
 BASE_TREE=""
-[ -n "$BASE_SHA" ] && BASE_TREE=$(gh api "repos/$R/git/commits/$BASE_SHA" --jq '.tree.sha')
+[ -n "$BASE_SHA" ] && BASE_TREE=$(gh api "repos/$REPO/git/commits/$BASE_SHA" --jq '.tree.sha')
 
 ENTRIES="[]"
 for img in "$DIR"/*.png; do
@@ -86,7 +86,7 @@ for img in "$DIR"/*.png; do
   # rejected -w0 cannot leak a partial blob into the pipe, then fall back.
   B64=$(base64 -w0 < "$img" 2>/dev/null) || B64=$(base64 < "$img" | tr -d '\n')
   SHA=$(printf '%s' "$B64" | jq -Rs '{content: ., encoding: "base64"}' \
-    | gh api "repos/$R/git/blobs" --method POST --input - --jq '.sha') || continue
+    | gh api "repos/$REPO/git/blobs" --method POST --input - --jq '.sha') || continue
   ENTRIES=$(echo "$ENTRIES" | jq --arg p "pr-${PR}/$B" --arg s "$SHA" '. + [{path:$p,mode:"100644",type:"blob",sha:$s}]')
 done
 
@@ -94,19 +94,19 @@ done
 [ "$(echo "$ENTRIES" | jq length)" -gt 0 ] || exit 0
 
 TREE=$(echo "$ENTRIES" | jq -c --arg bt "$BASE_TREE" 'if $bt == "" then {tree:.} else {base_tree:$bt,tree:.} end' \
-  | gh api "repos/$R/git/trees" --method POST --input - --jq '.sha') || exit 0
-COMMIT=$(gh api "repos/$R/git/commits" --method POST -f message="Review screenshots (auto-replaced)" -f tree="$TREE" --jq '.sha') || exit 0
+  | gh api "repos/$REPO/git/trees" --method POST --input - --jq '.sha') || exit 0
+COMMIT=$(gh api "repos/$REPO/git/commits" --method POST -f message="Review screenshots (auto-replaced)" -f tree="$TREE" --jq '.sha') || exit 0
 
 # Update-vs-create split: PATCH an existing ref (force, because the branch is a
 # scratch asset store and history there is worthless), POST a new one otherwise.
 if [ -n "$BASE_SHA" ]; then
-  gh api "repos/$R/git/refs/heads/review-assets" --method PATCH -f sha="$COMMIT" -F force=true >/dev/null || exit 0
+  gh api "repos/$REPO/git/refs/heads/review-assets" --method PATCH -f sha="$COMMIT" -F force=true >/dev/null || exit 0
 else
-  gh api "repos/$R/git/refs" --method POST -f ref="refs/heads/review-assets" -f sha="$COMMIT" >/dev/null || exit 0
+  gh api "repos/$REPO/git/refs" --method POST -f ref="refs/heads/review-assets" -f sha="$COMMIT" >/dev/null || exit 0
 fi
 
 # Only now are the blobs actually reachable at the URLs below, so this is the
 # only place the URLs may be printed. Printing them earlier would hand the
 # orchestrator embeds for a commit that never landed.
-echo "$ENTRIES" | jq -r --arg r "$R" '.[] | "https://github.com/\($r)/raw/review-assets/\(.path)"'
+echo "$ENTRIES" | jq -r --arg r "$REPO" '.[] | "https://github.com/\($r)/raw/review-assets/\(.path)"'
 exit 0
