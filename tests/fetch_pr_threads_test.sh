@@ -131,11 +131,17 @@ env -u PR_NUMBER -u GITHUB_REPOSITORY \
   PR= REPO= bash "$SCRIPT" threads >/dev/null 2>&1 || RC=$?
 assert_eq "missing PR/REPO exits 2" "2" "$RC"
 
+# Its own OUT_DIR, and PRIOR_HEAD_SHA unset: this case RUNS the script to
+# completion, so sharing $OUT would leave a prior-review.json behind for the
+# round-1 assertions below to trip over whenever the ambient env has a
+# PRIOR_HEAD_SHA (i.e. inside a round-2 review session).
 RC=0
-env -u PR -u REPO \
-  PATH="$MOCK_BIN:$PATH" GH_LOG="$WORK/gh.log" FX="$WORK" OUT_DIR="$OUT" \
+env -u PR -u REPO -u PRIOR_HEAD_SHA \
+  PATH="$MOCK_BIN:$PATH" GH_LOG="$WORK/gh.log" FX="$WORK" OUT_DIR="$WORK/out-fallback" \
   PR_NUMBER=7 GITHUB_REPOSITORY=o/r bash "$SCRIPT" threads >/dev/null 2>&1 || RC=$?
 assert_eq "PR_NUMBER/GITHUB_REPOSITORY fallback is accepted" "0" "$RC"
+assert_eq "the fallback case really produced output" "yes" \
+  "$([ -f "$WORK/out-fallback/all-raw-comments.json" ] && echo yes || echo no)"
 
 RC=0
 PATH="$MOCK_BIN:$PATH" GH_LOG="$WORK/gh.log" FX="$WORK" OUT_DIR="$OUT" \
