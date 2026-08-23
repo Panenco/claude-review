@@ -56,12 +56,23 @@ runs:
         # sits outside the workspace and survives the restore.
         echo "CLAUDE_REVIEW_PIPELINE_DIR=$PIPELINE_DIR" >> "$GITHUB_ENV"
 
-        # Scripts go into the workspace because the reusable workflow invokes
-        # them by path (`.review-scripts/foo.sh`).
-        mkdir -p .review-scripts
-        cp "$PIPELINE_DIR"/scripts/*.sh .review-scripts/
-        chmod +x .review-scripts/*.sh
+        # Scripts go OUTSIDE the workspace, for the same class of reason the
+        # skills do. They used to land in `$GITHUB_WORKSPACE/.review-scripts`,
+        # where they were UNTRACKED files inside a git repo that review
+        # subagents run arbitrary git commands against. On run 32648014030 a
+        # judge ran `git stash -u` to test the base revision, which swallowed
+        # `.review-scripts/` along with the working tree; it never popped, and
+        # the poster four minutes later died with `post-review.sh: No such file
+        # or directory` after a completed 14-minute review. `git clean -fd`,
+        # `git checkout -- .` and a `.claude/` restore are the same hazard.
+        # $RUNNER_TEMP is on the runner, outside every worktree, so no git
+        # command an agent can reach touches it.
+        SCRIPTS_DIR="${RUNNER_TEMP:-/tmp}/review-scripts"
+        mkdir -p "$SCRIPTS_DIR"
+        cp "$PIPELINE_DIR"/scripts/*.sh "$SCRIPTS_DIR"/
+        chmod +x "$SCRIPTS_DIR"/*.sh
+        echo "CLAUDE_REVIEW_SCRIPTS=$SCRIPTS_DIR" >> "$GITHUB_ENV"
         echo "Pipeline dir: $PIPELINE_DIR"
         echo "Skills available: $(ls "$PIPELINE_DIR"/skills/review-*.md | wc -l) at $PIPELINE_DIR/skills"
         echo "Agents available: $(ls "$PIPELINE_DIR"/agents/*.md | wc -l) at $PIPELINE_DIR/agents"
-        echo "Scripts installed: $(ls .review-scripts/*.sh | wc -l) at .review-scripts/"
+        echo "Scripts installed: $(ls "$SCRIPTS_DIR"/*.sh | wc -l) at $SCRIPTS_DIR"

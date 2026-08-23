@@ -241,7 +241,7 @@ Copy any screenshot path referenced by `/tmp/functional-meta.json`/`-findings.js
 # thing that binds the ~10 subagents it fans out to. The helper keeps the PNG
 # guard, the >200 KB-safe stdin blob upload, and the review-assets
 # create-vs-update split; it exits silently when there is nothing to publish.
-"${GITHUB_WORKSPACE:-.}/.review-scripts/upload-screenshots.sh"
+"$CLAUDE_REVIEW_SCRIPTS/upload-screenshots.sh"
 ```
 
 Embed URL per uploaded file: `https://github.com/$R/raw/review-assets/pr-${PR_NUMBER}/<basename>` — this exact form renders on private repos; never use raw.githubusercontent.com. A finding whose screenshot failed to upload renders `*see [build artifacts](https://github.com/$R/actions/runs/$GITHUB_RUN_ID)*` instead of an image. Failure of this whole block is non-fatal — proceed without embeds.

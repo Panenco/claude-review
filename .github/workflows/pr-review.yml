@@ -254,6 +254,29 @@ jobs:
         if: github.repository != 'panenco/claude-review'
         uses: ./__claude-review-pipeline
 
+      # Fail loudly here rather than with a bare `exit 127` fourteen minutes
+      # later, at the poster, after the whole review has already been paid for.
+      - name: Verify the script install resolved
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${CLAUDE_REVIEW_SCRIPTS:-}" ] || [ ! -d "$CLAUDE_REVIEW_SCRIPTS" ]; then
+            echo "::error::CLAUDE_REVIEW_SCRIPTS is unset or missing — the install step did not run, or action.yml and pr-review.yml are from different versions."
+            exit 1
+          fi
+          for s in post-review.sh review-plan.sh prior-review-state.sh pick-oauth-token.sh setup-dev-env.sh; do
+            if [ ! -x "$CLAUDE_REVIEW_SCRIPTS/$s" ]; then
+              echo "::error::$CLAUDE_REVIEW_SCRIPTS/$s is missing or not executable."
+              exit 1
+            fi
+          done
+          case "$CLAUDE_REVIEW_SCRIPTS" in
+            "${GITHUB_WORKSPACE}"/*)
+              echo "::error::CLAUDE_REVIEW_SCRIPTS is inside the git workspace ($CLAUDE_REVIEW_SCRIPTS). A subagent's git stash/clean/checkout would delete the pipeline's own scripts mid-run."
+              exit 1 ;;
+          esac
+          echo "Scripts resolved: $CLAUDE_REVIEW_SCRIPTS"
+
       - name: Detect code changes
         id: code_check
         shell: bash
@@ -298,7 +321,7 @@ jobs:
           GATE_HEAD_REF=$(jq -r '.headRefName // ""' <<< "$PR_JSON")
           GATE_LABELS=$(jq -r '.labels[].name' <<< "$PR_JSON")
           export GATE_FILES_TSV GATE_BASE_REF GATE_HEAD_REF GATE_LABELS
-          PLAN=$(.review-scripts/review-plan.sh)
+          PLAN=$("$CLAUDE_REVIEW_SCRIPTS"/review-plan.sh)
           echo "Review plan:"; echo "$PLAN" | sed 's/^/  /'
           {
             grep -E '^(review_level|run_functional|gate)=' <<< "$PLAN"
@@ -487,7 +510,7 @@ jobs:
           GATE: ${{ steps.review_plan.outputs.gate }}
         run: |
           set -uo pipefail
-          STATE=$(.review-scripts/prior-review-state.sh)
+          STATE=$("$CLAUDE_REVIEW_SCRIPTS"/prior-review-state.sh)
           echo "Prior review state:"; echo "$STATE" | sed 's/^/  /'
           # No `-e` here (repo rule), and the step's last statement is an `if` —
           # so a failed derivation would set NO outputs and still go green,
@@ -566,7 +589,8 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKENS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKENS }}
-        run: .review-scripts/pick-oauth-token.sh
+        run: |
+          "$CLAUDE_REVIEW_SCRIPTS"/pick-oauth-token.sh
 
       # Restore-only on purpose: the all-in-one cache's post(save) step re-runs
       # hashFiles after dev-start.sh mutates the tree, errors, and reds the
@@ -656,7 +680,7 @@ jobs:
           : > /tmp/dev-env/log
           rm -f /tmp/dev-env/rc
           setsid nohup bash -c '
-            GITHUB_OUTPUT=/tmp/dev-env/outputs .review-scripts/setup-dev-env.sh
+            GITHUB_OUTPUT=/tmp/dev-env/outputs "$CLAUDE_REVIEW_SCRIPTS"/setup-dev-env.sh
             echo $? > /tmp/dev-env/rc
           ' > /tmp/dev-env/log 2>&1 < /dev/null &
           PID=$!
@@ -866,7 +890,7 @@ jobs:
           # 5 reads in `skills/review-context-builder.md`, 7 screenshot-upload writes
           # in `skills/review-orchestrator.md`). Those are now extracted verbatim
           # into `scripts/fetch-pr-threads.sh` and `scripts/upload-screenshots.sh`,
-          # invoked as `.review-scripts/<name>.sh` — reviewed, in-repo, and running
+          # invoked as `"$CLAUDE_REVIEW_SCRIPTS"/<name>.sh` — reviewed, in-repo, and running
           # as a plain shell command that no deny pattern for a `gh` subcommand
           # matches. No agent in this pipeline needs the raw API verb any more, so
           # nothing legitimate is caught.
@@ -934,7 +958,7 @@ jobs:
           if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then
             cp "$ORCHESTRATOR_EXEC" /tmp/orchestrator-output.txt 2>/dev/null || true
           fi
-          .review-scripts/post-review.sh
+          "$CLAUDE_REVIEW_SCRIPTS"/post-review.sh
 
       - name: Report usage
         if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'

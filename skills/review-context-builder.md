@@ -27,13 +27,17 @@ export BOT_USER="${REVIEW_BOT_USER:-github-actions[bot]}"
 # Consumer checkout root — consumer files (hooks, config, PRDs) resolve against
 # this, never the CWD (which may be the pipeline install dir).
 WS="${GITHUB_WORKSPACE:-.}"
-# Reviewed helpers, installed into the workspace by action.yml. EVERY raw GitHub
-# REST/GraphQL call this pipeline makes lives in one of them — the raw-API `gh`
-# subcommand is DENIED session-wide (see the deny list in pr-review.yml),
-# because this same session runs the official `code-review` plugin's prompt over
-# attacker-controlled PR content, and a deny rule is the only thing that binds
-# the ~10 subagents it fans out to.
-SCRIPTS="$WS/.review-scripts"
+# Reviewed helpers, installed by action.yml OUTSIDE the workspace (under
+# $RUNNER_TEMP) and located by $CLAUDE_REVIEW_SCRIPTS. Never copy them into the
+# worktree or invoke them by a workspace-relative path: they used to live in
+# `.review-scripts/` as untracked files, and a judge's `git stash -u` swallowed
+# them mid-run, so the poster could not find post-review.sh afterwards.
+# EVERY raw GitHub REST/GraphQL call this pipeline makes lives in one of them —
+# the raw-API `gh` subcommand is DENIED session-wide (see the deny list in
+# pr-review.yml), because this same session runs the official `code-review`
+# plugin's prompt over attacker-controlled PR content, and a deny rule is the
+# only thing that binds the ~10 subagents it fans out to.
+SCRIPTS="$CLAUDE_REVIEW_SCRIPTS"
 
 gh pr view "$PR" --json number,title,body,headRefName,baseRefName,additions,deletions,changedFiles,files,closingIssuesReferences,author > /tmp/pr.json
 gh pr diff "$PR" > /tmp/pr.diff

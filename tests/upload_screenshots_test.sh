@@ -200,6 +200,15 @@ assert_eq "script does not use set -e (bugbot.md)" "yes" \
 assert_eq "action.yml verifies the script is installed" "yes" \
   "$(grep -q 'upload-screenshots.sh' action.yml && echo yes || echo no)"
 assert_eq "the orchestrator skill invokes it instead of inlining the API calls" "yes" \
-  "$(grep -q '.review-scripts/upload-screenshots.sh' skills/review-orchestrator.md && echo yes || echo no)"
+  "$(grep -q 'CLAUDE_REVIEW_SCRIPTS/upload-screenshots.sh' skills/review-orchestrator.md && echo yes || echo no)"
+
+# `.review-scripts/` lived in the worktree as untracked files; a judge's
+# `git stash -u` swallowed it mid-run and the poster died with exit 127.
+# Comments still name the old path to explain the history; only INVOCATIONS matter.
+assert_eq "no caller resolves the scripts through the git workspace" "yes" \
+  "$(grep -rh '\.review-scripts/[a-z-]*\.sh' action.yml .github/workflows/pr-review.yml skills/ \
+     | grep -qv '^[[:space:]]*#' && echo no || echo yes)"
+assert_eq "action.yml installs the scripts outside the workspace" "yes" \
+  "$(grep -q 'RUNNER_TEMP' action.yml && grep -q 'CLAUDE_REVIEW_SCRIPTS=' action.yml && echo yes || echo no)"
 
 exit $((fail > 0))
