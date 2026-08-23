@@ -23,10 +23,21 @@ Run the block below verbatim — do not retype, abridge, or drop sections (the r
 ```bash
 export PR="<PR number from prompt>"
 export REPO="$GITHUB_REPOSITORY"
-BOT_USER="${REVIEW_BOT_USER:-github-actions[bot]}"
+export BOT_USER="${REVIEW_BOT_USER:-github-actions[bot]}"
 # Consumer checkout root — consumer files (hooks, config, PRDs) resolve against
 # this, never the CWD (which may be the pipeline install dir).
 WS="${GITHUB_WORKSPACE:-.}"
+# Reviewed helpers, installed by action.yml OUTSIDE the workspace (under
+# $RUNNER_TEMP) and located by $CLAUDE_REVIEW_SCRIPTS. Never copy them into the
+# worktree or invoke them by a workspace-relative path: they used to live in
+# `.review-scripts/` as untracked files, and a judge's `git stash -u` swallowed
+# them mid-run, so the poster could not find post-review.sh afterwards.
+# EVERY raw GitHub REST/GraphQL call this pipeline makes lives in one of them —
+# the raw-API `gh` subcommand is DENIED session-wide (see the deny list in
+# pr-review.yml), because this same session runs the official `code-review`
+# plugin's prompt over attacker-controlled PR content, and a deny rule is the
+# only thing that binds the ~10 subagents it fans out to.
+SCRIPTS="$CLAUDE_REVIEW_SCRIPTS"
 
 gh pr view "$PR" --json number,title,body,headRefName,baseRefName,additions,deletions,changedFiles,files,closingIssuesReferences,author > /tmp/pr.json
 gh pr diff "$PR" > /tmp/pr.diff
@@ -68,93 +79,38 @@ if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
   echo "since-last: $(wc -l < /tmp/since-last.diff) lines, $(ls /tmp/since-last-chunks/ 2>/dev/null | wc -l) chunks"
 fi
 
-# Inline comments → four views.
-gh api --paginate "repos/$REPO/pulls/$PR/comments" | jq -s 'add // []' > /tmp/all-raw-comments.json
-jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot and .in_reply_to_id == null) | {id, node_id, path, line, body}]' \
-  /tmp/all-raw-comments.json > /tmp/prior-bot-comments.json
-jq --arg bot "$BOT_USER" '[.[] | select(.user.type == "Bot" and .user.login != $bot and .in_reply_to_id == null) | {id, node_id, user: .user.login, path, line, body: (.body[:500])}]' \
-  /tmp/all-raw-comments.json > /tmp/other-bot-comments.json
-jq --arg bot "$BOT_USER" '
-  (reduce .[] as $c ({}; if $c.in_reply_to_id == null then .[$c.id|tostring] = $c else . end)) as $tops |
-  [.[] | select(.user.type != "Bot" and .in_reply_to_id != null)
-       | ($tops[.in_reply_to_id|tostring]) as $p
-       | select($p != null)
-       | {parent_id: .in_reply_to_id,
-          channel: (if $p.user.login == $bot then "own-thread"
-                    elif $p.user.type == "Bot" then "other-bot-thread"
-                    else "human-thread" end),
-          user: .user.login, path: $p.path, line: $p.line, body: (.body[:1000])}]' \
-  /tmp/all-raw-comments.json > /tmp/user-replies-on-ours.json
-jq --arg bot "$BOT_USER" '[.[] | select(.user.login == $bot and .in_reply_to_id != null) | {parent_id: .in_reply_to_id, path, line, body: (.body[:1000])}]' \
-  /tmp/all-raw-comments.json > /tmp/our-replies-on-others.json
-PR_AUTHOR=$(jq -r '.author.login // empty' /tmp/pr.json)
-jq --arg author "$PR_AUTHOR" '[.[] | select(.user.type != "Bot" and .in_reply_to_id == null and .path != null and .user.login != $author)
-       | {id, node_id, user: .user.login, path, line, body: (.body[:500])}]' \
-  /tmp/all-raw-comments.json > /tmp/human-inline-comments.json
-
-gh api --paginate "repos/$REPO/issues/$PR/comments" | jq -s 'add // []' > /tmp/all-issue-comments.json
-jq '[.[] | select(.user.type != "Bot") | {id, user: .user.login, created_at, body: (.body[:1000])}]' /tmp/all-issue-comments.json > /tmp/general-comments.json
-
-# Review threads with GraphQL node ids (PRRT_…) — the poster resolves threads
-# by these ids. Map each thread's FIRST comment databaseId → thread id.
-gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated comments(first:1){nodes{databaseId author{login} path line}}}}}}}' \
-  -f o="${REPO%%/*}" -f r="${REPO##*/}" -F n="$PR" \
-  | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)
-         | {thread_id: .id, outdated: .isOutdated, comment_id: .comments.nodes[0].databaseId,
-            author: .comments.nodes[0].author.login, path: .comments.nodes[0].path, line: .comments.nodes[0].line}]' \
-  > /tmp/review-threads.json
-
-# Prior reviews (round 2): dismissal + prior functional result, from GitHub —
-# GitHub is the state store; there is no state artifact.
-# The filter MUST match scripts/prior-review-state.sh: same crash/superseded
-# exclusions AND the same skip markers, then pinned to $PRIOR_HEAD_SHA. That
-# script derived ROUND/PRIOR_HEAD_SHA/PRIOR_VERDICT from the JUDGED list; if this
-# resolves to a different review (e.g. an oversized block posted after the last
-# judged round) the round-2 ladder reconstructs the wrong prior findings — zero
-# of them — and silently forgives the prior round's blockers. Markers are matched
-# on the body's FIRST LINE, where they are stamped — contains() would also drop a
-# judged review that merely quotes one in a finding, with the same effect.
-# tests/prior_review_state_test.sh fails the build if a skip marker is missing here.
-if [ -n "${PRIOR_HEAD_SHA:-}" ]; then
-  gh api --paginate "repos/$REPO/pulls/$PR/reviews" | jq -s 'add // []' > /tmp/pr-reviews.json
-  jq --arg bot "$BOT_USER" --arg sha "$PRIOR_HEAD_SHA" '
-    def first_line: ((. // "") | split("\n") | (.[0] // "") | sub("\\s+$"; ""));
-    [.[] | select(.user.login == $bot) | select((.body // "") | length > 0)
-         | select((.body | first_line) != "<!-- claude-review-crash -->")
-         | select((.body | first_line) != "<!-- claude-review-superseded -->")
-         | select((.body | first_line) != "<!-- claude-review-oversized -->")
-         | select((.body | first_line) != "<!-- claude-review-skipped -->")]
-    | sort_by(.submitted_at) as $judged
-    | (($judged | map(select(.commit_id == $sha)) | last) // ($judged | last) // {})' \
-    /tmp/pr-reviews.json > /tmp/prior-review.json
-  echo "prior review: state=$(jq -r '.state // "none"' /tmp/prior-review.json) commit=$(jq -r '.commit_id // ""' /tmp/prior-review.json)"
-  grep -oE 'Functional Validation — (PASS|WARN|FAIL|CRASH)' <(jq -r '.body // ""' /tmp/prior-review.json) | head -1 || echo "prior functional: none"
-  jq '[.[] | select(.user.type != "Bot") | select((.body // "") | length > 0) | select(.state=="CHANGES_REQUESTED" or .state=="COMMENTED" or .state=="APPROVED") | {user: .user.login, state, submitted_at, body: (.body[:1500])}] | sort_by(.submitted_at)' /tmp/pr-reviews.json > /tmp/human-review-bodies.json
-
-  jq -s '
-    (.[0] | map({channel, user, path, line, text: .body}))
-    + (.[1] | map({channel: "general-comment", user, path: null, line: null, text: .body}))
-    + (.[2] | map({channel: "human-review-body", user, path: null, line: null, text: .body}))' \
-    /tmp/user-replies-on-ours.json /tmp/general-comments.json /tmp/human-review-bodies.json > /tmp/author-rebuttals.json
-  echo "author rebuttals: $(jq 'length' /tmp/author-rebuttals.json)"
-fi
+# Inline comments, issue comments, unresolved review threads and — on round 2
+# — the prior-review/author-rebuttal set. These are REST + GraphQL reads that
+# `gh pr view` cannot express, so they live in the reviewed helper rather than
+# inline (see SCRIPTS above). It writes, with EXACTLY these names and shapes:
+#   /tmp/all-raw-comments.json      every inline comment, raw
+#   /tmp/prior-bot-comments.json    our own top-level inline comments
+#   /tmp/other-bot-comments.json    other bots' top-level inline comments
+#   /tmp/user-replies-on-ours.json  human replies, tagged own-/other-bot-/human-thread
+#   /tmp/our-replies-on-others.json our replies on other bots' threads
+#   /tmp/human-inline-comments.json humans' own top-level inline comments
+#   /tmp/all-issue-comments.json + /tmp/general-comments.json
+#   /tmp/review-threads.json        UNRESOLVED threads with their PRRT_… node ids
+# and, only when PRIOR_HEAD_SHA is set:
+#   /tmp/pr-reviews.json /tmp/prior-review.json /tmp/human-review-bodies.json
+#   /tmp/author-rebuttals.json
+# It reads /tmp/pr.json for the PR author, so it must run AFTER the `gh pr view`
+# above. Its round-2 prior-review filter MUST stay in lockstep with
+# scripts/prior-review-state.sh — tests/prior_review_state_test.sh fails the
+# build if a skip marker is missing from it.
+"$SCRIPTS/fetch-pr-threads.sh" threads
 
 # ── Spec retrieval ──
-# 1. Linked GitHub issue. Candidates: closingIssuesReferences rank first
-#    (authoritative); plain refs in the PR title/body rank second — `Spec: #N`,
-#    `Issue #N`, `Refs #N`, bare `#N` mentions, and full issue URLs, not only
-#    closing keywords. Each is verified as a real issue, not a PR
-#    (.pull_request is null only for real issues; PRs are a subclass of issues
-#    in the API), then fetched via `gh issue view`.
-: > /tmp/issue-candidates.jsonl
-CANDS="$(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json)
-$(jq -r '(.title // "") + " " + (.body // "")' /tmp/pr.json | grep -oE '(#|/issues/)[0-9]+' | grep -oE '[0-9]+')"
-for n in $(printf '%s\n' "$CANDS" | awk 'NF && !seen[$0]++' | head -6); do
-  RESP=$(gh api "repos/$REPO/issues/$n" 2>/dev/null)
-  printf '%s' "$RESP" | jq -e '.pull_request == null and (.number | type == "number")' >/dev/null 2>&1 || continue
-  gh issue view "$n" --json number,title,body,labels,state >> /tmp/issue-candidates.jsonl 2>/dev/null || true
-done
-jq -s '.' /tmp/issue-candidates.jsonl > /tmp/issue.json 2>/dev/null || echo '[]' > /tmp/issue.json
+# 1. Linked GitHub issue — the same reviewed helper, second mode. Candidates:
+#    closingIssuesReferences rank first (authoritative); plain refs in the PR
+#    title/body rank second — `Spec: #N`, `Issue #N`, `Refs #N`, bare `#N`
+#    mentions, and full issue URLs, not only closing keywords. Each is verified
+#    as a real issue, not a PR (a raw `repos/<repo>/issues/<n>` read;
+#    `.pull_request` is null only for real issues, since PRs are a subclass of
+#    issues in the API), then fetched via `gh issue view`. Writes
+#    /tmp/issue-candidates.jsonl and /tmp/issue.json (an array, `[]` when
+#    nothing resolved).
+"$SCRIPTS/fetch-pr-threads.sh" issue-candidates
 
 # 2. External-tracker candidates from title + body + branch (JIRA-style ids,
 #    tracker URLs), then the consumer's optional fetch-issue.sh hook.
