@@ -62,8 +62,9 @@ real review having read nothing, and counting it as a round scoped the *next*
 run to the since-last diff (Panenco/qit#7534: a `deep-review` label on an
 oversized PR produced an APPROVE over a 7-line delta, with 4251 lines never
 read). The derivation now lives in `scripts/prior-review-state.sh` and keeps two
-lists: all standing bot reviews (for the oversized re-run dedup, which must see
-the block) and judged-only reviews (for round / prior SHA / prior verdict).
+lists: all standing bot reviews (read by the context builder, which must show
+the reviewer what is currently standing on the PR, blocks included) and
+judged-only reviews (for round / prior SHA / prior verdict).
 Non-judging reviews are identified by a hidden body marker; the guard in
 `tests/prior_review_state_test.sh` fails the build if a skip gate ships without
 one.

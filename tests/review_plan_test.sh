@@ -154,6 +154,26 @@ assert_plan "deep-review on a promotion → full" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=staging GATE_LABELS=$'deep-review' GATE_FILES_TSV=$'apps/web/x.ts\t10\t2'
 assert_plan "deep-review on an oversized PR → full" "full true normal" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_LABELS=$'deep-review' GATE_FILES_TSV="$BIG_FILES"
+# ── GATE_FORCE_FULL — how `/review deep` reaches the resolver. Must behave
+#    identically to the deep-review label in every branch. ──
+assert_plan "force-full on a small PR → full" "full true normal" \
+  GATE_FORCE_FULL=true GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t10\t2'
+assert_plan "force-full on a tiny PR → full" "full true normal" \
+  GATE_FORCE_FULL=true GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t5\t3'
+assert_plan "force-full on a promotion → full" "full true normal" \
+  GATE_FORCE_FULL=true GATE_BASE_REF=main GATE_HEAD_REF=staging GATE_FILES_TSV=$'apps/web/x.ts\t10\t2'
+assert_plan "force-full bypasses the oversized block" "full true normal" \
+  GATE_FORCE_FULL=true GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV="$BIG_FILES"
+assert_plan "force-full on docs → nonruntime, functional still off" "full false nonruntime" \
+  GATE_FORCE_FULL=true GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'README.md\t10\t2'
+# The one thing it does not beat: an opt-out label outranks an explicit request.
+assert_plan "skip-review label beats force-full" "skip false label" \
+  GATE_FORCE_FULL=true GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_LABELS=$'skip-review' \
+  GATE_FILES_TSV=$'src/app.ts\t40\t5'
+# Only the literal "true" forces it — a stray value must not escalate everything.
+assert_plan "force-full=false is inert" "light true small" \
+  GATE_FORCE_FULL=false GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/util.ts\t10\t2'
+
 assert_plan "deep-review on docs → still nonruntime (functional NOT forced)" "full false nonruntime" \
   GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_LABELS=$'deep-review' GATE_FILES_TSV=$'README.md\t10\t0'
 assert_plan "skip-review beats deep-review" "skip false label" \

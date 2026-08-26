@@ -1,8 +1,10 @@
 name: Claude PR Review
 
+# ON DEMAND — nothing reviews on push. Comment `/review code | functional | native
+# | all | deep` on a PR; combine passes in one comment for a single review.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
   pull_request_target: # warms the browser cache in main scope
   workflow_dispatch:
     inputs:
@@ -10,19 +12,25 @@ on:
         description: 'PR number to review'
         required: true
         type: string
+      command:
+        description: 'Passes to run, e.g. "/review code functional". Empty = judges only.'
+        required: false
+        type: string
 
-# Cancel superseded review runs when a PR branch is repushed. Manual dispatch
-# gets a per-invocation group so it never cancels concurrent PR runs.
+# Requests queue rather than cancel — a human asked for each one. Dispatch gets a
+# per-invocation group so it never blocks on a comment-driven run.
 concurrency:
-  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  group: claude-review-${{ github.event_name }}-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   review:
-    # Skip drafts to avoid burning review budget on in-progress work. The
-    # pipeline still re-runs automatically on `ready_for_review`. Manual
-    # dispatch is always allowed.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    # Filter, not security: without it every comment opens a run that only skips
+    # itself. Authorization is the author_association gate in the called workflow.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/review'))
     # This repo IS panenco/claude-review, so we call the reusable workflow
     # via its local path rather than `panenco/claude-review/.github/workflows/
     # pr-review.yml@v3`. Two reasons:
@@ -32,21 +40,18 @@ jobs:
     #      `prompts/setup-review.md` Step 2.
     #   2. The local path exercises the in-PR copy of pr-review.yml, which
     #      is a stronger dogfood: orchestration changes in a PR get tested
-    #      on that PR's own review run. We extend that dogfood to skills
-    #      + scripts via the `pipeline_ref:` input below.
+    #      on that PR's own review run.
     uses: ./.github/workflows/pr-review.yml
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      actions: read    # round-2 follow-up reviews need this to download
-                       # the prior run's review-state artifact via run-id.
-                       # Omitting this triggers startup_failure (caller perms
-                       # cap the called workflow's perms — and the called
-                       # workflow declares actions: read at job level).
       packages: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      # Empty on the comment path: the called workflow reads the body off THIS
+      # caller's event. Only dispatch, which has no comment, forwards one.
+      command: ${{ inputs.command || '' }}
       # MUST stay explicit. The `runner` default is `panenco-claude-review`,
       # whose org runner group is created with `allows_public_repositories:
       # false` — and THIS repo is public. It can never place a job on that
@@ -54,20 +59,7 @@ jobs:
       # default here would queue every review for GitHub's 24h timeout and
       # then fail. Any other public consumer needs this same line.
       runner: ubuntu-latest
-      # Self-dogfood pin: install skills + scripts from THIS PR's head
-      # commit, not from @v3. Without this, every PR on panenco/claude-review
-      # tests its own pr-review.yml orchestration (because we use the local
-      # path above) but installs skills/scripts from the last released v3 —
-      # so script-level changes never get exercised until after merge. With
-      # the pin, any change to scripts/ or skills/ is dogfooded on the very
-      # PR introducing it. `head.sha` covers pull_request events; `github.sha`
-      # is the fallback for `workflow_dispatch` (where head.sha is empty).
-      pipeline_ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      # The second-opinion pass stays OFF here. Turning it on dogfoods the
-      # plugin install and the `gh pr comment` deny rule — both were verified
-      # that way on #98, run 32649065881: `review-native` dispatched and no
-      # second bot comment appeared. But it is a full extra review pass on the
-      # shared 5-hour Claude window, and we do not have that budget to spend on
-      # every PR here. Set it back to "on" for a run when the native path
-      # itself changes, then take it off again.
+      # No `pipeline_ref`: the dogfood install (`uses: ./`) already comes from the
+      # PR-head checkout, and on a comment event `github.sha` is main's tip — a
+      # head-SHA-looking pin here would quietly mean "main".
     secrets: inherit

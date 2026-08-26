@@ -42,7 +42,9 @@ runs:
         # outright: without these files the context builder and the screenshot
         # publisher have no fallback path at all, and the failure would surface as
         # a mid-review "command not found" rather than an install error.
-        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh prior-review-state.sh require-review-json.sh require-native-findings.sh fetch-pr-threads.sh upload-screenshots.sh; do
+        # Without review-command.sh the run goes green having reviewed nothing, which
+        # reads as "the bot ignored me" rather than as a broken install.
+        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh review-plan.sh review-command.sh prior-review-state.sh require-review-json.sh require-native-findings.sh fetch-pr-threads.sh upload-screenshots.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1

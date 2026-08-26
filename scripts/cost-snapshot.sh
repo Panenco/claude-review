@@ -146,7 +146,7 @@ process_run() {
   [[ "$ms" =~ ^[0-9]+$ ]] || ms=0
   cost=$(jq -r --arg rid "$rid" '.[$rid].claude_cost_usd // empty' "$USAGE_MAP" 2>/dev/null)
   if [ -z "$cost" ] && [ "$FULL_COST" = true ] \
-     && { [ "$ev" = "pull_request" ] || [ "$ev" = "workflow_dispatch" ]; } \
+     && { [ "$ev" = "issue_comment" ] || [ "$ev" = "pull_request" ] || [ "$ev" = "workflow_dispatch" ]; } \
      && { [ "$concl" = "success" ] || [ "$concl" = "failure" ]; }; then
     faid=$(gh api "/repos/$repo/actions/runs/$rid/artifacts" \
              --jq '.artifacts[]? | select(.name|test("^claude-review-[0-9]+$")) | .id' 2>/dev/null | head -1)
@@ -299,7 +299,7 @@ render() {
     def money(x): "$" + (x * 100 | round / 100 | tostring);
     {
       runs: length,
-      review_runs: ([.[] | select(.event=="pull_request" or .event=="workflow_dispatch")] | length),
+      review_runs: ([.[] | select(.event=="issue_comment" or .event=="pull_request" or .event=="workflow_dispatch")] | length),
       warm_runs:   ([.[] | select(.event=="pull_request_target")] | length),
       billed_min:  ([.[] | .billed_min] | add // 0),
       cancelled:   ([.[] | select(.conclusion=="cancelled")] | length),
@@ -328,7 +328,7 @@ render() {
   # metric (distinct from runner-min, which is aggregate spend). Tracks how
   # long an author waits, and how many reviews blow past 10 min.
   jq -s -r '
-    [.[] | select((.event=="pull_request" or .event=="workflow_dispatch") and ((.duration_ms // 0) > 0)) | (.duration_ms/60000)]
+    [.[] | select((.event=="issue_comment" or .event=="pull_request" or .event=="workflow_dispatch") and ((.duration_ms // 0) > 0)) | (.duration_ms/60000)]
     | sort as $d | ($d | length) as $n
     | if $n == 0 then "## Review latency\n- (no completed review runs in window)\n"
       else
@@ -357,14 +357,15 @@ render() {
     "| \(.repo) | \(.runs) | \(.cancelled) | \(.min) | \(money(.min*$rate)) | \(money(.claude)) | \(.zero) | \(.find) |"
   ' "$ROWS"
 
-  # A PR is re-reviewed once per push, so its true cost is the sum across all
-  # its runs. Group pull_request runs by branch (≈ one PR) and total the spend.
+  # A PR can be reviewed several times — once per `/review` comment, and once per
+  # push on repos not yet migrated off the automatic trigger — so its true cost is
+  # the sum across all its runs. Group by branch (≈ one PR) and total the spend.
   printf '\n## Most expensive PRs (Σ across all of a PR'\''s runs)\n\n'
   printf '%s\n' '| Repo · branch | Runs | Σ runner-min | Σ Actions $ | Σ Claude $ |'
   printf '%s\n' '|---|---:|---:|---:|---:|'
   jq -s -r --argjson rate "$RATE" '
     def money(x): "$" + (x * 100 | round / 100 | tostring);
-    [.[] | select(.event=="pull_request")] | group_by(.repo + " " + .branch)
+    [.[] | select(.event=="issue_comment" or .event=="pull_request")] | group_by(.repo + " " + .branch)
     | map({k: (.[0].repo + " · " + .[0].branch), n: length,
            min: ([.[] | .billed_min] | add // 0),
            claude: ([.[] | (.claude_cost_usd // 0)] | add // 0)})
@@ -376,7 +377,7 @@ render() {
   printf '%s\n' '| Repo / branch | Runs in window |'
   printf '%s\n' '|---|---:|'
   jq -s -r '
-    [.[] | select(.event=="pull_request")] | group_by(.repo + " " + .branch)
+    [.[] | select(.event=="issue_comment" or .event=="pull_request")] | group_by(.repo + " " + .branch)
     | map({k: (.[0].repo + " · " + .[0].branch), n: length}) | sort_by(-.n) | .[0:10][] |
     "| \(.k) | \(.n) |"
   ' "$ROWS"

@@ -21,10 +21,14 @@ Review depth scales with the PR. The deterministic resolver
 PR takes one of two paths:
 
 - **small** — at or under `GATE_SMALL_CEILING` (default **300**) non-generated
-  changed lines, with no sensitive paths → a single-judge `light` pass, no
-  functional.
+  changed lines, with no sensitive paths → a single-judge `light` pass.
 - **full** — over the ceiling, **or** it touches a sensitive path → the
-  dual-judge debate + functional.
+  dual-judge debate.
+
+**Scope note (added when reviews became on demand).** This ADR is now about judge
+DEPTH only. Functional testing left the tier: it runs when the `/review` comment
+asks for it, at any tier. The cost argument below still holds for the judges; the
+infrastructure the tiers used to ration is now rationed by the command.
 
 Two overrides:
 
@@ -72,6 +76,5 @@ a repo whose `auth/` holds real auth logic opts it back in via
   deterministic and unit-tested (`tests/review_plan_test.sh`).
 - It is *structural*, not *semantic*: it cannot tell that a 40-line change is
   unusually risky unless its path says so. `deep-review` is the manual override.
-- Realized in two steps: the resolver classification (which also turns
-  functional off for `small`), then the orchestrator honoring `light` with a
-  single judge.
+- Realized in two steps: the resolver classification, then the orchestrator
+  honoring `light` with a single judge.
