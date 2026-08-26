@@ -194,6 +194,19 @@ assert_wiring "no step reads github.event.pull_request" \
 assert_wiring "functional infra gates on the resolved functional flag" \
   "$(grep -q "steps.review_plan.outputs.run_functional == 'true'" "$WF" && echo no || echo yes)"
 
+# Both replies must speak as the review App, not github-actions[bot] — and the
+# identity must be resolved BEFORE them, or they silently fall back to the
+# default token (seen live: the menu posted as github-actions[bot]).
+ID_LINE=$(grep -n '\- name: Resolve review identity' "$WF" | cut -d: -f1)
+for step in 'Acknowledge the request' 'Reply with the command menu'; do
+  step_line=$(grep -n "\- name: $step" "$WF" | cut -d: -f1)
+  token=$(sed -n "${step_line},$((step_line + 12))p" "$WF" | grep -c 'GH_TOKEN: ${{ steps.review_identity.outputs.token }}')
+  assert_wiring "'$step' posts as the review identity" \
+    "$([ "$token" = "1" ] && echo yes || echo no)"
+  assert_wiring "'$step' comes after the identity is resolved" \
+    "$([ "$step_line" -gt "$ID_LINE" ] && echo yes || echo no)"
+done
+
 if [ "$fail" -eq 0 ]; then
   echo "All review-command tests passed."
 else
