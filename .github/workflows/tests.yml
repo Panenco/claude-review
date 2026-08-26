@@ -15,6 +15,10 @@ on:
       # not run when the wiring changes is not a test.
       - 'action.yml'
       - '.github/workflows/pr-review.yml'
+      # review_command_test.sh asserts on the CALLER too — that it triggers on
+      # issue_comment and not pull_request. A wiring test that does not run when
+      # the wiring changes is not a test.
+      - '.github/workflows/claude-review.yml'
 
 jobs:
   shell:
@@ -35,6 +39,9 @@ jobs:
 
       - name: Run review_plan_test.sh
         run: bash tests/review_plan_test.sh
+
+      - name: Run review_command_test.sh
+        run: bash tests/review_command_test.sh
 
       - name: Run prior_review_state_test.sh
         run: bash tests/prior_review_state_test.sh

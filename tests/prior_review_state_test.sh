@@ -3,8 +3,8 @@ set -uo pipefail
 
 # prior_review_state_test.sh — fixture test for scripts/prior-review-state.sh.
 #
-# The script turns a PR's review list into (round, prior_head_sha, prior_verdict,
-# oversized_dup). Reviews come from a fixture file via REVIEWS_JSON, so no gh and
+# The script turns a PR's review list into (round, prior_head_sha, prior_verdict).
+# Reviews come from a fixture file via REVIEWS_JSON, so no gh and
 # no network. The SHA-reachability check is real git, so the fixtures run inside a
 # scratch repo with two real commits.
 #
@@ -74,19 +74,18 @@ QUOTING_BODY='## Claude PR Review — REQUEST_CHANGES
   body as `<!-- claude-review-skipped -->` but the oversized branch stamps
   `<!-- claude-review-oversized -->`; the two specs disagree.'
 
-# assert_state <label> <fixture-json-array> <want "round sha verdict dup"> [EXTRA_ENV=...]
+# assert_state <label> <fixture-json-array> <want "round sha verdict"> [EXTRA_ENV=...]
 assert_state() {
   local label="$1" fixture="$2" want="$3"; shift 3
   printf '%s' "$fixture" > "$WORK/reviews.json"
   local got
   got=$(env REVIEWS_JSON="$WORK/reviews.json" REVIEW_BOT_USER="$BOT" OUT_DIR="$WORK/out" \
-          GATE="" GITHUB_EVENT_NAME=pull_request "$@" bash "$SCRIPT" \
+          "$@" bash "$SCRIPT" \
         | awk -F= '
             /^round=/         {r=$2}
             /^prior_head_sha=/{s=$2}
             /^prior_verdict=/ {v=$2}
-            /^oversized_dup=/ {d=$2}
-            END {print r, (s == "" ? "-" : s), (v == "" ? "-" : v), d}')
+            END {print r, (s == "" ? "-" : s), (v == "" ? "-" : v)}')
   if [ "$got" = "$want" ]; then
     echo "OK:   $label → $got"
   else
@@ -98,37 +97,37 @@ assert_state() {
 echo "── round derivation ──"
 
 assert_state "no reviews → round 1" \
-  "[]" "1 - - false"
+  "[]" "1 - -"
 
 # THE REGRESSION. An oversized block judged nothing, so the next run must start
 # from scratch — full scope, no prior head to diff against.
 assert_state "oversized block only → round 1 (never judged)" \
   "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$OVERSIZED_BODY")]" \
-  "1 - - false"
+  "1 - -"
 
 assert_state "skip-label note only → round 1 (never judged)" \
   "[$(review COMMENTED 2026-08-07T07:46:24Z "$SHA_OLD" "$SKIPPED_BODY")]" \
-  "1 - - false"
+  "1 - -"
 
 assert_state "crash banner only → round 1" \
   "[$(review COMMENTED 2026-08-07T07:46:24Z "$SHA_OLD" "$CRASH_BODY")]" \
-  "1 - - false"
+  "1 - -"
 
 assert_state "one judged review → round 2 with its head + verdict" \
   "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$JUDGED_BODY")]" \
-  "2 $SHA_OLD REQUEST_CHANGES false"
+  "2 $SHA_OLD REQUEST_CHANGES"
 
 # A judged round followed by a block (PR grew past the ceiling) still anchors on
 # the judged round — the block contributes no state at all.
 assert_state "judged then oversized → round 2 anchored on the judged review" \
   "[$(review CHANGES_REQUESTED 2026-08-07T07:00:00Z "$SHA_OLD" "$JUDGED_BODY"),
     $(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_NEW" "$OVERSIZED_BODY")]" \
-  "2 $SHA_OLD REQUEST_CHANGES false"
+  "2 $SHA_OLD REQUEST_CHANGES"
 
 assert_state "two judged reviews → round 3, latest head" \
   "[$(review CHANGES_REQUESTED 2026-08-07T07:00:00Z "$SHA_OLD" "$JUDGED_BODY"),
     $(review APPROVED 2026-08-07T08:00:00Z "$SHA_NEW" "$JUDGED_BODY")]" \
-  "3 $SHA_NEW APPROVE false"
+  "3 $SHA_NEW APPROVE"
 
 # A dismissal is not an approval. It says nothing about what the review found,
 # so the verdict comes from the body header and the orchestrator's
@@ -136,22 +135,22 @@ assert_state "two judged reviews → round 3, latest head" \
 # only). Mapping DISMISSED→APPROVE here un-pinned the prior round's blockers.
 assert_state "dismissed judged RC → verdict recovered from the body" \
   "[$(review DISMISSED 2026-08-07T07:46:24Z "$SHA_OLD" "$JUDGED_BODY")]" \
-  "2 $SHA_OLD REQUEST_CHANGES false"
+  "2 $SHA_OLD REQUEST_CHANGES"
 
 assert_state "dismissed judged APPROVE → APPROVE" \
   "[$(review DISMISSED 2026-08-07T07:46:24Z "$SHA_OLD" "$JUDGED_APPROVE_BODY")]" \
-  "2 $SHA_OLD APPROVE false"
+  "2 $SHA_OLD APPROVE"
 
 assert_state "dismissed with unparseable body → REQUEST_CHANGES (fail closed)" \
   "[$(review DISMISSED 2026-08-07T07:46:24Z "$SHA_OLD" 'some hand-edited body')]" \
-  "2 $SHA_OLD REQUEST_CHANGES false"
+  "2 $SHA_OLD REQUEST_CHANGES"
 
 # Mirror of the oversized case: a skip note posted after a judged round adds no
 # state, so the next push still resumes from the judged round — with its verdict.
 assert_state "judged then skip note → round 2 anchored on the judged review" \
   "[$(review CHANGES_REQUESTED 2026-08-07T07:00:00Z "$SHA_OLD" "$JUDGED_BODY"),
     $(review COMMENTED 2026-08-07T07:46:24Z "$SHA_NEW" "$SKIPPED_BODY")]" \
-  "2 $SHA_OLD REQUEST_CHANGES false"
+  "2 $SHA_OLD REQUEST_CHANGES"
 
 # Markers are stamped on the body's FIRST LINE. This repo reviews itself, so a
 # judged review that QUOTES a marker in a finding is a live case — matching with
@@ -159,48 +158,20 @@ assert_state "judged then skip note → round 2 anchored on the judged review" \
 # un-pinning its blockers from the anti-downgrade ladder.
 assert_state "judged review quoting a marker still counts as judged" \
   "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$QUOTING_BODY")]" \
-  "2 $SHA_OLD REQUEST_CHANGES false"
-
-# Same anchoring, other direction: the dedup must not fire off a quoted marker,
-# or a still-oversized PR silently skips the run that would have reviewed it.
-assert_state "judged review quoting a marker → no oversized dedup" \
-  "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$QUOTING_BODY")]" \
-  "2 $SHA_OLD REQUEST_CHANGES false" GATE=oversized
+  "2 $SHA_OLD REQUEST_CHANGES"
 
 # GitHub hands back CRLF bodies; the stamp is still the first line.
 assert_state "CRLF skip body → still recognised as a skip" \
   "[$(review COMMENTED 2026-08-07T07:46:24Z "$SHA_OLD" "$(printf '<!-- claude-review-skipped -->\r\n\r\n## Claude PR Review — COMMENT\r\n')")]" \
-  "1 - - false"
+  "1 - -"
 
 assert_state "unreachable prior head → reset to round 1" \
   "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_GONE" "$JUDGED_BODY")]" \
-  "1 - - false"
+  "1 - -"
 
 assert_state "another bot's review is not ours" \
   '[{"user":{"login":"aikido-pr-checks[bot]"},"state":"COMMENTED","submitted_at":"2026-08-06T15:00:14Z","commit_id":"'"$SHA_OLD"'","body":"something"}]' \
-  "1 - - false"
-
-echo
-echo "── oversized dedup (reads the FULL list, must survive the round filter) ──"
-
-# The dedup asks "is the review standing on this PR my own block?" — if it read
-# the judged-only list it would never see one, and every push to a still-oversized
-# PR would re-post a byte-identical block.
-assert_state "still oversized, block standing → dedup fires" \
-  "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$OVERSIZED_BODY")]" \
-  "1 - - true" GATE=oversized
-
-assert_state "still oversized, judged review standing → no dedup" \
-  "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$JUDGED_BODY")]" \
-  "2 $SHA_OLD REQUEST_CHANGES false" GATE=oversized
-
-assert_state "block standing but gate no longer oversized → no dedup" \
-  "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$OVERSIZED_BODY")]" \
-  "1 - - false" GATE=normal
-
-assert_state "workflow_dispatch always re-runs" \
-  "[$(review CHANGES_REQUESTED 2026-08-07T07:46:24Z "$SHA_OLD" "$OVERSIZED_BODY")]" \
-  "1 - - false" GATE=oversized GITHUB_EVENT_NAME=workflow_dispatch
+  "1 - -"
 
 echo
 echo "── guard: every skip gate must have a marker ──"

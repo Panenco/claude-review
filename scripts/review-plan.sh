@@ -40,6 +40,8 @@
 #   GATE_LABELS          newline-separated PR label names
 #   GATE_SKIP_LABEL      label that forces a skip (default: skip-review)
 #   GATE_DEEP_LABEL      label that forces a full review (default: deep-review)
+#   GATE_FORCE_FULL      "true" forces a full review, exactly as the deep-review label
+#                        does. How `/review deep` gets here without a fake label.
 #   GATE_SIZE_CEILING    non-generated changed lines → oversized (default 3000)
 #   GATE_FILE_CEILING    non-generated changed files → oversized (default 60)
 #   GATE_SMALL_CEILING   non-gen lines at/under which a runtime PR → small/light (default 300)
@@ -85,6 +87,9 @@ fi
 # ── 1b) deep-review label → force a full review (suppresses the light downgrades
 #        below). skip-review (above) wins if both labels are present. ──
 FORCE_FULL=false
+if [ "${GATE_FORCE_FULL:-}" = "true" ]; then
+  FORCE_FULL=true
+fi
 if [ -n "${GATE_LABELS:-}" ] && printf '%s\n' "$GATE_LABELS" | grep -Fxq "$DEEP_LABEL"; then
   FORCE_FULL=true
 fi

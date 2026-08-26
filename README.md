@@ -1,18 +1,38 @@
 # Claude PR Review Pipeline
 
-Reusable PR review pipeline powered by Claude Code. A single orchestrator agent runs two independent judges in parallel (Opus for deep reasoning, Haiku for cheap broad coverage), reconciles them through a debate loop, and dispatches an end-to-end functional tester (Sonnet driving a real browser) when the diff has user-observable surface.
+Reusable PR review pipeline powered by Claude Code. A single orchestrator agent runs two independent judges in parallel (Opus for deep reasoning, Haiku for cheap broad coverage), reconciles them through a debate loop, and dispatches an end-to-end functional tester (Sonnet driving a real browser) when you ask for one.
+
+**Reviews are on demand.** Nothing runs on push. You ask for a review by commenting on the PR, and the comment says which passes to run.
+
+## The `/review` command
+
+| Comment | What runs |
+| --- | --- |
+| `/review` | Nothing — posts the menu below. |
+| `/review code` | The judges. Depth is still chosen automatically from the PR's size and paths. |
+| `/review functional` | The judges **+** the browser tester (dev-env bring-up, smoke, screenshots). |
+| `/review native` | The judges **+** Anthropic's official `code-review` plugin as a second opinion. |
+| `/review all` | All three. |
+| `/review deep` | Forces the two-judge debate on a PR the size gate would review lightly. Combines with the others. |
+
+**Combine passes in one comment.** `/review code functional native` runs them in one session and posts **one** review. Separate comments queue up and post separate reviews.
+
+- Aliases: `judges` = `code`, `browser`/`e2e`/`smoke` = `functional`, `anthropic`/`plugin` = `native`, `full` = `deep`.
+- The trigger must **start** the comment — mentioning `/review all` mid-sentence does nothing.
+- Only `OWNER`/`MEMBER`/`COLLABORATOR` can trigger a run. Everyone else is ignored silently.
+- **Not opt-in:** the judges, and their depth. The command picks the passes, not how hard they think.
 
 ## Quick Start
 
 ### 1. Add the caller workflow
 
-Create `.github/workflows/claude-review.yml` in your repo. Track the `@v3` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v3 + secrets: inherit` on every PR. (If you're still on `@v1` or `@v2`, see [Migration: v1 → v2](#migration-v1--v2) for the older bump, then move the tag to `@v3` — the latest tier requires a `dev-start.sh` for runtime PRs.)
+Create `.github/workflows/claude-review.yml` in your repo. Track the `@v3` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v3 + secrets: inherit` on every PR.
 
 ```yaml
 name: Claude PR Review
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
   pull_request_target: # warms the browser cache in main scope
   workflow_dispatch:
     inputs:
@@ -20,8 +40,18 @@ on:
         description: "PR number to review"
         required: true
         type: string
+      command:
+        description: 'Passes to run, e.g. "/review code functional". Empty = judges only.'
+        required: false
+        type: string
 jobs:
   review:
+    # Filter only — without it every comment on every issue opens a run that
+    # exists just to skip itself. Authorization lives in the called workflow.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/review'))
     uses: panenco/claude-review/.github/workflows/pr-review.yml@v3
     permissions:
       contents: write
@@ -30,8 +60,13 @@ jobs:
       packages: read
     with:
       pr_number: ${{ inputs.pr_number || '' }}
+      command: ${{ inputs.command || '' }}
     secrets: inherit
 ```
+
+You do **not** forward the comment body. A reusable workflow sees the caller's `github` context, so it reads `github.event.comment.body` itself; `command` exists only for `workflow_dispatch`, which has no comment to read (an empty command there means a plain judge review — clicking *Run workflow* is the opt-in).
+
+`pull_request_target` only warms the browser/dependency cache; it never reviews. Keep it if your team uses `/review functional` regularly, drop it otherwise.
 
 The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. `actions: read` is **no longer required** — round-2 state is derived from the PR's own review history, not from workflow artifacts; existing callers that still grant it are unaffected and can leave it in. See `prompts/setup-review.md` for the full troubleshooting flow.
 
@@ -50,13 +85,9 @@ with:
 
 Without `pipeline_ref`, the install defaults to `@v3` and consumers get new orchestration on old skills, which fails at max-turns. The `@v3` default is correct for normal use; only override during testing.
 
-**Allowing bot-opened PRs.** By default, runs triggered by a non-human actor (renovate, dependabot, automation bots) are skipped cleanly — a green check with a `::notice::`, no review, no crash banner. Opt in per-repo by passing `allowed_bots` (comma-separated bot logins, or `*` for all bots) on the caller's `with:` block. Use the login **without** the `[bot]` suffix — it matches `github.actor`:
+**Bot-opened PRs.** There is no `allowed_bots` input any more, and nothing to configure: a bot's comment never clears the `author_association` gate, and a bot's *PR* is reviewed like any other once a human comments `/review` on it. Renovate and dependabot PRs simply sit unreviewed until somebody asks — which is the point of an on-demand trigger.
 
-```yaml
-with:
-  pr_number: ${{ inputs.pr_number || '' }}
-  allowed_bots: panenco-automation   # not "panenco-automation[bot]"
-```
+**Changing the trigger word.** Pass `command_trigger` if `/review` collides with another bot in your repo. Change the caller's `startsWith(...)` filter to match, and note that the menu the bot posts back quotes whatever you set.
 
 Empty (the default) skips all bot-initiated runs. Two notes for allowed bots: dependabot-triggered events receive *Dependabot secrets*, not Actions secrets — add `CLAUDE_CODE_OAUTH_TOKEN` there too or the token picker fails. And bot-authored PRs waive the manual-spec gate (a machine PR can never link a human spec), so they can reach APPROVE on review merit alone.
 
@@ -107,17 +138,16 @@ Two things your fleet needs. It must have **network egress to the GitHub Actions
 
 The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Note that it inherits `runner` too, so a caller that wires the `pull_request_target` trigger lands a `secrets: inherit` job on the fleet; callers that would rather keep that combination off self-hosted infrastructure simply omit the trigger.
 
-**Second opinion: the native `code-review` pass (`native_review`).** With `native_review: "on"`, a `full` review runs **two** reviewers: this pipeline's own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin, run exactly as Anthropic ships it. The second one is not a separate job — it is the `review-native` subagent, dispatched by the orchestrator **inside the existing review session**, in the same response as the judges and the functional tester. It therefore costs **no extra runner, no second checkout, no second Claude CLI install and no second OAuth probe**, and it adds no wall-clock: it overlaps the judges and the functional tester, which already dominate the run. It is **`off` by default** — the infra cost is gone, but the token draw on the shared 5-hour Claude window is not, so enabling it is the caller's call.
+**Second opinion: the native `code-review` pass (`/review native`).** With `native`, a review runs **two** reviewers: this pipeline's own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin, run exactly as Anthropic ships it. The second one is not a separate job — it is the `review-native` subagent, dispatched by the orchestrator **inside the existing review session**, in the same response as the judges and the functional tester. It therefore costs **no extra runner, no second checkout, no second Claude CLI install and no second OAuth probe**, and it adds no wall-clock: it overlaps the judges and the functional tester, which already dominate the run. It runs only when a comment asks for it (`/review native`) — the infra cost is gone, but the token draw on the shared 5-hour Claude window is not, so spending it is a per-PR decision rather than a repo-wide setting.
 
 ```yaml
 with:
   pr_number: ${{ inputs.pr_number || '' }}
-  native_review: "on"     # default "off" — enables the second pass
   native_review_scope: |  # default "" — reviews the whole diff
     only review changes under `apps/api/` and `apps/web/`; ignore everything else
 ```
 
-**`native_review_runner` is deprecated and does nothing.** It placed the old separate `Native Review` job on its own runner; there is no second job any more, so the input is a declared no-op. **Delete it from your caller workflow** — it is kept only so callers that still pass it do not fail with `startup_failure` (a reusable workflow that drops an input a caller supplies fails the whole run).
+**`native_review` and `native_review_runner` are gone.** The comment decides, per run, whether the native pass runs — a repo-wide default has nothing left to decide. Passing either input now fails the run with `startup_failure`; delete both from your caller workflow. `native_review_scope` stays and still applies whenever `/review native` is used.
 
 Why two reviewers rather than one better one: they fail differently. On `Panenco/hr4cast`, where both ran side by side, the native pass caught a missing authorization guard, a Postgres privilege-management regression, silently removed abuse limits and a deploy-breaking unique migration that our own reviewer walked past.
 
@@ -129,7 +159,7 @@ Why two reviewers rather than one better one: they fail differently. On `Panenco
 
 Confidence maps onto this pipeline's severities as: 95-100 in the security/data-loss class → `critical`; 95-100 otherwise → `major`; 80-94 → `minor`; below 80 the plugin's own filter has already dropped it.
 
-**`full` reviews only.** It is a second complete review pass, and although it costs no runner it does draw on the **same 5-hour Claude subscription window** as everything else, so per-PR token consumption is meaningfully higher. `light`-tier reviews (the `small`, `tiny`, `promotion` and `nonruntime` gates) skip it, and `skip` runs nothing at all — so the `gate_skip_label` (default `skip-review`) and the oversized ceilings silence **both** reviewers, not just one. If the token draw is scarce, add a token to the `CLAUDE_CODE_OAUTH_TOKENS` pool or leave the pass `off`. On a monorepo, `native_review_scope` is free text injected into the native reviewer's prompt as a *narrowing* constraint; the plugin knows nothing about this pipeline's gate rules, so scope it away from generated and vendored paths or it will spend its budget there.
+**Only when asked.** It is a second complete review pass, and although it costs no runner it does draw on the **same 5-hour Claude subscription window** as everything else, so per-PR token consumption is meaningfully higher. It no longer keys off the review tier: a `light` plan on a small diff is exactly when a second opinion is worth having, so `/review native` gets it either way. `skip` still runs nothing at all — the `gate_skip_label` (default `skip-review`) and the oversized ceilings silence **both** reviewers. If the token draw is scarce, add a token to the `CLAUDE_CODE_OAUTH_TOKENS` pool. On a monorepo, `native_review_scope` is free text injected into the native reviewer's prompt as a *narrowing* constraint; the plugin knows nothing about this pipeline's gate rules, so scope it away from generated and vendored paths or it will spend its budget there.
 
 
 ### 2. Set secrets
@@ -158,10 +188,14 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
 ## How It Works
 
 ```
-PR opened / updated
+/review … comment on a PR
     |
-[Plan]  Deterministic resolver → review_level (full | light | skip)
-        + run_functional. See docs/review-plan.md.
+[Cmd]   Which passes were asked for → judges (always) + functional? + native?
+        See scripts/review-command.sh.
+    |
+[Plan]  Deterministic resolver → review_level (full | light | skip).
+        Depth only; the command already chose the passes.
+        See docs/review-plan.md.
     |
 [Setup] Node/pnpm, pinned agent-browser + Chrome (cached), browser
         launch preflight, disk reclaim, full clone, dev-env launched in
@@ -211,11 +245,11 @@ Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code
 
 A single LLM judge can have a bad sample on any given run — miss something subtle, over-grade a defensive note, mis-route a finding to the wrong file. The orchestrator runs **two independent judges with different model strengths** (Opus for deep reasoning, Haiku for cheap broad-coverage finds) and reconciles them: if they agree, the review ships immediately; if they disagree, each judge sees the other's findings and either concedes the ones they missed or defends the ones the other dropped. This catches the long tail where one judge is wrong without paying for it on every PR — most reviews converge on the first round.
 
-> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate for substantial or sensitive changes; small PRs take a lighter single-judge pass (on Opus), and tiny (≤ 10-line) or docs-only PRs get that single judge with no functional run. Oversized PRs (over the size ceiling) aren't lightly reviewed — they're blocked with a `REQUEST_CHANGES` asking to split, unless you add the `deep-review` label. Functional testing is gated separately and stays on for every runtime diff above the tiny ceiling — screenshots of the running app are the review's centerpiece, so a small UI fix still gets its quick smoke + screenshot pass. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
+> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate for substantial or sensitive changes; small PRs take a lighter single-judge pass (on Opus), and tiny (≤ 10-line) or docs-only PRs get that single judge with no functional run. Oversized PRs (over the size ceiling) aren't lightly reviewed — they're blocked with a `REQUEST_CHANGES` asking to split, unless you add the `deep-review` label. Functional testing is not part of that decision at all — it runs when, and only when, a comment asks for it. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
 
 ### Round 1 vs round 2
 
-Review state lives on the PR itself — there are no cross-run artifacts. On every push, `scripts/prior-review-state.sh` lists the pipeline's own prior reviews on the PR: the newest **judged** review's `commit_id` is the previously-reviewed SHA, its state is the prior verdict, and the count of judged reviews sets the round number. *Judged* is the load-bearing word — a `review_level=skip` early-return (the oversized split-request, the skip-label note) posts a review without any judge reading the diff, so it carries a hidden marker (`<!-- claude-review-oversized -->` / `<!-- claude-review-skipped -->`) and is excluded from the count. Counting one would scope the next push to the since-last diff and approve a PR nobody ever reviewed. Crash banners and their supersede notes are excluded the same way. Two consequences: the context builder resolves the same judged review (same marker exclusions, pinned to the derived SHA) so the round-2 ladder can't reconstruct prior findings off a review that judged nothing, and a skip-marked post never dismisses a standing review — adding `skip-review` must not clear a REQUEST_CHANGES nobody re-reviewed. The oversized re-run dedup deliberately reads the *unfiltered* list — it needs to see the block standing on the PR. The checkout is a full clone, so `git diff <prior>...HEAD` is always computable and since-last scoping never silently degrades into a full-price re-review. The context builder scopes round 2 to that since-last diff and classifies every open thread — re-verifying each "still present" claim against the file at HEAD before it counts. The verdict ladder gains a round-2 layer that's strictly **anti-downgrade**:
+Review state lives on the PR itself — there are no cross-run artifacts. On every run, `scripts/prior-review-state.sh` lists the pipeline's own prior reviews on the PR: the newest **judged** review's `commit_id` is the previously-reviewed SHA, its state is the prior verdict, and the count of judged reviews sets the round number. *Judged* is the load-bearing word — a `review_level=skip` early-return (the oversized split-request, the skip-label note) posts a review without any judge reading the diff, so it carries a hidden marker (`<!-- claude-review-oversized -->` / `<!-- claude-review-skipped -->`) and is excluded from the count. Counting one would scope the next review to the since-last diff and approve a PR nobody ever reviewed. Crash banners and their supersede notes are excluded the same way. Two consequences: the context builder resolves the same judged review (same marker exclusions, pinned to the derived SHA) so the round-2 ladder can't reconstruct prior findings off a review that judged nothing, and a skip-marked post never dismisses a standing review — adding `skip-review` must not clear a REQUEST_CHANGES nobody re-reviewed. The checkout is a full clone, so `git diff <prior>...HEAD` is always computable and since-last scoping never silently degrades into a full-price re-review. The context builder scopes round 2 to that since-last diff and classifies every open thread — re-verifying each "still present" claim against the file at HEAD before it counts. The verdict ladder gains a round-2 layer that's strictly **anti-downgrade**:
 
 - Prior `REQUEST_CHANGES`, no new criticals/majors, all prior blockers `RESOLVED` → per-PR verdict (APPROVE if no new findings, COMMENT otherwise).
 - Prior `REQUEST_CHANGES`, some prior blockers `STILL_PRESENT` → keep `REQUEST_CHANGES`.
@@ -612,7 +646,7 @@ permissions:
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
 - **Runtime-evidence gate** — a PR the planner judged has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}`) is blocked with `REQUEST_CHANGES` only when the smoke run actually ran and `FAIL`ed. If the smoke never ran (no `.github/claude-review/dev-start.sh`, a bring-up that fails/times out, a tester crash), the verdict is capped at `COMMENT` — never `APPROVE` — and the review body's **⚙️ Review setup health** section states exactly what's broken and how to fix it. Docs-only / non-runtime PRs are exempt.
-- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with no judge debate. Further pushes to a still-oversized PR don't re-run the review — the standing block re-evaluates once the PR shrinks below the ceiling. Add the `deep-review` label to force a full review instead.
+- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with no judge debate. Ask again after splitting and the block re-evaluates against the new size. `/review deep` (or the `deep-review` label) forces a full review instead.
 - **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
 
 These gates compose: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff. `REQUEST_CHANGES` is reserved for evidence against the PR (findings, a failed smoke run, an unreviewably large diff); setup problems surface loudly but downgrade to `COMMENT` instead of blocking.
@@ -620,7 +654,7 @@ These gates compose: `APPROVE` is granted only when _something_ substantively va
 ### 3. New optional knobs (defaults preserve v1 behaviour)
 
 - `DEV_ENV_SECRETS` repo secret — newline-separated `KEY=VALUE` env exposed to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Mirrors `TRACKER_SECRETS`. Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot.
-- New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `functional_budget_seconds` (480 — the functional tester's wall-clock bound; it records a start timestamp and hard-stops + writes its findings once elapsed exceeds this, so a thorough tester against a live backend can't run into the job's `timeout-minutes` ceiling and get cancelled with nothing posted), `free_disk_space` (`safe` — reclaims runner disk before a heavy `dev-start.sh` bring-up so it can't ENOSPC the post-orchestrate steps and lose a finished review; `safe` removes only tooling no Linux app bring-up needs (CodeQL/Haskell/Swift, ~12 GB), `aggressive` also drops Android + .NET, `off` disables), `model_high` (Opus — drives the high-recall judge), `model_fast` (Haiku — drives the cheap broad-coverage judge), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding). The `core_max_turns` input from v1 is kept as a deprecated no-op alias for caller compatibility: the workflow caps the orchestrator at `--max-turns 100` and per-phase discipline lives inside the skill prompts. The functional tester is bounded by wall-clock (`functional_budget_seconds`), not turn count — turns are a poor proxy for runtime against a real backend. A `functional_max_turns` input existed briefly under `@v2`; it has been removed (passing it from the caller is a workflow-call error — drop it).
+- New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `functional_budget_seconds` (480 — the functional tester's wall-clock bound; it records a start timestamp and hard-stops + writes its findings once elapsed exceeds this, so a thorough tester against a live backend can't run into the job's `timeout-minutes` ceiling and get cancelled with nothing posted), `free_disk_space` (`safe` — reclaims runner disk before a heavy `dev-start.sh` bring-up so it can't ENOSPC the post-orchestrate steps and lose a finished review; `safe` removes only tooling no Linux app bring-up needs (CodeQL/Haskell/Swift, ~12 GB), `aggressive` also drops Android + .NET, `off` disables), `model_high` (Opus — drives the high-recall judge), `model_fast` (Haiku — drives the cheap broad-coverage judge), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding). The `core_max_turns` input from v1 has been removed (passing it is now a workflow-call error — drop it): the workflow caps the orchestrator at `--max-turns 100` and per-phase discipline lives inside the skill prompts. The functional tester is bounded by wall-clock (`functional_budget_seconds`), not turn count — turns are a poor proxy for runtime against a real backend. A `functional_max_turns` input existed briefly under `@v2`; it has been removed (passing it from the caller is a workflow-call error — drop it).
 
 ### 4. Already in `@v1`, called out for sub-tag pinners
 

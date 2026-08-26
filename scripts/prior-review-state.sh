@@ -9,14 +9,12 @@
 #   round=<int>              1 on a first (or unreconstructable) round, else N+1
 #   prior_head_sha=<sha>     head SHA of the last JUDGED review ("" on round 1)
 #   prior_verdict=<verdict>  APPROVE|COMMENT|REQUEST_CHANGES ("" on round 1)
-#   oversized_dup=true|false skip this run — the standing review is the same block
 #
 # THE TWO LISTS ARE NOT THE SAME LIST — this is the whole point of the script:
 #
 #   bot-reviews.json    every bot review that is not a crash/superseded banner.
-#                       Feeds the oversized dedup ONLY: that check asks "is the
-#                       review currently standing on this PR my own split-request
-#                       block?", so it must see the blocks.
+#                       Read by the review-context builder, which shows the reviewer
+#                       what is currently standing on the PR — blocks included.
 #   prior-reviews.json  the above MINUS the reviews that never judged the diff
 #                       (the REVIEW_LEVEL=skip early-returns: the oversized block
 #                       and the skip-label note). Feeds round/prior_head_sha/
@@ -32,8 +30,6 @@
 # Inputs (env):
 #   GITHUB_REPOSITORY, PR_NUMBER   the PR to read (unused when REVIEWS_JSON is set)
 #   REVIEW_BOT_USER                login whose reviews count as ours
-#   GATE                           review-plan gate, for the oversized dedup
-#   GITHUB_EVENT_NAME              workflow_dispatch always re-runs (human escape hatch)
 #   REVIEWS_JSON                   test hook: read this file instead of calling gh
 #   OUT_DIR                        where the two lists land (default /tmp)
 #
@@ -120,19 +116,9 @@ if [ -z "$PRIOR_SHA" ] || ! git cat-file -e "${PRIOR_SHA}^{commit}" 2>/dev/null;
   ROUND=1; PRIOR_SHA=""; PRIOR_VERDICT=""
 fi
 
-# ── 4) Oversized dedup, from the FULL list. The size gate is a pure function of
-#       PR shape, so a push to a still-oversized PR would re-emit a byte-equivalent
-#       "split this PR" block; skip the agent run and leave the standing review in
-#       place. Reads bot-reviews.json on purpose — prior-reviews.json filters the
-#       very block this check looks for. Manual dispatch always re-runs. ──
-STANDING_STATE=$(jq -r 'sort_by(.submitted_at) | last | .state // empty' "$BOT_REVIEWS")
-OVERSIZED_DUP=false
-if [ "${GATE:-}" = "oversized" ] && [ "$STANDING_STATE" = "CHANGES_REQUESTED" ] \
-   && [ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" ] \
-   && jq -e "$JQ_FIRST_LINE"'sort_by(.submitted_at) | last | (.body | first_line) == "<!-- claude-review-oversized -->"' \
-        "$BOT_REVIEWS" >/dev/null 2>&1; then
-  OVERSIZED_DUP=true
-fi
+# The oversized re-run dedup is gone with the push trigger that made it necessary:
+# a review now happens because someone asked, and answering that with silence is
+# worse than answering it with the same block twice.
 
-printf 'round=%s\nprior_head_sha=%s\nprior_verdict=%s\noversized_dup=%s\n' \
-  "$ROUND" "$PRIOR_SHA" "$PRIOR_VERDICT" "$OVERSIZED_DUP"
+printf 'round=%s\nprior_head_sha=%s\nprior_verdict=%s\n' \
+  "$ROUND" "$PRIOR_SHA" "$PRIOR_VERDICT"
