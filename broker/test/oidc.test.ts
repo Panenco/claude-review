@@ -26,6 +26,18 @@ test("the dogfood ref shape passes too", () => {
   );
 });
 
+test("the owner's canonical casing is accepted", () => {
+  // GitHub emits "Panenco/claude-review", not the lowercase form the prefix is
+  // written in. A case-sensitive compare 403s every legitimate run — it broke
+  // the deploy pipeline's WIF condition the same way before this was fixed.
+  assert.doesNotThrow(() =>
+    checkClaims(config, {
+      ...valid,
+      job_workflow_ref: "Panenco/claude-review/.github/workflows/pr-review.yml@refs/tags/v3",
+    }),
+  );
+});
+
 test("an org outside the list is rejected", () => {
   assert.throws(() => checkClaims(config, { ...valid, repository_owner: "attacker" }), /not an allowed org/);
   assert.throws(() => checkClaims(config, { ...valid, repository_owner: undefined }), /not an allowed org/);

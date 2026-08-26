@@ -19,8 +19,11 @@ export function checkClaims(config: Config, payload: JWTPayload): RunClaims {
     throw new ClaimError(`repository_owner "${owner}" is not an allowed org`);
   }
 
+  // GitHub emits the owner's canonical casing ("Panenco/claude-review"), which
+  // is not what a hand-written prefix looks like. Names are case-insensitively
+  // unique, so fold before comparing — a mismatch here is an opaque 403.
   const ref = typeof payload.job_workflow_ref === "string" ? payload.job_workflow_ref : "";
-  if (!ref.startsWith(WORKFLOW_REF_PREFIX)) {
+  if (!ref.toLowerCase().startsWith(WORKFLOW_REF_PREFIX)) {
     throw new ClaimError(`job_workflow_ref "${ref}" is not the reviewer workflow`);
   }
 

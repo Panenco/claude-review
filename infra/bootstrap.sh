@@ -156,7 +156,10 @@ ok "pool $POOL"
 # OIDC token for any audience — so a repo-scoped trust would let a PR
 # impersonate an account holding projectIamAdmin. Require the ref as well.
 WIF_MAPPING="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment"
-WIF_CONDITION="assertion.repository == '${GITHUB_REPO}' && assertion.ref == 'refs/heads/main'"
+# lowerAscii() because the claim carries the owner's canonical casing
+# ("Panenco/claude-review"); a case-sensitive == rejects every real deploy
+# with "the given credential is rejected by the attribute condition".
+WIF_CONDITION="assertion.repository.lowerAscii() == '$(printf '%s' "$GITHUB_REPO" | tr '[:upper:]' '[:lower:]')' && assertion.ref == 'refs/heads/main'"
 
 if gcloud iam workload-identity-pools providers describe "$PROVIDER" \
      --workload-identity-pool="$POOL" --location=global \
