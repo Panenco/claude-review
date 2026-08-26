@@ -12,3 +12,11 @@ docs/metrics/
 
 # macOS junk
 .DS_Store
+
+# Broker + infra build artefacts
+broker/node_modules/
+broker/dist/
+infra/node_modules/
+infra/Pulumi.*.yaml
+.pulumi/
+infra/.pulumi/

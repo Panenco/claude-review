@@ -47,6 +47,7 @@ jobs:
       pull-requests: write
       issues: write
       packages: read
+      id-token: write # for the coming per-developer Claude seats; inert until then
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       # Empty on the comment path: the called workflow reads the body off THIS

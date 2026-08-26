@@ -58,6 +58,7 @@ jobs:
       pull-requests: write
       issues: write
       packages: read
+      id-token: write # for the coming per-developer Claude seats; inert until then
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       command: ${{ inputs.command || '' }}
@@ -68,7 +69,7 @@ You do **not** forward the comment body. A reusable workflow sees the caller's `
 
 `pull_request_target` only warms the browser/dependency cache; it never reviews. Keep it if your team uses `/review functional` regularly, drop it otherwise.
 
-The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. `actions: read` is **no longer required** — round-2 state is derived from the PR's own review history, not from workflow artifacts; existing callers that still grant it are unaffected and can leave it in. See `prompts/setup-review.md` for the full troubleshooting flow.
+The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. Add `id-token: write` now even though nothing uses it yet — the reviewer will soon mint an OIDC token to draw on the requester's own Claude seat, and a caller that lacks the line then fails at startup with no logs. `actions: read` is **no longer required** — round-2 state is derived from the PR's own review history, not from workflow artifacts; existing callers that still grant it are unaffected and can leave it in. See `prompts/setup-review.md` for the full troubleshooting flow.
 
 Why `@v3` and not a SHA pin: every consumer repo stays on the same moving target, so a fix landed on `panenco/claude-review` reaches everything on the next PR push without touching any downstream repo. The trade-off — a mutable tag + `secrets: inherit` is technically a supply-chain vector — is one we explicitly accept here because upstream is first-party (Panenco org) and the logistics of SHA-bumping every consumer after every pipeline fix were unworkable. If _your_ repo has different trust needs, substitute a 40-char SHA for `@v3`.
 
@@ -639,6 +640,7 @@ permissions:
   pull-requests: write # post review + comments
   issues: write
   packages: read
+  id-token: write # for the upcoming per-developer Claude seats; see the Quick Start
 ```
 
 `actions: read` is **not** required: round-2 state is derived from the PR's own review history (the prior review's `commit_id`), not from workflow artifacts. Earlier v2 docs asked for it — callers that still grant it are unaffected; it can be removed at leisure.
