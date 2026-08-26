@@ -36,7 +36,10 @@ run() {
   "$@" || { echo "error: command failed: $*" >&2; exit 1; }
 }
 
-git fetch origin --tags --quiet || { echo "error: git fetch failed" >&2; exit 1; }
+# --force because the whole point of this script is that `v3` MOVES: once it has
+# been released before, a plain --tags fetch rejects it as "would clobber existing
+# tag" and every release after the first fails here.
+git fetch origin --tags --force --quiet || { echo "error: git fetch failed" >&2; exit 1; }
 
 TIP="$(git rev-parse origin/main)"
 
