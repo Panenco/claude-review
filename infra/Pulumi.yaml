@@ -1,0 +1,3 @@
+name: claude-token-broker
+runtime: nodejs
+description: Cloud Run token broker for the Claude review pipeline

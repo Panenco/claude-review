@@ -19,6 +19,8 @@ on:
       # issue_comment and not pull_request. A wiring test that does not run when
       # the wiring changes is not a test.
       - '.github/workflows/claude-review.yml'
+      - 'broker/**'
+      - 'infra/**'
 
 jobs:
   shell:
@@ -62,4 +64,39 @@ jobs:
         run: bash tests/upload_screenshots_test.sh
 
       - name: Shellcheck scripts (error-level only)
-        run: shellcheck --severity=error scripts/*.sh tests/*.sh
+        run: shellcheck --severity=error scripts/*.sh tests/*.sh infra/*.sh
+
+  broker:
+    name: Broker tests + typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            broker/package-lock.json
+            infra/package-lock.json
+
+      - name: Broker — install, build, test
+        working-directory: broker
+        run: |
+          npm ci
+          npm test
+
+      # The Pulumi program has no unit tests (every resource is a cloud call),
+      # so tsc is the gate: it catches a renamed provider field, which is the
+      # failure mode that would otherwise surface halfway through a deploy.
+      - name: Infra — typecheck
+        working-directory: infra
+        run: |
+          npm ci
+          npm run typecheck
+
+      # The image is what actually runs. Without this, a broken Dockerfile
+      # surfaces during `pulumi up`, in front of whoever is deploying.
+      - name: Broker — image builds
+        run: docker build -t claude-token-broker:ci broker/

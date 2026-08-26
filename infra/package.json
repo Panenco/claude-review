@@ -1,0 +1,19 @@
+{
+  "name": "claude-token-broker-infra",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pulumi/docker-build": "^0.0.22",
+    "@pulumi/gcp": "^9.35.1",
+    "@pulumi/pulumi": "^3.259.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

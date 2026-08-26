@@ -74,6 +74,7 @@ jobs:
       pull-requests: write
       issues: write
       packages: read
+      id-token: write # for the coming per-developer Claude seats; inert until then
     with:
       pr_number: ${{ inputs.pr_number || '' }}
       command: ${{ inputs.command || '' }}
@@ -149,6 +150,14 @@ read-only `GITHUB_TOKEN` scope (see inline comment above). `actions: read` is
 **not** needed: round-2 state comes from the PR's own review history, not from
 workflow artifacts — existing callers that still grant it are unaffected.
 
+Include `id-token: write` even though nothing requests it yet. The reviewer is
+moving to per-developer Claude seats: it will mint a GitHub Actions OIDC token
+and trade it for the seat of whoever typed `/review`. A reusable workflow's
+permissions are capped by the caller's, so the line has to be in place across
+every consumer *before* that switch — a caller missing it then fails at startup
+with no logs. Until then it is inert, and it grants the caller nothing else: an
+OIDC token is only a signed statement of which workflow ran and who asked.
+
 **If `secrets: inherit` fails with `Secret CLAUDE_CODE_OAUTH_TOKEN is required, but not provided while calling`** — even though the secret is clearly set on the repo — swap `inherit` for the explicit form as a fallback:
 
 ```yaml
@@ -167,7 +176,7 @@ This has been observed on same-repo PRs in at least one external org and is like
 
 ### The second-opinion pass: `/review native` and the `native_review_scope` input
 
-A review can run **two** reviewers: its own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin. The second one is **not a separate job** — it is the `review-native` subagent, dispatched inside the same review session alongside the judges and the functional tester, so it costs no extra runner, no second checkout and no extra wall-clock. There is nothing to enable in the caller: a reviewer asks for it per PR with `/review native`. It introduces no new permission requirement beyond the `permissions:` block you already wrote above — do not add `id-token: write` for it (a reusable workflow's permissions are capped by the caller's, and requesting more than the caller grants is a `startup_failure`).
+A review can run **two** reviewers: its own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin. The second one is **not a separate job** — it is the `review-native` subagent, dispatched inside the same review session alongside the judges and the functional tester, so it costs no extra runner, no second checkout and no extra wall-clock. There is nothing to enable in the caller: a reviewer asks for it per PR with `/review native`. It introduces no new permission requirement beyond the `permissions:` block you already wrote above.
 
 **There is only one review comment.** The plugin's own prompt ends by telling the model to post its findings with `gh pr comment`; the pipeline overrides that — the subagent writes its findings to a file, the orchestrator dedupes them against the judges' findings (the judges win on a shared line) and folds the survivors into the single consolidated review, attributed inline. The override is structural: `Bash(gh pr comment:*)` is denied session-wide, so a second bot comment cannot appear. If the user reports "two review comments", the second one is a different tool, not this.
 
@@ -576,6 +585,7 @@ It is common to fix one and miss the other on a first setup; the installation pa
 | App installed but with "No repositories" | Same `Not Found` as above. Installation record exists but is empty. |
 | App installed but with "No permissions" | Token creation **succeeds**, posting the review **fails** with 403s in later steps. Fix: add Contents R / Pull requests RW / Issues RW / Metadata R in App settings, then approve the updated permissions on the installation. |
 | Caller workflow missing `permissions:` block | `startup_failure`, zero jobs, no logs. Happens when the org's default `GITHUB_TOKEN` is read-only. Fix: add the `permissions:` block from Step 2. |
+| Caller workflow missing `id-token: write` | Nothing today — the reviewer does not request it yet. Once it does, this is `startup_failure`, zero jobs, no logs, because GitHub refuses the run before any pipeline code executes. Fix: add `id-token: write` to the caller's `permissions:` block. |
 | All correct | "Create GitHub App token" = `success`, "Resolve review identity" logs `Review identity: <your-app-slug>[bot]`. |
 
 ### `TRACKER_SECRETS` (optional, for Step 4.6 opt-in)

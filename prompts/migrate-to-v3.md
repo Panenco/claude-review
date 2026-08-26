@@ -59,7 +59,7 @@ In `.github/workflows/claude-review.yml`:
 - **Delete `allowed_bots`, `native_review`, `native_review_runner` and
   `core_max_turns` if present.** All four are gone; passing any of them now fails
   the run with `startup_failure`. `native_review_scope` stays.
-- Keep the reusable-workflow pin at **`panenco/claude-review/.github/workflows/pr-review.yml@v3`** and the full `permissions:` block (`contents: write`, `pull-requests: write`, `issues: write`, `packages: read`). Missing `permissions:` is the #1 startup failure.
+- Keep the reusable-workflow pin at **`panenco/claude-review/.github/workflows/pr-review.yml@v3`** and the full `permissions:` block (`contents: write`, `pull-requests: write`, `issues: write`, `packages: read`, `id-token: write`). Missing `permissions:` is the #1 startup failure. `id-token: write` is inert today; add it now so the caller is ready when the reviewer starts minting an OIDC token to draw on the requester's own Claude seat.
 - `actions: read` is **no longer needed** in v3 (round-2 state comes from the PR's own review history). Drop it; keeping it is harmless.
 
 Only people with write access (`OWNER`, `MEMBER`, `COLLABORATOR`) can trigger a

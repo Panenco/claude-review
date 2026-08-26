@@ -1,0 +1,87 @@
+name: Deploy token broker
+
+# Deploy on merge. Path-gated: a pipeline release (prompts, skills, workflows)
+# must not push a new revision of the service holding everyone's credentials.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'broker/**'
+      - 'infra/**'
+      - '.github/workflows/deploy-broker.yml'
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel a half-applied `pulumi up`.
+concurrency:
+  group: deploy-token-broker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: pulumi up
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: token-broker
+    permissions:
+      contents: read
+      id-token: write # Workload Identity Federation — no service-account key
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # The docker-build provider pushes through the local docker config.
+      - name: Authorise Docker for Artifact Registry
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      - name: Deploy
+        id: deploy
+        working-directory: infra
+        env:
+          PULUMI_BACKEND_URL: ${{ vars.PULUMI_BACKEND_URL }}
+        run: |
+          set -euo pipefail
+          npm ci
+          pulumi login "$PULUMI_BACKEND_URL"
+
+          # The first deploy is deliberately manual: stack config is git-ignored
+          # (this repo is public), so CI recovers it from the last deployment's
+          # state — and before that there is nothing to recover. Skip cleanly
+          # rather than failing red on a merge that lands before the bootstrap.
+          if ! pulumi stack select prod 2>/dev/null; then
+            echo "::notice title=Broker not deployed yet::No 'prod' stack in the backend. Run the first deploy by hand — docs/runbooks/token-broker-setup.md section 4 — after which merges deploy themselves."
+            echo "deployed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pulumi config refresh --force
+          pulumi up --yes
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Confirm the served URL still matches the computed one
+        if: steps.deploy.outputs.deployed == 'true'
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          url=$(pulumi stack output url)
+          # If these ever diverge, the OIDC audience is wrong and every review
+          # fails with an opaque 403.
+          pulumi stack output deployedUrls --json | jq -e --arg u "$url" 'index($u)' >/dev/null
+          echo "broker serving at $url"
