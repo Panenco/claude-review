@@ -256,6 +256,53 @@ jobs:
           esac
           echo "Scripts resolved: $CLAUDE_REVIEW_SCRIPTS"
 
+      # Optional GitHub App review identity; falls back to github-actions[bot].
+      # APP_SLUG is required because installation tokens can't query /user.
+      - name: Generate review token
+        id: review_token
+        shell: bash
+        env:
+          APP_CLIENT_ID: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
+          APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
+        run: |
+          if [ -n "$APP_CLIENT_ID" ]; then
+            if [ -z "$APP_SLUG" ]; then
+              echo "::error::CLAUDE_REVIEW_APP_CLIENT_ID is set but CLAUDE_REVIEW_APP_SLUG is not."
+              echo "::error::Find your app slug in the App's settings URL (github.com/apps/<slug>) and add it as a repo secret named CLAUDE_REVIEW_APP_SLUG."
+              exit 1
+            fi
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App token
+        id: app_token
+        if: steps.review_token.outputs.has_app == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
+
+      - name: Resolve review identity
+        id: review_identity
+        shell: bash
+        env:
+          HAS_APP: ${{ steps.review_token.outputs.has_app }}
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
+          APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$HAS_APP" = "true" ] && [ -n "$APP_TOKEN" ]; then
+            BOT_USER="${APP_SLUG}[bot]"
+            echo "token=$APP_TOKEN" >> "$GITHUB_OUTPUT"
+          else
+            BOT_USER="github-actions[bot]"
+            echo "token=$FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
+          fi
+          echo "bot_user=$BOT_USER" >> "$GITHUB_OUTPUT"
+          echo "Review identity: $BOT_USER"
+
       # Which passes did the comment ask for? Depth is not opt-in — review-plan.sh
       # still sizes the PR below. A reusable workflow sees the CALLER's event, so
       # the body needs no `with:` wiring; `inputs.command` covers workflow_dispatch.
@@ -296,7 +343,7 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
           COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           set -uo pipefail
@@ -310,7 +357,7 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
           MESSAGE: ${{ steps.cmd.outputs.message }}
         run: |
           set -uo pipefail
@@ -508,53 +555,6 @@ jobs:
           else
             echo "Browser ready: $(printf '%s' "$DOC" | jq -r '.checks[] | select(.id == "chrome.installed") | .message')"
           fi
-
-      # Optional GitHub App review identity; falls back to github-actions[bot].
-      # APP_SLUG is required because installation tokens can't query /user.
-      - name: Generate review token
-        id: review_token
-        shell: bash
-        env:
-          APP_CLIENT_ID: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
-          APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
-        run: |
-          if [ -n "$APP_CLIENT_ID" ]; then
-            if [ -z "$APP_SLUG" ]; then
-              echo "::error::CLAUDE_REVIEW_APP_CLIENT_ID is set but CLAUDE_REVIEW_APP_SLUG is not."
-              echo "::error::Find your app slug in the App's settings URL (github.com/apps/<slug>) and add it as a repo secret named CLAUDE_REVIEW_APP_SLUG."
-              exit 1
-            fi
-            echo "has_app=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_app=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create GitHub App token
-        id: app_token
-        if: steps.review_token.outputs.has_app == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ secrets.CLAUDE_REVIEW_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
-
-      - name: Resolve review identity
-        id: review_identity
-        shell: bash
-        env:
-          HAS_APP: ${{ steps.review_token.outputs.has_app }}
-          APP_TOKEN: ${{ steps.app_token.outputs.token }}
-          APP_SLUG: ${{ secrets.CLAUDE_REVIEW_APP_SLUG }}
-          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ "$HAS_APP" = "true" ] && [ -n "$APP_TOKEN" ]; then
-            BOT_USER="${APP_SLUG}[bot]"
-            echo "token=$APP_TOKEN" >> "$GITHUB_OUTPUT"
-          else
-            BOT_USER="github-actions[bot]"
-            echo "token=$FALLBACK_TOKEN" >> "$GITHUB_OUTPUT"
-          fi
-          echo "bot_user=$BOT_USER" >> "$GITHUB_OUTPUT"
-          echo "Review identity: $BOT_USER"
 
       # GitHub is the state store: prior verdict + reviewed SHA come straight
       # from the PR's review list. No cross-run artifacts.
