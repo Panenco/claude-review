@@ -78,7 +78,7 @@ Render exactly this, omitting any section that would be empty:
 
 Max 5, filled strictly critical → major → minor. Each ≤700 chars total. Each finding appears **exactly once** — an inline comment OR a `### Findings` bullet, never both. Findings beyond the 5 inline slots become body bullets.
 
-**Do not hand-maintain that invariant — `post-review.sh` enforces it.** After it has worked out which comments really go inline (in-hunk, deduped, within the 5-cap), it deletes any `### Findings` bullet whose `{{LINK:path:line}}` matches one of them, renumbers `### Findings (<n>)` to what survives, and drops the header if nothing does. So:
+**Do not hand-maintain that invariant — `post-review.sh` enforces it.** After it has worked out which comments really go inline (in-hunk, deduped, within the 5-cap), it deletes any `### Findings` bullet matching one of them — same path and line, or same path and title (so re-anchoring a comment to a different line still de-duplicates) — renumbers `### Findings (<n>)` to what survives, and drops the header if nothing does. So:
 
 - Write each finding in ONE place. If you slip and write both, the body copy is removed, not the comment.
 - Do NOT pre-emptively omit a body bullet for a comment you fear may not post. A comment that lands outside a diff hunk or past the cap is put back into the body by the poster under `### Also flagged` — nothing is lost.

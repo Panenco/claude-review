@@ -30,10 +30,16 @@ set -uo pipefail
 # model each finding appears once — inline OR as a `### Findings` bullet. It
 # does not hold (observed: a review that listed both findings in the body AND
 # posted the same two inline). So it is enforced here: once the final `kept`
-# set of inline comments is known, any `### Findings` bullet whose
-# {{LINK:path:line}} matches a kept comment is deleted and the section header
-# renumbered. Stripping runs BEFORE the budget is measured, so the freed bytes
-# go to the content that is left.
+# set of inline comments is known, any `### Findings` bullet that matches a kept
+# comment on path+line OR on path+title is deleted and the section header
+# renumbered. Both keys are needed: review-verify is told to re-anchor a wrong
+# line ("Wrong anchor -> fix it from your Read"), which moves the comment off the
+# bullet's line and defeats path:line alone; and two files can carry the same
+# title, which is why title alone is never enough. The match is ONE-TO-ONE: each
+# kept comment can strip at most one bullet, because the invariant is that a
+# SPECIFIC comment is carrying that finding — two same-titled bullets in one file
+# with only one comment between them must not both vanish. Stripping runs BEFORE
+# the budget is measured, so the freed bytes go to the content that is left.
 #
 # NOTHING IS SILENTLY DROPPED. A comment that cannot be posted inline (anchored
 # outside a diff hunk, or past the 5-comment cap) becomes a body bullet under
@@ -296,10 +302,15 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
        jq -n '{kept: [], dropped: []}' > "$WORK/split.json"; }
 
 jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
-# `path:line` of every comment that will actually be posted inline — the key the
-# body-bullet strip in section 4 matches on. Derived from `kept`, post-hunk-filter,
-# post-dedupe, post-cap: a comment that fell back to the body is NOT in here.
-jq -r '.[] | .path + ":" + (.line | tostring)' "$WORK/comments.json" > "$WORK/kept-keys.txt"
+# What the body-bullet strip in section 4 matches against: ONE record per comment
+# that will actually be posted inline — `path:line<TAB>**sev** title` (the body's
+# first line). One record per COMMENT, not one per key, is what lets a match
+# consume the whole comment: both of its keys are spent together, so it can never
+# strip a second bullet. Derived from `kept`, post-hunk-filter, post-dedupe,
+# post-cap: a comment that fell back to the body is NOT in here.
+jq -r '.[] | .path + ":" + (.line | tostring) + "\t"
+             + ((.body // "") | split("\n") | (.[0] // ""))' \
+  "$WORK/comments.json" > "$WORK/kept-keys.txt"
 # Each dropped comment becomes a body bullet — the finding must reach the reader
 # somewhere, and under the inline-XOR-body rule the body does not already list it.
 jq -r '.dropped[]
@@ -325,8 +336,9 @@ echo "::group::Render body"
 # body.awk — one program, three modes, all over the PRE-EXPANSION body.
 #   mlen(line) = bytes, with each {{LINK:x}} counted as `x` (the wrapper is
 #   exactly 9 bytes: `{{LINK:` + `}}`), which is what the model was told to count.
-#   mode=strip   → delete `### Findings` bullets already posted inline, renumber
-#                  the header, drop sections left empty
+#   mode=strip   → delete `### Findings` bullets already posted inline (matched
+#                  on path+line OR path+title), renumber the header, drop
+#                  sections left empty
 #   mode=measure → the whole file's measured byte size
 #   mode=fit     → the file truncated to `max` measured bytes
 # prune() is shared by strip and fit: a `###` header whose every item is gone —
@@ -337,6 +349,42 @@ function nph(s,   n) { n = 0; while (match(s, /\{\{LINK:[^{}]*\}\}/)) { n++; s =
 function mlen(s) { return length(s) - 9 * nph(s) }
 # The `path[:line]` inside a line's FIRST {{LINK:}}, or "" — the bullet's identity.
 function phkey(s) { return (match(s, /\{\{LINK:[^{}]*\}\}/) ? substr(s, RSTART + 7, RLENGTH - 9) : "") }
+# `path` of a phkey, with the `:<line>` suffix (if any) removed.
+function bpath(s) { sub(/:[0-9]+$/, "", s); return s }
+# Compare titles on their text alone: CR gone, whitespace runs collapsed, trimmed.
+# Backticks, markdown and non-ASCII are left exactly as written — both sides are
+# rendered from the same string, so byte equality is the point.
+function norm(s) { gsub(/\r/, "", s); gsub(/[ \t]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
+# Title of an inline comment = its first line minus the leading `**severity**`.
+function ctitle(s) { sub(/^[ \t]*\*\*[A-Za-z]+\*\*[ \t]*/, "", s); return norm(s) }
+# Title of a `### Findings` bullet = everything after its first {{LINK:}} and the
+# ` — ` separator. ONLY the first separator is consumed, so a title that itself
+# contains an em dash survives whole.
+function btitle(s,   r) {
+  if (!match(s, /\{\{LINK:[^{}]*\}\}/)) return ""
+  r = substr(s, RSTART + RLENGTH)
+  sub(/^[ \t]*(—|–)[ \t]*/, "", r)
+  return norm(r)
+}
+# Claim the first not-yet-used comment in a key's id list, or 0. Claiming marks
+# the COMMENT used, so it is spent for both of its keys at once.
+function claim(list,   m, a, i) {
+  m = split(list, a, " ")
+  for (i = 1; i <= m; i++) if (!used[a[i]]) { used[a[i]] = 1; return 1 }
+  return 0
+}
+# A bullet duplicates a comment going inline when they agree on path AND line, or
+# on path AND title. Neither key alone is safe: verify re-anchors comments off the
+# bullet's line, and two paths can carry the same title. path:line is tried and
+# consumed first — it is the stronger key — and only its miss falls through to
+# the title. A bullet that claims nothing is a finding no comment is carrying,
+# and it stays.
+function isdup(key, ln,   p, t) {
+  if (claim(lidx[key])) return 1
+  p = bpath(key); t = btitle(ln)
+  if (p == "" || t == "") return 0
+  return claim(tidx[p SUBSEP t])
+}
 function hardcut(s, budget,   out, ml, ph, phm) {
   out = ""; ml = 0
   while (length(s) > 0) {
@@ -370,16 +418,30 @@ function prune(cnt,   i, j, has, m) {
   while (m > 0 && out[m] ~ /^[ \t]*$/) m--
   return m
 }
-BEGIN { if (keysfile != "") while ((getline k < keysfile) > 0) if (k != "") kept_key[k] = 1 }
+# Every kept comment gets one id, listed under its `path:line` key and under its
+# `path`+title key. A bullet claims an ID, never a key.
+BEGIN {
+  nk = 0
+  while (keysfile != "" && (getline kk < keysfile) > 0) {
+    ki = index(kk, "\t")
+    if (ki == 0) { ka = kk; kf = "" } else { ka = substr(kk, 1, ki - 1); kf = substr(kk, ki + 1) }
+    if (ka == "") continue
+    nk++
+    lidx[ka] = lidx[ka] " " nk
+    kp = bpath(ka); kt = ctitle(kf)
+    if (kp != "" && kt != "") tidx[kp SUBSEP kt] = tidx[kp SUBSEP kt] " " nk
+  }
+}
 { line[NR] = $0; total += mlen($0) + 1 }
 END {
   if (mode == "measure") { print total + 0; exit }
   n = 0; kept = 0
   if (mode == "strip") {
-    # A `### Findings` bullet whose link matches a comment being posted inline is
-    # the duplicate. Only that section: a `### What a human should review` item may
-    # legitimately point at the same path:line as a finding, and `### Also flagged`
-    # is not appended until after this pass.
+    # A `### Findings` bullet matching a comment being posted inline — same path
+    # and line, or same path and title — is the duplicate. Only that section: a
+    # `### What a human should review` item may legitimately point at the same
+    # path:line as a finding, and `### Also flagged` (the bullets for comments
+    # that could NOT be posted inline) is not appended until after this pass.
     insec = 0; skipping = 0; nh = 0
     for (i = 1; i <= NR; i++) {
       l = line[i]
@@ -392,7 +454,7 @@ END {
       if (l ~ /^[ \t]*$/) { skipping = 0; out[++kept] = l; continue }
       if (insec && l ~ /^[ \t]*[-*][ \t]/) {
         k = phkey(l)
-        if (k != "" && (k in kept_key)) { skipping = 1; continue }
+        if (k != "" && isdup(k, l)) { skipping = 1; continue }
         skipping = 0; out[++kept] = l; continue
       }
       if (skipping) continue          # a wrapped continuation line of a stripped bullet
