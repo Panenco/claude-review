@@ -114,6 +114,64 @@ want "the workflow posts a message on a run that proceeds" "$WORKFLOW" \
   "proceed == 'true' && steps\.cmd\.outputs\.message != ''"
 
 echo ""
+echo "── repo conventions reach BOTH stages, and cannot escalate a verdict ──"
+# v4 dropped the v3 judge's config read, so every consumer repo's hand-written
+# "Do not flag" entries went silently unread fleet-wide and the reviewer
+# re-raised trade-offs the team had already accepted. Both stages must read the
+# two files, suppression must be stated in both, and the convention class must
+# stay capped, minor, and unable to reach REQUEST_CHANGES.
+for f in "$SCAN" "$VERIFY"; do
+  n=${f##*/}
+  want "$n names .github/review-config.md" "$f" '\.github/review-config\.md'
+  want "$n names bugbot.md" "$f" '`?bugbot\.md`?'
+  want "$n reads each config only when present" "$f" 'only if they exist'
+  want "$n forbids globbing for other config files" "$f" 'do not glob|no globbing'
+  want "$n carries the suppression rule" "$f" 'accepted trade-off'
+  want "$n puts suppression first" "$f" 'comes first'
+  want "$n caps convention findings at 2" "$f" '(max|most) \*{0,2}2\*{0,2}( per review)?'
+  want "$n keeps convention findings minor" "$f" 'severity.{0,3} to .{0,2}minor|severity: .{0,2}minor'
+  want "$n requires the rule quoted verbatim as evidence" "$f" 'evidence.*verbatim|verbatim.*config file'
+  want "$n exposes the convention flag in its schema" "$f" '"convention":'
+  want "$n does not weaken the ordinary bar" "$f" \
+    'ordinary finding bar is unchanged|Ordinary findings keep the full `failure_scenario` bar'
+done
+# The verdict rule is the one that must name the exclusion, not just imply it.
+RC_LINE=$(grep -n 'REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
+if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE 'not a convention finding|convention.*NEVER produce'; then
+  ok "review-verify's REQUEST_CHANGES rule excludes convention findings on the rule line itself"
+else
+  bad "review-verify's REQUEST_CHANGES rule must exclude convention findings on line $RC_LINE"
+fi
+want "…and says so unambiguously" "$VERIFY" 'can NEVER produce REQUEST_CHANGES'
+# Cost guard: the whole point is TWO Reads, not a config subsystem. Each file
+# may name each config path exactly once — a second mention is a second read
+# site, which is how "read the config" grows back into one.
+for f in "$SCAN" "$VERIFY"; do
+  n=${f##*/}
+  for p in 'review-config\.md' 'bugbot\.md'; do
+    c=$(grep -cE "$p" "$f")
+    if [ "$c" -eq 1 ]; then
+      ok "$n names ${p%%\\*} exactly once (one Read, not a config subsystem)"
+    else
+      bad "$n names ${p%%\\*} $c times — each config path gets exactly one read site"
+    fi
+  done
+done
+
+echo ""
+echo "── this repo's own review-config is not v3-stale ──"
+# It is a config file the reviewer now actually reads and acts on, so stale
+# claims in it become wrong instructions to the model.
+CFG="$ROOT/.github/review-config.md"
+never "review-config does not name the deleted core/sweep reviewers" "$CFG" \
+  'core \(Opus\)|sweep \(Sonnet\)|[Cc]ore.{0,5}and sweep reviewers'
+never "review-config does not name the deleted validate step" "$CFG" \
+  'Validate review config'
+never "review-config does not name deleted v3 artifacts" "$CFG" \
+  'build-review\.sh|core-meta\.json'
+want "…it names the v4 stages instead" "$CFG" 'review-scan.*review-verify'
+
+echo ""
 echo "── no stale references to deleted assets ──"
 never "require-review-json.sh does not name v3 artifacts" "$ROOT/scripts/require-review-json.sh" \
   'judge-\*\.json|functional-\*\.json'

@@ -26,10 +26,21 @@ set -uo pipefail
 #     codepoints, so a body of accented text measured ~half its real size).
 # It also owns every GitHub URL: the models emit placeholders, never links.
 #
+# THIS SCRIPT ALSO OWNS THE INLINE-XOR-BODY RULE. review-verify.md tells the
+# model each finding appears once — inline OR as a `### Findings` bullet. It
+# does not hold (observed: a review that listed both findings in the body AND
+# posted the same two inline). So it is enforced here: once the final `kept`
+# set of inline comments is known, any `### Findings` bullet whose
+# {{LINK:path:line}} matches a kept comment is deleted and the section header
+# renumbered. Stripping runs BEFORE the budget is measured, so the freed bytes
+# go to the content that is left.
+#
 # NOTHING IS SILENTLY DROPPED. A comment that cannot be posted inline (anchored
 # outside a diff hunk, or past the 5-comment cap) becomes a body bullet under
 # `### Also flagged` — under v4's inline-XOR-body rule a dropped comment would
-# otherwise erase the finding from the review entirely.
+# otherwise erase the finding from the review entirely. Which is why the strip
+# matches against `kept` and never against the model's original comment list: a
+# bullet for a DROPPED comment is the fallback and must survive.
 #
 # Exit semantics: 0 = a review reached the PR (REQUEST_CHANGES included — the
 # blocking signal is the PR review, not the check color). 1 = pipeline failure
@@ -285,6 +296,10 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
        jq -n '{kept: [], dropped: []}' > "$WORK/split.json"; }
 
 jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
+# `path:line` of every comment that will actually be posted inline — the key the
+# body-bullet strip in section 4 matches on. Derived from `kept`, post-hunk-filter,
+# post-dedupe, post-cap: a comment that fell back to the body is NOT in here.
+jq -r '.[] | .path + ":" + (.line | tostring)' "$WORK/comments.json" > "$WORK/kept-keys.txt"
 # Each dropped comment becomes a body bullet — the finding must reach the reader
 # somewhere, and under the inline-XOR-body rule the body does not already list it.
 jq -r '.dropped[]
@@ -306,23 +321,22 @@ echo "::endgroup::"
 # hex; the line suffix is `R<n>` (RIGHT side). Verified against a live PR — do
 # not "fix" the format.
 echo "::group::Render body"
-if [ -s "$WORK/fallback.md" ]; then
-  { echo ""
-    echo "### Also flagged ($(grep -c '' "$WORK/fallback.md"))"
-    cat "$WORK/fallback.md"
-  } >> "$WORK/body.raw"
-fi
 
-# budget.awk — measures and truncates the PRE-expansion body.
+# body.awk — one program, three modes, all over the PRE-EXPANSION body.
 #   mlen(line) = bytes, with each {{LINK:x}} counted as `x` (the wrapper is
 #   exactly 9 bytes: `{{LINK:` + `}}`), which is what the model was told to count.
+#   mode=strip   → delete `### Findings` bullets already posted inline, renumber
+#                  the header, drop sections left empty
 #   mode=measure → the whole file's measured byte size
 #   mode=fit     → the file truncated to `max` measured bytes
-# A trailing `###` section header whose every item was cut is dropped with them:
-# a dangling `### Findings (2)` above nothing reads as a rendering bug.
+# prune() is shared by strip and fit: a `###` header whose every item is gone —
+# stripped as a duplicate, or cut by the budget — is dropped with them. A
+# dangling `### Findings (2)` above nothing reads as a rendering bug.
 cat > "$WORK/budget.awk" <<'BUDGET_AWK'
 function nph(s,   n) { n = 0; while (match(s, /\{\{LINK:[^{}]*\}\}/)) { n++; s = substr(s, RSTART + RLENGTH) } return n }
 function mlen(s) { return length(s) - 9 * nph(s) }
+# The `path[:line]` inside a line's FIRST {{LINK:}}, or "" — the bullet's identity.
+function phkey(s) { return (match(s, /\{\{LINK:[^{}]*\}\}/) ? substr(s, RSTART + 7, RLENGTH - 9) : "") }
 function hardcut(s, budget,   out, ml, ph, phm) {
   out = ""; ml = 0
   while (length(s) > 0) {
@@ -339,10 +353,61 @@ function hardcut(s, budget,   out, ml, ph, phm) {
   }
   return out
 }
+# Drop every `###` section left with no item, plus trailing blank lines.
+# Operates on out[1..cnt] in place; returns the new count.
+function prune(cnt,   i, j, has, m) {
+  for (i = 1; i <= cnt; i++) del[i] = 0
+  for (i = 1; i <= cnt; i++) {
+    if (out[i] !~ /^[ \t]*###/) continue
+    has = 0
+    for (j = i + 1; j <= cnt && out[j] !~ /^[ \t]*###/; j++)
+      if (out[j] !~ /^[ \t]*$/) { has = 1; break }
+    if (has) continue
+    for (j = i; j == i || (j <= cnt && out[j] !~ /^[ \t]*###/); j++) del[j] = 1
+  }
+  m = 0
+  for (i = 1; i <= cnt; i++) if (!del[i]) out[++m] = out[i]
+  while (m > 0 && out[m] ~ /^[ \t]*$/) m--
+  return m
+}
+BEGIN { if (keysfile != "") while ((getline k < keysfile) > 0) if (k != "") kept_key[k] = 1 }
 { line[NR] = $0; total += mlen($0) + 1 }
 END {
   if (mode == "measure") { print total + 0; exit }
   n = 0; kept = 0
+  if (mode == "strip") {
+    # A `### Findings` bullet whose link matches a comment being posted inline is
+    # the duplicate. Only that section: a `### What a human should review` item may
+    # legitimately point at the same path:line as a finding, and `### Also flagged`
+    # is not appended until after this pass.
+    insec = 0; skipping = 0; nh = 0
+    for (i = 1; i <= NR; i++) {
+      l = line[i]
+      if (l ~ /^[ \t]*###/) {
+        skipping = 0; insec = (l ~ /^[ \t]*###[ \t]*Findings/)
+        out[++kept] = l
+        if (insec) hdr[++nh] = kept
+        continue
+      }
+      if (l ~ /^[ \t]*$/) { skipping = 0; out[++kept] = l; continue }
+      if (insec && l ~ /^[ \t]*[-*][ \t]/) {
+        k = phkey(l)
+        if (k != "" && (k in kept_key)) { skipping = 1; continue }
+        skipping = 0; out[++kept] = l; continue
+      }
+      if (skipping) continue          # a wrapped continuation line of a stripped bullet
+      out[++kept] = l
+    }
+    for (h = 1; h <= nh; h++) {
+      n = 0
+      for (j = hdr[h] + 1; j <= kept && out[j] !~ /^[ \t]*###/; j++)
+        if (out[j] ~ /^[ \t]*[-*][ \t]/) n++
+      sub(/\([0-9]+\)/, "(" n ")", out[hdr[h]])
+    }
+    kept = prune(kept)
+    for (i = 1; i <= kept; i++) print out[i]
+    exit
+  }
   for (i = 1; i <= NR; i++) {
     l = mlen(line[i]) + 1
     if (n + l > max) break
@@ -353,10 +418,35 @@ END {
     h = hardcut(line[1], max)
     if (length(h) > 0) out[++kept] = h
   }
-  while (kept > 0 && (out[kept] ~ /^[ \t]*$/ || out[kept] ~ /^[ \t]*###/)) kept--
+  kept = prune(kept)
   for (i = 1; i <= kept; i++) print out[i]
 }
 BUDGET_AWK
+
+# 4a. Inline-XOR-body, enforced. Runs against `kept` (the comments that are
+# really going inline) and BEFORE the fallback append and the budget, so a
+# stripped duplicate's bytes go to the content that survives.
+if [ -s "$WORK/kept-keys.txt" ]; then
+  BEFORE_LINES=$(grep -c '' "$WORK/body.raw")
+  if LC_ALL=C awk -v mode=strip -v keysfile="$WORK/kept-keys.txt" \
+       -f "$WORK/budget.awk" "$WORK/body.raw" > "$WORK/body.strip"; then
+    mv "$WORK/body.strip" "$WORK/body.raw"
+    AFTER_LINES=$(grep -c '' "$WORK/body.raw")
+    if [ "$AFTER_LINES" -lt "$BEFORE_LINES" ]; then
+      echo "Dropped $(( BEFORE_LINES - AFTER_LINES )) body line(s) duplicating an inline comment."
+    fi
+  else
+    echo "::warning::Could not de-duplicate body bullets against inline comments — posting the body as rendered."
+  fi
+fi
+
+# 4b. Anything that could not be posted inline comes back as a body bullet.
+if [ -s "$WORK/fallback.md" ]; then
+  { echo ""
+    echo "### Also flagged ($(grep -c '' "$WORK/fallback.md"))"
+    cat "$WORK/fallback.md"
+  } >> "$WORK/body.raw"
+fi
 
 TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
 AVAIL=$(( BODY_MAX - $(blen "$FOOTER") ))

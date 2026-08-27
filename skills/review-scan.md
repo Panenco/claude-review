@@ -27,6 +27,14 @@ Then `Read`/`Grep` the changed files **at HEAD** for anything you intend to flag
 
 **Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. Record which you chose in `depth_used` with one clause saying why. Target ≤15 turns; write the file by turn 25 whatever you have.
 
+## Repo conventions — two files, one Read each
+
+`Read` `.github/review-config.md` and `bugbot.md` **only if they exist**, once each. Do not glob, do not hunt for other config files.
+
+**Suppression comes first and is unconditional.** If either file calls something intentional, an accepted trade-off, or says not to flag it — do not emit that finding at all. Not downgraded, not a `human_review` item. The team already made that call; re-raising it is the noise this pipeline exists to avoid.
+
+**Convention findings are a narrow second class** — the only findings exempt from `failure_scenario`, because a documented-convention violation usually has no runtime failure. Emit one with `"convention": true`, `severity: "minor"`, and `evidence` set to the rule **quoted verbatim from the config file** — that quote is what stands in for `failure_scenario`. **Max 2 per review**, and never a convention you cannot quote: if it is not written down in one of those two files, it does not exist. The ordinary finding bar is unchanged — everything below applies in full to every other finding.
+
 ## The finding bar
 
 **A finding without a `failure_scenario` — a concrete input or state that produces a concrete wrong output — MUST NOT be emitted. This is the single most important rule in this file.**
@@ -46,6 +54,7 @@ Every finding carries all of:
 | `evidence` | 2–6 lines quoted from the file **as it exists at HEAD** |
 | `fix` | a committable replacement for the cited lines — real code, not advice |
 | `severity` | `critical` (security, data loss, broken build) / `major` (user-reachable logic bug) / `minor` (real but non-blocking) |
+| `convention` | `true` only for a quoted documented-convention violation (then `failure_scenario` may be `""`); `false` for every normal finding |
 
 Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences.
 
@@ -81,7 +90,8 @@ The functional tester is dispatched in the **same response** as you and runs to 
       "failure_scenario": "...",
       "evidence": "...",
       "fix": "...",
-      "severity": "critical|major|minor"
+      "severity": "critical|major|minor",
+      "convention": false
     }
   ],
   "prior_findings": [

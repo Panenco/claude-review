@@ -19,6 +19,14 @@ For every candidate, in ONE pass over all of them:
 
 Never invent a new finding. You only kill, keep, or re-anchor — with the single exception below.
 
+## Repo conventions — two files, one Read each
+
+`Read` `.github/review-config.md` and `bugbot.md` **only if they exist**, once each. No globbing, no other config files.
+
+**Suppression is unconditional and comes first, before any other test in this file.** Refute — with reason `"suppressed by <file>"` — every finding those files call intentional, an accepted trade-off, or say not to flag, whatever its severity and even if scan emitted it anyway.
+
+A finding carrying `"convention": true` is judged on a different bar: keep it only if its `evidence` quotes the rule **verbatim** from one of those two files (that quote replaces `failure_scenario`); refute it if you cannot find that text there. Force `severity` to `minor` and keep at most **2**. Ordinary findings keep the full `failure_scenario` bar — nothing here relaxes it.
+
 ## Functional results — the one exception
 
 You are the only consumer of `/tmp/functional.json`. The tester is dispatched alongside `review-scan` and finishes after it, so scan never sees this file; you run after both.
@@ -37,7 +45,7 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 
 ## Verdict
 
-- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
+- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES — it is always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
 - **APPROVE** — requires ALL of: zero surviving findings; `human_review_adds_nothing` true with a real, non-empty `approve_argument`; `sensitive_paths_touched` false; `review_effort` ≤ 2. Any doubt → not APPROVE.
 - **COMMENT** — everything else, and the normal outcome. **A COMMENT carrying human-review items is a good review, not a failure.** It says: nothing is provably broken, here is what a human should look at.
 
@@ -70,6 +78,12 @@ Render exactly this, omitting any section that would be empty:
 
 Max 5, filled strictly critical → major → minor. Each ≤700 chars total. Each finding appears **exactly once** — an inline comment OR a `### Findings` bullet, never both. Findings beyond the 5 inline slots become body bullets.
 
+**Do not hand-maintain that invariant — `post-review.sh` enforces it.** After it has worked out which comments really go inline (in-hunk, deduped, within the 5-cap), it deletes any `### Findings` bullet whose `{{LINK:path:line}}` matches one of them, renumbers `### Findings (<n>)` to what survives, and drops the header if nothing does. So:
+
+- Write each finding in ONE place. If you slip and write both, the body copy is removed, not the comment.
+- Do NOT pre-emptively omit a body bullet for a comment you fear may not post. A comment that lands outside a diff hunk or past the cap is put back into the body by the poster under `### Also flagged` — nothing is lost.
+- `### What a human should review` is never touched. An item there may point at the same `path:line` as a finding.
+
 ````
 **<severity>** <title>
 
@@ -94,7 +108,7 @@ The suggestion block must be a valid, committable replacement for the commented 
   "meta": {
     "findings": [
       {"path": "src/foo.ts", "line": 42, "title": "...", "severity": "critical|major|minor",
-       "failure_scenario": "...", "fix": "...", "placement": "inline|body"}
+       "failure_scenario": "...", "fix": "...", "placement": "inline|body", "convention": false}
     ],
     "human_review": [
       {"path": "...", "line": 12, "what_to_check": "...", "why_unresolved": "..."}
