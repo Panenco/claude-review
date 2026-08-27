@@ -81,7 +81,7 @@ wrong.
 ## Consequences
 
 - ADR 0001 is **superseded**. `scripts/review-plan.sh`, `docs/review-plan.md`,
-  the `deep-review` label and the six tiers are gone. `gate_deep_label`,
+  the six tiers are gone (`deep-review` survives, but only as an override for the size ceiling — it no longer selects a depth). `gate_deep_label`,
   `gate_small_ceiling`, `gate_tiny_ceiling`, `gate_sensitive_globs`,
   `gate_promotion_*` and `model_fast` remain as **deprecated, ignored** inputs:
   a reusable workflow errors on an undefined input, so removing one breaks every
