@@ -221,8 +221,10 @@ if grep -q 'gh \|curl \|wget ' "$SCRIPT"; then
 else
   echo "OK:   guard.sh makes no network calls"
 fi
+# 110, raised from 100 when `deep-review` was added. The ceiling guards against
+# the tier ladder creeping back in, not against a comment or a single override.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 100 ]; then
+if [ "$LINES" -le 110 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"
@@ -230,6 +232,25 @@ else
 fi
 
 echo
+
+
+# --- deep-review overrides the size ceiling -------------------------------
+# A PR that genuinely cannot be split is worse off unreviewed than reviewed
+# imperfectly: PR #106 (6692 lines, credential handling) merged with no review.
+big="$(printf 'a.ts\t9000\t0')"
+assert_gate "oversized blocks by default" "false oversized REQUEST_CHANGES" \
+  "GATE_FILES_TSV=$big"
+assert_gate "deep-review overrides oversized" "true ok -" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=deep-review"
+assert_gate "skip-review still wins over deep-review" "false label -" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=$(printf 'deep-review\nskip-review')"
+assert_gate "a near-miss label is not the override" "false oversized REQUEST_CHANGES" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=deep-review-please"
+assert_gate "custom GATE_FORCE_LABEL is honoured" "true ok -" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=huge-ok" "GATE_FORCE_LABEL=huge-ok"
+assert_contains "split request names the override label" "deep-review" \
+  "$(body_of "GATE_FILES_TSV=$big")"
+
 if [ "$fail" -eq 0 ]; then
   echo "All guard tests passed."
   exit 0

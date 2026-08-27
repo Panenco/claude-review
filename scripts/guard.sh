@@ -12,6 +12,7 @@
 #
 # Env (all optional): GATE_FILES_TSV ("path<TAB>additions<TAB>deletions" per
 # changed file), GATE_LABELS (newline-separated), GATE_SKIP_LABEL (skip-review),
+# GATE_FORCE_LABEL (deep-review — overrides the size ceiling),
 # GATE_SIZE_CEILING (3000), GATE_FILE_CEILING (60), GATE_PRIOR_HEAD_SHA +
 # GATE_DELTA_FILES (round-2 incremental scope, see docs/adr/0003),
 # GATE_HUMAN_REQUESTED (true when a person typed the command that started this
@@ -20,6 +21,7 @@
 set -uo pipefail # No `set -e` (repo rule, bugbot.md).
 
 SKIP_LABEL="${GATE_SKIP_LABEL:-skip-review}"
+FORCE_LABEL="${GATE_FORCE_LABEL:-deep-review}"
 SIZE_CEILING="${GATE_SIZE_CEILING:-3000}"
 FILE_CEILING="${GATE_FILE_CEILING:-60}"
 
@@ -70,7 +72,14 @@ while IFS=$'\t' read -r path adds dels; do
 done <<< "${GATE_FILES_TSV:-}"
 
 # 3) Too big to review well — block with a split request, no model call.
-if [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; then
+#    `deep-review` overrides it: a large PR that genuinely cannot be split is
+#    worse off unreviewed than reviewed imperfectly (PR #106, a 6692-line
+#    rewrite of credential handling, merged with no review at all).
+forced=false
+if [ -n "${GATE_LABELS:-}" ] && printf '%s\n' "$GATE_LABELS" | grep -Fxq "$FORCE_LABEL"; then
+  forced=true
+fi
+if [ "$forced" != "true" ] && { [ "$ng_lines" -gt "$SIZE_CEILING" ] || [ "$ng_files" -gt "$FILE_CEILING" ]; }; then
   emit false oversized REQUEST_CHANGES \
     "Too large to review well: ${ng_files} files / ${ng_lines} non-generated lines (ceiling ${FILE_CEILING} / ${SIZE_CEILING})."
   cat <<GUARD_OUTPUT
@@ -81,7 +90,7 @@ body<<GUARD_BODY
 
 Too large to review well: ${ng_files} files, ${ng_lines} non-generated lines (ceiling ${FILE_CEILING} files / ${SIZE_CEILING} lines). No code was read.
 
-Split it into focused PRs (team limit: 400 lines), or add the \`${SKIP_LABEL}\` label if this bundles already-reviewed work.
+Split it into focused PRs (team limit: 400 lines). If it genuinely cannot be split, add the \`${FORCE_LABEL}\` label to review it anyway, or \`${SKIP_LABEL}\` if this bundles already-reviewed work.
 GUARD_BODY
 GUARD_OUTPUT
   exit 0
