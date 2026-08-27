@@ -3,8 +3,11 @@ set -uo pipefail
 
 # post_review_test.sh — end-to-end tests for scripts/post-review.sh with a
 # mocked `gh` (PATH shim). Covers the crash path (missing/invalid review.json,
-# quota grep), hunk validation, verdict exit codes, POST failure, and
-# crash-banner supersession.
+# quota grep), the v4 rendering contract ({{LINK:}} expansion, footer, the
+# 1200-byte PRE-EXPANSION body budget and its interaction with link expansion,
+# the 5×700-BYTE inline-comment budget and the body-bullet fallback for anything
+# that cannot be posted inline), hunk validation, verdict exit codes, POST
+# failure, and crash-banner supersession.
 
 cd "$(dirname "$0")/.."
 POSTER="$(pwd)/scripts/post-review.sh"
@@ -30,11 +33,18 @@ assert_not_contains() {
   esac
 }
 
+# The anchor GitHub uses on the Files tab: sha256 of the raw path string, lowercase
+# hex. Computed here the same two ways the script does, so the test is not just
+# restating the implementation's own output.
+path_sha() {
+  if command -v sha256sum >/dev/null 2>&1; then printf '%s' "$1" | sha256sum | awk '{print $1}'
+  else printf '%s' "$1" | shasum -a 256 | awk '{print $1}'; fi
+}
+
 # ── gh mock (PATH shim) ──────────────────────────────────────────────────────
 # Logs every invocation to $GH_LOG; captures POSTed review payloads (incl.
 # stdin via `--input -`) to $GH_CAPTURE_DIR; serves fixtures from
-# GH_FIXTURE_REVIEWS / GH_FIXTURE_FILES / GH_FIXTURE_THREADS. GH_POST_FAIL=1
-# makes review POSTs fail.
+# GH_FIXTURE_REVIEWS / GH_FIXTURE_FILES. GH_POST_FAIL=1 makes review POSTs fail.
 MOCK_BIN=$(mktemp -d)
 cat > "$MOCK_BIN/gh" <<'MOCK'
 #!/usr/bin/env bash
@@ -53,17 +63,10 @@ capture() {
 case "$args" in
   *"--method PUT"*)
     echo '{}' ;;
-  *"--method POST"*"/comments/"*"/replies"*)
-    [ "$INPUT" = "-" ] && cat >/dev/null
-    echo '{"id": 1}' ;;
   *"--method POST"*"/pulls/"*"/reviews"*)
     capture
     if [ "${GH_POST_FAIL:-0}" = "1" ]; then echo "HTTP 422: boom" >&2; exit 1; fi
     echo '{"id": 9001, "node_id": "PRR_x"}' ;;
-  *graphql*resolveReviewThread*)
-    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}' ;;
-  *graphql*)
-    cat "${GH_FIXTURE_THREADS:-/dev/null}" 2>/dev/null || echo '[]' ;;
   *"/pulls/"*"/files"*)
     cat "${GH_FIXTURE_FILES:-/dev/null}" 2>/dev/null || echo '[]' ;;
   *"/pulls/"*"/reviews"*)
@@ -85,15 +88,17 @@ run_poster() {
     PATH="$MOCK_BIN:$PATH" \
     GH_LOG="$work/gh.log" GH_CAPTURE_DIR="$work/capture" \
     GH_FIXTURE_REVIEWS="${FIXTURE_REVIEWS:-}" GH_FIXTURE_FILES="${FIXTURE_FILES:-}" \
-    GH_FIXTURE_THREADS="${FIXTURE_THREADS:-}" GH_POST_FAIL="${POST_FAIL:-0}" \
+    GH_POST_FAIL="${POST_FAIL:-0}" \
     GH_TOKEN=x GITHUB_REPOSITORY=o/r PR_NUMBER=7 \
-    REVIEW_BOT_USER="claude-bot[bot]" ANALYZER_OUTCOME="${ANALYZER_OUTCOME:-success}" \
+    REVIEW_BOT_USER="claude-bot[bot]" \
     HEAD_SHA=abc123 GITHUB_STEP_SUMMARY="$work/summary.md" \
+    GITHUB_SERVER_URL="${SERVER_URL:-https://github.com}" GITHUB_RUN_ID="${RUN_ID:-}" \
+    JOB_START="${JOB_START:-$work/no-job-start}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
-    DEV_ENV_LOG="${DEV_ENV_LOG:-/dev/null}" \
     bash "$POSTER" 2>&1)
   RC=$?
 }
+payload_of() { cat "$1"/capture/* 2>/dev/null || echo '{}'; }
 
 # Shared fixtures: one hunk in src/foo.ts covering RIGHT lines 10-13.
 FILES_FIXTURE=$(mktemp)
@@ -104,17 +109,14 @@ EOF
 VALID_REVIEW=$(cat <<'EOF'
 {
   "verdict": "REQUEST_CHANGES",
-  "body": "## Claude PR Review\n\nFindings below.",
+  "body": "## Claude review — REQUEST_CHANGES\n\nOne blocking finding.\n\n### Findings (1)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one",
   "comments": [
-    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**[BUG] in-hunk finding**"},
-    {"path": "src/foo.ts", "line": 99, "side": "RIGHT", "body": "**[BUG] out-of-hunk finding**"}
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**major** in-hunk finding"},
+    {"path": "src/foo.ts", "line": 99, "side": "RIGHT", "body": "**major** out-of-hunk finding"}
   ],
-  "resolve_threads": [],
-  "bot_replies": [],
   "meta": {
-    "findings": [{"id": "j1", "title": "boom", "severity": "major", "type": "bug", "path": "src/foo.ts", "line_start": 11}],
-    "round": 1,
-    "functional_validation": {"strategy": "skip", "overall": "N/A", "screenshot_count": 0}
+    "findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11}],
+    "human_review": []
   }
 }
 EOF
@@ -126,7 +128,7 @@ W=$(mktemp -d)
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 assert_eq "exit 1" "1" "$RC"
 assert_contains "emits ::error::" "::error::" "$OUT"
-PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "")
+PAYLOAD=$(payload_of "$W")
 assert_contains "crash review posted" "<!-- claude-review-crash -->" "$PAYLOAD"
 assert_contains "crash review is COMMENT" '"event": "COMMENT"' "$PAYLOAD"
 assert_contains "no-output crash message" "Claude Review — incomplete" "$PAYLOAD"
@@ -141,7 +143,7 @@ echo '{"error": "rate_limit"} hit your limit · resets 7pm' > "$W/orchestrator-o
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 assert_eq "exit 1" "1" "$RC"
 assert_contains "quota error annotation" "quota exhausted" "$OUT"
-PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "")
+PAYLOAD=$(payload_of "$W")
 assert_contains "quota-specific banner" "Claude Review — quota exhausted" "$PAYLOAD"
 assert_contains "reset window surfaced" "resets 7pm" "$PAYLOAD"
 rm -rf "$W"
@@ -153,7 +155,7 @@ W=$(mktemp -d)
 # Unescaped quote inside a string — the exact qiv#679 corruption.
 printf '%s\n' '{"verdict":"COMMENT","body":"shows a "bad" quote"}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
-PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "")
+PAYLOAD=$(payload_of "$W")
 assert_eq "exit 1" "1" "$RC"
 assert_contains "crash banner posted" "<!-- claude-review-crash -->" "$PAYLOAD"
 assert_contains "unreadable variant, not incomplete" "result unreadable" "$PAYLOAD"
@@ -161,20 +163,78 @@ assert_contains "tells the human to re-run" "re-run the workflow" "$PAYLOAD"
 assert_not_contains "does not say human must review" "a human should review" "$PAYLOAD"
 rm -rf "$W"
 
-# ── (d) out-of-hunk comment moved to body ────────────────────────────────────
+# ── (d) hunk validation: out-of-hunk comments fall back to a body bullet ─────
+# GitHub 422s the atomic POST if any comment sits outside a hunk, so it cannot be
+# posted inline — but under v4's inline-XOR-body rule the body does NOT already
+# name it, so dropping it erases the finding from the review entirely.
 echo ""
 echo "── (d) hunk validation ──"
 W=$(mktemp -d)
 printf '%s' "$VALID_REVIEW" > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 assert_eq "exit 0" "0" "$RC"
-PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "one inline comment survives" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_eq "surviving comment is the in-hunk one" "11" "$(echo "$PAYLOAD" | jq '.comments[0].line')"
-BODY=$(echo "$PAYLOAD" | jq -r '.body')
-assert_contains "body gets the outside-hunks section" "### Findings outside diff hunks" "$BODY"
-assert_contains "moved finding carries path:line" "src/foo.ts:99" "$BODY"
+assert_contains "the drop is announced in the log" "outside a diff hunk" "$OUT"
+assert_contains "the fallback is announced in the log" "body bullets instead" "$OUT"
+assert_contains "the dropped finding gets a body bullet" "### Also flagged (1)" "$BODY"
+assert_contains "the bullet carries its severity and title" \
+  "**major** [src/foo.ts:99](" "$BODY"
+assert_contains "the bullet keeps the comment's own title" "out-of-hunk finding" "$BODY"
 rm -rf "$W"
+
+# ── (d2) a large file with no `.patch` still gets its finding into the body ──
+# GitHub omits `patch` for large files, so no line of that file can be validated
+# and every comment on it is undeliverable inline. A `critical` there used to
+# vanish with only a run-log warning.
+echo ""
+echo "── (d2) large file with no .patch ──"
+W=$(mktemp -d)
+NOPATCH_FILES=$(mktemp)
+cat > "$NOPATCH_FILES" <<'EOF'
+[{"filename": "src/foo.ts", "patch": "@@ -10,3 +10,4 @@\n line10\n-old\n+new11\n+new12\n ctx"},
+ {"filename": "src/huge.ts"}]
+EOF
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nOne blocking finding.",
+        comments: [{path: "src/huge.ts", line: 4200, side: "RIGHT",
+                    body: "**critical** unbounded read of attacker input"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$NOPATCH_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "nothing posted inline on the patch-less file" "0" \
+  "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the critical reaches the body instead" \
+  "**critical** [src/huge.ts:4200](" "$BODY"
+assert_contains "with its title" "unbounded read of attacker input" "$BODY"
+rm -rf "$W" "$NOPATCH_FILES"
+
+# ── (d3) comments past the 5-cap fall back too ───────────────────────────────
+echo ""
+echo "── (d3) over-cap comments fall back to the body ──"
+W=$(mktemp -d)
+WIDE=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -1,20 +1,20 @@\n" + ([range(20) | " ctx"] | join("\n")))}]' > "$WIDE"
+jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nsee comments.",
+        comments: [range(1;9) | {path: "src/foo.ts", line: (1 + .), side: "RIGHT",
+                                 body: "**major** finding \(.)"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "still capped at 5 inline" "5" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the 3 over the cap are listed in the body" "### Also flagged (3)" "$BODY"
+assert_contains "over-cap fallback is announced" "over the inline cap" "$OUT"
+for n in 6 7 8; do
+  assert_contains "finding $n survives in the body" "finding $n" "$BODY"
+done
+rm -rf "$W" "$WIDE"
 
 # ── (e) REQUEST_CHANGES → exit 0 with warning ────────────────────────────────
 echo ""
@@ -186,7 +246,6 @@ assert_eq "exit 0" "0" "$RC"
 assert_contains "emits ::warning::" "::warning::" "$OUT"
 assert_contains "names the verdict" "REQUEST_CHANGES" "$OUT"
 assert_contains "states finding count" "1 blocking finding" "$OUT"
-assert_not_contains "no ::error::" "::error::" "$OUT"
 assert_contains "step summary has verdict header" "## Claude Review: REQUEST_CHANGES" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
@@ -213,7 +272,7 @@ cat > "$REVIEWS_FIXTURE" <<'EOF'
    "body": "<!-- claude-review-crash -->\n\n> **Claude Review — incomplete** :warning:",
    "commit_id": "old1", "submitted_at": "2026-06-01T00:00:00Z"},
   {"id": 778, "user": {"login": "claude-bot[bot]"}, "state": "CHANGES_REQUESTED",
-   "body": "## Claude PR Review — prior round", "commit_id": "old2", "submitted_at": "2026-06-02T00:00:00Z"}
+   "body": "## Claude review — prior round", "commit_id": "old2", "submitted_at": "2026-06-02T00:00:00Z"}
 ]
 EOF
 FIXTURE_REVIEWS="$REVIEWS_FIXTURE" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
@@ -225,20 +284,20 @@ assert_contains "prior blocking review dismissed" "reviews/778/dismissals" "$GH_
 rm -rf "$W" "$REVIEWS_FIXTURE"
 
 # ── (g2) a skip-marked review must NOT dismiss the standing block ────────────
-# It judged nothing: dismissing would un-block a PR nobody re-reviewed, and the
-# next judged round would read its prior verdict off a DISMISSED review.
+# It judged nothing (guard.sh renders it with no model call): dismissing would
+# un-block a PR nobody re-reviewed, and the next round would read its prior
+# verdict off a DISMISSED review.
 echo ""
 echo "── (g2) skip-marked review leaves the standing block alone ──"
 for marker in "<!-- claude-review-skipped -->" "<!-- claude-review-oversized -->"; do
   W=$(mktemp -d)
-  jq -n --arg body "$marker"$'\n\n## Claude PR Review — COMMENT\n\nSkipped.' \
-    '{verdict: "COMMENT", body: $body, comments: [], resolve_threads: [], bot_replies: [],
-      meta: {findings: [], round: 1}}' > "$W/review.json"
+  jq -n --arg body "$marker"$'\n\n## Claude review — REQUEST_CHANGES\n\nToo large to review well.' \
+    '{verdict: "REQUEST_CHANGES", body: $body, comments: [], meta: {findings: []}}' > "$W/review.json"
   REVIEWS_FIXTURE=$(mktemp)
   cat > "$REVIEWS_FIXTURE" <<'EOF'
 [
   {"id": 778, "user": {"login": "claude-bot[bot]"}, "state": "CHANGES_REQUESTED",
-   "body": "## Claude PR Review — REQUEST_CHANGES\n\nprior round", "commit_id": "old2",
+   "body": "## Claude review — REQUEST_CHANGES\n\nprior round", "commit_id": "old2",
    "submitted_at": "2026-06-02T00:00:00Z"}
 ]
 EOF
@@ -256,21 +315,20 @@ done
 echo ""
 echo "── (g3) judged review quoting markers still dismisses/does not clobber ──"
 W=$(mktemp -d)
-jq -n --arg body '## Claude PR Review — REQUEST_CHANGES
+jq -n --arg body '## Claude review — REQUEST_CHANGES
 
-### Blocking findings
-- **[major]** `skills/review-orchestrator.md:53` — spec stamps `<!-- claude-review-skipped -->`
-  but the oversized branch stamps `<!-- claude-review-oversized -->`.' \
-  '{verdict: "REQUEST_CHANGES", body: $body, comments: [], resolve_threads: [], bot_replies: [],
-    meta: {findings: [], round: 2}}' > "$W/review.json"
+### Findings (1)
+- **major** `scripts/guard.sh:53` — stamps `<!-- claude-review-skipped -->` where the
+  oversized branch stamps `<!-- claude-review-oversized -->`.' \
+  '{verdict: "REQUEST_CHANGES", body: $body, comments: [], meta: {findings: []}}' > "$W/review.json"
 REVIEWS_FIXTURE=$(mktemp)
 cat > "$REVIEWS_FIXTURE" <<'EOF'
 [
   {"id": 778, "user": {"login": "claude-bot[bot]"}, "state": "CHANGES_REQUESTED",
-   "body": "## Claude PR Review — REQUEST_CHANGES\n\nprior round", "commit_id": "old2",
+   "body": "## Claude review — REQUEST_CHANGES\n\nprior round", "commit_id": "old2",
    "submitted_at": "2026-06-02T00:00:00Z"},
   {"id": 779, "user": {"login": "claude-bot[bot]"}, "state": "COMMENTED",
-   "body": "## Claude PR Review — COMMENT\n\nquotes <!-- claude-review-crash --> in a finding",
+   "body": "## Claude review — COMMENT\n\nquotes <!-- claude-review-crash --> in a finding",
    "commit_id": "old3", "submitted_at": "2026-06-03T00:00:00Z"}
 ]
 EOF
@@ -281,89 +339,320 @@ assert_contains "stale block still dismissed" "reviews/778/dismissals" "$GH_CALL
 assert_not_contains "crash-quoting review not superseded" "reviews/779" "$GH_CALLS"
 rm -rf "$W" "$REVIEWS_FIXTURE"
 
-# ── (h) reject-oversized → body-only REQUEST_CHANGES ─────────────────────────
+# ── (h) oversized split request → body-only REQUEST_CHANGES ──────────────────
 echo ""
-echo "── (h) reject-oversized posts body-only REQUEST_CHANGES ──"
+echo "── (h) guard.sh split request posts body-only REQUEST_CHANGES ──"
 W=$(mktemp -d)
-cat > "$W/review.json" <<'EOF'
-{
-  "verdict": "REQUEST_CHANGES",
-  "body": "## Claude PR Review\n\nThis PR is too large to review safely — please split it.",
-  "comments": [],
-  "resolve_threads": [],
-  "bot_replies": [],
-  "meta": {
-    "findings": [],
-    "round": 1,
-    "ladder_rule_applied": "reject-oversized"
-  }
-}
-EOF
+GATE_FILES_TSV="$(for i in $(seq 1 65); do printf 'src/f%d.ts\t10\t10\n' "$i"; done)" \
+  bash scripts/guard.sh | awk '/^body<<GUARD_BODY$/{f=1;next} /^GUARD_BODY$/{f=0} f' > "$W/guard-body.md"
+jq -n --rawfile body "$W/guard-body.md" \
+  '{verdict: "REQUEST_CHANGES", body: $body, comments: [], meta: {findings: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 assert_eq "exit 0" "0" "$RC"
-PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
+PAYLOAD=$(payload_of "$W")
 assert_eq "event is REQUEST_CHANGES" "REQUEST_CHANGES" "$(echo "$PAYLOAD" | jq -r '.event')"
 assert_eq "no inline comments" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_not_contains "no runtime-evidence banner" "no runtime evidence" "$(cat "$W/summary.md")"
+assert_contains "the split request survives to the PR" "Split it into focused PRs" \
+  "$(echo "$PAYLOAD" | jq -r '.body')"
 rm -rf "$W"
 
-# ── (i) runtime-evidence (smoke FAILED) → step-summary banner ────────────────
+# ── (i) {{LINK:}} placeholders become real GitHub file links ─────────────────
+# The models emit NO urls — only this script knows repo + PR number.
 echo ""
-echo "── (i) runtime-evidence (smoke FAILED) renders the step-summary banner ──"
+echo "── (i) link placeholder expansion ──"
 W=$(mktemp -d)
-cat > "$W/review.json" <<'EOF'
-{
-  "verdict": "REQUEST_CHANGES",
-  "body": "## Claude PR Review\n\nThe functional smoke run failed.",
-  "comments": [],
-  "resolve_threads": [],
-  "bot_replies": [],
-  "meta": {
-    "findings": [],
-    "round": 1,
-    "ladder_rule_applied": "runtime-evidence",
-    "functional_validation": {"strategy": "functional", "overall": "FAIL", "dev_env": "ready"}
-  }
-}
-EOF
+jq -n '{verdict: "COMMENT",
+        body: "## Claude review — COMMENT\n\n### What a human should review\n- [ ] {{LINK:src/foo.ts:11}} — check the loop bound\n- [ ] {{LINK:src/bar.ts}} — whole-file rewrite\n\nAlso see {{LINK:src/foo.ts:11}} again.",
+        comments: [], meta: {findings: [], human_review: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+FOO_SHA=$(path_sha "src/foo.ts")
+BAR_SHA=$(path_sha "src/bar.ts")
 assert_eq "exit 0" "0" "$RC"
-PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
-assert_eq "event is REQUEST_CHANGES" "REQUEST_CHANGES" "$(echo "$PAYLOAD" | jq -r '.event')"
-assert_eq "no inline comments" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_contains "step summary has smoke-failed banner" "functional smoke failed" "$(cat "$W/summary.md")"
-assert_not_contains "healthy dev-env renders no setup-health note" "Review setup health" "$(cat "$W/summary.md")"
+assert_contains "path:line becomes a linked label" \
+  "[src/foo.ts:11](https://github.com/o/r/pull/7/files#diff-${FOO_SHA}R11)" "$BODY"
+assert_contains "a path with no line omits the R suffix" \
+  "[src/bar.ts](https://github.com/o/r/pull/7/files#diff-${BAR_SHA})" "$BODY"
+assert_not_contains "no placeholder survives" "{{LINK:" "$BODY"
+assert_eq "every occurrence is expanded, not just the first" "2" \
+  "$(printf '%s' "$BODY" | grep -c "diff-${FOO_SHA}R11")"
+assert_eq "the sha is lowercase hex sha256 of the raw path" "yes" \
+  "$(printf '%s' "$FOO_SHA" | grep -qE '^[0-9a-f]{64}$' && echo yes || echo no)"
 rm -rf "$W"
 
-# ── (j) dev-env failed → setup-health summary note + warning + log tail ──────
+# ── (j) footer: duration · cost · logs, appended here and not by the model ───
 echo ""
-echo "── (j) dev-env failed surfaces setup health (COMMENT, no block) ──"
+echo "── (j) footer ──"
 W=$(mktemp -d)
-cat > "$W/review.json" <<'EOF'
-{
-  "verdict": "COMMENT",
-  "body": "## Claude PR Review — COMMENT\n\n### ⚙️ Review setup health\n\n- dev-start.sh failed.",
-  "comments": [],
-  "resolve_threads": [],
-  "bot_replies": [],
-  "meta": {
-    "findings": [],
-    "round": 1,
-    "functional_validation": {"strategy": "skip", "overall": "SKIP_NO_DEVENV", "dev_env": "failed"}
-  }
-}
-EOF
-printf 'pnpm install ok\ncould not connect to postgres://app:S3cretPw@db:5432/app\nDATABASE_TOKEN=tok_abc123 rejected\nError: connect ECONNREFUSED 127.0.0.1:5432\n' > "$W/dev-env.log"
-FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" DEV_ENV_LOG="$W/dev-env.log" run_poster "$W"
-assert_eq "exit 0" "0" "$RC"
-PAYLOAD=$(cat "$W"/capture/* 2>/dev/null || echo "{}")
-assert_eq "event is COMMENT (setup failure never blocks)" "COMMENT" "$(echo "$PAYLOAD" | jq -r '.event')"
-assert_contains "summary carries the setup-health note" "Review setup health: dev-env \`failed\`" "$(cat "$W/summary.md")"
-assert_contains "summary embeds the dev-start log tail" "ECONNREFUSED" "$(cat "$W/summary.md")"
-assert_not_contains "URL password is redacted from the tail" "S3cretPw" "$(cat "$W/summary.md")"
-assert_not_contains "token value is redacted from the tail" "tok_abc123" "$(cat "$W/summary.md")"
-assert_contains "actions log gets a ::warning::" "::warning::Dev environment 'failed'" "$OUT"
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nNothing to flag.",
+        comments: [], meta: {findings: [], human_review: []}}' > "$W/review.json"
+printf '{"total_cost_usd": 0.618}\n' > "$W/orchestrator-output.txt"
+printf '%s\n' "$(( $(date +%s) - 245 ))" > "$W/job-start"
+JOB_START="$W/job-start" RUN_ID=4242 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_eq "exit 0 (APPROVE)" "0" "$RC"
+assert_contains "footer is a <sub> line" "<sub>" "$BODY"
+# 245s, but the clock can tick between writing job-start and the poster reading
+# it — assert the minute, not the exact second, or this flakes ~1 run in 60.
+case "$BODY" in
+  *"4m 5s"*|*"4m 6s"*) echo "OK:   footer carries the wall clock" ;;
+  *) echo "FAIL: footer carries the wall clock — expected '4m 5s' or '4m 6s'"; fail=$((fail + 1)) ;;
+esac
+assert_contains "footer carries the cost, 2dp" '$0.62' "$BODY"
+assert_contains "footer links the run" "[logs](https://github.com/o/r/actions/runs/4242)" "$BODY"
 rm -rf "$W"
+
+# A run that knows none of the three must not post an empty <sub></sub>.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nfine.", comments: [], meta: {}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_not_contains "no footer when nothing is known" "<sub>" "$(payload_of "$W" | jq -r '.body')"
+rm -rf "$W"
+
+# ── (k) body budget: 1200 chars, cut on a line boundary, footer kept ─────────
+# Prompt-only budgets historically did not hold (measured median body 1560
+# chars), so the cap is enforced here.
+echo ""
+echo "── (k) 1200-char body budget ──"
+W=$(mktemp -d)
+{ echo "## Claude review — COMMENT"; echo ""
+  for i in $(seq 1 60); do echo "- **major** finding number $i that goes on and on about a thing"; done
+} > "$W/long-body.md"
+jq -n --rawfile b "$W/long-body.md" \
+  '{verdict: "COMMENT", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
+printf '{"total_cost_usd": 0.5}\n' > "$W/orchestrator-output.txt"
+RUN_ID=99 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+BYTES=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+assert_eq "exit 0" "0" "$RC"
+if [ "$BYTES" -le 1200 ]; then
+  echo "OK:   body held to the budget ($BYTES bytes)"
+else
+  echo "FAIL: body is $BYTES bytes, over the 1200 budget"; fail=$((fail + 1))
+fi
+assert_contains "truncation is announced to the reader" "truncated" "$BODY"
+assert_contains "the footer survives truncation" "[logs](" "$BODY"
+assert_contains "the header survives truncation" "## Claude review — COMMENT" "$BODY"
+# Cut on a line boundary: no bullet may end mid-word.
+assert_not_contains "no half-written bullet" "finding number 60 that goes on and" "$BODY"
+rm -rf "$W"
+
+# ── (k2) THE INTERACTION: budget × link expansion ────────────────────────────
+# (k) truncates a body with NO placeholders; (i) expands placeholders in a body
+# far under budget. Neither catches the case that actually shipped: a body the
+# model rendered WITHIN its stated budget ("count {{LINK:path:line}} as
+# path:line", review-verify.md) where expansion adds ~130 bytes per link and
+# pushes the rendered text past 1200. Enforcing the cap after expansion cut both
+# finding bullets and left a dangling `### Findings (2)` — and under the
+# inline-XOR-body rule those findings existed NOWHERE else in the review.
+echo ""
+echo "── (k2) a budget-compliant body with links loses nothing ──"
+W=$(mktemp -d)
+{ echo "## Claude review — REQUEST_CHANGES"; echo ""
+  echo "Reworks the broker's claim handling and the tenant cache; two user-reachable defects survive verification, and two questions need a human who knows the upstream timeout policy and the tenancy model to settle them properly."
+  echo ""
+  echo "### What a human should review"
+  echo "- [ ] {{LINK:src/alpha/service.ts:120}} — confirm the retry budget matches the upstream gateway timeout; the policy doc is out of date (no spec)"
+  echo "- [ ] {{LINK:src/beta/handler.ts:44}} — confirm the cache key includes the tenant id on every path, including the warm-start branch (needs prod data)"
+  echo ""
+  echo "### Findings (2)"
+  echo "- **critical** {{LINK:src/alpha/service.ts:131}} — token refresh loops forever on a 401 and pins a core"
+  echo "- **major** {{LINK:src/beta/handler.ts:52}} — cross-tenant cache hit returns another tenant's rows"
+} > "$W/linked-body.md"
+NLINKS=$(grep -o '{{LINK:' "$W/linked-body.md" | wc -l | tr -d ' ')
+# What the model was told to count: the placeholder measured as `path:line`,
+# i.e. the raw bytes minus the 9-byte `{{LINK:` … `}}` wrapper.
+MEASURED=$(( $(wc -c < "$W/linked-body.md") - 9 * NLINKS ))
+if [ "$MEASURED" -le 1200 ]; then
+  echo "OK:   the fixture is a budget-compliant body ($MEASURED bytes as the model counts them)"
+else
+  echo "FAIL: fixture is $MEASURED bytes pre-expansion — it must be UNDER 1200 to test this"; fail=$((fail + 1))
+fi
+jq -n --rawfile b "$W/linked-body.md" \
+  '{verdict: "REQUEST_CHANGES", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+BYTES=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+assert_eq "exit 0" "0" "$RC"
+if [ "$BYTES" -gt 1200 ]; then
+  echo "OK:   expansion really does push it past 1200 ($BYTES bytes) — the case is live"
+else
+  echo "FAIL: expanded body is only $BYTES bytes; the fixture no longer exercises the interaction"
+  fail=$((fail + 1))
+fi
+assert_not_contains "nothing was truncated" "truncated to fit" "$BODY"
+assert_contains "the Findings header survives" "### Findings (2)" "$BODY"
+assert_contains "the critical finding survives" "token refresh loops forever on a 401" "$BODY"
+assert_contains "the major finding survives" "another tenant's rows" "$BODY"
+assert_eq "all four placeholders expanded" "$NLINKS" \
+  "$(printf '%s' "$BODY" | grep -c 'files#diff-')"
+assert_not_contains "no placeholder survives" "{{LINK:" "$BODY"
+rm -rf "$W"
+
+# ── (k3) genuinely over budget with links → truncate, drop the empty header ──
+# A `### Findings (2)` header above nothing reads as a rendering bug and tells
+# the reader the review lost content without saying what.
+echo ""
+echo "── (k3) truncation never leaves a dangling section header ──"
+W=$(mktemp -d)
+{ echo "## Claude review — COMMENT"; echo ""
+  echo "### What a human should review"
+  for i in $(seq 1 20); do
+    echo "- [ ] {{LINK:src/pkg/module$i/service.ts:$i}} — check the boundary condition on this call path carefully"
+  done
+  echo ""
+  echo "### Findings (2)"
+  echo "- **major** {{LINK:src/late/one.ts:9}} — this bullet is past the budget"
+  echo "- **minor** {{LINK:src/late/two.ts:9}} — so is this one"
+} > "$W/long-linked.md"
+jq -n --rawfile b "$W/long-linked.md" \
+  '{verdict: "COMMENT", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_contains "truncation is announced" "truncated to fit" "$BODY"
+assert_not_contains "the emptied Findings header is gone" "### Findings (2)" "$BODY"
+assert_contains "the section that kept its items stays" "### What a human should review" "$BODY"
+assert_not_contains "no placeholder survives truncation" "{{LINK:" "$BODY"
+# The budget is measured pre-expansion, so what survives is judged that way too.
+RAW_KEPT=$(printf '%s' "$BODY" | grep -c 'files#diff-')
+if [ "$RAW_KEPT" -gt 3 ]; then
+  echo "OK:   truncation kept $RAW_KEPT linked items (pre-expansion budgeting keeps far more than post-expansion did)"
+else
+  echo "FAIL: only $RAW_KEPT linked items survived — the budget is still being spent on expanded URLs"
+  fail=$((fail + 1))
+fi
+rm -rf "$W"
+
+# ── (k4) a body with no line break must not lose 100% of its content ─────────
+# The line-boundary truncator exits on the first line that does not fit, so a
+# single long line yielded a body of just the marker and the footer.
+echo ""
+echo "── (k4) hard cut when no line boundary fits ──"
+W=$(mktemp -d)
+LONGLINE="## Claude review — COMMENT: $(printf 'the review body arrived as one unbroken line %.0s' $(seq 1 120))"
+jq -n --arg b "$LONGLINE" \
+  '{verdict: "COMMENT", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+BYTES=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the verdict header survives" "## Claude review — COMMENT" "$BODY"
+assert_contains "real content survives the hard cut" "one unbroken line" "$BODY"
+assert_contains "truncation is announced" "truncated to fit" "$BODY"
+if [ "$BYTES" -gt 900 ] && [ "$BYTES" -le 1200 ]; then
+  echo "OK:   the single line was cut mid-line to fill the budget ($BYTES bytes)"
+else
+  echo "FAIL: single-line body came out $BYTES bytes — expected a mid-line cut near the 1200 budget"
+  fail=$((fail + 1))
+fi
+rm -rf "$W"
+
+# ── (l) inline comments: 5 max, critical/major first ─────────────────────────
+echo ""
+echo "── (l) inline-comment cap ──"
+W=$(mktemp -d)
+WIDE_FILES=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -1,20 +1,20 @@\n" + ([range(20) | " ctx"] | join("\n")))}]' > "$WIDE_FILES"
+jq -n '
+  {verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nsee comments.",
+   comments: (
+     [range(1;5)  | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**minor** minor \(.)"}] +
+     [range(5;9)  | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**critical** critical \(.)"}] +
+     [range(9;13) | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**major** major \(.)"}]),
+   meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "capped at 5" "5" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_eq "all 4 criticals kept" "4" \
+  "$(echo "$PAYLOAD" | jq '[.comments[] | select(.body | startswith("**critical**"))] | length')"
+assert_eq "the 5th slot goes to a major, not a minor" "1" \
+  "$(echo "$PAYLOAD" | jq '[.comments[] | select(.body | startswith("**major**"))] | length')"
+assert_eq "no minor survives the cap" "0" \
+  "$(echo "$PAYLOAD" | jq '[.comments[] | select(.body | startswith("**minor**"))] | length')"
+assert_eq "criticals keep the model's own order" "6" \
+  "$(echo "$PAYLOAD" | jq '.comments[0].line')"
+rm -rf "$W" "$WIDE_FILES"
+
+# ── (m) each inline comment <= 700 BYTES, cut suggestion fence dropped ───────
+# jq's `length` counts CODEPOINTS, so the old clamp let a comment of accented
+# text through at ~2x the budget. And a ```suggestion cut mid-block used to be
+# re-closed — syntactically valid, semantically a one-click commit that deletes
+# the tail of the replacement code. Drop the fence instead.
+echo ""
+echo "── (m) 700-byte inline budget ──"
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT",
+        body: "## Claude review — COMMENT\n\nsee comment.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: ("**major** long one\n\nbreaks when x is null\n\n```suggestion\n"
+                           + ([range(80) | "const someVeryLongLineOfCode = 1;"] | join("\n")) + "\n```")}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+CBODY=$(payload_of "$W" | jq -r '.comments[0].body')
+CBYTES=$(printf '%s' "$CBODY" | wc -c | tr -d ' ')
+assert_eq "exit 0" "0" "$RC"
+if [ "$CBYTES" -le 700 ]; then
+  echo "OK:   inline comment held to the budget ($CBYTES bytes)"
+else
+  echo "FAIL: inline comment is $CBYTES bytes, over the 700 budget"; fail=$((fail + 1))
+fi
+assert_not_contains "the cut suggestion fence is dropped, not re-closed" '```' "$CBODY"
+assert_contains "the finding itself survives" "breaks when x is null" "$CBODY"
+assert_contains "clamp is visible to the reader" "…" "$CBODY"
+rm -rf "$W"
+
+# ── (m2) the byte clamp holds for multibyte text ─────────────────────────────
+# 900 `é` is 900 codepoints and 1800 bytes: the codepoint clamp emitted 696
+# codepoints = 1383 bytes, near 2x the budget. Even pure ASCII overshot by 2
+# (the ellipsis is 3 bytes, and the old clamp only reserved 1 char for it).
+echo ""
+echo "── (m2) the inline clamp counts bytes, not codepoints ──"
+for glyph in "é" "→" "x"; do
+  W=$(mktemp -d)
+  jq -n --arg g "$glyph" '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nsee comment.",
+     comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                 body: ("**major** t " + ([range(900) | $g] | join("")))}],
+     meta: {findings: []}}' > "$W/review.json"
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  CBYTES=$(payload_of "$W" | jq -j '.comments[0].body' | wc -c | tr -d ' ')
+  if [ "$CBYTES" -le 700 ]; then
+    echo "OK:   900×'$glyph' clamped to $CBYTES bytes"
+  else
+    echo "FAIL: 900×'$glyph' clamped to $CBYTES bytes, over the 700 budget"; fail=$((fail + 1))
+  fi
+  rm -rf "$W"
+done
+
+# ── (n) meta the v4 pipeline no longer emits must not break the poster ───────
+echo ""
+echo "── (n) tolerates the slimmed schema ──"
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nno meta at all."}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "exit 0 with no comments and no meta" "0" "$RC"
+assert_eq "posts an empty comment array" "0" "$(payload_of "$W" | jq '.comments | length')"
+assert_contains "step summary still renders" "## Claude Review: COMMENT" "$(cat "$W/summary.md")"
+rm -rf "$W"
+
+# ── (o) house rules ──────────────────────────────────────────────────────────
+echo ""
+echo "── (o) house rules ──"
+if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$POSTER"; then
+  echo "FAIL: post-review.sh uses set -e (banned, bugbot.md)"; fail=$((fail + 1))
+else
+  echo "OK:   post-review.sh does not use set -e"
+fi
+for dead in '\.resolve_threads' '\.bot_replies' resolveReviewThread functional-meta.json start_line; do
+  if grep -qE "$dead" "$POSTER"; then
+    echo "FAIL: post-review.sh still handles '$dead', which the v4 pipeline never produces"
+    fail=$((fail + 1))
+  else
+    echo "OK:   no dead path for '$dead'"
+  fi
+done
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 

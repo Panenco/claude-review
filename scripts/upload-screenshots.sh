@@ -12,12 +12,12 @@ set -uo pipefail
 # and `gh search` already cover.
 #
 # As long as those writes were spelled out inline in a skill, the session had to
-# grant `Bash` with `gh api` reachable — and the review session runs the OFFICIAL
-# `code-review` plugin prompt (`review-native`) over ATTACKER-CONTROLLED PR
-# content. Session-wide `--disallowedTools` cannot deny `gh api` selectively, so
-# an unqualified `gh api` grant meant `gh api -X POST /repos/.../issues/N/comments`
-# and friends stayed reachable by that plugin's ~10 subagents. Moving every
-# privileged call in here lets `pr-review.yml` deny `Bash(gh api:*)` outright,
+# grant `Bash` with `gh api` reachable — and every agent in this session reads
+# ATTACKER-CONTROLLED PR content. Session-wide `--disallowedTools` cannot deny
+# `gh api` selectively, so an unqualified `gh api` grant meant
+# `gh api -X POST /repos/.../issues/N/comments` and friends stayed reachable by
+# any subagent. Moving every privileged call in here lets `pr-review.yml` deny
+# `Bash(gh api:*)` outright,
 # which restores the read-only posture the deleted separate `native-review` job
 # had (it ran with `contents: read` and a narrow allowlist) — and that posture is
 # what made moving the plugin in-session safe in the first place.

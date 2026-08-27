@@ -16,12 +16,7 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$ROOT/scripts/prior-review-state.sh"
-PLAN_SCRIPT="$ROOT/scripts/review-plan.sh"
-ORCHESTRATOR="$ROOT/skills/review-orchestrator.md"
-# The context builder's prior-review filter moved out of the skill and into a
-# reviewed helper when the raw `gh` API subcommand was denied session-wide — the
-# markers now live in the script, so that is what this suite checks.
-CONTEXT_BUILDER="$ROOT/scripts/fetch-pr-threads.sh"
+GUARD="$ROOT/scripts/guard.sh"
 POSTER="$ROOT/scripts/post-review.sh"
 fail=0
 
@@ -129,16 +124,24 @@ assert_state "two judged reviews → round 3, latest head" \
     $(review APPROVED 2026-08-07T08:00:00Z "$SHA_NEW" "$JUDGED_BODY")]" \
   "3 $SHA_NEW APPROVE"
 
-# A dismissal is not an approval. It says nothing about what the review found,
-# so the verdict comes from the body header and the orchestrator's
-# `prior-dismiss-drops-low-sev` rung decides what dismissal may drop (minor/note
-# only). Mapping DISMISSED→APPROVE here un-pinned the prior round's blockers.
+# A dismissal is not an approval. It says nothing about what the review found, so
+# the verdict is recovered from the body header. Nothing gates on it now (ADR 0003
+# recomputes the verdict fresh each round), but it lands in the usage record.
 assert_state "dismissed judged RC → verdict recovered from the body" \
   "[$(review DISMISSED 2026-08-07T07:46:24Z "$SHA_OLD" "$JUDGED_BODY")]" \
   "2 $SHA_OLD REQUEST_CHANGES"
 
 assert_state "dismissed judged APPROVE → APPROVE" \
   "[$(review DISMISSED 2026-08-07T07:46:24Z "$SHA_OLD" "$JUDGED_APPROVE_BODY")]" \
+  "2 $SHA_OLD APPROVE"
+
+# v4 renamed the header from "## Claude PR Review" to "## Claude review". Both must
+# parse: a long-lived PR carries reviews written by both versions of the poster, and
+# a header the regex misses silently fails closed to REQUEST_CHANGES.
+assert_state "dismissed v4-header review → verdict recovered" \
+  "[$(review DISMISSED 2026-08-07T07:46:24Z "$SHA_OLD" '## Claude review — APPROVE
+
+Looks fine.')]" \
   "2 $SHA_OLD APPROVE"
 
 assert_state "dismissed with unparseable body → REQUEST_CHANGES (fail closed)" \
@@ -174,46 +177,40 @@ assert_state "another bot's review is not ours" \
   "1 - -"
 
 echo
-echo "── guard: every skip gate must have a marker ──"
+echo "── guard: every skip gate that POSTS must carry a marker ──"
 
-# review-plan.sh is the only producer of review_level=skip. Sweep a matrix wide
-# enough to hit every branch and collect the gates that skip; each one needs a
-# marker in prior-review-state.sh, or the next push reviews only the delta.
+# guard.sh is the only producer of a review nobody judged. Sweep every branch and
+# collect the ones that still post a body; each needs a marker, or the next push
+# reviews only the delta on top of a review that read no code.
 BIG_FILES=$(for i in $(seq 1 65); do printf 'src/f%d.ts\t10\t10\n' "$i"; done)
-skip_gates=$(
+guard_body() {
+  env "$@" bash "$GUARD" | awk '/^body<<GUARD_BODY$/{f=1;next} /^GUARD_BODY$/{f=0} f'
+}
+posting_gates=$(
   {
-    env GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_LABELS=$'skip-review' GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$PLAN_SCRIPT"
-    env GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV="$BIG_FILES" bash "$PLAN_SCRIPT"
-    env GATE_BASE_REF=main GATE_HEAD_REF=staging GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$PLAN_SCRIPT"
-    env GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'README.md\t5\t5' bash "$PLAN_SCRIPT"
-    env GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t1\t1' bash "$PLAN_SCRIPT"
-    env GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t50\t50' bash "$PLAN_SCRIPT"
-    env GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_FILES_TSV=$'src/a.ts\t500\t500' bash "$PLAN_SCRIPT"
-    env GATE_BASE_REF=main GATE_HEAD_REF=feat/x GATE_LABELS=$'deep-review' GATE_FILES_TSV="$BIG_FILES" bash "$PLAN_SCRIPT"
-  } | awk -F= '/^review_level=/{lvl=$2} /^gate=/{if (lvl == "skip") print $2}' | sort -u
+    env GATE_LABELS=$'skip-review' GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$GUARD"
+    env GATE_FILES_TSV="$BIG_FILES" bash "$GUARD"
+    env GATE_FILES_TSV=$'pnpm-lock.yaml\t9\t9' bash "$GUARD"
+    env GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES='' GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$GUARD"
+    env GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$GUARD"
+  } | awk -F= '/^gate=/{g=$2} /^verdict=/{if ($2 != "") print g}' | sort -u
 )
-# Pin the sweep's own result first. Everything below loops over $skip_gates, so
-# an empty sweep — review-plan.sh renamed a GATE_* input, or the FILE/SIZE
-# ceilings moved past BIG_FILES — would run zero assertions and still print
-# "All prior-review-state tests passed". The guard has to fail loudly when it
-# stops guarding anything.
-EXPECTED_SKIP_GATES=$'label\noversized'
-if [ "$skip_gates" != "$EXPECTED_SKIP_GATES" ]; then
-  echo "FAIL: skip-gate sweep found [$(echo "$skip_gates" | tr '\n' ' ')], expected [label oversized]."
-  echo "      Either review-plan.sh changed which gates skip — add the new one to SKIP_MARKERS in"
-  echo "      prior-review-state.sh, to marker_for below, and to EXPECTED_SKIP_GATES — or the sweep's"
-  echo "      env matrix no longer trips the gates it targets, in which case the marker guard below"
-  echo "      is checking nothing."
+# Pin the sweep's own result first: a sweep that trips nothing would run zero
+# assertions below and still print "All prior-review-state tests passed".
+if [ "$posting_gates" != "oversized" ]; then
+  echo "FAIL: posting-gate sweep found [$(echo "$posting_gates" | tr '\n' ' ')], expected [oversized]."
+  echo "      Either guard.sh gained a gate that posts without a model call — give its body a"
+  echo "      marker, add the marker to SKIP_MARKERS in prior-review-state.sh and to marker_for"
+  echo "      below — or the sweep no longer trips the oversized ceilings and guards nothing."
   fail=$((fail + 1))
 else
-  echo "OK:   skip-gate sweep reached both skip gates (label, oversized)"
+  echo "OK:   posting-gate sweep reached the oversized gate"
 fi
 
 # gate → the marker its review body must carry.
 marker_for() {
   case "$1" in
     oversized) echo '<!-- claude-review-oversized -->' ;;
-    label)     echo '<!-- claude-review-skipped -->' ;;
     *)         echo "" ;;
   esac
 }
@@ -221,31 +218,21 @@ while IFS= read -r gate; do
   [ -z "$gate" ] && continue
   marker=$(marker_for "$gate")
   if [ -z "$marker" ]; then
-    echo "FAIL: review-plan.sh gate '$gate' yields review_level=skip but has no skip marker."
-    echo "      Give its review body a marker in skills/review-orchestrator.md, add the marker"
-    echo "      to SKIP_MARKERS in scripts/prior-review-state.sh, and map it in marker_for above."
+    echo "FAIL: guard.sh gate '$gate' posts a review nobody judged but has no skip marker."
     fail=$((fail + 1))
     continue
   fi
-  if ! grep -qF "$marker" "$SCRIPT"; then
+  # The marker must be the body's FIRST line: every consumer anchors there.
+  if [ "$(guard_body GATE_FILES_TSV="$BIG_FILES" | head -n1)" != "$marker" ]; then
+    echo "FAIL: gate '$gate' does not stamp $marker as the first line of its body"
+    fail=$((fail + 1))
+  elif ! grep -qF "$marker" "$SCRIPT"; then
     echo "FAIL: gate '$gate' marker $marker is not in SKIP_MARKERS in prior-review-state.sh"
     fail=$((fail + 1))
-  # Anchored to the `body` = spec on purpose: both markers also appear in this
-  # skill's explanatory prose, so an unanchored grep passes even after a gate
-  # stops stamping its marker — i.e. it would stop checking the thing it names.
-  elif ! grep -F '`body` =' "$ORCHESTRATOR" | grep -qF "$marker"; then
-    echo "FAIL: gate '$gate' marker $marker is not stamped by any \`body\` = spec in review-orchestrator.md"
-    fail=$((fail + 1))
-  # The context builder derives its OWN prior review for the round-2 ladder. If
-  # it doesn't exclude the same markers, it resolves to a review that judged
-  # nothing and reconstructs zero prior findings — forgiving real blockers.
-  elif ! grep -qF "$marker" "$CONTEXT_BUILDER"; then
-    echo "FAIL: gate '$gate' marker $marker is not excluded by fetch-pr-threads.sh's prior-review filter"
-    fail=$((fail + 1))
   else
-    echo "OK:   skip gate '$gate' → $marker (stamped, filtered by both consumers)"
+    echo "OK:   skip gate '$gate' → $marker (stamped first, excluded from the judged list)"
   fi
-done <<< "$skip_gates"
+done <<< "$posting_gates"
 
 # The poster must not dismiss a standing block when posting a skip-marked review
 # (behaviour asserted in tests/post_review_test.sh) — that would un-block a PR

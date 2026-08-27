@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# pipeline_contract_test.sh — the parts of the v4 pipeline that live ACROSS
+# files, where each file is individually correct and the seam between them is
+# not. Nothing here runs a model; every assertion is about a contract two
+# artifacts have to agree on.
+#
+# It exists because three shipped bugs were exactly this shape:
+#   * review-scan was told to read /tmp/functional.json, which the orchestrator
+#     dispatches in the SAME response — so it never existed when scan looked,
+#     and nothing else ever read it. A reproduced FAIL surfaced nowhere.
+#   * review-verify tells the model to count `{{LINK:path:line}}` as `path:line`
+#     while post-review.sh measured the EXPANDED text, silently truncating away
+#     whole findings from a body that was within budget as written.
+#   * review-command.sh renders the `native` removal notice on a run that
+#     proceeds, and the only step that posted `message` was gated on the run NOT
+#     proceeding, so the notice was unreachable.
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SCAN="$ROOT/skills/review-scan.md"
+VERIFY="$ROOT/skills/review-verify.md"
+ORCH="$ROOT/skills/review-orchestrator.md"
+POSTER="$ROOT/scripts/post-review.sh"
+WORKFLOW="$ROOT/.github/workflows/pr-review.yml"
+CMD="$ROOT/scripts/review-command.sh"
+fail=0
+
+ok()   { echo "OK:   $1"; }
+bad()  { echo "FAIL: $1"; fail=$((fail + 1)); }
+want() { # want <label> <file> <extended-regex>
+  if grep -qiE "$3" "$2"; then ok "$1"; else bad "$1 — no match for /$3/ in ${2#"$ROOT"/}"; fi
+}
+never() { # never <label> <file> <extended-regex>
+  if grep -qiE "$3" "$2"; then bad "$1 — unexpected match for /$3/ in ${2#"$ROOT"/}"; else ok "$1"; fi
+}
+
+for f in "$SCAN" "$VERIFY" "$ORCH" "$POSTER" "$WORKFLOW" "$CMD"; do
+  [ -f "$f" ] || { echo "FAIL: $f not found"; exit 1; }
+done
+
+echo "── functional results reach the review through review-verify ──"
+# The orchestrator issues both Task calls in one response on purpose (the
+# wall-clock win is real), which is precisely why scan cannot be the consumer.
+want "orchestrator still dispatches scan + tester in ONE response" "$ORCH" \
+  'both Task calls together|same response'
+want "orchestrator hands functional.json to verify" "$ORCH" \
+  'review-verify\.md.*functional\.json|functional\.json.*verify'
+never "review-scan is not told to read /tmp/functional.json" "$SCAN" \
+  '`?Read`? (it|/tmp/functional\.json)|functional\.json`? exists'
+# Belt and braces: no line that mentions the file may also carry a Read.
+if grep 'functional\.json' "$SCAN" | grep -qiE '\bread\b'; then
+  bad "review-scan mentions functional.json on a line that also says 'read'"
+else
+  ok "no line in review-scan pairs functional.json with a read"
+fi
+want "review-scan says why the file is not its to read" "$SCAN" \
+  'functional\.json`? does not exist|NOT yours to read'
+want "review-verify reads /tmp/functional.json" "$VERIFY" \
+  '/tmp/functional\.json'
+want "review-verify keeps the never-invent rule" "$VERIFY" \
+  'Never invent a new finding'
+want "…and states the exception explicitly" "$VERIFY" \
+  'exception'
+want "…scoped to a REPRODUCED failure" "$VERIFY" \
+  'reproduced'
+want "…with the fallback to a human_review item" "$VERIFY" \
+  'human_review.*item|one `human_review`'
+want "…and the tester still cannot move the verdict" "$VERIFY" \
+  'never.*lowers the verdict|neither raise nor lower'
+
+echo ""
+echo "── the body budget the model is told matches the one enforced ──"
+want "review-verify tells the model to count {{LINK:path:line}} as path:line" "$VERIFY" \
+  'Count .*\{\{LINK:path:line\}\}.* as .*path:line'
+want "post-review.sh measures the body PRE-expansion" "$POSTER" \
+  'PRE-EXPANSION|pre-expansion'
+want "post-review.sh subtracts exactly the 9-byte placeholder wrapper" "$POSTER" \
+  'length\(s\) - 9 \* nph\(s\)'
+want "post-review.sh truncates before it expands" "$POSTER" \
+  'budget\.awk.*body\.raw|mode=fit'
+# The order is the whole fix: expansion must be the LAST thing that touches the
+# body, so it can never be what pushes a finding out of the review.
+TRUNC_LINE=$(grep -n 'mode=fit' "$POSTER" | head -1 | cut -d: -f1)
+EXPAND_LINE=$(grep -n 'render_link "\${BASH_REMATCH\[1\]}"' "$POSTER" | head -1 | cut -d: -f1)
+if [ -n "$TRUNC_LINE" ] && [ -n "$EXPAND_LINE" ] && [ "$TRUNC_LINE" -lt "$EXPAND_LINE" ]; then
+  ok "truncation (line $TRUNC_LINE) runs before link expansion (line $EXPAND_LINE)"
+else
+  bad "link expansion must come AFTER truncation (trunc=$TRUNC_LINE expand=$EXPAND_LINE)"
+fi
+
+echo ""
+echo "── nothing that cannot be posted inline is silently discarded ──"
+want "post-review.sh renders a body bullet for dropped comments" "$POSTER" \
+  'Also flagged'
+never "no code comment still claims the body already names every finding" "$POSTER" \
+  'body already names every finding|remain listed in the review body'
+
+echo ""
+echo "── an explicit /review is never answered with silence ──"
+want "guard.sh honours GATE_HUMAN_REQUESTED" "$ROOT/scripts/guard.sh" \
+  'GATE_HUMAN_REQUESTED'
+want "the workflow sets it from the triggering event" "$WORKFLOW" \
+  'GATE_HUMAN_REQUESTED:.*issue_comment'
+
+echo ""
+echo "── a message on a PROCEEDING run is actually posted ──"
+# review-command.sh emits `message` on action=run for the removed `native` pass.
+NATIVE_MSG=$(CMD_BODY="/review native" bash "$CMD" | sed -n 's/^message=//p')
+PLAIN_MSG=$(CMD_BODY="/review code" bash "$CMD" | sed -n 's/^message=//p')
+if [ -n "$NATIVE_MSG" ]; then ok "/review native still renders a notice"; else bad "/review native renders no notice"; fi
+if [ -z "$PLAIN_MSG" ]; then ok "/review code renders none (so the poster step cannot fire spuriously)"; else bad "/review code rendered a message: '$PLAIN_MSG'"; fi
+want "the workflow posts a message on a run that proceeds" "$WORKFLOW" \
+  "proceed == 'true' && steps\.cmd\.outputs\.message != ''"
+
+echo ""
+echo "── no stale references to deleted assets ──"
+never "require-review-json.sh does not name v3 artifacts" "$ROOT/scripts/require-review-json.sh" \
+  'judge-\*\.json|functional-\*\.json'
+want "…it names the v4 ones" "$ROOT/scripts/require-review-json.sh" \
+  '/tmp/scan\.json .*/tmp/verify\.json .*/tmp/functional\.json'
+never "the onboarding prompt does not install a deleted subagent" \
+  "$ROOT/prompts/setup-review.md" 'agents/review-native\.md'
+for a in review-scan review-verify review-functional-tester; do
+  if grep -q "agents/$a.md" "$ROOT/prompts/setup-review.md" && [ -f "$ROOT/agents/$a.md" ]; then
+    ok "onboarding names agents/$a.md, and it exists"
+  else
+    bad "onboarding must name agents/$a.md, and the file must exist"
+  fi
+done
+
+echo ""
+if [ "$fail" -eq 0 ]; then
+  echo "All pipeline contract tests passed."
+  exit 0
+else
+  echo "$fail pipeline contract test(s) failed."
+  exit 1
+fi

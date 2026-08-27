@@ -4,21 +4,20 @@ set -uo pipefail
 # review_command_test.sh — fixture test for scripts/review-command.sh.
 #
 # A comment body → a run decision, asserted as
-# "<action> <run_functional> <native_review> <force_deep>".
+# "<action> <run_functional> <force_deep>".
 # action: run | help | unknown | ignore
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="$ROOT/scripts/review-command.sh"
 fail=0
 
-# decision_of KEY=VAL... → "<action> <run_functional> <native_review> <force_deep>"
+# decision_of KEY=VAL... → "<action> <run_functional> <force_deep>"
 decision_of() {
   env "$@" bash "$SCRIPT" | awk -F= '
     /^action=/        {a=$2}
     /^run_functional=/{f=$2}
-    /^native_review=/ {n=$2}
     /^force_deep=/    {d=$2}
-    END {print a, f, n, d}'
+    END {print a, f, d}'
 }
 passes_of() { env "$@" bash "$SCRIPT" | sed -n 's/^passes=//p'; }
 message_of() { env "$@" bash "$SCRIPT" | sed -n 's/^message=//p'; }
@@ -45,62 +44,82 @@ assert_passes() {
 }
 
 # ── Bare command prints the menu rather than guessing which pass was meant. ──
-assert_cmd "bare /review"        "help false off false" CMD_BODY="/review"
-assert_cmd "explicit help"       "help false off false" CMD_BODY="/review help"
-assert_cmd "question mark"       "help false off false" CMD_BODY="/review ?"
+assert_cmd "bare /review"        "help false false" CMD_BODY="/review"
+assert_cmd "explicit help"       "help false false" CMD_BODY="/review help"
+assert_cmd "question mark"       "help false false" CMD_BODY="/review ?"
 
-# ── The three passes, alone and combined. `code` is implicit everywhere. ──
-assert_cmd "code"                "run false off false"  CMD_BODY="/review code"
-assert_cmd "functional"          "run true off false"   CMD_BODY="/review functional"
-assert_cmd "native"              "run false on false"   CMD_BODY="/review native"
-assert_cmd "all"                 "run true on false"    CMD_BODY="/review all"
-assert_cmd "code + functional"   "run true off false"   CMD_BODY="/review code functional"
-assert_cmd "every token spelled" "run true on true"     CMD_BODY="/review code functional native deep"
+# ── The two passes, alone and combined. `code` is implicit everywhere. ──
+assert_cmd "code"                "run false false"  CMD_BODY="/review code"
+assert_cmd "functional"          "run true false"   CMD_BODY="/review functional"
+assert_cmd "all"                 "run true false"   CMD_BODY="/review all"
+assert_cmd "code + functional"   "run true false"   CMD_BODY="/review code functional"
+assert_cmd "every token spelled" "run true true"    CMD_BODY="/review code functional native deep"
 
-assert_passes "functional implies code" "code functional"      CMD_BODY="/review functional"
-assert_passes "no duplicate code"       "code functional"      CMD_BODY="/review code functional"
-assert_passes "all expands"             "code functional native" CMD_BODY="/review all"
-assert_passes "deep is a modifier"      "code deep"            CMD_BODY="/review deep"
+assert_passes "functional implies code" "code functional" CMD_BODY="/review functional"
+assert_passes "no duplicate code"       "code functional" CMD_BODY="/review code functional"
+assert_passes "all expands"             "code functional" CMD_BODY="/review all"
+assert_passes "deep is a modifier"      "code deep"       CMD_BODY="/review deep"
 
-# ── deep forces the dual-judge review; it never implies the add-on passes. ──
-assert_cmd "deep alone"          "run false off true"   CMD_BODY="/review deep"
-assert_cmd "deep + functional"   "run true off true"    CMD_BODY="/review deep functional"
+# ── `deep` is accepted but inert downstream; it never implies the add-on pass. ──
+assert_cmd "deep alone"          "run false true"   CMD_BODY="/review deep"
+assert_cmd "deep + functional"   "run true true"    CMD_BODY="/review deep functional"
+
+# ── The `native` pass is DELETED (ADR 0003). The token must still parse — a
+#    reviewer who types the documented old command deserves a review, not the
+#    unknown-option menu — but it must run nothing extra and say so. ──
+assert_cmd "native is a no-op"        "run false false" CMD_BODY="/review native"
+assert_cmd "alias plugin is a no-op"  "run false false" CMD_BODY="/review plugin"
+assert_passes "native adds no pass"   "code"            CMD_BODY="/review native"
+assert_passes "all no longer expands to native" "code functional" CMD_BODY="/review all"
+if message_of CMD_BODY="/review native" | grep -q 'has been removed'; then
+  echo "OK:   native says the pass was removed"
+else
+  echo "FAIL: /review native runs silently — it must say the pass was removed"
+  fail=$((fail + 1))
+fi
+# Structural: nothing may re-grow a native_review output the workflow would read.
+if CMD_BODY="/review native" bash "$SCRIPT" | grep -q '^native_review='; then
+  echo "FAIL: review-command.sh still emits native_review — the pass is gone"
+  fail=$((fail + 1))
+else
+  echo "OK:   no native_review key is emitted"
+fi
 
 # ── Aliases and sloppy typing — this is typed by hand in a PR comment. ──
-assert_cmd "alias browser"       "run true off false"   CMD_BODY="/review browser"
-assert_cmd "alias e2e"           "run true off false"   CMD_BODY="/review e2e"
-assert_cmd "alias anthropic"     "run false on false"   CMD_BODY="/review anthropic"
-assert_cmd "alias judges"        "run false off false"  CMD_BODY="/review judges"
-assert_cmd "alias full=deep"     "run false off true"   CMD_BODY="/review full"
-assert_cmd "uppercase"           "run true on false"    CMD_BODY="/review ALL"
-assert_cmd "comma + period"      "run true on false"    CMD_BODY="/review functional, native."
-assert_cmd "backticked token"    "run true off false"   CMD_BODY='/review `functional`'
-assert_cmd "extra whitespace"    "run true off false"   CMD_BODY="/review   functional  "
-assert_cmd "leading whitespace"  "run false off false"  CMD_BODY="   /review code"
+assert_cmd "alias browser"       "run true false"   CMD_BODY="/review browser"
+assert_cmd "alias e2e"           "run true false"   CMD_BODY="/review e2e"
+assert_cmd "alias anthropic"     "run false false"  CMD_BODY="/review anthropic"
+assert_cmd "alias judges"        "run false false"  CMD_BODY="/review judges"
+assert_cmd "alias full=deep"     "run false true"   CMD_BODY="/review full"
+assert_cmd "uppercase"           "run true false"   CMD_BODY="/review ALL"
+assert_cmd "comma + period"      "run true false"   CMD_BODY="/review functional, native."
+assert_cmd "backticked token"    "run true false"   CMD_BODY='/review `functional`'
+assert_cmd "extra whitespace"    "run true false"   CMD_BODY="/review   functional  "
+assert_cmd "leading whitespace"  "run false false"  CMD_BODY="   /review code"
 
 # ── First line only, body must START with the trigger. Without both anchors a
 #    comment quoting the docs would trigger real runs. ──
-assert_cmd "trailing prose"      "run true off false"   CMD_BODY=$'/review functional\n\nplease check the modal'
-assert_cmd "trigger mid-sentence" "ignore false off false" CMD_BODY="you can run /review all on this"
-assert_cmd "trigger on line 2"   "ignore false off false" CMD_BODY=$'looks good\n/review all'
-assert_cmd "quoted in a codeblock" "ignore false off false" CMD_BODY=$'```\n/review all\n```'
-assert_cmd "unrelated comment"   "ignore false off false" CMD_BODY="LGTM, merging"
-assert_cmd "empty body"          "ignore false off false" CMD_BODY=""
-assert_cmd "CRLF line ending"    "run false off false"  CMD_BODY=$'/review code\r\nnice'
-assert_cmd "prefix is not a match" "ignore false off false" CMD_BODY="/reviewer code"
+assert_cmd "trailing prose"      "run true false"   CMD_BODY=$'/review functional\n\nplease check the modal'
+assert_cmd "trigger mid-sentence" "ignore false false" CMD_BODY="you can run /review all on this"
+assert_cmd "trigger on line 2"   "ignore false false" CMD_BODY=$'looks good\n/review all'
+assert_cmd "quoted in a codeblock" "ignore false false" CMD_BODY=$'```\n/review all\n```'
+assert_cmd "unrelated comment"   "ignore false false" CMD_BODY="LGTM, merging"
+assert_cmd "empty body"          "ignore false false" CMD_BODY=""
+assert_cmd "CRLF line ending"    "run false false"  CMD_BODY=$'/review code\r\nnice'
+assert_cmd "prefix is not a match" "ignore false false" CMD_BODY="/reviewer code"
 
 # ── An unknown option shows the menu; it never degrades into a different review. ──
-assert_cmd "unknown token"       "unknown false off false" CMD_BODY="/review deploy"
-assert_cmd "unknown wins early"  "unknown false off false" CMD_BODY="/review functional deploy"
+assert_cmd "unknown token"       "unknown false false" CMD_BODY="/review deploy"
+assert_cmd "unknown wins early"  "unknown false false" CMD_BODY="/review functional deploy"
 
 # ── Manual dispatch: the click is the opt-in, and a menu posted to nobody would
 #    be a dead end. ──
-assert_cmd "dispatch, no command" "run false off false" CMD_EVENT=workflow_dispatch CMD_BODY=""
-assert_cmd "dispatch, with command" "run true on false" CMD_EVENT=workflow_dispatch CMD_BODY="/review all"
+assert_cmd "dispatch, no command" "run false false" CMD_EVENT=workflow_dispatch CMD_BODY=""
+assert_cmd "dispatch, with command" "run true false" CMD_EVENT=workflow_dispatch CMD_BODY="/review all"
 
 # ── A custom trigger must be honoured in the help text too, not just the match. ──
-assert_cmd "custom trigger"      "run true off false"  CMD_TRIGGER="/claude" CMD_BODY="/claude functional"
-assert_cmd "custom trigger, default ignored" "ignore false off false" CMD_TRIGGER="/claude" CMD_BODY="/review functional"
+assert_cmd "custom trigger"      "run true false"  CMD_TRIGGER="/claude" CMD_BODY="/claude functional"
+assert_cmd "custom trigger, default ignored" "ignore false false" CMD_TRIGGER="/claude" CMD_BODY="/review functional"
 if message_of CMD_TRIGGER="/claude" CMD_BODY="/claude" | grep -q '`/claude code`'; then
   echo "OK:   help text quotes the custom trigger"
 else
@@ -112,8 +131,8 @@ fi
 #    after it. ──
 for body in "/review" "/review deploy" "/review help"; do
   lines=$(CMD_BODY="$body" bash "$SCRIPT" | wc -l | tr -d ' ')
-  if [ "$lines" = "6" ]; then
-    echo "OK:   '$body' emits 6 single-line keys"
+  if [ "$lines" = "5" ]; then
+    echo "OK:   '$body' emits 5 single-line keys"
   else
     echo "FAIL: '$body' emitted $lines lines — a multi-line value breaks \$GITHUB_OUTPUT"
     fail=$((fail + 1))
@@ -123,7 +142,7 @@ done
 # ── LOOP PROTECTION. The menu is posted as a PR comment, which fires
 #    issue_comment again. The workflow ignores bot comments; this is the second
 #    lock — the reply text itself can never re-trigger. ──
-for body in "/review" "/review deploy" "/review help"; do
+for body in "/review" "/review deploy" "/review help" "/review native"; do
   reply=$(message_of CMD_BODY="$body")
   echoed=$(CMD_BODY="$reply" bash "$SCRIPT" | sed -n 's/^action=//p')
   if [ "$echoed" = "ignore" ]; then

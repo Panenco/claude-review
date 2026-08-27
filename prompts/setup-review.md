@@ -31,10 +31,9 @@ Before writing any config, gather context about this project:
 ## Step 2: Create the caller workflow
 
 **Reviews are on demand.** Nothing runs on push: a reviewer comments `/review …`
-on the PR and the comment names the passes to run — `code` (the judges),
-`functional` (the browser tester), `native` (Anthropic's `code-review` plugin),
-`all`, plus `deep` to force the dual-judge path. Depth is still chosen
-automatically from the PR's size and paths; the command chooses which passes run.
+on the PR and the comment names the passes to run — `code` (the code review),
+`functional` (the browser tester) or `all`. Depth is not a command option:
+`review-scan` scales itself from the diff. The command chooses which passes run.
 
 Create `.github/workflows/claude-review.yml`:
 
@@ -51,7 +50,7 @@ on:
         required: true
         type: string
       command:
-        description: 'Passes to run, e.g. "/review code functional". Empty = judges only.'
+        description: 'Passes to run, e.g. "/review code functional". Empty = code review only.'
         required: false
         type: string
 
@@ -174,27 +173,11 @@ OIDC token is only a signed statement of which workflow ran and who asked.
 
 This has been observed on same-repo PRs in at least one external org and is likely caused by an org-level policy interacting with `inherit`. The explicit form unblocks the run; root cause can be investigated later.
 
-### The second-opinion pass: `/review native` and the `native_review_scope` input
+### The `native` pass is removed — do not wire it
 
-A review can run **two** reviewers: its own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin. The second one is **not a separate job** — it is the `review-native` subagent, dispatched inside the same review session alongside the judges and the functional tester, so it costs no extra runner, no second checkout and no extra wall-clock. There is nothing to enable in the caller: a reviewer asks for it per PR with `/review native`. It introduces no new permission requirement beyond the `permissions:` block you already wrote above.
+`/review native` used to run Anthropic's official `code-review` plugin in-session as a second opinion. It is **deleted** (see `docs/adr/0003-two-call-review.md`), along with the `plugin_marketplaces` / `plugins` action inputs. The review is now one self-scaling reviewer plus a refutation pass.
 
-**There is only one review comment.** The plugin's own prompt ends by telling the model to post its findings with `gh pr comment`; the pipeline overrides that — the subagent writes its findings to a file, the orchestrator dedupes them against the judges' findings (the judges win on a shared line) and folds the survivors into the single consolidated review, attributed inline. The override is structural: `Bash(gh pr comment:*)` is denied session-wide, so a second bot comment cannot appear. If the user reports "two review comments", the second one is a different tool, not this.
-
-It runs at whatever tier the plan picked — a `light` plan on a small diff is exactly when a second opinion is worth having. Only `skip` runs nothing at all. If the plugin fails to install on the runner, the pass degrades to a silent no-op and the review posts normally. It is a second full review pass drawing on the same 5-hour Claude subscription window, so per-PR token consumption is meaningfully higher on the PRs where it is used; budget for another token in the `CLAUDE_CODE_OAUTH_TOKENS` pool if the team reaches for it often.
-
-One optional input, which you should leave unset unless the user asks:
-
-```yaml
-    with:
-      pr_number: ${{ inputs.pr_number || '' }}
-      command: ${{ inputs.command || '' }}
-      native_review_scope: |  # default ""; empty reviews the whole diff
-        only review changes under `apps/api/` and `apps/web/`; ignore everything else
-```
-
-- `native_review_scope` — free text injected verbatim into the native reviewer's prompt as a *narrowing* constraint, applied whenever someone runs `/review native`. Wire it on a monorepo where much of a typical diff is generated or vendored: the plugin knows nothing about this pipeline's gate rules and will otherwise spend its budget on paths nobody wants reviewed. Derive the paths from the runtime surface you determined in Step 1.
-
-**`native_review` and `native_review_runner` no longer exist.** Passing either fails the run with `startup_failure`. If the repo you are setting up already has them, delete them.
+Do **not** add `native_review_scope` to a caller workflow you are setting up: it is accepted and ignored. It is kept only so an existing caller that passes it does not break — a reusable workflow errors on an undefined input. If the repo you are setting up already passes `native_review_scope` or `model_standard`, you may delete both. `native_review` and `native_review_runner` never existed in v3 and still do not; passing either fails the run with `startup_failure`.
 
 
 ## Step 3: Create bugbot.md
@@ -614,7 +597,7 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 - The review body carries **no "⚙️ Review setup health" section** — the pipeline emits one when it detects config/dev-env problems (missing `dev-start.sh`, a failed bring-up with the error quoted, missing `review-config.md` or `### Auth`, a failing `fetch-issue.sh`); a correct config stays silent
 - Context builder produces `context.md` and `test-plan.md`
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
-- "Install review subagents" copies the pipeline's static `agents/review-functional-tester.md` and `agents/review-native.md` to `~/.claude/agents/` on the runner, templated with `inputs.model_functional` / `inputs.model_standard` (each pins its model and points at its skill — don't commit such files to your repo)
+- "Install review subagents" copies the pipeline's static `agents/review-scan.md`, `agents/review-verify.md` and `agents/review-functional-tester.md` to `~/.claude/agents/` on the runner, templated with `inputs.model_high` / `inputs.model_functional` (each pins its model and its reasoning effort and points at its skill — don't commit such files to your repo)
 - Orchestrator runs the judges in parallel and (when applicable) the functional tester. A **full** review runs two judges (Opus + Haiku) that debate to a single deduped findings list. A **light** review runs ONE judge: **Opus** on a small/tiny runtime PR, Sonnet on a docs/release/promotion PR — light is not a weaker review.
 - Functional testing runs on **every runtime diff** above the tiny ceiling (a `small` runtime PR gets the single-judge `light` tier — one **Opus** judge plus a quick functional smoke; the test planner picks `skip`/`quick` per surface). A **tiny** fix (≤ 10 non-generated lines, no sensitive paths) and a docs/tests-only (`nonruntime`) PR get a single Opus/Sonnet judge with **no functional run** — a trivial or non-runtime change rarely needs a smoke pass (a `.github/` CI, `.claude/`, or `bugbot.md` touch stays at the full dual-judge review). Oversized PRs (> 3000 non-generated lines or > 60 files) are different — they aren't lightly reviewed any more: the orchestrator returns a canned `REQUEST_CHANGES` asking to split the PR and runs no judges, and re-pushes skip the run while the PR stays oversized (add the `deep-review` label to force a full review instead). This is why `dev-start.sh` matters even for repos that mostly ship small PRs — without it, a runtime PR carries no smoke evidence, can never be `APPROVE`d, and every review nags with the setup-health section (docs-only / non-runtime PRs are exempt). The tester is bounded by a wall-clock budget (`functional_budget_seconds`, default 8 min) so it always writes findings before the job's time ceiling rather than getting cancelled mid-run.
 - A heavy `dev-start.sh` (Docker images + JDK/Gradle + a large monorepo's `node_modules`) can exhaust the hosted runner's ~14 GB free disk and fail the job with `No space left on device` after the review already ran. The workflow reclaims disk before the bring-up via the `free_disk_space` input: `safe` (default) clears tooling no Linux app needs (CodeQL/Haskell/Swift, ~12 GB) and is safe for every repo; set it to `aggressive` (also drops Android SDK + .NET, ~25 GB) **only if your `dev-start.sh` doesn't build Android or .NET**; `off` disables it.

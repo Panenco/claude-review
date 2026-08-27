@@ -1,6 +1,6 @@
 # Claude PR Review Pipeline
 
-Reusable PR review pipeline powered by Claude Code. A single orchestrator agent runs two independent judges in parallel (Opus for deep reasoning, Haiku for cheap broad coverage), reconciles them through a debate loop, and dispatches an end-to-end functional tester (Sonnet driving a real browser) when you ask for one.
+Reusable PR review pipeline powered by Claude Code. **Two model calls:** a reviewer that reads the diff and scales its own depth, then an adversary whose only job is to refute what the first one found. An end-to-end functional tester (Sonnet driving a real browser) runs when you ask for one, and can never change the verdict. See [ADR 0003](docs/adr/0003-two-call-review.md).
 
 **Reviews are on demand.** Nothing runs on push. You ask for a review by commenting on the PR, and the comment says which passes to run.
 
@@ -9,18 +9,17 @@ Reusable PR review pipeline powered by Claude Code. A single orchestrator agent 
 | Comment | What runs |
 | --- | --- |
 | `/review` | Nothing — posts the menu below. |
-| `/review code` | The judges. Depth is still chosen automatically from the PR's size and paths. |
-| `/review functional` | The judges **+** the browser tester (dev-env bring-up, smoke, screenshots). |
-| `/review native` | The judges **+** Anthropic's official `code-review` plugin as a second opinion. |
-| `/review all` | All three. |
-| `/review deep` | Forces the two-judge debate on a PR the size gate would review lightly. Combines with the others. |
+| `/review code` | The code review. It picks its own depth from the diff. |
+| `/review functional` | The code review **+** the browser tester (dev-env bring-up, smoke, screenshots). |
+| `/review all` | Both. |
 
-**Combine passes in one comment.** `/review code functional native` runs them in one session and posts **one** review. Separate comments queue up and post separate reviews.
+**Combine passes in one comment.** `/review code functional` runs them in one session and posts **one** review. Separate comments queue up and post separate reviews.
 
-- Aliases: `judges` = `code`, `browser`/`e2e`/`smoke` = `functional`, `anthropic`/`plugin` = `native`, `full` = `deep`.
+- Aliases: `judges` = `code`, `browser`/`e2e`/`smoke` = `functional`.
+- `native` and `deep` are **accepted but inert.** The native (`code-review` plugin) pass is deleted and there are no depth tiers left to force; typing either still gets you a normal code review rather than an error.
 - The trigger must **start** the comment — mentioning `/review all` mid-sentence does nothing.
 - Only `OWNER`/`MEMBER`/`COLLABORATOR` can trigger a run. Everyone else is ignored silently.
-- **Not opt-in:** the judges, and their depth. The command picks the passes, not how hard they think.
+- **Not opt-in:** the code review, and its depth. The command picks the passes, not how hard the reviewer thinks.
 
 ## Quick Start
 
@@ -41,7 +40,7 @@ on:
         required: true
         type: string
       command:
-        description: 'Passes to run, e.g. "/review code functional". Empty = judges only.'
+        description: 'Passes to run, e.g. "/review code functional". Empty = code review only.'
         required: false
         type: string
 jobs:
@@ -139,28 +138,12 @@ Two things your fleet needs. It must have **network egress to the GitHub Actions
 
 The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Note that it inherits `runner` too, so a caller that wires the `pull_request_target` trigger lands a `secrets: inherit` job on the fleet; callers that would rather keep that combination off self-hosted infrastructure simply omit the trigger.
 
-**Second opinion: the native `code-review` pass (`/review native`).** With `native`, a review runs **two** reviewers: this pipeline's own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin, run exactly as Anthropic ships it. The second one is not a separate job — it is the `review-native` subagent, dispatched by the orchestrator **inside the existing review session**, in the same response as the judges and the functional tester. It therefore costs **no extra runner, no second checkout, no second Claude CLI install and no second OAuth probe**, and it adds no wall-clock: it overlaps the judges and the functional tester, which already dominate the run. It runs only when a comment asks for it (`/review native`) — the infra cost is gone, but the token draw on the shared 5-hour Claude window is not, so spending it is a per-PR decision rather than a repo-wide setting.
+**The native `code-review` pass is gone.** `/review native` used to dispatch Anthropic's official `code-review` plugin in-session as a second opinion. The v4 rewrite removed it along with the judge panel it second-guessed: the review is now one self-scaling reviewer plus a refutation pass, and a third opinion bought no signal it could not already produce. Deleted with it: the `plugin_marketplaces` / `plugins` inputs on the action (and the unpinnable marketplace ref they installed), `skills/review-native.md`, `agents/review-native.md`, the `SubagentStop` hook that enforced its output, and `scripts/require-native-findings.sh`.
 
-```yaml
-with:
-  pr_number: ${{ inputs.pr_number || '' }}
-  native_review_scope: |  # default "" — reviews the whole diff
-    only review changes under `apps/api/` and `apps/web/`; ignore everything else
-```
+`native_review_scope` and `model_standard` remain as **deprecated, ignored** inputs — a reusable workflow errors on an undefined input, so removing them would break every caller workflow that still passes one. You can delete them from yours at your convenience. `/review native` still parses; it runs a normal code review and says the pass was removed.
 
-**`native_review` and `native_review_runner` are gone.** The comment decides, per run, whether the native pass runs — a repo-wide default has nothing left to decide. Passing either input now fails the run with `startup_failure`; delete both from your caller workflow. `native_review_scope` stays and still applies whenever `/review native` is used.
+**The session is still sandboxed.** The review job holds `contents: write` / `pull-requests: write` / `issues: write`, and every agent in it reads attacker-controlled PR content — so the session denies **every GitHub write verb**: `gh pr comment/review/edit/close/merge/ready`, `gh issue comment/edit/close`, `gh release`, `git push`, the raw `gh` API subcommand, plus `Edit`/`WebFetch`/`WebSearch`. What stays reachable is reads — `gh pr view/diff/list`, `gh issue view`, `gh search`, `git log/blame/diff/show` — which is all a reviewer needs. That is possible because the pipeline's own privileged API calls live in a reviewed helper (`scripts/upload-screenshots.sh`) rather than inline in a prompt: `--disallowedTools` is session-wide and cannot be scoped to one subagent, so nothing may need what nothing should have.
 
-Why two reviewers rather than one better one: they fail differently. On `Panenco/hr4cast`, where both ran side by side, the native pass caught a missing authorization guard, a Postgres privilege-management regression, silently removed abuse limits and a deploy-breaking unique migration that our own reviewer walked past.
-
-**One PR, one review comment.** The plugin's own prompt ends by telling the model to `gh pr comment` its findings onto the PR. That step is overridden: the subagent writes `/tmp/native-findings.json` instead, and the orchestrator folds those findings into the single consolidated review this pipeline posts. Findings the judges already flagged at the same line are dropped in favour of the judges' write-up (one defect, one comment); the survivors are attributed inline — `(via the official code-review plugin, confidence 90/100)` — so you can see which reviewer caught what. The override is structural, not just a wording preference: `Bash(gh pr comment:*)` is on the session's `--disallowedTools` list, deny rules beat allow rules, and that binds every subagent — so a stray post cannot happen.
-
-**The plugin runs sandboxed.** The review job holds `contents: write` / `pull-requests: write` / `issues: write`, and the plugin's prompt is fetched at run time from an unpinnable marketplace and read over attacker-controlled PR content — so the session denies **every GitHub write verb**: `gh pr comment/review/edit/close/merge/ready`, `gh issue comment/edit/close`, `gh release`, `git push`, the raw `gh` API subcommand, plus `Edit`/`WebFetch`/`WebSearch`. What stays reachable is reads — `gh pr view/diff/list`, `gh issue view`, `gh search`, `git log/blame/diff/show` — which is all a reviewer needs. This is possible because the pipeline's own privileged API calls live in reviewed helpers (`scripts/fetch-pr-threads.sh`, `scripts/upload-screenshots.sh`) rather than inline in a prompt: `--disallowedTools` is session-wide and cannot be scoped to one subagent, so nothing may need what the plugin must not have. It restores the read-only posture the old separate job had, which is what makes running the plugin in-session safe.
-
-**Anthropic's prompt stays canonical.** The plugin is installed into the review session by `plugin_marketplaces` / `plugins` on the action, and `skills/review-native.md` *locates the installed command file at runtime and follows it verbatim* — steps 1-7, including its ≥80 confidence filter. Nothing is vendored, so upstream's rubric updates itself. If the plugin cannot be found or installed, the pass writes an `unavailable` file and the review proceeds normally without it — a second opinion that cannot be obtained never costs a PR its review.
-
-Confidence maps onto this pipeline's severities as: 95-100 in the security/data-loss class → `critical`; 95-100 otherwise → `major`; 80-94 → `minor`; below 80 the plugin's own filter has already dropped it.
-
-**Only when asked.** It is a second complete review pass, and although it costs no runner it does draw on the **same 5-hour Claude subscription window** as everything else, so per-PR token consumption is meaningfully higher. It no longer keys off the review tier: a `light` plan on a small diff is exactly when a second opinion is worth having, so `/review native` gets it either way. `skip` still runs nothing at all — the `gate_skip_label` (default `skip-review`) and the oversized ceilings silence **both** reviewers. If the token draw is scarce, add a token to the `CLAUDE_CODE_OAUTH_TOKENS` pool. On a monorepo, `native_review_scope` is free text injected into the native reviewer's prompt as a *narrowing* constraint; the plugin knows nothing about this pipeline's gate rules, so scope it away from generated and vendored paths or it will spend its budget there.
 
 
 ### 2. Set secrets
@@ -191,47 +174,53 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
 ```
 /review … comment on a PR
     |
-[Cmd]   Which passes were asked for → judges (always) + functional? + native?
+[Cmd]   Which passes were asked for → code review (always) + functional?
         See scripts/review-command.sh.
     |
-[Plan]  Deterministic resolver → review_level (full | light | skip).
-        Depth only; the command already chose the passes.
-        See docs/review-plan.md.
+[State] prior-review-state.sh → round, prior_head_sha, prior_verdict,
+        straight off the PR's own review list. No cross-run artifacts.
+    |
+[Guard] scripts/guard.sh — pure bash, no model call. Four exits:
+          skip-review label            → skip, post nothing
+          empty since-last delta       → skip, post nothing
+          oversized (>3000 lines/60 f) → REQUEST_CHANGES split request
+          no non-generated files       → skip, post nothing
+        Anything else runs. NO DEPTH TIERS — review-scan self-scales.
     |
 [Setup] Node/pnpm, pinned agent-browser + Chrome (cached), browser
         launch preflight, disk reclaim, full clone, dev-env launched in
-        background (overlaps with the context-build phase), prior review
-        state derived from the PR's own review history, functional-tester
-        subagent installed to ~/.claude/agents/.
+        background, subagents installed to ~/.claude/agents/.
+        Functional-only work is skipped unless a comment asked for it.
     |
 [One agent: Review: orchestrate]  (anthropics/claude-code-action)
-    A single Sonnet orchestrator runs end-to-end and dispatches
-    everything via the Task tool:
-      Phase A — Task: context builder (Sonnet) → context.md +
-                test-plan.md: diff index, spec retrieval (linked
-                issue / PRD / external tracker), test plan + auth
-                recipe, and — on round 2 — classification of every
-                open thread (own bot, other bots, humans) against
-                the diff since the last review.
-      Phase B — Parallel Task fan (single assistant response):
-                  Judge-Opus  (model_high)              ─┐
-                  Judge-Haiku (model_fast)              ├ all parallel
-                  Functional tester (real browser,      ─┘
-                    wall-clock budget)
-                Light tier: ONE Sonnet judge instead of the pair.
-                Trivial PRs early-exit before any judge dispatch.
-      Phase C — Up to 2 rebuttal rounds when judges disagree (each
-                sees the other's findings; concede or defend).
-      Phase D — Consolidate + dedup, verdict ladder + gates, assemble
-                review body + inline comments → /tmp/review.json,
-                the single output artifact.
+    A single opus-5 session at --effort low. It orchestrates and writes
+    files; it never reviews the diff and never rewrites a subagent's
+    prose. Two Task calls:
+      review-scan   (opus-5, effort: medium) — reads the diff itself,
+                    picks light vs full and says why, emits candidate
+                    findings that MUST each name a concrete failure
+                    scenario. On round 2+ it reads only
+                    git diff <prior_head_sha>..HEAD and carries the
+                    prior review's still-unresolved findings.
+                    → /tmp/scan.json
+      (functional tester, sonnet-5 — same response, ADVISORY ONLY, and
+       only when a linked issue supplies real acceptance criteria)
+      review-verify (opus-5, effort: low) — ONE pass over all
+                    candidates whose mandate is to REFUTE them against
+                    the source at HEAD. Uncertain → refuted. Reads
+                    /tmp/functional.json if the tester wrote one (it
+                    is the only reader — scan runs in parallel with
+                    the tester and would never see it). Decides the
+                    verdict and renders the final body.
+                    → /tmp/verify.json
+    The orchestrator copies verify's output into /tmp/review.json
+    VERBATIM.
     |
 [Post]  post-review.sh (deterministic): validates /tmp/review.json,
-        hunk-validates comments, dismisses stale reviews, supersedes
-        old crash banners, posts the review atomically, replies +
-        resolves RESOLVED threads (own bot, other bots, AND humans).
-        Its exit code is the check: green = review posted (incl.
-        REQUEST_CHANGES), red = pipeline failure.
+        hunk-validates comments, expands {{LINK:path:line}} placeholders,
+        dismisses stale reviews, supersedes old crash banners, posts the
+        review atomically. Its exit code is the check: green = review
+        posted (incl. REQUEST_CHANGES), red = pipeline failure.
     |
 Verdict: APPROVE / COMMENT / REQUEST_CHANGES
 ```
@@ -242,36 +231,37 @@ Verdict: APPROVE / COMMENT / REQUEST_CHANGES
 
 Two practical wins. (1) **Native rate-limit fast-fail.** `anthropics/claude-code-action` exits in <1 s when the OAuth token hits a quota wall; the bare `claude -p` CLI silently retries and _hangs_ until the 45-minute job timeout — a real bug observed on PR #309. (2) **All parallelism through the `Task` tool.** No bash background processes, no `wait`/reap traps, no sibling stdout files. One nested transcript covers the whole review.
 
-### Why two judges?
+### Why a refuter instead of a second judge?
 
-A single LLM judge can have a bad sample on any given run — miss something subtle, over-grade a defensive note, mis-route a finding to the wrong file. The orchestrator runs **two independent judges with different model strengths** (Opus for deep reasoning, Haiku for cheap broad-coverage finds) and reconciles them: if they agree, the review ships immediately; if they disagree, each judge sees the other's findings and either concedes the ones they missed or defends the ones the other dropped. This catches the long tail where one judge is wrong without paying for it on every PR — most reviews converge on the first round.
+A single LLM reviewer can have a bad sample on any given run — miss something subtle, over-grade a defensive note, mis-anchor a finding. The old answer was two judges plus a debate loop; it cost two full diff reads and then a third call to reconcile them, and it still produced findings nobody could reproduce.
 
-> **Not every PR needs that depth.** A deterministic resolver classifies each PR up front and reserves the two-judge debate for substantial or sensitive changes; small PRs take a lighter single-judge pass (on Opus), and tiny (≤ 10-line) or docs-only PRs get that single judge with no functional run. Oversized PRs (over the size ceiling) aren't lightly reviewed — they're blocked with a `REQUEST_CHANGES` asking to split, unless you add the `deep-review` label. Functional testing is not part of that decision at all — it runs when, and only when, a comment asks for it. See **[Review plan](docs/review-plan.md)** for the tiers, the `skip-review` / `deep-review` labels, and per-repo tuning — and [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) for why.
+The v4 answer is cheaper and sharper: **one reviewer, then one adversary.** `review-verify` reads `review-scan`'s candidates and tries to kill each one against the source at HEAD — does that input actually reach that line, does the missing guard exist above it, does the caller already handle it. **Uncertain counts as refuted.** Dropping a real bug costs one missed comment; keeping a fake one costs the author's trust in every future review. That asymmetry is what a second judge could never enforce, because a second judge is incentivised to find things too.
+
+Two rules do most of the work upstream of it. **Every finding must name a concrete failure scenario** — a real input or state producing a real wrong output — and a finding that cannot is deleted by the model that found it, not downgraded to `minor` to survive. And **zero findings is the correct output for a clean PR**; most PRs deserve one.
+
+> **Depth is the model's call, not a table's.** There are no tiers. `scripts/guard.sh` answers exactly one question — does a model run at all — and `review-scan` picks light or full from the diff itself, recording which and why in `depth_used`. A small change to auth logic gets the full pass because the reviewer can see what it touches, not because a glob matched. Oversized PRs (over the size ceiling) are still blocked with a `REQUEST_CHANGES` asking to split, with no model call at all. Functional testing runs when, and only when, a comment asks for it. See [ADR 0003](docs/adr/0003-two-call-review.md); [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) records the tiered design it replaced.
 
 ### Round 1 vs round 2
 
-Review state lives on the PR itself — there are no cross-run artifacts. On every run, `scripts/prior-review-state.sh` lists the pipeline's own prior reviews on the PR: the newest **judged** review's `commit_id` is the previously-reviewed SHA, its state is the prior verdict, and the count of judged reviews sets the round number. *Judged* is the load-bearing word — a `review_level=skip` early-return (the oversized split-request, the skip-label note) posts a review without any judge reading the diff, so it carries a hidden marker (`<!-- claude-review-oversized -->` / `<!-- claude-review-skipped -->`) and is excluded from the count. Counting one would scope the next review to the since-last diff and approve a PR nobody ever reviewed. Crash banners and their supersede notes are excluded the same way. Two consequences: the context builder resolves the same judged review (same marker exclusions, pinned to the derived SHA) so the round-2 ladder can't reconstruct prior findings off a review that judged nothing, and a skip-marked post never dismisses a standing review — adding `skip-review` must not clear a REQUEST_CHANGES nobody re-reviewed. The checkout is a full clone, so `git diff <prior>...HEAD` is always computable and since-last scoping never silently degrades into a full-price re-review. The context builder scopes round 2 to that since-last diff and classifies every open thread — re-verifying each "still present" claim against the file at HEAD before it counts. The verdict ladder gains a round-2 layer that's strictly **anti-downgrade**:
+Review state lives on the PR itself — there are no cross-run artifacts. On every run, `scripts/prior-review-state.sh` lists the pipeline's own prior reviews on the PR: the newest **judged** review's `commit_id` is the previously-reviewed SHA, its state is the prior verdict, and the count of judged reviews sets the round number. *Judged* is the load-bearing word — a guard short-circuit (the oversized split-request, the skip-label note) posts a review without any model reading the diff, so it carries a hidden marker (`<!-- claude-review-oversized -->` / `<!-- claude-review-skipped -->`) and is excluded from the count. Counting one would scope the next review to the since-last diff and approve a PR nobody ever read. Crash banners and their supersede notes are excluded the same way. A skip-marked post also never dismisses a standing review — adding `skip-review` must not clear a REQUEST_CHANGES nobody re-reviewed. The checkout is a full clone, so `git diff <prior>..HEAD` is always computable.
 
-- Prior `REQUEST_CHANGES`, no new criticals/majors, all prior blockers `RESOLVED` → per-PR verdict (APPROVE if no new findings, COMMENT otherwise).
-- Prior `REQUEST_CHANGES`, some prior blockers `STILL_PRESENT` → keep `REQUEST_CHANGES`.
-- Prior `COMMENT`, no new blockers → per-PR verdict (APPROVE when the per-PR judgement is APPROVE, COMMENT when minor findings remain). The ladder no longer pins prior=COMMENT to COMMENT — that ratchet was the source of "bot says Would APPROVE but verdict says COMMENT" contradictions.
-- Any prior verdict + ≥1 new critical/major → `REQUEST_CHANGES` (handled by the per-PR ladder upstream).
-- Prior review **dismissed by the author** → the dismissal is the author's call on **low-severity** findings (minor/note stop counting), but it does **not** wave off a critical/major: those re-block if they still hold at HEAD unless the bot agreed they were wrong. Surfaced as a banner in the review body.
-- Prior finding **disputed by a human** (a substantive reply/comment disputing it, code unchanged — author or maintainer, on any channel: thread reply, general PR comment, or review body) → the high-tier judge **evaluates the dispute on its merits against the code at HEAD**, it is not rubber-stamped. For **critical/major** the finding is dropped only if the judge affirmatively agrees it is wrong (a plausible-but-unverified assertion, an "in another PR" claim, or a bare dismissal keeps it blocking); **minor/note** are dropped on any reasonable explanation. Dropped findings are listed under "Dropped after author rebuttal"; ones the judge keeps are listed under "Still present after your reply" with the bot's reasoning, and the bot replies in-thread either way — so a blocker is never silently dropped or silently re-nagged.
+**What round 2 actually does.** Two things, and deliberately only two:
 
-When the round-2 ladder overrides the bot's per-PR judgement (e.g. STILL_PRESENT blockers force REQUEST_CHANGES on a clean re-review), the body prepends a one-line "Verdict pinned to X by the round-2 ladder" rationale so the body's narrative never contradicts the header.
+- **Scope.** `review-scan` reads only `git diff <prior_head_sha>..HEAD`. It reads the wider file for context, but it does not go hunting outside that delta — round 1 already read the rest.
+- **Carry.** It re-checks each finding the prior review raised against the code at HEAD and decides *fixed* or *unresolved* **from the code**, not from any reply. Unresolved ones are carried into `prior_findings` and refuted by `review-verify` like any other candidate. Fixed ones are never mentioned again, and nothing already raised gets re-raised under a new title.
 
-**Thread resolution covers humans too.** When round-2 classification marks a thread RESOLVED, the poster replies with `✅ Resolved as of <sha>` and calls `resolveReviewThread` — for our own past bot comments, for other bots' threads (cursor, aikido, sonarcloud), and for human reviewers' inline comments. A "this should be X" from a teammate that gets fixed in a follow-up commit closes automatically, same as a bot's finding.
+**Empty delta → nothing happens at all, unless a person asked.** If no non-generated file changed since the last judged review, `guard.sh` short-circuits before any model call and posts nothing — for *automatic* re-runs. A run a human started (`/review …`, or Run workflow) is never answered with silence: `/review code` followed by `/review functional` on the same commit used to give the second request a 👀 reaction and nothing else, no comment and no tester. An explicit request always gets a review.
 
-**Severity grading:** the bot uses four levels — `critical` and `major` block (REQUEST_CHANGES); `minor` and `note` never gate APPROVE. Doc nits / identifier typos / "you might consider …" observations land at `note` so a single one-word fix doesn't hold a PR at COMMENT. The judge skill enforces a "demonstrate the failure mode" rule for blocking severities — if a critical/major finding can't show the path that produces a real outcome, it's downgraded.
+**There is no ladder.** The verdict is recomputed from scratch every round, from surviving findings alone. A prior `REQUEST_CHANGES` does **not** force another one, and a prior `APPROVE` does not protect this round. The old anti-downgrade ladder pinned each round to its predecessor and produced twelve rounds of flip-flopping between "would approve" and a blocking verdict on a single PR; it is deleted, along with thread adjudication, `DISPUTED` states and "dropped after author rebuttal" bookkeeping. A prior finding survives because the code still shows it, or it does not survive.
 
-**Inline comments are reserved for what matters.** Only `critical`/`major` findings and functional failures post as inline comments, capped at 12 (overflow moves to the body, critical first); `minor` and `note` findings appear as bullets in the review body instead. When another reviewer bot already flagged the same defect, the review does not re-post it — the overlap is noted in the body, and a reply lands on the other bot's thread only when it adds genuinely new information. "+1"/"confirmed"-only replies are never posted.
 
-**Findings outside diff hunks:** comments whose `path:line:side` falls outside any diff hunk (deleted-line findings without `side: "LEFT"`, or near-but-imprecise line targets) are appended to the review body under "Findings outside diff hunks" rather than silently dropped. Setting `side: "LEFT"` for deleted-line findings keeps them inline.
+**Severity grading:** three levels — `critical` (security, data loss, broken build) and `major` (a user-reachable logic bug) block; `minor` is real but non-blocking. The `note` level is gone: a finding that cannot name a concrete failure scenario is deleted rather than parked at the bottom of the scale, so there is nothing left for a fourth level to hold. `REQUEST_CHANGES` needs a surviving critical or major and **never** comes from a gate, a missing spec, a missing dev env or a smoke test that did not run — that class of verdict was 76% of the old pipeline's blocks and almost none of its real defects.
+
+**Inline comments are reserved for what matters.** Max **5**, filled strictly critical → major → minor, each ≤700 **bytes**, and each carrying a committable ```suggestion``` block — comments with one resolve at 75.5% against 64.6% without. A suggestion fence the clamp cut through is dropped rather than re-closed: a truncated committable suggestion silently deletes the tail of the code it replaces. A finding appears exactly once: as an inline comment *or* as a body bullet, never both. The body itself is budgeted to ~600 bytes with a hard cap of 1200, measured **before** `{{LINK:…}}` placeholders are expanded (the model is told to count `{{LINK:path:line}}` as `path:line`, so that is what the poster enforces — measuring the expanded text charged ~130 bytes per link against the budget and truncated away findings the model had rendered within it). Any empty section is omitted, and a section header whose items were all cut is dropped with them.
+
+**Nothing that cannot be posted inline is discarded.** A comment whose `path:line:side` falls outside any diff hunk (a deleted-line finding without `side: "LEFT"`, an imprecise line target, or *any* line of a file large enough that GitHub omits its `patch`), and every comment past the 5-comment cap, is rendered as a body bullet under `### Also flagged` with its own file link. Under the inline-XOR-body rule the body does not already list it, so dropping it would erase the finding from the review. Setting `side: "LEFT"` for deleted-line findings keeps them inline.
 
 **Crash banners:** when a run can't post a real review, the poster posts a single review carrying the `<!-- claude-review-crash -->` HTML marker, in one of three forms matched to what actually happened: **quota exhausted** (OAuth rate-limit — re-run after reset or rotate the token), **result unreadable** (the agent ran and produced output that couldn't be parsed — a transient serialization slip that a plain re-run almost always clears, no human action implied), or **incomplete** (no output at all — max-turns, network, or OOM). Each links to the run logs. The orchestrator validates its own `/tmp/review.json` with `jq` before exiting and repairs malformed escaping in place, so the "result unreadable" form is rare; it exists as a safety net rather than the common path. The next successful run finds any prior crash banner and edits its body to a "_Superseded by …_" form so a stale red banner doesn't survive every retry.
-
-**Round-2 cost comes from scoping, not a smaller plan.** The review plan resolves fresh each round from the same rules (labels included); what makes follow-up rounds cheap is that everything downstream is scoped to the since-last diff: the context builder indexes only the files changed since the prior review, judges read just that, and functional scenarios are planned against the since-last diff — **zero scenarios is a valid outcome** when the follow-up has no user-observable surface. The runtime-evidence gate inherits the prior round's functional result, so a deliberate round-2 `skip` doesn't re-block a runtime PR (inheritance applies only to a prior PASS/WARN; a prior FAIL still blocks).
 
 ---
 
@@ -279,7 +269,7 @@ When the round-2 ladder overrides the bot's per-PR judgement (e.g. STILL_PRESENT
 
 ### `bugbot.md` (optional)
 
-A markdown list of project-specific review rules. Place at the repo root. Both judges read this (it's inlined into the orchestrator prompt and forwarded to each judge subagent).
+A markdown list of project-specific review rules. Place at the repo root. `review-scan` reads it before it flags anything.
 
 ```markdown
 # Bugbot
@@ -436,7 +426,7 @@ Authentication for functional testing:
 - Method: cookie | bearer | header | none
 ```
 
-The context builder turns this section (plus the dev-env outputs) into a ready-made auth recipe for the functional tester, so the tester spends zero budget rediscovering auth. Be explicit and literal: exact endpoints, exact seeded credentials, exact method.
+The orchestrator hands this section (plus the dev-env outputs) to the functional tester as a ready-made auth recipe, so the tester spends zero budget rediscovering auth. Be explicit and literal: exact endpoints, exact seeded credentials, exact method.
 
 **Header-based auth (e.g., custom `x-auth` token) — document the capture step:**
 
@@ -461,9 +451,11 @@ The context builder turns this section (plus the dev-env outputs) into a ready-m
 
 #### `### Known dev-env quirks` (optional)
 
-Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths. The context builder copies the section verbatim into the functional tester's test plan, so a failure matching a listed quirk is treated as expected: mentioned in the functional summary, never reported as a finding.
+Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths. The section is passed verbatim to the functional tester, so a failure matching a listed quirk is treated as expected rather than reported as a finding.
 
 ### `.github/claude-review/fetch-issue.sh` (optional — external issue trackers)
+
+> **Currently unwired.** This hook was invoked by `review-context-builder`, which the v4 rewrite deleted ([ADR 0003](docs/adr/0003-two-call-review.md)). `review-scan` reads the PR and its linked GitHub issue directly and does not shell out to a tracker script, so a `fetch-issue.sh` in your repo is presently a no-op. The contract below is kept because the file is harmless and the integration is expected to return; do not add one expecting it to be read today.
 
 The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from the PR/issue body. Repos that track specs in Linear, Jira, Monday, Notion, etc. can opt into a hook that fetches the external spec and includes it in `context.md` alongside the GitHub one. **No provider is built in here** — the consumer owns the script and picks whatever API call makes sense for their tracker.
 
@@ -509,7 +501,7 @@ Ticket: https://linear.app/team/issue/LIN-123/...
 
 ```
 Script:  .github/claude-review/fetch-issue.sh  (presence = opt-in)
-Run by:  the context-builder agent, from the repo root, with a 60s timeout
+Run by:  (unwired — was the context-builder agent, from the repo root, 60s timeout)
 Env in:
   PR_NUMBER, PR, REPO                        (always set)
   <anything you put in TRACKER_SECRETS>      (your chosen names)
@@ -528,7 +520,7 @@ Exit:    0 with output     = success.
 
 #### Candidates file schema
 
-Before your script runs, the context builder scans the PR title, PR body, and branch name for ticket-reference patterns and writes `/tmp/external-issue-candidates.json`. The file is always present and always valid JSON (empty arrays when nothing matches):
+Before your script ran, the context builder scanned the PR title, PR body, and branch name for ticket-reference patterns and wrote `/tmp/external-issue-candidates.json`. The file is always present and always valid JSON (empty arrays when nothing matches):
 
 ```json
 {
@@ -558,7 +550,9 @@ Note: a _present but broken_ `dev-start.sh` is reported distinctly from a missin
 
 ## Spec-presence gate
 
-The pipeline withholds `APPROVE` whenever the PR has no human-authored spec. The judges decide this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the judges set `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated. Bot-authored PRs (renovate, dependabot) are exempt — a machine PR can never carry a human spec, so the gate would be permanent noise there.
+> **Superseded by the APPROVE bar in [ADR 0003](docs/adr/0003-two-call-review.md).** There is no separate spec gate and no `manual_spec_present` flag. `APPROVE` now requires `review-verify` to accept an argued case that a human pass over the diff changes nothing — an unargued approval is rejected, so an unspecified PR fails that bar without a gate of its own. The description below is kept for the record.
+
+The pipeline withheld `APPROVE` whenever the PR had no human-authored spec. The judges decided this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the judges set `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated. Bot-authored PRs (renovate, dependabot) are exempt — a machine PR can never carry a human spec, so the gate would be permanent noise there.
 
 ## Runtime-evidence gate
 
@@ -648,7 +642,7 @@ permissions:
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
 - **Runtime-evidence gate** — a PR the planner judged has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}`) is blocked with `REQUEST_CHANGES` only when the smoke run actually ran and `FAIL`ed. If the smoke never ran (no `.github/claude-review/dev-start.sh`, a bring-up that fails/times out, a tester crash), the verdict is capped at `COMMENT` — never `APPROVE` — and the review body's **⚙️ Review setup health** section states exactly what's broken and how to fix it. Docs-only / non-runtime PRs are exempt.
-- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with no judge debate. Ask again after splitting and the block re-evaluates against the new size. `/review deep` (or the `deep-review` label) forces a full review instead.
+- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with **no model call at all** — `guard.sh` renders that body itself. Ask again after splitting and the block re-evaluates against the new size. There is no override: `deep-review` and `/review deep` are inert, and `skip-review` is the way to park a PR the bot must not touch.
 - **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
 
 These gates compose: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff. `REQUEST_CHANGES` is reserved for evidence against the PR (findings, a failed smoke run, an unreviewably large diff); setup problems surface loudly but downgrade to `COMMENT` instead of blocking.
@@ -680,16 +674,17 @@ If you have a polished config for a stack not covered here (e.g. Python/FastAPI,
 
 The pipeline consists of:
 
-- **Reusable workflow** (`.github/workflows/pr-review.yml`) — review-plan resolution, dev-env setup, pinned agent-browser + Chrome install and launch preflight (cached, decoupled from the consumer repo), prior-state derivation from the PR's review history, subagent installation, the single `claude-code-action` invocation (which also installs the official `code-review` plugin into the session), the deterministic poster
-- **5 skill files** (`skills/`) — prompt templates defining review methodology:
-  - `review-orchestrator` — the single top-level Claude Code agent; dispatches the context builder, the native second-opinion pass, the judges, and the functional tester via the `Task` tool, runs the debate, consolidates + dedups, applies the verdict ladder and gates, assembles the review, and writes the single output artifact `/tmp/review.json`
-  - `review-context-builder` — Task subagent; gathers PR metadata, diff index, spec sources (linked issue / PRD / external tracker), the functional test plan + auth recipe, and — on round 2 — the classification of every open thread (own bot, other bots, **humans**) as RESOLVED / STILL_PRESENT / DISPUTED / NEW_CONTEXT (a `DISPUTED` finding is then adjudicated on its merits by the high-tier judge), into `context.md` + `test-plan.md`
-  - `review-judge` — Task subagent skill used by both the Opus and Haiku judges (correctness, security, spec, design, consistency, performance, tests)
-  - `review-functional-tester` — drives the live app with the `agent-browser` CLI under a wall-clock budget; first turn is a browser smoke check that hard-fails the run as `overall: CRASH` if Chrome can't launch — silent fallback to curl is forbidden
-  - `review-native` — the official Anthropic `code-review` plugin, in-session (`full` reviews only); locates the installed plugin command file at runtime, follows its steps 1-7 verbatim including the ≥80 confidence filter, and writes `/tmp/native-findings.json` instead of commenting — a missing plugin degrades to a silent no-op
-- **Static subagent definitions** (`agents/review-functional-tester.md`, `agents/review-native.md`) — installed to `~/.claude/agents/` at job start; each pins its model and points at its skill. The tester has no MCP server: the browser is a CLI the subagent drives through Bash, which the workflow installs and preflights before the agent starts. `review-native` keeps `Task` in its tool list because the plugin prompt it follows fans out to ~10 subagents
-- **Privileged-API helpers** (`scripts/fetch-pr-threads.sh`, `scripts/upload-screenshots.sh`) — every raw GitHub REST/GraphQL call the review session makes: the context builder's comment/thread/review reads, and the screenshot upload to the `review-assets` branch. They exist so the session can deny the raw `gh` API subcommand outright while the official plugin's prompt runs inside it
-- **Session-end hooks** (`scripts/require-review-json.sh`, `scripts/require-native-findings.sh`) — registered as Claude Code `Stop` / `SubagentStop` hooks; they refuse to let the orchestrator, or the native pass, end a session without its output artifact. Both are bounded (3 nudges) and fail open to a visible crash banner rather than spinning
+- **Reusable workflow** (`.github/workflows/pr-review.yml`) — prior-state derivation from the PR's review history, the deterministic guard, dev-env setup, pinned agent-browser + Chrome install and launch preflight (cached, decoupled from the consumer repo), subagent installation, the single `claude-code-action` invocation, the deterministic poster
+- **Deterministic guard** (`scripts/guard.sh`) — ~90 lines of pure bash, no network, unit-tested. The only thing that decides whether a model runs at all: skip-review label, empty since-last delta, oversized PR (blocked with a split request it renders itself), no non-generated files. There are no depth tiers
+- **4 skill files** (`skills/`) — prompt templates defining review methodology:
+  - `review-orchestrator` — the single top-level Claude Code agent (opus-5, `--effort low`); dispatches `review-scan` and the optional functional tester in one response, then `review-verify`, then copies verify's output into `/tmp/review.json` **verbatim**. It never reviews the diff and never rewrites a subagent's prose
+  - `review-scan` — Task subagent (opus-5, `effort: medium`); reads the diff itself with `gh`/`Read`/`Grep`, self-scales light vs full and records why, and emits candidate findings that must each name a concrete failure scenario. On round 2+ it scopes to `git diff <prior_head_sha>..HEAD` and carries the prior review's still-unresolved findings → `/tmp/scan.json`
+  - `review-verify` — Task subagent (opus-5, `effort: low`); ONE pass over all candidates whose mandate is to **refute** them against the source at HEAD, defaulting to refuted when uncertain. Decides the verdict and renders the posted body and inline comments → `/tmp/verify.json`. Its prose is final. It is also the **only** consumer of `/tmp/functional.json`, which is the one narrow exception to its never-invent-a-finding rule: the tester is dispatched in the same response as `review-scan` and finishes long after it, so scan can never read it
+  - `review-functional-tester` — drives the live app with the `agent-browser` CLI under a wall-clock budget; first turn is a browser smoke check that hard-fails the run as `overall: CRASH` if Chrome can't launch — silent fallback to curl is forbidden. **Advisory only:** it can never raise or lower the verdict, and its test plan comes only from a linked issue's acceptance criteria (no issue, no test)
+- **Static subagent definitions** (`agents/review-scan.md`, `agents/review-verify.md`, `agents/review-functional-tester.md`) — installed to `~/.claude/agents/` at job start; each pins its model and effort and points at its skill. The tester has no MCP server: the browser is a CLI the subagent drives through Bash, which the workflow installs and preflights before the agent starts
+- **Privileged-API helper** (`scripts/upload-screenshots.sh`) — every raw GitHub REST/GraphQL call the review session makes, which is now only the screenshot upload to the `review-assets` branch. It exists so the session can deny the raw `gh` API subcommand outright
+- **Session-end hook** (`scripts/require-review-json.sh`) — registered as a Claude Code `Stop` hook; it refuses to let the orchestrator end a session without `/tmp/review.json`. Bounded (3 nudges) and fails open to a visible crash banner rather than spinning
+
 - **Deterministic poster** (`scripts/post-review.sh`) — validates `/tmp/review.json`, hunk-validates inline comments against the PR diff, dismisses stale reviews, supersedes crash banners, posts the review atomically, resolves threads; its exit code is the check
 
 There is **one top-level Claude Code agent** for the entire review, and one handoff: the orchestrator owns all judgment AND assembly and writes `/tmp/review.json`; the poster only validates and POSTs it. See [ADR 0002](docs/adr/0002-github-as-state-single-assembler.md) for why.

@@ -2,24 +2,61 @@
 set -uo pipefail
 # No `set -e` (repo rule, bugbot.md): critical steps carry explicit guards instead.
 
-# post-review.sh — validate /tmp/review.json, post the review, set the check.
+# post-review.sh — render /tmp/review.json into the one review this PR gets, post it,
+# and set the check.
+#
+# v4 artifact contract (written by review-verify, copied through verbatim by the
+# orchestrator):
+#   { "verdict":  "APPROVE" | "COMMENT" | "REQUEST_CHANGES",
+#     "body":     markdown carrying {{LINK:<path>[:<line>]}} placeholders and NO footer,
+#     "comments": [ { "path", "line", "side", "body" } ],
+#     "meta":     { "findings": [...], "human_review": [...], ... } }
+# Thread resolution, replies to other bots and multi-line comment ranges are gone:
+# the 2-call pipeline produces none of them, and their absence is normal.
+#
+# THIS SCRIPT OWNS THE BUDGETS. The models are told to hold them; historically they
+# did not, so they are enforced here as a safety net:
+#   body <= 1200 BYTES measured PRE-EXPANSION, with {{LINK:path:line}} counted as
+#     `path:line` — exactly the arithmetic review-verify.md hands the model. An
+#     expanded link costs ~130 bytes more (64-hex sha + URL + markdown), so
+#     enforcing the cap after expansion truncated away whole findings from a body
+#     the model had rendered perfectly within budget. Truncate first, expand after.
+#     Cut on a line boundary; hard-cut mid-line when not even one line fits.
+#   inline comments <= 5, critical/major first, each <= 700 BYTES (jq `length` is
+#     codepoints, so a body of accented text measured ~half its real size).
+# It also owns every GitHub URL: the models emit placeholders, never links.
+#
+# NOTHING IS SILENTLY DROPPED. A comment that cannot be posted inline (anchored
+# outside a diff hunk, or past the 5-comment cap) becomes a body bullet under
+# `### Also flagged` — under v4's inline-XOR-body rule a dropped comment would
+# otherwise erase the finding from the review entirely.
 #
 # Exit semantics: 0 = a review reached the PR (REQUEST_CHANGES included — the
 # blocking signal is the PR review, not the check color). 1 = pipeline failure
 # (no usable orchestrator output, or the POST to GitHub failed).
 #
 # Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, REVIEW_BOT_USER
-# Optional env: ANALYZER_OUTCOME, HEAD_SHA, GITHUB_STEP_SUMMARY
+# Optional env: HEAD_SHA, GITHUB_STEP_SUMMARY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
+#               REVIEW_JSON, ORCH_LOG, JOB_START, REVIEW_BODY_MAX,
+#               REVIEW_COMMENT_MAX, REVIEW_COMMENT_LIMIT
 
 REPO="$GITHUB_REPOSITORY"
 PR="$PR_NUMBER"
 BOT="${REVIEW_BOT_USER:-github-actions[bot]}"
 REVIEW_JSON="${REVIEW_JSON:-/tmp/review.json}"
 ORCH_LOG="${ORCH_LOG:-/tmp/orchestrator-output.txt}"
-DEV_ENV_LOG="${DEV_ENV_LOG:-/tmp/dev-env/log}"
+JOB_START="${JOB_START:-/tmp/job-start}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+SERVER="${GITHUB_SERVER_URL:-https://github.com}"
+BODY_MAX="${REVIEW_BODY_MAX:-1200}"
+COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
+COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-5}"
 WORK=$(mktemp -d) || { echo "::error::mktemp failed"; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
+
+# Byte length — the budgets are compared against `wc -c`, and ${#var} counts
+# CHARACTERS, so a body with one em dash would otherwise be measured short.
+blen() { printf '%s' "$1" | wc -c | tr -d ' '; }
 
 # Crash banners can't be deleted (no review-delete API); PATCH them to a
 # benign superseded form. The superseded marker shares no substring with the
@@ -67,9 +104,7 @@ crash_exit() {
   else
     kind=no-output
   fi
-  if [ -n "${GITHUB_SERVER_URL:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-    run_link="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
-  fi
+  run_link=$(run_url)
 
   case "$kind" in
     quota)
@@ -116,6 +151,11 @@ crash_exit() {
   exit 1
 }
 
+run_url() {
+  [ -n "${GITHUB_RUN_ID:-}" ] || return 0
+  printf '%s/%s/actions/runs/%s' "$SERVER" "$REPO" "$GITHUB_RUN_ID"
+}
+
 # ── 1. Validate the orchestrator's single artifact ──────────────────────────
 if [ ! -f "$REVIEW_JSON" ]; then
   crash_exit "$REVIEW_JSON not found — orchestrator did not write output."
@@ -128,14 +168,43 @@ case "$VERDICT" in
   APPROVE|COMMENT|REQUEST_CHANGES) ;;
   *) crash_exit "$REVIEW_JSON has unknown verdict '${VERDICT:-<missing>}'." ;;
 esac
-jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.md" || crash_exit "could not extract review body from $REVIEW_JSON."
+jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.raw" || crash_exit "could not extract review body from $REVIEW_JSON."
 jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json" || crash_exit "could not extract comments from $REVIEW_JSON."
 
-# ── 2. Hunk validation ───────────────────────────────────────────────────────
-# GitHub 422s the whole atomic POST if any comment line is outside a diff
-# hunk. Build the valid (path:line:side) set from the pulls/files patches and
-# move out-of-hunk comments into the body instead of losing the review.
-echo "::group::Hunk validation"
+# ── 2. Footer ────────────────────────────────────────────────────────────────
+# Built before the body is measured: it is part of the 1200 and is the last thing
+# that can push the body over. Whatever of duration / cost / run link this run
+# actually knows — never written by the model.
+FOOTER_PARTS=()
+if [ -f "$JOB_START" ]; then
+  START=$(cat "$JOB_START" 2>/dev/null)
+  case "$START" in
+    ''|*[!0-9]*) ;;
+    *) ELAPSED=$(( $(date +%s) - START ))
+       [ "$ELAPSED" -ge 0 ] && FOOTER_PARTS+=( "$(( ELAPSED / 60 ))m $(( ELAPSED % 60 ))s" ) ;;
+  esac
+fi
+COST=$(grep -oE '"total_cost_usd"[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)?' "$ORCH_LOG" 2>/dev/null \
+        | grep -oE '[0-9]+(\.[0-9]+)?$' | sort -g | tail -1)
+[ -n "$COST" ] && FOOTER_PARTS+=( "$(printf '$%.2f' "$COST")" )
+RUN_LINK=$(run_url)
+[ -n "$RUN_LINK" ] && FOOTER_PARTS+=( "[logs]($RUN_LINK)" )
+FOOTER=""
+if [ "${#FOOTER_PARTS[@]}" -gt 0 ]; then
+  FOOTER=$'\n<sub>'
+  for i in "${!FOOTER_PARTS[@]}"; do
+    [ "$i" -gt 0 ] && FOOTER+=" · "
+    FOOTER+="${FOOTER_PARTS[$i]}"
+  done
+  FOOTER+=$'</sub>\n'
+fi
+
+# ── 3. Inline comments: in-hunk only, deduped, 5 max, 700 bytes each ────────
+# GitHub 422s the whole atomic POST if any comment line is outside a diff hunk,
+# and GitHub omits `.patch` entirely for large files — so a critical finding in a
+# big file can derive no valid line. Those comments, and everything past the cap,
+# are NOT discarded: they come back as body bullets in section 4.
+echo "::group::Inline comments"
 if ! gh api --paginate "repos/$REPO/pulls/$PR/files" 2>/dev/null | jq -s 'add // []' > "$WORK/pr-files.json"; then
   echo '[]' > "$WORK/pr-files.json"
 fi
@@ -152,58 +221,197 @@ awk '
     for (i = rstart; i < rstart + rcount; i++) print file ":" i ":RIGHT"
   }
 ' "$WORK/patches.txt" | sort -u > "$WORK/valid-lines.txt"
+[ -s "$WORK/valid-lines.txt" ] \
+  || echo "::warning::Could not derive diff hunks from pulls/files — posting comments unvalidated."
 
-if [ -s "$WORK/valid-lines.txt" ]; then
-  jq --rawfile valid "$WORK/valid-lines.txt" '
-    ($valid | split("\n") | map(select(length > 0))) as $lines |
-    [.[] | . as $c | ($c.path + ":" + ($c.line | tostring) + ":" + ($c.side // "RIGHT")) as $key |
-      $c + {_in_diff: ($lines | any(. == $key))}
-    ] as $tagged |
-    {
-      kept:    [$tagged[] | select(._in_diff) | del(._in_diff)],
-      dropped: [$tagged[] | select(._in_diff | not) | del(._in_diff)]
-    }
-  ' "$WORK/comments.json" > "$WORK/split.json"
-  # start_line must also anchor inside a hunk or GitHub 422s the whole POST;
-  # demote an invalid range to a single-line comment rather than losing it.
-  # Null-valued keys (start_line: null) are stripped for the same reason.
-  jq --rawfile valid "$WORK/valid-lines.txt" '
-    ($valid | split("\n") | map(select(length > 0))) as $lines |
-    [.kept[]
-      | . as $c
-      | if ($c.start_line != null)
-          and (($lines | index($c.path + ":" + ($c.start_line | tostring) + ":" + ($c.side // "RIGHT"))) == null)
-        then $c | .start_line = null else $c end
-      | with_entries(select(.value != null))]
-  ' "$WORK/split.json" > "$WORK/comments.json"
-  DROPPED=$(jq '.dropped | length' "$WORK/split.json")
-  if [ "$DROPPED" -gt 0 ]; then
-    echo "Moved $DROPPED comment(s) outside diff hunks into the review body."
-    {
-      printf '\n### Findings outside diff hunks (%s)\n\n' "$DROPPED"
-      printf '_These findings reference lines outside the PR diff hunks, so inline comments cannot anchor there._\n\n'
-      jq -r '.dropped[] | "- **`" + .path + ":" + (.line | tostring) + "`** — " + (.body | split("\n")[0]) + "\n"' "$WORK/split.json"
-    } >> "$WORK/body.md"
-  fi
-else
-  echo "::warning::Could not derive diff hunks from pulls/files — posting comments unvalidated."
+# One pass: normalise, order by severity then the model's own order, split into
+# the 5 that get posted inline and the rest that fall back to body bullets.
+#
+# `clamp` measures BYTES (jq's `length` is codepoints — 900 `é` is 900 by that
+# count and 1800 bytes on the wire). A ```suggestion fence the clamp cut through
+# is DROPPED, not re-closed: re-closing yields a committable suggestion that
+# silently deletes the tail of the replacement code.
+jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
+   --rawfile valid "$WORK/valid-lines.txt" '
+  def sev:
+    ((.severity // "") | ascii_downcase) as $f
+    | if ($f | length) > 0 then $f
+      elif ((.body // "") | test("^\\s*\\*\\*critical\\*\\*"; "i")) then "critical"
+      elif ((.body // "") | test("^\\s*\\*\\*major\\*\\*"; "i")) then "major"
+      elif ((.body // "") | test("^\\s*\\*\\*minor\\*\\*"; "i")) then "minor"
+      else "" end;
+  def rank: if . == "critical" then 0 elif . == "major" then 1 elif . == "minor" then 2 else 3 end;
+  def title:
+    ((.body // "") | split("\n") | (.[0] // "")
+     | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "") | .[:90] | sub("\\s+$"; ""))
+    | if length == 0 then "flagged inline" else . end;
+  # Longest codepoint prefix of $s that fits $max bytes. Starts at the byte
+  # budget (bytes >= codepoints, always) and walks down; ASCII exits at once.
+  def bcut($s; $max):
+    if ($s | utf8bytelength) <= $max then $s
+    else ({i: ([$max, ($s | length)] | min)}
+          | until((($s[:.i]) | utf8bytelength) <= $max; .i = (.i - 1))
+          | $s[:.i])
+    end;
+  def clamp($max):
+    (if utf8bytelength <= $max then . else (bcut(.; $max - 3)) + "…" end)
+    # An odd number of ``` fences means the closer is gone: drop the opener and
+    # everything after it rather than re-closing a half-written suggestion.
+    | if (((. / "```") | length) % 2 == 0)
+      then (((. / "```") | .[:-1] | join("```")) | sub("\\s+$"; "")) + "…"
+      else . end;
+  ($valid | split("\n") | map(select(length > 0))) as $lines
+  | ($lines | length > 0) as $validated
+  | map(select((.path // "") != "" and .line != null))
+  | map(.line = ((.line | tostring | tonumber?) // 0))
+  | map(select(.line > 0))
+  | to_entries
+  | map(.value + {_i: .key, _r: (.value | sev | rank)})
+  | unique_by([.path, .line, .body])
+  | sort_by(._r, ._i)
+  | map(. as $c | $c + {_inhunk:
+      (if $validated
+       then ($lines | any(. == ($c.path + ":" + ($c.line | tostring) + ":" + ($c.side // "RIGHT"))))
+       else true end)})
+  | ([.[] | select(._inhunk)]) as $in
+  | ([.[] | select(._inhunk | not)]) as $out
+  | { kept: ($in[:$limit] | map({path, line, side: (.side // "RIGHT"), body: ((.body // "") | clamp($cmax))})),
+      dropped: ((($in[$limit:]) + $out)
+                | sort_by(._r, ._i)
+                | map({path, line, severity: sev, title: title,
+                       reason: (if ._inhunk then "over the inline cap" else "outside a diff hunk" end)})) }
+' "$WORK/comments.json" > "$WORK/split.json" \
+  || { echo "::warning::Could not process inline comments — posting the body alone."
+       jq -n '{kept: [], dropped: []}' > "$WORK/split.json"; }
+
+jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
+# Each dropped comment becomes a body bullet — the finding must reach the reader
+# somewhere, and under the inline-XOR-body rule the body does not already list it.
+jq -r '.dropped[]
+       | "- " + (if .severity == "" then "" else "**" + .severity + "** " end)
+         + "{{LINK:" + .path + ":" + (.line | tostring) + "}} — " + .title' \
+  "$WORK/split.json" > "$WORK/fallback.md"
+DROPPED_COUNT=$(jq '.dropped | length' "$WORK/split.json")
+if [ "${DROPPED_COUNT:-0}" -gt 0 ]; then
+  jq -r '.dropped | group_by(.reason)[]
+         | "::warning::" + (length | tostring) + " inline comment(s) " + .[0].reason
+           + " — listed as body bullets instead."' "$WORK/split.json"
 fi
-echo "Inline comments: $(jq 'length' "$WORK/comments.json")"
+echo "Inline comments: $(jq 'length' "$WORK/comments.json") (max $COMMENT_LIMIT, $COMMENT_MAX bytes each), $DROPPED_COUNT fell back to the body"
 echo "::endgroup::"
 
-# ── 3. Dismiss own stale blocking reviews (keep COMMENTED for audit trail) ──
+# ── 4. Render the body: budget PRE-expansion, then expand {{LINK:...}} ──────
+# The models emit placeholders because only this script knows repo + PR number.
+# GitHub's per-file diff anchor is the sha256 of the raw path string, lowercase
+# hex; the line suffix is `R<n>` (RIGHT side). Verified against a live PR — do
+# not "fix" the format.
+echo "::group::Render body"
+if [ -s "$WORK/fallback.md" ]; then
+  { echo ""
+    echo "### Also flagged ($(grep -c '' "$WORK/fallback.md"))"
+    cat "$WORK/fallback.md"
+  } >> "$WORK/body.raw"
+fi
+
+# budget.awk — measures and truncates the PRE-expansion body.
+#   mlen(line) = bytes, with each {{LINK:x}} counted as `x` (the wrapper is
+#   exactly 9 bytes: `{{LINK:` + `}}`), which is what the model was told to count.
+#   mode=measure → the whole file's measured byte size
+#   mode=fit     → the file truncated to `max` measured bytes
+# A trailing `###` section header whose every item was cut is dropped with them:
+# a dangling `### Findings (2)` above nothing reads as a rendering bug.
+cat > "$WORK/budget.awk" <<'BUDGET_AWK'
+function nph(s,   n) { n = 0; while (match(s, /\{\{LINK:[^{}]*\}\}/)) { n++; s = substr(s, RSTART + RLENGTH) } return n }
+function mlen(s) { return length(s) - 9 * nph(s) }
+function hardcut(s, budget,   out, ml, ph, phm) {
+  out = ""; ml = 0
+  while (length(s) > 0) {
+    ph = ""
+    if (substr(s, 1, 7) == "{{LINK:" && match(s, /^\{\{LINK:[^{}]*\}\}/)) ph = substr(s, 1, RLENGTH)
+    if (ph != "") {
+      phm = length(ph) - 9
+      if (ml + phm > budget) break
+      out = out ph; ml += phm; s = substr(s, length(ph) + 1)
+    } else {
+      if (ml + 1 > budget) break
+      out = out substr(s, 1, 1); ml++; s = substr(s, 2)
+    }
+  }
+  return out
+}
+{ line[NR] = $0; total += mlen($0) + 1 }
+END {
+  if (mode == "measure") { print total + 0; exit }
+  n = 0; kept = 0
+  for (i = 1; i <= NR; i++) {
+    l = mlen(line[i]) + 1
+    if (n + l > max) break
+    out[++kept] = line[i]; n += l
+  }
+  # Not one line fit: cut mid-line rather than return an empty body.
+  if (kept == 0 && NR > 0) {
+    h = hardcut(line[1], max)
+    if (length(h) > 0) out[++kept] = h
+  }
+  while (kept > 0 && (out[kept] ~ /^[ \t]*$/ || out[kept] ~ /^[ \t]*###/)) kept--
+  for (i = 1; i <= kept; i++) print out[i]
+}
+BUDGET_AWK
+
+TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
+AVAIL=$(( BODY_MAX - $(blen "$FOOTER") ))
+MEASURED=$(LC_ALL=C awk -v mode=measure -f "$WORK/budget.awk" "$WORK/body.raw")
+if [ "${MEASURED:-0}" -gt "$AVAIL" ]; then
+  echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating."
+  LC_ALL=C awk -v mode=fit -v max="$(( AVAIL - $(blen "$TRUNC_MARKER") ))" \
+    -f "$WORK/budget.awk" "$WORK/body.raw" > "$WORK/body.trunc"
+  mv "$WORK/body.trunc" "$WORK/body.raw"
+  printf '%s' "$TRUNC_MARKER" >> "$WORK/body.raw"
+fi
+
+path_sha() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print $1}'
+  else
+    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  fi
+}
+render_link() {
+  local spec="$1" path lineno="" url
+  path="${spec%:}"
+  if [[ "$path" =~ ^(.+):([0-9]+)$ ]]; then
+    path="${BASH_REMATCH[1]}"; lineno="${BASH_REMATCH[2]}"
+  fi
+  url="${SERVER}/${REPO}/pull/${PR}/files#diff-$(path_sha "$path")"
+  [ -n "$lineno" ] && url="${url}R${lineno}"
+  if [ -n "$lineno" ]; then printf '[%s:%s](%s)' "$path" "$lineno" "$url"
+  else printf '[%s](%s)' "$path" "$url"; fi
+}
+: > "$WORK/body.md"
+while IFS= read -r line || [ -n "$line" ]; do
+  out=""
+  while [[ "$line" =~ \{\{LINK:([^{}]*)\}\} ]]; do
+    ph="${BASH_REMATCH[0]}"
+    out+="${line%%"$ph"*}$(render_link "${BASH_REMATCH[1]}")"
+    line="${line#*"$ph"}"
+  done
+  printf '%s%s\n' "$out" "$line" >> "$WORK/body.md"
+done < "$WORK/body.raw"
+
+printf '%s' "$FOOTER" >> "$WORK/body.md"
+echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"
+echo "::endgroup::"
+
+# ── 5. Dismiss own stale blocking reviews (keep COMMENTED for audit trail) ──
 # Only a review that JUDGED the diff may clear a standing one. A skip-marked
-# body (skip-review note, oversized split-request) read no code, so dismissing
-# on its way in would (a) un-block a PR nobody re-reviewed — adding the
-# `skip-review` label would silently clear a REQUEST_CHANGES — and (b) leave the
-# next judged round reading `prior_verdict` off a DISMISSED review, which means
-# "the author opted out" (see prior-review-state.sh). Leave it standing; the
-# skip note posts alongside it.
+# body (guard.sh's oversized split request) read no code, so dismissing on its
+# way in would (a) un-block a PR nobody re-reviewed and (b) leave the next
+# judged round reading `prior_verdict` off a DISMISSED review, which means "the
+# author opted out" (see prior-review-state.sh). Leave it standing.
 #
-# Matched on the FIRST LINE only (where the orchestrator stamps it). An
-# unanchored grep also matches a JUDGED review that quotes a marker — in a
-# finding, or in the out-of-hunk appendix step 2 already appended below — and
-# would then leave the stale review it is supposed to dismiss standing.
+# Matched on the FIRST LINE only. An unanchored grep also matches a JUDGED
+# review that quotes a marker in a finding, and would then leave the stale
+# review it is supposed to dismiss standing.
 echo "::group::Dismiss stale reviews"
 if head -n1 "$WORK/body.md" 2>/dev/null \
      | grep -qE '^[[:space:]]*<!-- claude-review-(skipped|oversized) -->[[:space:]]*$'; then
@@ -225,17 +433,13 @@ while IFS= read -r id; do
 done <<< "$STALE_IDS"
 echo "::endgroup::"
 
-# ── 4. Supersede prior crash banners ─────────────────────────────────────────
+# ── 6. Supersede prior crash banners ─────────────────────────────────────────
 echo "::group::Supersede prior crash banners"
 supersede_crash_banners
 echo "::endgroup::"
 
-# ── 5. Atomic POST ───────────────────────────────────────────────────────────
+# ── 7. Atomic POST ───────────────────────────────────────────────────────────
 echo "::group::Post review"
-# Last-line dedup guard: identical (path, line, body) tuples that survive the
-# orchestrator's merge must not reach GitHub twice.
-jq 'unique_by([.path, (.line | tostring), .body])' "$WORK/comments.json" > "$WORK/comments-dedup.json" \
-  && mv "$WORK/comments-dedup.json" "$WORK/comments.json"
 jq -n \
   --arg event "$VERDICT" \
   --rawfile body "$WORK/body.md" \
@@ -250,138 +454,30 @@ REVIEW_ID=$(echo "$POST_RESPONSE" | jq -r '.id // empty' 2>/dev/null || echo "")
 echo "Posted review${REVIEW_ID:+ #$REVIEW_ID}"
 echo "::endgroup::"
 
-# ── 6. Best-effort: replies to other-bot threads + resolve fixed threads ────
-REPLY_COUNT=$(jq '(.bot_replies // []) | length' "$REVIEW_JSON")
-if [ "$REPLY_COUNT" -gt 0 ]; then
-  echo "::group::Bot replies ($REPLY_COUNT)"
-  while IFS= read -r reply; do
-    CID=$(echo "$reply" | jq -r '.comment_id')
-    if OUT=$(echo "$reply" | jq '{body: .body}' \
-        | gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" --input - 2>&1); then
-      echo "Replied to comment $CID"
-    else
-      echo "::warning::Reply to comment $CID failed — $(echo "$OUT" | head -c 300)"
-    fi
-  done < <(jq -c '(.bot_replies // [])[]' "$REVIEW_JSON")
-  echo "::endgroup::"
-fi
-
-RESOLVE_COUNT=$(jq '(.resolve_threads // []) | length' "$REVIEW_JSON")
-if [ "$RESOLVE_COUNT" -gt 0 ]; then
-  echo "::group::Resolve threads ($RESOLVE_COUNT)"
-  OWNER="${REPO%%/*}"; NAME="${REPO##*/}"
-  # Map thread id → first comment's databaseId: audit replies go through the
-  # REST /replies endpoint because the GraphQL reply mutation auto-creates an
-  # empty review container.
-  THREADS=$(gh api graphql -f query='
-    query($owner:String!, $repo:String!, $pr:Int!) {
-      repository(owner:$owner, name:$repo) {
-        pullRequest(number:$pr) {
-          reviewThreads(first:100) {
-            nodes { id isResolved comments(first:1) { nodes { databaseId } } }
-          }
-        }
-      }
-    }' -f owner="$OWNER" -f repo="$NAME" -F pr="$PR" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes' 2>&1 || true)
-  if ! echo "$THREADS" | jq -e 'type == "array"' >/dev/null 2>&1; then
-    echo "::warning::Could not fetch review threads — skipping thread resolution. Response: $(echo "$THREADS" | head -c 300)"
-    THREADS='[]'
-  fi
-  while IFS= read -r entry; do
-    TID=$(echo "$entry" | jq -r '.thread_id // empty')
-    [ -z "$TID" ] && continue
-    NODE=$(echo "$THREADS" | jq -c --arg tid "$TID" '.[] | select(.id == $tid)' | head -n1 || true)
-    if [ -z "$NODE" ]; then
-      echo "::warning::Thread $TID not found among open review threads — skipping."
-      continue
-    fi
-    CID=$(echo "$NODE" | jq -r '.comments.nodes[0].databaseId // empty')
-    if [ -n "$CID" ]; then
-      echo "$entry" | jq '{body: (.reply // "✅ Resolved by Claude review")}' \
-        | gh api --method POST "repos/$REPO/pulls/$PR/comments/$CID/replies" --input - >/dev/null 2>&1 \
-        || echo "::warning::Audit reply on thread $TID failed (still resolving)."
-    fi
-    if gh api graphql -f query='
-      mutation($threadId:ID!) {
-        resolveReviewThread(input:{threadId:$threadId}) { thread { isResolved } }
-      }' -f threadId="$TID" >/dev/null 2>&1; then
-      echo "Resolved thread $TID"
-    else
-      echo "::warning::resolveReviewThread failed for $TID"
-    fi
-  done < <(jq -c '(.resolve_threads // [])[]' "$REVIEW_JSON")
-  echo "::endgroup::"
-fi
-
-# ── 7. Step summary ──────────────────────────────────────────────────────────
+# ── 8. Step summary ──────────────────────────────────────────────────────────
 FINDING_COUNT=$(jq '(.meta.findings // []) | length' "$REVIEW_JSON")
-HUMAN_REVIEW=$(jq -r '.meta.requires_human_review // false' "$REVIEW_JSON")
-HUMAN_REASON=$(jq -r '.meta.requires_human_review_reason // empty' "$REVIEW_JSON")
-MANUAL_SPEC=$(jq -r 'if (.meta | type == "object" and has("manual_spec_present")) then .meta.manual_spec_present else true end' "$REVIEW_JSON")
-SPEC_WAIVED=$(jq -r '.meta.spec_gate_waived // false' "$REVIEW_JSON")
-LADDER_RULE=$(jq -r '.meta.ladder_rule_applied // empty' "$REVIEW_JSON")
-FN_STRATEGY=$(jq -r '.meta.functional_validation.strategy // "skip"' "$REVIEW_JSON")
-FN_OVERALL=$(jq -r '.meta.functional_validation.overall // "N/A"' "$REVIEW_JSON")
-FN_SHOTS=$(jq -r '.meta.functional_validation.screenshot_count // 0' "$REVIEW_JSON")
-DEV_ENV=$(jq -r '.meta.functional_validation.dev_env // empty' "$REVIEW_JSON")
-DEV_ENV_BROKEN=false
-case "$DEV_ENV" in ""|ready|n/a) ;; *) DEV_ENV_BROKEN=true ;; esac
+HUMAN_COUNT=$(jq '(.meta.human_review // []) | length' "$REVIEW_JSON")
 {
   echo "## Claude Review: $VERDICT"
   echo ""
-  jq -r '.meta.verdict_summary // .meta.functional_validation.summary // "(see the PR review for details)"' "$REVIEW_JSON"
-  echo ""
-  echo "### Confirmed findings ($FINDING_COUNT)"
-  jq -r '(.meta.findings // [])[] | "- **\((.severity // "?") | ascii_upcase)** [\(.type // "?")] `\(.path // "?"):\(.line_start // "?")` — \(.title // "Untitled")"' "$REVIEW_JSON"
-  if [ "$HUMAN_REVIEW" = "true" ]; then
+  echo "### Findings ($FINDING_COUNT)"
+  jq -r '(.meta.findings // [])[] | "- **\((.severity // "?") | ascii_upcase)** `\(.path // "?"):\(.line // "?")` — \(.title // "Untitled")"' "$REVIEW_JSON"
+  if [ "$HUMAN_COUNT" -gt 0 ]; then
     echo ""
-    echo "> :stop_sign: **Human review required.** $HUMAN_REASON"
-  fi
-  if [ "$MANUAL_SPEC" = "false" ] && [ "$SPEC_WAIVED" != "true" ]; then
-    echo ""
-    echo "> :no_entry: **No manual spec available — APPROVE withheld.** Link an issue, paste acceptance criteria, or wire up an external tracker to enable APPROVE."
-  fi
-  if [ "$LADDER_RULE" = "runtime-evidence" ]; then
-    echo ""
-    echo "> :no_entry: **Changes requested — functional smoke failed** (overall=\`$FN_OVERALL\`). The smoke run against the live app failed — see the review body's Functional Validation section."
-  fi
-  if [ "$DEV_ENV_BROKEN" = "true" ]; then
-    echo ""
-    echo "> :wrench: **Review setup health: dev-env \`$DEV_ENV\`** — the functional smoke could not run; the review body's '⚙️ Review setup health' section has the fix."
-    if [ "$DEV_ENV" = "failed" ] && [ -s "$DEV_ENV_LOG" ]; then
-      echo ""
-      echo "<details><summary>dev-start.sh log tail</summary>"
-      echo ""
-      echo '```'
-      # Redacted: URL userinfo + TOKEN/SECRET/KEY/PASSWORD-shaped values (this
-      # summary is rendered outside Actions log masking).
-      tail -n 25 "$DEV_ENV_LOG" \
-        | sed -E -e 's#(://[^:/@[:space:]]+):[^@[:space:]]+@#\1:***@#g' \
-                 -e 's#([A-Za-z_]*(TOKEN|SECRET|PASSWORD|KEY)[A-Za-z_]*[=:] ?)[^[:space:]]+#\1***#g'
-      echo '```'
-      echo "</details>"
-    fi
-  fi
-  if [ "$FN_STRATEGY" != "skip" ]; then
-    echo ""
-    echo "### Functional validation: $FN_OVERALL"
-    echo "Strategy: $FN_STRATEGY | Screenshots: $FN_SHOTS | Areas: $(jq -r '.meta.functional_validation.areas_tested // [] | join(", ")' "$REVIEW_JSON")"
+    echo "### For a human to review ($HUMAN_COUNT)"
+    jq -r '(.meta.human_review // [])[] | "- `\(.path // "?"):\(.line // "?")` — \(.what_to_check // "")"' "$REVIEW_JSON"
   fi
   echo ""
   echo "Review posted${REVIEW_ID:+ (review #$REVIEW_ID)} on \`${HEAD_SHA:-HEAD}\`."
 } >> "$SUMMARY"
-if [ "$DEV_ENV_BROKEN" = "true" ]; then
-  echo "::warning::Dev environment '$DEV_ENV' — the functional smoke could not run. See the review body's '⚙️ Review setup health' section; full bring-up log in the run artifacts (dev-env/log)."
-fi
 
-# ── 8. Exit code ─────────────────────────────────────────────────────────────
+# ── 9. Exit code ─────────────────────────────────────────────────────────────
 case "$VERDICT" in
   APPROVE)
     exit 0 ;;
   COMMENT)
-    if [ "$HUMAN_REVIEW" = "true" ]; then
-      echo "::warning::Claude requires human review: $HUMAN_REASON"
+    if [ "$HUMAN_COUNT" -gt 0 ]; then
+      echo "::warning::Claude posted $FINDING_COUNT finding(s) and $HUMAN_COUNT item(s) for a human to review."
     else
       echo "::warning::Claude posted $FINDING_COUNT non-blocking finding(s). See the PR review for details."
     fi

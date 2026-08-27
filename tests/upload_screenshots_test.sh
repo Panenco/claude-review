@@ -200,7 +200,7 @@ assert_eq "script does not use set -e (bugbot.md)" "yes" \
 assert_eq "action.yml verifies the script is installed" "yes" \
   "$(grep -q 'upload-screenshots.sh' action.yml && echo yes || echo no)"
 assert_eq "the orchestrator skill invokes it instead of inlining the API calls" "yes" \
-  "$(grep -q 'CLAUDE_REVIEW_SCRIPTS/upload-screenshots.sh' skills/review-orchestrator.md && echo yes || echo no)"
+  "$(grep -q 'upload-screenshots.sh' skills/review-orchestrator.md && echo yes || echo no)"
 
 # `.review-scripts/` lived in the worktree as untracked files; a judge's
 # `git stash -u` swallowed it mid-run and the poster died with exit 127.

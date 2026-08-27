@@ -1,0 +1,110 @@
+---
+name: review-verify
+description: Stage 2 and final stage. Tries to REFUTE every candidate finding from /tmp/scan.json against the source at HEAD, then decides the verdict and renders the posted body and inline comments into /tmp/verify.json. Its prose is final — nothing downstream rewrites it.
+---
+
+# Review Verify
+
+Your mandate is to **refute**, not to confirm. You read `/tmp/scan.json`, attack each finding, and produce the review that gets posted.
+
+## Refute each finding
+
+For every candidate, in ONE pass over all of them:
+
+1. `Read` the cited file at HEAD (never trust the quoted `evidence` — it may be stale or invented).
+2. Walk the `failure_scenario` line by line against the real code. Does that input actually reach that line? Does the guard it claims is missing exist above it? Does the caller already handle it?
+3. Check `path` is in the diff and `line` is inside a hunk. Wrong anchor → fix it from your Read, or drop the finding.
+
+**Keep a finding only if you can restate its failure_scenario yourself from the code you just read. Uncertain → refuted. Cannot reproduce the scenario on paper → refuted.** Dropping a real bug costs one missed comment; keeping a fake one costs the author's trust in every future review.
+
+Never invent a new finding. You only kill, keep, or re-anchor — with the single exception below.
+
+## Functional results — the one exception
+
+You are the only consumer of `/tmp/functional.json`. The tester is dispatched alongside `review-scan` and finishes after it, so scan never sees this file; you run after both.
+
+If the file exists, `Read` it. **This is the ONE case where you may add something scan did not raise**, and only under all of these:
+
+- The tester **reproduced** the failure against the running app — it names the steps it ran and the output it observed. A crash, a timeout, a bring-up failure, an unreached scenario or a "looks wrong" is NOT a reproduction.
+- The scenario came from the linked issue's acceptance criteria (that is the tester's only permitted source).
+- You can point at the changed line that causes it. `Read` that code at HEAD and restate the failure yourself, exactly as you would for any finding.
+
+Then emit it as a normal finding meeting the full bar (`path`, in-hunk `line`, `title`, `failure_scenario` = the observed behaviour, `fix`, `severity`). If you cannot tie it to a changed line, make it **one `human_review` item** instead — never a finding.
+
+Everything else in that file is discarded silently. A failed, crashed or skipped functional run **never** lowers the verdict on its own (contract: the tester can neither raise nor lower a verdict), never derives severity from the PR title, and never gets its own body section — it appears as a finding or a human-review item or not at all.
+
+`prior_findings` (round 2+) are findings the last review raised that scan re-checked and believes are STILL unresolved at HEAD. Refute them exactly like new ones — re-read the code, keep only what you can restate yourself. Survivors are findings and count like any other.
+
+## Verdict
+
+- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
+- **APPROVE** — requires ALL of: zero surviving findings; `human_review_adds_nothing` true with a real, non-empty `approve_argument`; `sensitive_paths_touched` false; `review_effort` ≤ 2. Any doubt → not APPROVE.
+- **COMMENT** — everything else, and the normal outcome. **A COMMENT carrying human-review items is a good review, not a failure.** It says: nothing is provably broken, here is what a human should look at.
+
+**The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
+
+Carry through up to 3 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own categories.
+
+## The body — hard budgets
+
+Render exactly this, omitting any section that would be empty:
+
+```
+## Claude review — <VERDICT>
+
+<one verdict sentence, <=240 chars>
+
+### What a human should review
+- [ ] {{LINK:<path>:<line>}} — <what_to_check> (<why_unresolved>)
+
+### Findings (<n>)
+- **<severity>** {{LINK:<path>:<line>}} — <title>
+```
+
+- Total ≤1200 chars, aim ~600. Count `{{LINK:path:line}}` as `path:line`.
+- `{{LINK:path:line}}` is a literal placeholder — `post-review.sh` expands it into the GitHub file link. **Never build a URL yourself.**
+- No footer (the poster appends duration/cost/logs), no banners, no "Spec sources", no setup-health bullets, no functional section, no "consolidated from N judges", no explanation of where comments were posted.
+- Verdict sentence: what the PR does and why this verdict. No praise, no restating the sections below it.
+
+## Inline comments
+
+Max 5, filled strictly critical → major → minor. Each ≤700 chars total. Each finding appears **exactly once** — an inline comment OR a `### Findings` bullet, never both. Findings beyond the 5 inline slots become body bullets.
+
+````
+**<severity>** <title>
+
+<failure_scenario>
+
+```suggestion
+<fix>
+```
+````
+
+The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
+
+## Output — `/tmp/verify.json`
+
+```json
+{
+  "verdict": "APPROVE|COMMENT|REQUEST_CHANGES",
+  "body": "<the rendered markdown above, with {{LINK:...}} placeholders>",
+  "comments": [
+    {"path": "src/foo.ts", "line": 42, "side": "RIGHT", "body": "<=700 chars"}
+  ],
+  "meta": {
+    "findings": [
+      {"path": "src/foo.ts", "line": 42, "title": "...", "severity": "critical|major|minor",
+       "failure_scenario": "...", "fix": "...", "placement": "inline|body"}
+    ],
+    "human_review": [
+      {"path": "...", "line": 12, "what_to_check": "...", "why_unresolved": "..."}
+    ],
+    "refuted": [{"path": "...", "line": 12, "title": "...", "reason": "one line"}],
+    "depth_used": "light|full",
+    "review_effort": 3,
+    "approve_blocked_by": "findings|no_argument|sensitive_path|effort|none"
+  }
+}
+```
+
+`refuted` is diagnostics — it must never appear in `body` or in a comment. Escape every `"`, newline and backslash in `body`, `fix` and comment bodies. Always write the file, then `jq empty /tmp/verify.json` and repair until it parses.
