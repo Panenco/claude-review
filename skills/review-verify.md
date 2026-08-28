@@ -55,6 +55,8 @@ Carry through up to 3 `human_review` items from scan unchanged (drop any whose `
 
 **Refute the checkboxes too.** If an item can be answered from the checkout — HEAD, the diff, anything already on disk — answer it and drop the item; promote what you found to a finding if it is one. Nothing outside the checkout is reachable, so "the source is not in the checkout" stands as a reason; "not checked" or "unverifiable here" does not.
 
+**Every dropped item leaves a trace.** Whatever kills a `human_review` item — suppressed by a config file, already mitigated at the cited line, answered from the checkout, or a `path`/`line` you could not confirm — record it in `meta.refuted` with `"kind": "human_review"` and that reason. A silent drop is unauditable; `refuted` is the only place anyone can see what the review decided not to ask.
+
 ## The body — hard budgets
 
 Render exactly this, omitting any section that would be empty:
@@ -117,7 +119,8 @@ The suggestion block must be a valid, committable replacement for the commented 
     "human_review": [
       {"path": "...", "line": 12, "what_to_check": "...", "why_unresolved": "..."}
     ],
-    "refuted": [{"path": "...", "line": 12, "title": "...", "reason": "one line"}],
+    "refuted": [{"kind": "finding|human_review", "path": "...", "line": 12, "title": "<title, or the what_to_check that was asked>",
+                 "reason": "suppressed by <file> | already mitigated at the cited line | answered: <answer> | <one line>"}],
     "depth_used": "light|full",
     "review_effort": 3,
     "approve_blocked_by": "findings|no_argument|sensitive_path|effort|none"

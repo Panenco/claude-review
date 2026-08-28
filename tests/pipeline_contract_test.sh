@@ -221,6 +221,30 @@ fi
 # a comment at the very line cited.
 want "review-scan drops an item the cited code already mitigates" "$SCAN" \
   'already documents the risk and mitigates it'
+
+# ...but a drop with no trace is the same failure shape as the bugs above: the
+# context builder went out and nothing recorded it; suppression was findings-only
+# and nothing recorded that either. Every killed checkbox must be auditable in
+# the uploaded verify.json, and must stay OUT of the posted review.
+want "review-verify records every dropped human_review item" "$VERIFY" \
+  'Every dropped item leaves a trace'
+want "…tagged so the two kinds are distinguishable in meta.refuted" "$VERIFY" \
+  '"kind": "finding\|human_review"'
+want "…carrying what was asked" "$VERIFY" \
+  'what_to_check that was asked'
+want "…and why it was dropped" "$VERIFY" \
+  'suppressed by <file> \| already mitigated'
+want "…and refuted stays diagnostics-only" "$VERIFY" \
+  'refuted.{0,30}never appear in .{0,10}body.{0,10} or in a comment'
+# Structural, not a wording preference: the poster reads meta.findings and
+# meta.human_review. If it ever learns to read meta.refuted, diagnostics become
+# review prose and the suppression audit trail turns into noise on the PR.
+never "post-review.sh never reads meta.refuted into the review" "$POSTER" \
+  'meta\.refuted|\.refuted'
+# Free-of-charge audit trail: verify.json is uploaded verbatim, so a human can
+# read the drops after a run without any new plumbing.
+want "the workflow uploads /tmp/verify.json as an artifact" "$WORKFLOW" \
+  '^ +/tmp/verify\.json$'
 # The judge: the answer an author most wants is whether the fix actually works.
 want "review-scan verifies the PR's stated fix holds at HEAD" "$SCAN" \
   'if the PR exists to fix something'
