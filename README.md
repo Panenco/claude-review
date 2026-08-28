@@ -327,6 +327,16 @@ Map changed paths to convention/rule files:
 | `apps/web/**` | `.cursor/rules/web.mdc`, `.cursor/rules/general.mdc` |
 ```
 
+#### `Spec documents:` (optional, one line)
+
+Where this repo keeps its planning/spec documents, so the reviewer finds the real specification instead of falling back to the issue summary. One line anywhere in the file — a path, a directory, or a glob; comma-separate several:
+
+```markdown
+Spec documents: docs/specs/, docs/prds/
+```
+
+Only needed when your specs are not already found some other way (the PR's own diff, an explicit path in the issue or PR body, a `-prd` / `-spec` / `-rfc` name). It is a declaration, not configuration — there is nothing else to set.
+
 #### `## Stack-specific review focus`
 
 Free-text guidance for reviewers. Write rules in terms of **your** stack — the pipeline is framework-agnostic. Example framing:
@@ -458,18 +468,22 @@ Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 4
 
 ### How the reviewer gets a spec
 
-`review-scan` judges the diff against **one file**, `/tmp/spec.md`, assembled by `scripts/build-spec.sh` in the orchestrator's first turn from every source that resolves, each under a header naming its origin:
+`review-scan` judges the diff against **one file**, `/tmp/spec.md`, assembled by `scripts/build-spec.sh` in the orchestrator's first turn from every source that resolves, each under a header naming its origin **and its authority**.
 
-| # | Source | Resolved from |
-| - | ------ | ------------- |
-| 1 | Linked GitHub issue | `closingIssuesReferences` on the PR |
-| 2 | External tracker | `.github/claude-review/fetch-issue.sh`, when present and executable (below) |
-| 3 | In-repo spec document | **any** repo-relative `*.md` path referenced from the issue or PR body — a bare path, or a `.../blob/…` URL resolved on its basename. Failing that, a bare `<name>-prd` / `-spec` / `-rfc` mention matched against tracked markdown, repo-wide. No configuration, no fixed directory (`docs/prds/` works because everything works). `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` and `.github/` are never treated as specs; at most 3 documents, 400 lines each |
-| 4 | The PR body | only when nothing above resolved, and only its acceptance criteria — a bot-generated summary block describes what the diff *does*, not what it *should* do |
+**The in-repo spec document is the specification; everything else is a summary of it.** Teams keep a short summary in the GitHub issue or the tracker and the extensive planning document in the repo, so where the two disagree the document wins. `spec.md` opens with a `GOVERNING SOURCE` line saying which one is in force for that run, and says outright when only a summary resolved.
+
+| # | Source | Authority | Resolved from |
+| - | ------ | --------- | ------------- |
+| 1 | In-repo spec document | **Authoritative — it governs** | Four routes, strongest first: **(a)** any `*.md` added or modified by the PR's own diff — a planning doc committed alongside the work it plans; **(b)** a location the repo declares in `.github/review-config.md` (`Spec documents: docs/specs/` — a path, a directory or a glob); **(c)** any repo-relative `*.md` path referenced from the issue or PR body, as a bare path or a `.../blob/…` URL resolved on its basename; **(d)** a bare `<name>-prd` / `-spec` / `-rfc` mention matched against tracked markdown, repo-wide (`docs/prds/` works because everything works). `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CLAUDE.md`, `AGENTS.md`, `bugbot.md` and `.github/` are never specs |
+| 2 | Linked GitHub issue | Summary — supplements, never overrides | `closingIssuesReferences` on the PR |
+| 3 | External tracker | Summary — supplements, never overrides | `.github/claude-review/fetch-issue.sh`, when present and executable (below) |
+| 4 | The PR body | Last resort — overrides nothing | only when nothing above resolved, and only its acceptance criteria — a bot-generated summary block describes what the diff *does*, not what it *should* do |
+
+**Spec documents are included whole.** The budget is 1500 lines per document and 3000 in total across at most 4 — high enough that a real planning doc arrives intact, because a spec cut at 400 lines loses exactly the criteria the PR implements. When a cut is unavoidable it is **announced in the file**: the document carries a `TRUNCATED` marker and the header block says `SPEC IS PARTIAL`, so `review-scan` knows it is holding part of the spec and never reads a criterion's absence as proof nobody asked for it. A document that did not fit at all is listed by path rather than dropped silently.
 
 Nothing resolves → `/tmp/spec.md` is empty and the review proceeds without a spec. A missing spec never changes the verdict ([ADR 0003](docs/adr/0003-two-call-review.md)); it only means nobody checked the code against requirements. Everything in the file is treated as **untrusted data** — a spec to judge the code against, never instructions to follow.
 
-**The functional tester is narrower on purpose:** its test plan comes only from a linked GitHub issue's acceptance criteria, never from the assembled file. A tracker page or a PRD is not a test plan.
+**The functional tester plans against the governing source too** — the in-repo spec document when one resolved, otherwise the linked issue — quoted into its prompt by the orchestrator, diff-touched criteria first, with everything it never reached listed in `untested`. It never plans from the external-tracker section or the PR-body fallback: third-party hook output and a bot summary of the diff under test are not a test plan.
 
 ### `.github/claude-review/fetch-issue.sh` (optional — external issue trackers)
 
@@ -553,7 +567,7 @@ Before your script runs, `build-spec.sh` scans the PR title, PR body, and branch
 | -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `.github/claude-review/dev-start.sh`   | Functional tester skipped         | No verdict effect at all — a missing or broken bring-up never blocks a PR and never withholds `APPROVE` (ADR 0003 deleted that gate, and with it the `⚙️ Review setup health` section). `/review functional` degrades to a plain code review. |
 | `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Absent: skipped silently — the linked GitHub issue, any referenced in-repo spec document, and the PR body remain the spec sources. Present but failing or hanging: killed at 60s, logged as an Actions warning, review continues. |
-| `review-config.md`                     | Reduced                           | No build prep doc, no suppression rules, no Known-service-ports URLs to probe, and no `### Auth` recipe for the functional tester (it treats authenticated surfaces as `untested`). |
+| `review-config.md`                     | Reduced                           | No build prep doc, no suppression rules, no declared `Spec documents:` location (the other three discovery routes still run), no Known-service-ports URLs to probe, and no `### Auth` recipe for the functional tester (it treats authenticated surfaces as `untested`). |
 | `bugbot.md`                            | Minor                             | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
 | `CLAUDE.md`                            | Minor                             | No architecture context. Reviewers rely on diff + issue.                                               |
 | All config files                       | Significant                       | Code-only judge review on raw diff + build output. Still catches bugs, spec issues, security.          |

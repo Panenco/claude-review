@@ -253,6 +253,16 @@ Map changed file paths to convention/rule files the reviewers should read:
 
 If no convention files exist, omit this section.
 
+### Spec documents (one line, optional)
+
+Where this repo keeps its planning/spec documents, so the reviewer judges the code against the real specification instead of the short summary in the GitHub issue:
+
+```markdown
+Spec documents: docs/specs/, docs/prds/
+```
+
+A path, a directory or a glob; comma-separate several. Look for an existing convention first (`docs/specs/`, `docs/prds/`, `docs/rfcs/`, `planning/`, a `*-prd.md` naming habit) and declare that. Skip the line if the repo has no such directory — the reviewer still finds spec docs added by the PR itself, referenced by path from the issue or PR body, or named `<x>-prd` / `-spec` / `-rfc`.
+
 ### Stack-specific review focus
 
 Write 3-5 bullet points per area about what reviewers should watch for. Be specific — reference actual patterns used in this codebase.
@@ -451,7 +461,7 @@ Do **not** promote to `## Auth` / `## Known service ports` — the dev-env probe
 
 ## Step 4.7: External issue tracker (optional)
 
-The reviewer assembles one spec file per run from the linked GitHub issue, any repo-relative `*.md` spec document referenced from the issue or PR body, and the PR body. Repos that track specs in Linear / Jira / Monday / Notion / etc. can add one more source: a hook that fetches the external spec. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
+The reviewer assembles one spec file per run, in precedence order: the repo's own spec documents first (they are authoritative), then the linked GitHub issue, then the PR body. A tracker ticket, like a GitHub issue, counts as a *summary* of the document — it supplements it and never overrides it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can add that source with a hook that fetches the external spec. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
 
 Walk through this decision even if the project looks GitHub-only; confirm it explicitly so you don't leave a Linear-using repo silently missing spec context.
 
@@ -464,7 +474,7 @@ Walk through this decision even if the project looks GitHub-only; confirm it exp
    > "Does this repo track specs in an external system (Linear / Jira / Monday / Notion / other)? If yes, which? If no, choose **GitHub only**."
    Ask this whether detection succeeded or not — a grep hit might be a one-off link, and a miss might just mean the history is sparse. The user's answer wins.
 
-3. **If GitHub only** — print "No tracker integration needed. Skipping." and go to Step 5. Do not create `fetch-issue.sh` and do not list any extra secrets. Also tell the user the cheaper alternative that needs no wiring: reference the spec document by its repo path in the issue or PR body, and the reviewer picks it up from any directory.
+3. **If GitHub only** — print "No tracker integration needed. Skipping." and go to Step 5. Do not create `fetch-issue.sh` and do not list any extra secrets. Also tell the user the cheaper alternative that needs no wiring: keep the spec document in the repo. One committed in the PR itself is picked up automatically; so is one under the `Spec documents:` location declared in Step 4, or one referenced by its repo path from the issue or PR body.
 
 4. **If a tracker was chosen** — do NOT generate the hook script or any tracker code yourself. Output three concrete to-dos for the user to complete:
 

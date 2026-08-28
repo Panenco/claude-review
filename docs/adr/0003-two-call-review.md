@@ -130,3 +130,60 @@ wider than a test plan on purpose.
 work no criterion asks for is raised as at most **one** item per review. It is
 the inverse of AC compliance, it has no failure scenario so it can never be a
 finding, and with no spec loaded it is not raised at all.
+
+## Amendment 2, 2026-08-28 — the in-repo document is the spec; the issue is a summary
+
+The first amendment ordered the sources linked issue → tracker → in-repo
+document. That was backwards for how the fleet actually writes specs: **the
+GitHub issue carries a summary, and the extensive planning document lives in the
+repo** ("docs in code"). Ordering the summary first told the reviewer the thin
+source outranked the real one, and made document discovery — which decides
+whether the real spec is read at all — the least important step in the chain.
+
+**Precedence is now document → issue → tracker → PR body**, and `/tmp/spec.md`
+says so in its own structure: every header carries its source's authority
+(`AUTHORITATIVE — this governs` / `SUMMARY — does not override the spec
+document`), and the file opens with a `GOVERNING SOURCE` line naming what is in
+force for that run. When no document resolved it says that outright, so a review
+against a summary is visible rather than assumed complete.
+
+**Discovery became load-bearing, so it got three more routes**, strongest first:
+markdown **added or modified by the PR's own diff** (a planning doc committed
+alongside the work it plans, needing no reference from anywhere); a location the
+repo **declares** in `.github/review-config.md` as a one-line `Spec documents:`
+path, directory or glob (the convention varies per repo — a repo needs a way to
+say where its specs live, and one line is the whole feature); then the existing
+explicit path/URL reference and the `<name>-prd` / `-spec` / `-rfc` last resort.
+The denylist grew with it: `CLAUDE.md`, `AGENTS.md` and `bugbot.md` are prompts,
+not requirements, and inlining them would feed the reviewer instructions dressed
+as a spec.
+
+**The 3×400-line cap became a truncation risk** the moment the document, not the
+issue, was the spec — a real planning doc runs past 400 lines and the criteria
+the PR implements are as likely to be at line 700 as line 40. The budget is now
+1500 lines per document, 3000 across at most 4, whole-document inclusion by
+default. When a cut is unavoidable it is **announced in the file**: a `TRUNCATED`
+marker on the document, `SPEC IS PARTIAL` in the header block, an Actions
+warning, and any document that did not fit at all listed by path. Silent
+truncation and silent degradation are the same bug.
+
+**The out-of-scope `human_review` item moved with the precedence.** It was gated
+on "`/tmp/spec.md` is non-empty", which included the PR-body fallback — asserting
+that a PR does more than asked, against a bot summary of that same PR, is
+circular. It is now gated on a governing source that is a document, an issue or a
+ticket, and suppressed entirely when the spec is marked partial (the pages we cut
+may be exactly what asked for the work). Against a spec document it may be put as
+fact; against a summary it must say it is reading a summary. Still capped at one
+item, still never a finding.
+
+**The functional tester no longer plans against the thinnest source.** Amendment
+1 fixed its input at the linked issue's ACs. Once the issue is known to be a
+summary, that is the same silent degradation in a second place: a tester that
+verifies three of twelve criteria and reads as if it verified the feature. The
+orchestrator now quotes the criteria from the **governing** source — the spec
+document when one resolved, else the linked issue — diff-touched criteria first,
+with everything unreached listed in `untested`. What stayed excluded, and why:
+the external-tracker section is third-party hook output and the PR body
+summarises the diff under test; neither is a test plan, and neither should be
+steering a browser. The tester still reads no spec artifact itself — the
+orchestrator pastes the criteria into its prompt, exactly as before.
