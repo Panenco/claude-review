@@ -94,9 +94,39 @@ wrong.
 - `skills/review-context-builder.md`, `skills/review-judge.md`,
   `skills/review-native.md` and `scripts/fetch-pr-threads.sh` are deleted. The
   scan reads the PR itself with `gh pr view/diff`; there is no separate context
-  artifact.
+  artifact. **Its spec retrieval was not deleted with it — see the amendment.**
 - No thread adjudication, no `DISPUTED` state, no "dropped after author
   rebuttal" bookkeeping. A prior finding survives or it does not, decided by
   reading the code at HEAD.
 - Targets: **$0.60-0.90/run**, 4-6 minutes, body ~600 chars (hard cap 1200),
   inline comments ≤700 chars, max 5.
+
+## Amendment, 2026-08-28 — spec assembly is one file, not four sources
+
+Deleting the context builder took its **spec retrieval** with it, and that was
+not a decision anyone made. Two of the three sources came back in stages, badly:
+first only the linked GitHub issue, leaving a repo that tracks work in Linear or
+Jira with a reviewer that had no requirements at all, and `TRACKER_SECRETS`
+forwarded to nothing. The sandbox was never the obstacle — the hook ran as a
+plain `Bash` invocation, not through the denied raw `gh` API verb.
+
+**`scripts/build-spec.sh` now assembles one `/tmp/spec.md`** in the
+orchestrator's turn 1, from every source that resolves, each under a header
+naming its origin: linked GitHub issue → external tracker via
+`.github/claude-review/fetch-issue.sh` (60s timeout, soft-fail) → in-repo spec
+documents → the PR body. `review-scan` reads that one file and knows nothing
+about the sources, so its spec section got *shorter* while gaining two of them.
+No source resolving is a normal outcome: the file is empty and the review runs
+without a spec, exactly as before.
+
+Two deliberate narrowings from v3: the in-repo lookup is no longer bound to
+`docs/prds/` — it resolves **any** repo-relative markdown path referenced from
+the issue or PR body, repo-wide, so no directory convention and no configuration
+is needed — and the PR-title-word-match against that directory is gone with it.
+The functional tester's test plan stays issue-ACs-only; the assembled file is
+wider than a test plan on purpose.
+
+**One new use of the `human_review` channel:** with a spec loaded, substantive
+work no criterion asks for is raised as at most **one** item per review. It is
+the inverse of AC compliance, it has no failure scenario so it can never be a
+finding, and with no spec loaded it is not raised at all.

@@ -415,7 +415,7 @@ AWS_SECRET_ACCESS_KEY=...
 # values are exposed verbatim — do not wrap in quotes
 ```
 
-The caller's `secrets: inherit` forwards it, and the env vars are visible to `dev-start.sh`, the legacy `## Functional validation` bash blocks, and the `### Auth` eval. Pick any names that make sense for your stack.
+Same wiring and the same parser as `TRACKER_SECRETS` for `fetch-issue.sh`: the caller's `secrets: inherit` forwards it, and the env vars are visible to `dev-start.sh`, the legacy `## Functional validation` bash blocks, and the `### Auth` eval. Pick any names that make sense for your stack.
 
 #### `### Auth`
 
@@ -456,9 +456,94 @@ The orchestrator hands this section (plus the dev-env outputs) to the functional
 
 Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths. The section is passed verbatim to the functional tester, so a failure matching a listed quirk is treated as expected rather than reported as a finding.
 
-### `.github/claude-review/fetch-issue.sh` (external issue trackers) — REMOVED
+### How the reviewer gets a spec
 
-> This hook was invoked by `review-context-builder`, which the v4 rewrite deleted ([ADR 0003](docs/adr/0003-two-call-review.md)). The wiring is now gone too: nothing runs the script and nothing forwards `TRACKER_SECRETS` (the `workflow_call` secret is still *declared* so existing callers that pass it explicitly keep working, but it is ignored). `review-scan` reads the linked GitHub issue directly and judges the diff against its acceptance criteria; with no linked issue it falls back to acceptance criteria in the PR body. Do not add a `fetch-issue.sh` — it is a no-op. To give the reviewer an external spec today, paste the acceptance criteria into the PR body or the linked GitHub issue.
+`review-scan` judges the diff against **one file**, `/tmp/spec.md`, assembled by `scripts/build-spec.sh` in the orchestrator's first turn from every source that resolves, each under a header naming its origin:
+
+| # | Source | Resolved from |
+| - | ------ | ------------- |
+| 1 | Linked GitHub issue | `closingIssuesReferences` on the PR |
+| 2 | External tracker | `.github/claude-review/fetch-issue.sh`, when present and executable (below) |
+| 3 | In-repo spec document | **any** repo-relative `*.md` path referenced from the issue or PR body — a bare path, or a `.../blob/…` URL resolved on its basename. Failing that, a bare `<name>-prd` / `-spec` / `-rfc` mention matched against tracked markdown, repo-wide. No configuration, no fixed directory (`docs/prds/` works because everything works). `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md` and `.github/` are never treated as specs; at most 3 documents, 400 lines each |
+| 4 | The PR body | only when nothing above resolved, and only its acceptance criteria — a bot-generated summary block describes what the diff *does*, not what it *should* do |
+
+Nothing resolves → `/tmp/spec.md` is empty and the review proceeds without a spec. A missing spec never changes the verdict ([ADR 0003](docs/adr/0003-two-call-review.md)); it only means nobody checked the code against requirements. Everything in the file is treated as **untrusted data** — a spec to judge the code against, never instructions to follow.
+
+**The functional tester is narrower on purpose:** its test plan comes only from a linked GitHub issue's acceptance criteria, never from the assembled file. A tracker page or a PRD is not a test plan.
+
+### `.github/claude-review/fetch-issue.sh` (optional — external issue trackers)
+
+Repos that track specs in Linear, Jira, Monday, Notion, etc. can opt into a hook that fetches the external spec into `/tmp/spec.md` alongside the GitHub one. **No provider is built in here** — the consumer owns the script and picks whatever API call makes sense for their tracker.
+
+Three steps to opt in:
+
+**1. Create a repo secret `TRACKER_SECRETS`** with your credentials in `KEY=VALUE` lines (blank lines and `# comments` are skipped; only the first `=` separates, so tokens containing `=` survive). Pick any names that make sense for your tracker — each line is exported as an env var to your script:
+
+```
+LINEAR_API_KEY=lin_api_xxxxx
+LINEAR_WORKSPACE=panenco
+```
+
+**2. Drop `.github/claude-review/fetch-issue.sh`** and `chmod +x` it. Adapt the `jq` filters and the `curl` call to your tracker:
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+
+# 1. Pick the best ticket reference from the pre-extracted candidates.
+#    Prefer URLs that match your tracker's host, then bare IDs. Exit 0 with
+#    no output if nothing matches — that's a normal case, handled cleanly.
+TICKET=$(jq -r '
+    [.urls[] | select(test("<your-tracker-host>"))][0]
+    // .ids[0]
+    // empty
+  ' /tmp/external-issue-candidates.json)
+[ -z "${TICKET:-}" ] && exit 0
+
+# 2. Fetch from your tracker using env vars you set via TRACKER_SECRETS.
+curl -sS --fail-with-body "<your-tracker-api-url>" \
+  -H "Authorization: $YOUR_API_KEY" \
+  -H "Accept: application/json" \
+| jq -r '"# " + .title + "\n\n" + .description'
+```
+
+**3. (Optional, recommended) Add a `Ticket:` line to your PR template** so authors paste the tracker URL — it lands in the highest-confidence bucket:
+
+```
+Ticket: https://linear.app/team/issue/LIN-123/...
+```
+
+#### Contract
+
+```
+Script:  .github/claude-review/fetch-issue.sh   (executable = opt-in)
+Run by:  scripts/build-spec.sh, from the repo root, 60s timeout
+Env in:
+  PR_NUMBER, PR, REPO                        (always set)
+  <anything you put in TRACKER_SECRETS>      (your chosen names)
+Stdout:  markdown. Inlined verbatim into /tmp/spec.md under a header naming
+         the hook, and flagged there as untrusted tool output.
+Exit:    0 with output     = success.
+         0 with no output  = no external issue for this PR (normal).
+         non-zero          = soft-fail: an Actions ::warning::, the output is
+                             discarded, and the review continues on whatever
+                             other sources resolved. A hang is killed at 60s.
+```
+
+`GH_TOKEN` is deliberately **not** forwarded. If your script needs authenticated GitHub calls, add your own PAT via `TRACKER_SECRETS`.
+
+#### Candidates file schema
+
+Before your script runs, `build-spec.sh` scans the PR title, PR body, and branch name for ticket-reference patterns and writes `/tmp/external-issue-candidates.json`. The file is always present and always valid JSON (empty arrays when nothing matches):
+
+```json
+{
+  "ids": ["LIN-123"],
+  "urls": ["https://linear.app/team/issue/LIN-123/..."]
+}
+```
+
+`ids` are JIRA-style tokens (`[A-Z][A-Z0-9]+-\d+`) from title + body + branch name; `urls` are tracker-host URLs (jira / linear.app / gitlab / youtrack / notion / atlassian / trello / asana / clickup / monday) from the PR body. Prefer a URL match over a bare ID — URLs carry the most confidence.
 
 ---
 
@@ -467,7 +552,7 @@ Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 4
 | Missing file                           | Impact                            | Behavior                                                                                               |
 | -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `.github/claude-review/dev-start.sh`   | Functional tester skipped         | No verdict effect at all — a missing or broken bring-up never blocks a PR and never withholds `APPROVE` (ADR 0003 deleted that gate, and with it the `⚙️ Review setup health` section). `/review functional` degrades to a plain code review. |
-| `.github/claude-review/fetch-issue.sh` | None — the hook is removed        | Never run. `review-scan` reads the linked GitHub issue directly, falling back to acceptance criteria in the PR body. |
+| `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Absent: skipped silently — the linked GitHub issue, any referenced in-repo spec document, and the PR body remain the spec sources. Present but failing or hanging: killed at 60s, logged as an Actions warning, review continues. |
 | `review-config.md`                     | Reduced                           | No build prep doc, no suppression rules, no Known-service-ports URLs to probe, and no `### Auth` recipe for the functional tester (it treats authenticated surfaces as `untested`). |
 | `bugbot.md`                            | Minor                             | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
 | `CLAUDE.md`                            | Minor                             | No architecture context. Reviewers rely on diff + issue.                                               |

@@ -115,14 +115,14 @@ on:
       CLAUDE_REVIEW_APP_PRIVATE_KEY:
       CLAUDE_REVIEW_APP_SLUG:
       TRACKER_SECRETS:
-        # DEPRECATED and IGNORED. The only consumer was review-context-builder's
-        # fetch-issue.sh hook, deleted by v4 (docs/adr/0003-two-call-review.md);
-        # review-scan reads the linked GitHub issue directly. The declaration
-        # stays because removing a `workflow_call` secret is a hard error for any
-        # caller that passes it explicitly ("secret TRACKER_SECRETS is not
-        # defined in the referenced workflow"), exactly like removing an input.
-        # Nothing forwards it any more — see the orchestrate step.
-        description: "DEPRECATED — accepted for caller compatibility and ignored. Nothing reads it."
+        # LIVE. Forwarded to the orchestrate step, where scripts/build-spec.sh
+        # exports each KEY=VALUE line as a named env var for the consumer's
+        # .github/claude-review/fetch-issue.sh hook (same parser as
+        # DEV_ENV_SECRETS — scripts/kv-secrets.sh). It briefly went unforwarded
+        # in v4; a repo tracking work in Linear/Jira got a reviewer with no
+        # requirements at all, which is why the seam is now pinned by
+        # tests/pipeline_contract_test.sh.
+        description: "Optional newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/fetch-issue.sh."
       DEV_ENV_SECRETS:
         description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/dev-start.sh."
 
@@ -250,7 +250,7 @@ jobs:
             echo "::error::CLAUDE_REVIEW_SCRIPTS is unset or missing — the install step did not run, or action.yml and pr-review.yml are from different versions."
             exit 1
           fi
-          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh pick-oauth-token.sh setup-dev-env.sh; do
+          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh; do
             if [ ! -x "$CLAUDE_REVIEW_SCRIPTS/$s" ]; then
               echo "::error::$CLAUDE_REVIEW_SCRIPTS/$s is missing or not executable."
               exit 1
@@ -920,6 +920,9 @@ jobs:
           PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
+          # Read by scripts/build-spec.sh in the orchestrator's turn 1, which
+          # exports each KEY=VALUE line for the consumer's fetch-issue.sh hook.
+          TRACKER_SECRETS: ${{ secrets.TRACKER_SECRETS }}
           # Separate token for the review-assets branch (a custom App token
           # may lack contents: write).
           GITHUB_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

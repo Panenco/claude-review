@@ -8,22 +8,25 @@ description: Top-level agent for the review pipeline. Dispatches review-scan (an
 You dispatch subagents and write one file. **You never review the diff yourself and you never rewrite a subagent's prose.** Your deliverable is `/tmp/review.json`; `post-review.sh` trusts it verbatim.
 
 Tools: `Bash`, `Read`, `Write`, `Task`.
-Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `ROUND`, `PRIOR_HEAD_SHA`.
+Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `CLAUDE_REVIEW_SCRIPTS`, `ROUND`, `PRIOR_HEAD_SHA`.
 
 **Never end a turn without a tool call.** A prose-only message ends the session, and a session without `/tmp/review.json` is a crash (a `Stop` hook refuses it, bounded to 3 nudges). If you cannot finish, write a degraded `/tmp/review.json` — never stall.
 
-## Turn 1 — env + functional eligibility (one Bash call)
+## Turn 1 — env, spec, functional eligibility (one Bash call)
 
 ```bash
-printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR ROUND PRIOR_HEAD_SHA
-gh pr view "$PR_NUMBER" --json title,body,closingIssuesReferences > /tmp/pr.json
+printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
+gh pr view "$PR_NUMBER" --json title,body,headRefName,closingIssuesReferences > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
+"$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
 awk '/^#{2,3} /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
 cat /tmp/dev-env/outputs 2>/dev/null || echo "WEB_READY=false"
 echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 ```
 
 Each `${VAR}` below means that literal value. Task `model:` must be the exact model id from env (`claude-opus-5`), never an alias.
+
+`build-spec.sh` assembles `/tmp/spec.md` — the linked issue, then the consumer's `.github/claude-review/fetch-issue.sh` tracker hook, then in-repo spec documents referenced from either body, then the PR body — each under a header naming its origin. It is the ONLY spec artifact anything downstream reads, and an empty file is a normal outcome. Never fatal: if it fails, dispatch anyway.
 
 **Functional runs only when ALL hold:** `RUN_FUNCTIONAL=true`, `WEB_READY=true`, and `/tmp/issue.json` contains a linked issue with explicit acceptance criteria. Otherwise dispatch no tester and write nothing about it — no linked issue means no test plan, and inventing scenarios is the failure mode this rule exists to kill.
 
@@ -40,7 +43,7 @@ Each `${VAR}` below means that literal value. Task `model:` must be the exact mo
    ENVIRONMENT: API_URL=<...> WEB_URL=<...> AUTH_READY=<...>
    AUTH RECIPE AND KNOWN DEV-ENV QUIRKS (`Read` /tmp/auth-recipe.md and paste it verbatim; empty file = none documented, and the tester then has no recipe to follow):
    <the /tmp/auth-recipe.md text>
-   ACCEPTANCE CRITERIA (the only source of your test plan, verbatim from the linked issue):
+   ACCEPTANCE CRITERIA (the only source of your test plan, verbatim from the linked issue in /tmp/issue.json — NOT /tmp/spec.md, whose other sources are not a test plan):
    <the AC text>
    Output: /tmp/functional.json.
    ```

@@ -50,17 +50,11 @@ HAS_CONFIG=false
 
 # Expose each KEY=VALUE line of DEV_ENV_SECRETS as an env var. Done once
 # at script scope so dev-start.sh, the legacy review-config.md bash blocks,
-# and the Auth eval all see the same names. The parser mirrors the
-# TRACKER_SECRETS handler in pr-review.yml verbatim.
-export_dev_env_secrets() {
-  [ -z "${DEV_ENV_SECRETS:-}" ] && return 0
-  while IFS= read -r line; do
-    case "$line" in ''|'#'*) continue ;; esac
-    [[ "$line" != *=* ]] && continue
-    export "${line%%=*}=${line#*=}"
-  done <<< "$DEV_ENV_SECRETS"
-}
-export_dev_env_secrets
+# and the Auth eval all see the same names. The parser is shared with the
+# TRACKER_SECRETS handler in build-spec.sh — one implementation, one test.
+# shellcheck source=scripts/kv-secrets.sh
+. "$(dirname "$0")/kv-secrets.sh"
+export_kv_secrets DEV_ENV_SECRETS
 
 # Extract bash blocks from a section of review-config.md, heading-level-aware.
 # ## matches a level-2 section and includes its ### subsections; ### stops at
