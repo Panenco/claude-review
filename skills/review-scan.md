@@ -87,6 +87,12 @@ Every finding carries all of:
 
 **Inaccurate prose is `minor`.** A comment, README, changelog or doc that has drifted from the code is not a user-reachable logic bug, so it never reaches `major` on its own. The exception is text this repo *executes* — skill prompts, the setup recipe, workflow and action files — where a consumer runs the stale wording as an instruction: rate that by the failure it causes, exactly like code.
 
+### Copy that states a fact about the system
+
+When the diff changes a user-facing string making a factual claim about behaviour — a duration, a limit, a count, a price, a URL, what a link does — `Grep` for the constant that implements the claim and compare the two values. This is the one place you go looking rather than waiting for code to look wrong: on byte-identical code, a review carrying this instruction found the defect and a review without it missed it.
+
+A mismatch is an **ordinary finding at the ordinary bar**, and the failure scenario writes itself — the user believes the copy, acts on it, and the code does something else. Measured: invitation copy said "expires in 7 days" while `ACTIVATION_TTL_MS` was 72 hours; recipients who trusted it hit an expired-token error on day 4. Copy is runtime behaviour, not documentation, so the prose-is-minor rule above does not apply to it.
+
 Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences.
 
 ## human_review — you choose these

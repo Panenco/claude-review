@@ -54,7 +54,7 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 - **APPROVE** — requires ALL of: zero surviving findings; `human_review_adds_nothing` true with a real, non-empty `approve_argument`; `sensitive_paths_touched` false; `review_effort` ≤ 2. Any doubt → not APPROVE.
 - **COMMENT** — everything else, and the normal outcome. **A COMMENT carrying human-review items is a good review, not a failure.** It says: nothing is provably broken, here is what a human should look at.
 
-**Re-rate a survivor whose severity overshoots scan's ladder** before it decides the verdict: `major` means a user-reachable logic bug, so prose that merely drifted from the code is `minor` — unless it is text a consumer executes, which is judged by the failure it causes.
+**Re-rate a survivor whose severity overshoots scan's ladder** before it decides the verdict: `major` means a user-reachable logic bug, so prose that merely drifted from the code is `minor` — unless it is text a consumer executes, which is judged by the failure it causes — and unless it is user-facing copy stating a fact the user acts on, which is runtime behaviour, judged by where the wrong belief leads.
 
 **The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
 

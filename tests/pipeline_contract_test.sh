@@ -335,6 +335,34 @@ want "…before that severity decides the verdict" "$VERIFY" \
   'before it decides the verdict'
 
 echo ""
+echo "── copy that states a fact about behaviour is checked against the constant ──"
+# v3 proved this by controlled experiment: on byte-identical code the reviewer
+# WITH this directed check found "expires in 7 days" against a 72h
+# ACTIVATION_TTL_MS, and WITHOUT it missed the same defect. The bar never moved —
+# only whether anything told the model to go look. Nothing here runs a model, so
+# these pin the instruction, never the catch.
+want "review-scan directs a lookup when copy claims a fact about behaviour" "$SCAN" \
+  'factual claim about behaviour'
+want "…and names what to go read: the constant behind the claim" "$SCAN" \
+  '`Grep` for the constant that implements the claim'
+# Anchored on "mismatch": the bare phrase already appears in the spec section,
+# so an unanchored match would pass with this whole rule deleted.
+want "…keeping it an ORDINARY finding, not a new exempt class" "$SCAN" \
+  'mismatch is an \*{0,2}ordinary finding at the ordinary bar'
+want "…and carries the measured case that motivated it" "$SCAN" \
+  'ACTIVATION_TTL_MS'
+# The seam: verify's prose-is-minor re-rate would otherwise cap a copy defect at
+# minor, and the verdict it earned would vanish between the two stages.
+if grep -iE 'Re-rate a survivor whose severity' "$VERIFY" | grep -qiE 'user-facing copy'; then
+  ok "the copy exemption rides on the re-rate rule line itself"
+else
+  bad "review-verify must exempt user-facing copy on the Re-rate line, not elsewhere"
+fi
+# And it must not have grown a fourth channel on the way in.
+never "review-scan adds no new exempt class for copy" "$SCAN" \
+  'uncertain_observations|"copy": true'
+
+echo ""
 echo "── the spec reaches the reviewer: ONE file, and the DOCUMENT governs ──"
 # v4 deleted review-context-builder and with it every spec read. The first
 # repair restored only the linked GitHub issue; the external tracker and in-repo
