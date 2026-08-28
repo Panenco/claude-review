@@ -104,7 +104,12 @@ jq -r 'sort_by(.submitted_at) | reverse
        | [.[] | select((.body // "") | contains("<!-- claude-review-state"))]
        | (.[0].body // "")' "$PRIOR_REVIEWS" > "$WORK/state-body.txt" 2>/dev/null \
   || : > "$WORK/state-body.txt"
-if [ -s "$WORK/state-body.txt" ]; then
+# `grep -q` the marker rather than `[ -s ]`: when NO review carries a state block
+# the jq above still emits a bare newline, so the file is 1 byte and `-s` is true.
+# That reported "present but unreadable" on every PR opened before the state block
+# shipped — the whole round-2 population on release day — and sent operators
+# looking for a corruption that was really just an absence.
+if grep -q '<!-- claude-review-state' "$WORK/state-body.txt" 2>/dev/null; then
   sed -n '/<!-- claude-review-state/,/-->/p' "$WORK/state-body.txt" | sed '1d;$d' > "$WORK/state.json"
   if jq -e '.v == 1' "$WORK/state.json" >/dev/null 2>&1; then
     jq '[ (.findings // [])[]

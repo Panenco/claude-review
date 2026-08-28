@@ -310,6 +310,32 @@ else
 fi
 
 echo ""
+echo "── an ABSENT state block is not a CORRUPT one ──"
+# jq emits a bare newline when no review carries a block, so the file is 1 byte
+# and `[ -s ]` was true — reporting corruption on every PR that predates the
+# state block, which on release day is the entire round-2 population.
+reset 2
+printf '[%s]\n' "$(review 2026-06-01T00:00:00Z "## Claude review — COMMENT
+
+A body from before the state block shipped.")" > "$WORK/out/prior-reviews.json"
+run_pf
+assert_eq "exit 0" "0" "$RC"
+assert_not_contains "no state block is not an unreadable one" \
+  "state block is present but unreadable" "$OUT"
+
+# …and a block that IS there but is malformed must still say so.
+reset 2
+printf '[%s]\n' "$(review 2026-06-02T00:00:00Z "## Claude review — COMMENT
+
+<!-- claude-review-state
+{ this is not json
+-->")" > "$WORK/out/prior-reviews.json"
+run_pf
+assert_eq "exit 0" "0" "$RC"
+assert_contains "a corrupt block still warns" \
+  "state block is present but unreadable" "$OUT"
+
+echo ""
 echo "── house rules ──"
 if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$SCRIPT"; then
   bad "prior-findings.sh uses set -e (banned, bugbot.md)"
