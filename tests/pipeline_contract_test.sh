@@ -193,6 +193,83 @@ want "…and says which failure mode is worse" "$VERIFY" \
   'wrong patch is worse than a wrong sentence'
 
 echo ""
+echo "── the spec reaches the reviewer: someone fetches it, someone judges it ──"
+# v4 deleted review-context-builder and with it every spec read. The orchestrator
+# kept writing /tmp/issue.json, but the ONLY readers were the functional-tester
+# eligibility check and the tester's prompt — so on every PR where the tester did
+# not run (the overwhelming majority) nothing on earth compared the code to what
+# the code was supposed to do. Both halves of that seam are asserted here.
+want "orchestrator still fetches linked-issue bodies into /tmp/issue.json" "$ORCH" \
+  'gh issue view.*>\s*/tmp/issue\.json|/tmp/issue\.json'
+want "review-scan reads /tmp/issue.json itself" "$SCAN" \
+  '`?Read`? /tmp/issue\.json'
+want "…and falls back to acceptance criteria in the PR body" "$SCAN" \
+  'acceptance criteria from the PR body|PR body instead'
+want "…ignoring bot-generated summaries, which are not a spec" "$SCAN" \
+  'bot-generated summary'
+# The bar is the whole product. An AC gap is a normal finding, not a new class
+# of finding that gets to skip failure_scenario.
+want "…and an AC gap still clears the ordinary finding bar" "$SCAN" \
+  'ordinary finding at the ordinary bar|still name the input'
+# Precise, not fuzzy: the line that enumerates legitimate why_unresolved
+# blockers must not list a missing spec among them, now that one is loaded.
+if grep -i 'names the real blocker' "$SCAN" | grep -qi 'no spec'; then
+  bad "review-scan still lists \"no spec\" as a legitimate why_unresolved blocker"
+else
+  ok "review-scan does not list \"no spec\" among the legitimate blockers"
+fi
+want "…and says so once a spec is loaded" "$SCAN" \
+  '"no spec" is never a `why_unresolved`'
+# v3 had prompt_injection_detected; v4's only surviving defence is the CLI deny
+# list, which cannot stop the model from OBEYING text it read.
+want "review-scan treats PR/issue prose as untrusted data, not instructions" "$SCAN" \
+  'untrusted data, never instructions'
+
+echo ""
+echo "── the auth recipe is DELIVERED by whoever promises it ──"
+# Three files told the tester its prompt carried a ready-made auth recipe and
+# the dev-env quirks list. The orchestrator passed API_URL/WEB_URL/AUTH_READY
+# and nothing else, so "do not rediscover auth" left the tester with no auth at
+# all. Promise and delivery must both be present, in the same direction.
+TESTER="$ROOT/skills/review-functional-tester.md"
+TESTER_AGENT="$ROOT/agents/review-functional-tester.md"
+[ -f "$TESTER" ] && [ -f "$TESTER_AGENT" ] || { echo "FAIL: functional tester files missing"; exit 1; }
+want "the tester is told to use the recipe from its prompt" "$TESTER" \
+  'auth recipe from your prompt'
+want "…and the agent definition says the prompt carries it" "$TESTER_AGENT" \
+  'auth recipe'
+want "the orchestrator extracts ### Auth from .github/review-config.md" "$ORCH" \
+  'review-config\.md'
+want "…including ### Known dev-env quirks, which the tester also expects" "$ORCH" \
+  'Known dev-env quirks'
+want "…and pastes it into the tester's Task prompt" "$ORCH" \
+  'auth-recipe\.md'
+want "the tester degrades to untested when no recipe was passed" "$TESTER" \
+  'no recipe at all'
+want "the tester names review-verify as the consumer of its output" "$TESTER" \
+  'read by .review-verify.'
+
+echo ""
+echo "── the orphaned external-tracker wiring is gone, not half-gone ──"
+# README called fetch-issue.sh "currently unwired" while the workflow still
+# exported TRACKER_SECRETS to a step nothing read, and the onboarding prompt
+# still walked new consumers through building the hook.
+never "the workflow forwards TRACKER_SECRETS to no step" "$WORKFLOW" \
+  'TRACKER_SECRETS: \$\{\{'
+if grep -qE '^ *TRACKER_SECRETS:' "$WORKFLOW"; then
+  # Kept on purpose: deleting a workflow_call SECRET is a hard error for any
+  # caller that passes it explicitly, exactly like deleting an input.
+  want "…and the surviving workflow_call declaration is marked DEPRECATED" "$WORKFLOW" \
+    'DEPRECATED'
+else
+  ok "workflow declares no TRACKER_SECRETS at all"
+fi
+never "onboarding no longer tells consumers to create fetch-issue.sh" \
+  "$ROOT/prompts/setup-review.md" 'fetch-issue\.sh'
+never "onboarding no longer asks for a TRACKER_SECRETS secret" \
+  "$ROOT/prompts/setup-review.md" 'TRACKER_SECRETS'
+
+echo ""
 echo "── this repo's own review-config is not v3-stale ──"
 # It is a config file the reviewer now actually reads and acts on, so stale
 # claims in it become wrong instructions to the model.

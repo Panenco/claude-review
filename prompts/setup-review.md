@@ -380,34 +380,9 @@ If bring-up needs creds that aren't checked-in defaults (private registry token,
 
 Detect this passively: grep the `dev-start.sh` you drafted for `$VAR` references that aren't shell built-ins or values you set inside the script. If any look external (anything ending `_TOKEN`/`_KEY`/`_SECRET`, registry/cloud creds), surface the to-do. If self-contained (compose-defined creds, no external API), skip it.
 
-## Step 4.6: External issue tracker (optional)
+## Step 4.6: The `review-config.md` runtime sections
 
-The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can opt into an extra hook that fetches the external spec and includes it in the reviewer's context. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
-
-Walk through this decision even if the project looks GitHub-only; confirm it explicitly so you don't leave a Linear-using repo silently missing spec context.
-
-1. **Detect passively.** Look for tracker evidence without asking first:
-   - `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE*`, `.github/ISSUE_TEMPLATE/*` — grep for `linear.app`, `*.atlassian.net`, `jira.`, `monday.com`, `notion.so`, `app.clickup.com`, `app.shortcut.com`, `app.asana.com`.
-   - Recent PR bodies and branch names: `gh pr list --json body,headRefName --limit 20` — look for the same hosts plus any recurring `[A-Z]+-\d+` token convention in branch names.
-   - Note what you found (or didn't) for the user.
-
-2. **Confirm with the user.** Use `AskUserQuestion` to ask:
-   > "Does this repo track specs in an external system (Linear / Jira / Monday / Notion / other)? If yes, which? If no, choose **GitHub only**."
-   Ask this whether detection succeeded or not — a grep hit might be a one-off link, and a miss might just mean the history is sparse. The user's answer wins.
-
-3. **If GitHub only** — print "No tracker integration needed. Skipping." and go to Step 5. Do not create `fetch-issue.sh` and do not list any extra secrets.
-
-4. **If a tracker was chosen** — do NOT generate the hook script or any tracker code yourself. Output three concrete to-dos for the user to complete:
-
-   - "**Add a repo secret named `TRACKER_SECRETS`** with your credentials in newline-separated `KEY=VALUE` form. For `<chosen tracker>`, a typical minimum is something like:
-     ```
-     <PROVIDER>_API_KEY=<your key>
-     ```
-     Get your key at `<the provider's API-key page URL>`."
-   - "**Create `.github/claude-review/fetch-issue.sh`**. It reads the pre-extracted ticket references at `/tmp/external-issue-candidates.json`, calls your tracker, and prints markdown to stdout. See the README section **External issue trackers** (`.github/claude-review/fetch-issue.sh`) for the full contract, the candidates-file schema, and a provider-neutral skeleton to adapt."
-   - "**Optional but recommended:** add a `Ticket: <url>` line to your PR template so authors paste the tracker URL into every PR — this gives the highest-confidence lookup (Tier-1 explicit marker)."
-
-   Emphasize: `fetch-issue.sh` must be committed and `chmod +x`'d. Without `TRACKER_SECRETS` the hook runs but every env var the script references is empty, and the script will soft-fail on the first `curl` — the Actions log will show a `::warning::`.
+These sit in `.github/review-config.md` (Step 4). `scripts/setup-dev-env.sh` probes them during bring-up, and the orchestrator lifts `### Auth` + `### Known dev-env quirks` verbatim into the functional tester's prompt.
 
 ### Auth
 
@@ -570,10 +545,6 @@ It is common to fix one and miss the other on a first setup; the installation pa
 | Caller workflow missing `permissions:` block | `startup_failure`, zero jobs, no logs. Happens when the org's default `GITHUB_TOKEN` is read-only. Fix: add the `permissions:` block from Step 2. |
 | Caller workflow missing `id-token: write` | Nothing today — the reviewer does not request it yet. Once it does, this is `startup_failure`, zero jobs, no logs, because GitHub refuses the run before any pipeline code executes. Fix: add `id-token: write` to the caller's `permissions:` block. |
 | All correct | "Create GitHub App token" = `success`, "Resolve review identity" logs `Review identity: <your-app-slug>[bot]`. |
-
-### `TRACKER_SECRETS` (optional, for Step 4.6 opt-in)
-
-Single multiline secret with newline-separated `KEY=VALUE` pairs that your `fetch-issue.sh` reads as env vars. Without it, the hook runs but every referenced env var is empty — the Actions log will show a `::warning::` from `fetch-issue.sh`, and the review completes without external-spec context.
 
 ### `DEV_ENV_SECRETS` (optional, for Step 4.5 when dev-start.sh needs creds)
 

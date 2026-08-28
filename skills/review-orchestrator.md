@@ -18,6 +18,7 @@ Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `FUNCTIONAL_BUDGET_SECO
 printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR ROUND PRIOR_HEAD_SHA
 gh pr view "$PR_NUMBER" --json title,body,closingIssuesReferences > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
+awk '/^#{2,3} /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
 cat /tmp/dev-env/outputs 2>/dev/null || echo "WEB_READY=false"
 echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 ```
@@ -37,6 +38,8 @@ Each `${VAR}` below means that literal value. Task `model:` must be the exact mo
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-functional-tester.md and follow it exactly. PR #${PR_NUMBER}.
    DEADLINE_EPOCH=<computed> — hard wall-clock stop.
    ENVIRONMENT: API_URL=<...> WEB_URL=<...> AUTH_READY=<...>
+   AUTH RECIPE AND KNOWN DEV-ENV QUIRKS (`Read` /tmp/auth-recipe.md and paste it verbatim; empty file = none documented, and the tester then has no recipe to follow):
+   <the /tmp/auth-recipe.md text>
    ACCEPTANCE CRITERIA (the only source of your test plan, verbatim from the linked issue):
    <the AC text>
    Output: /tmp/functional.json.

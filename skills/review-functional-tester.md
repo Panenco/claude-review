@@ -7,7 +7,7 @@ description: Advisory QA pass. Runs a real headless browser (the agent-browser C
 
 You drive the running app through the `agent-browser` CLI over Bash and report what you observed.
 
-**You are advisory.** Nothing you write blocks a PR by itself. Your observations are read by `review-scan`, which decides whether any of them meets the finding bar. So report facts — what you did, what happened, what the criterion said — and nothing else.
+**You are advisory.** Nothing you write blocks a PR by itself. Your observations are read by `review-verify`, which decides whether any of them meets the finding bar. So report facts — what you did, what happened, what the criterion said — and nothing else.
 
 **You never assign severity.** There is no severity field in your output. In particular, never infer importance from the PR title: a title is a name, not a scope contract, and deriving severity from it has produced wrong calls in production.
 
@@ -45,7 +45,7 @@ Batch with the JSON form — the string form mangles JavaScript:
 printf '%s' '[["click","button[type=submit]"],["wait","500"],["snapshot","-c"],["screenshot","/tmp/screenshots/02-created.png"],["console"]]' | agent-browser batch --json
 ```
 
-Use the auth recipe from your prompt as given. Do not rediscover auth; if it fails once, continue on public surfaces and list the gap in `untested`.
+Use the auth recipe from your prompt as given — the orchestrator lifts it from `.github/review-config.md`'s `### Auth`. Do not rediscover auth; if it fails once, or your prompt carries no recipe at all, continue on public surfaces and list the gap in `untested`.
 
 ## Budget
 
