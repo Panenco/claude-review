@@ -78,6 +78,8 @@ Every finding carries all of:
 | `severity` | `critical` (security, data loss, broken build) / `major` (user-reachable logic bug) / `minor` (real but non-blocking) |
 | `convention` | `true` only for a quoted documented-convention violation (then `failure_scenario` may be `""`); `false` for every normal finding |
 
+**Inaccurate prose is `minor`.** A comment, README, changelog or doc that has drifted from the code is not a user-reachable logic bug, so it never reaches `major` on its own. The exception is text this repo *executes* — skill prompts, the setup recipe, workflow and action files — where a consumer runs the stale wording as an instruction: rate that by the failure it causes, exactly like code.
+
 Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences.
 
 ## human_review — you choose these

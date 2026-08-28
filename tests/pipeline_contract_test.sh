@@ -264,6 +264,68 @@ want "…and falls back to prose instead of shipping an unconfirmed patch" "$VER
 want "…and says which failure mode is worse" "$VERIFY" \
   'wrong patch is worse than a wrong sentence'
 
+# ...and the two decisions must stay SEPARATE. PR98 again: review-scan found a
+# real bug (require-native-findings.sh self-disabling), review-verify agreed the
+# code did what was asserted, then refuted the whole finding with the reason
+# "the proposed suggestion would flip that asserted behaviour" — it dropped the
+# FINDING where this rule says drop the FENCE. A true-positive loss is the worst
+# outcome this reviewer has, so the separation is pinned three ways.
+want "…and never refutes a finding over its fix" "$VERIFY" \
+  'Refuting a finding because its suggested fix is wrong is an error'
+want "…a confirmed defect with no safe patch is still a finding" "$VERIFY" \
+  'confirmed defect with no safe patch is still a finding'
+want "…and the fence is what gets dropped, never the finding" "$VERIFY" \
+  'drop the fence, never the finding'
+# The separation has to live INSIDE the refute mandate, not only down in the
+# inline-comment section — that distance is what let the refute framing swallow
+# it. Anything after "## Repo conventions" is out of that section.
+SEP_LINE=$(grep -nE '`fix` is not under test' "$VERIFY" | head -1 | cut -d: -f1)
+CONV_LINE=$(grep -n '^## Repo conventions' "$VERIFY" | head -1 | cut -d: -f1)
+if [ -n "$SEP_LINE" ] && [ -n "$CONV_LINE" ] && [ "$SEP_LINE" -lt "$CONV_LINE" ]; then
+  ok "the defect/patch split is stated in the refute section itself (line $SEP_LINE)"
+else
+  bad "review-verify must say the fix is not under test inside the refute section (split=${SEP_LINE:-?} conventions=${CONV_LINE:-?})"
+fi
+# Structural: no rule anywhere may pair killing a finding with the state of its
+# patch, unless it is one of the rules forbidding exactly that.
+TIED=$(grep -niE 'refut|drop the finding|drop it' "$VERIFY" \
+  | grep -iE 'suggestion|patch|fence|`fix`' | grep -i 'finding' \
+  | grep -viE 'is an error|never the finding|not under test|no safe patch is still a finding')
+if [ -z "$TIED" ]; then
+  ok "no rule in review-verify ties refuting a finding to the quality of its fix"
+else
+  bad "review-verify ties a refutation to the fix: $TIED"
+fi
+
+echo ""
+echo "── the severity ladder: drifted prose is not a user-reachable logic bug ──"
+# PR99 got REQUEST_CHANGES for documentation drift, against this repo's own bar
+# (doc accuracy non-blocking; REQUEST_CHANGES for critical/major defects only).
+# `major` was left to inference, so prose inaccuracy kept landing there. The
+# exception is real and must survive: this repo executes its skill prompts and
+# prompts/setup-review.md, so stale text there can break a consumer.
+want "review-scan rates drifted prose minor, not major" "$SCAN" \
+  'Inaccurate prose is .{0,3}`?minor`?'
+want "…naming why: it is not a user-reachable logic bug" "$SCAN" \
+  'not a user-reachable logic bug'
+want "…and it never reaches major on its own" "$SCAN" \
+  'never reaches .{0,3}`?major`?'
+want "…while executable text stays judged by the failure it causes" "$SCAN" \
+  'skill prompts, the setup recipe'
+never "…so no blanket \"docs are always minor\" rule ships" "$SCAN" \
+  'documentation is always minor|docs are always minor|all documentation.{0,20}minor'
+# Rule and exception must share a line: split apart, the exception is the half
+# that gets deleted, and stale executable text silently becomes minor.
+if grep -iE 'Inaccurate prose is' "$SCAN" | grep -qiE 'exception is text this repo'; then
+  ok "the prose-is-minor rule carries its executable-asset exception in the same paragraph"
+else
+  bad "review-scan must state the executable-asset exception alongside the prose-is-minor rule"
+fi
+want "review-verify re-rates a survivor that overshoots the ladder" "$VERIFY" \
+  'Re-rate a survivor whose severity'
+want "…before that severity decides the verdict" "$VERIFY" \
+  'before it decides the verdict'
+
 echo ""
 echo "── the spec reaches the reviewer: ONE file, and the DOCUMENT governs ──"
 # v4 deleted review-context-builder and with it every spec read. The first

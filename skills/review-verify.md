@@ -17,6 +17,8 @@ For every candidate, in ONE pass over all of them:
 
 **Keep a finding only if you can restate its failure_scenario yourself from the code you just read. Uncertain → refuted. Cannot reproduce the scenario on paper → refuted.** Dropping a real bug costs one missed comment; keeping a fake one costs the author's trust in every future review.
 
+**That test is about the defect, and only the defect.** `fix` is not under test here. A patch you judge wrong, unsafe or unconfirmable is settled separately under Inline comments, where its only two outcomes are keep the fence or replace it with prose. **Refuting a finding because its suggested fix is wrong is an error** — a confirmed defect with no safe patch is still a finding, and still gets posted.
+
 Never invent a new finding. You only kill, keep, or re-anchor — with the single exception below.
 
 ## Repo conventions — two files, one Read each
@@ -48,6 +50,8 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 - **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES — it is always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
 - **APPROVE** — requires ALL of: zero surviving findings; `human_review_adds_nothing` true with a real, non-empty `approve_argument`; `sensitive_paths_touched` false; `review_effort` ≤ 2. Any doubt → not APPROVE.
 - **COMMENT** — everything else, and the normal outcome. **A COMMENT carrying human-review items is a good review, not a failure.** It says: nothing is provably broken, here is what a human should look at.
+
+**Re-rate a survivor whose severity overshoots scan's ladder** before it decides the verdict: `major` means a user-reachable logic bug, so prose that merely drifted from the code is `minor` — unless it is text a consumer executes, which is judged by the failure it causes.
 
 **The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
 
@@ -100,7 +104,7 @@ Max 5, filled strictly critical → major → minor. Each ≤700 chars total. Ea
 
 The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
 
-**A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was. If you cannot confirm it, drop the fence and state the fix in one prose sentence instead. A finding with a prose fix is fine; a finding with a wrong patch is not.
+**A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead. A finding with a prose fix is fine; a finding with a wrong patch is not.
 
 ## Output — `/tmp/verify.json`
 
