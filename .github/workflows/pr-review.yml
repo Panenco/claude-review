@@ -250,7 +250,7 @@ jobs:
             echo "::error::CLAUDE_REVIEW_SCRIPTS is unset or missing — the install step did not run, or action.yml and pr-review.yml are from different versions."
             exit 1
           fi
-          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh; do
+          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh; do
             if [ ! -x "$CLAUDE_REVIEW_SCRIPTS/$s" ]; then
               echo "::error::$CLAUDE_REVIEW_SCRIPTS/$s is missing or not executable."
               exit 1
@@ -440,6 +440,15 @@ jobs:
             exit 1
           fi
           grep -E '^(round|prior_head_sha|prior_verdict)=' <<< "$STATE" >> "$GITHUB_OUTPUT"
+
+          # The findings themselves, not just the round number. prior-review-state.sh
+          # gives review-scan the last review BODY — and the inline-XOR rule deleted
+          # every critical and major from that body, so the body alone made the
+          # highest-severity findings invisible to the next round. Never fatal: a
+          # carrier that cannot be read contributes nothing.
+          FSTATE=$(ROUND=$(sed -n 's/^round=//p' <<< "$STATE") "$CLAUDE_REVIEW_SCRIPTS"/prior-findings.sh)
+          echo "Prior findings:"; echo "$FSTATE" | sed 's/^/  /'
+          grep -E '^prior_finding_count=[0-9]+$' <<< "$FSTATE" >> "$GITHUB_OUTPUT" || true
 
       # The ONLY deterministic short-circuit left. No depth tiers — review-scan
       # self-scales — so this answers one question: does a model run at all?
@@ -1025,6 +1034,7 @@ jobs:
           ANALYZER_OUTCOME: ${{ steps.claude_run.outcome }}
           HEAD_SHA: ${{ steps.pr_sha.outputs.sha }}
           ORCHESTRATOR_EXEC: ${{ steps.claude_run.outputs.execution_file }}
+          ROUND: ${{ steps.prior_state.outputs.round || '1' }}
         run: |
           set -uo pipefail
           if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then

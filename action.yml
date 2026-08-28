@@ -46,7 +46,10 @@ runs:
         # build-spec.sh + kv-secrets.sh assemble /tmp/spec.md in the orchestrator's
         # turn 1. Missing, the review silently judges the code against no spec at
         # all — the exact regression this list exists to make loud.
-        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh guard.sh review-command.sh prior-review-state.sh require-review-json.sh upload-screenshots.sh build-spec.sh kv-secrets.sh; do
+        # prior-findings.sh is the round-2 carry-over. Missing, round 2 sees a body
+        # the inline-XOR rule already stripped its criticals out of, reads a clean
+        # delta, and approves a PR whose blocking finding nobody fixed.
+        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh require-review-json.sh upload-screenshots.sh build-spec.sh kv-secrets.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1

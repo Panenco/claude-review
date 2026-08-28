@@ -55,7 +55,8 @@ set -uo pipefail
 # Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, REVIEW_BOT_USER
 # Optional env: HEAD_SHA, GITHUB_STEP_SUMMARY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
 #               REVIEW_JSON, ORCH_LOG, JOB_START, REVIEW_BODY_MAX,
-#               REVIEW_COMMENT_MAX, REVIEW_COMMENT_LIMIT
+#               REVIEW_COMMENT_MAX, REVIEW_COMMENT_LIMIT, ROUND,
+#               PRIOR_FINDINGS_JSON, REVIEW_STATE_MAX
 
 REPO="$GITHUB_REPOSITORY"
 PR="$PR_NUMBER"
@@ -68,12 +69,26 @@ SERVER="${GITHUB_SERVER_URL:-https://github.com}"
 BODY_MAX="${REVIEW_BODY_MAX:-1200}"
 COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
 COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-5}"
+ROUND="${ROUND:-1}"
+PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
+STATE_MAX="${REVIEW_STATE_MAX:-4000}"
+# Shared byte-for-byte with prior-findings.sh: the two must never disagree about
+# what "the same finding" is. Line is deliberately not part of the identity.
+JQ_NORM='def norm: gsub("[\r\n]+"; " ") | sub("^[ \t]*\\*\\*(critical|major|minor)\\*\\*[ \t]*"; ""; "i") | gsub("[`*]"; "") | gsub("[ \t]+"; " ") | sub("^ "; "") | sub(" $"; "") | ascii_downcase | sub("[.!?]+$"; "");'
 WORK=$(mktemp -d) || { echo "::error::mktemp failed"; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 
 # Byte length — the budgets are compared against `wc -c`, and ${#var} counts
 # CHARACTERS, so a body with one em dash would otherwise be measured short.
 blen() { printf '%s' "$1" | wc -c | tr -d ' '; }
+
+# A body guard.sh rendered without a model call. Matched on the FIRST LINE only:
+# an unanchored grep also matches a JUDGED review that quotes a marker in a
+# finding. One helper, two callers (4c and section 5), so they cannot drift.
+is_skip_marked() {
+  head -n1 "$WORK/body.md" 2>/dev/null \
+    | grep -qE '^[[:space:]]*<!-- claude-review-(skipped|oversized) -->[[:space:]]*$'
+}
 
 # Crash banners can't be deleted (no review-delete API); PATCH them to a
 # benign superseded form. The superseded marker shares no substring with the
@@ -528,6 +543,20 @@ path_sha() {
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
   fi
 }
+# The cross-round finding id: sha256(path + "\n" + normalised title), first 8 hex.
+finding_id() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s\n%s' "$1" "$2" | sha256sum | cut -c1-8
+  else
+    printf '%s\n%s' "$1" "$2" | shasum -a 256 | cut -c1-8
+  fi
+}
+emit_state() {
+  jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" \
+    '{v: 1, round: $round, truncated: ($trunc == 1), findings: .}' \
+    "$WORK/state-findings.json" > "$WORK/state.json"
+}
+state_bytes() { wc -c < "$WORK/state.json" | tr -d ' '; }
 render_link() {
   local spec="$1" path lineno="" url
   path="${spec%:}"
@@ -554,19 +583,156 @@ printf '%s' "$FOOTER" >> "$WORK/body.md"
 echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"
 echo "::endgroup::"
 
+# ── 4c. The round-2 state block ─────────────────────────────────────────────
+# Everything above this line is for the human; this is for the next round.
+#
+# WHY IT EXISTS. Findings that get an inline slot are deleted from the body by
+# 4a, and findings past the budget are deleted by the truncator above. The body
+# was the only surface the next round read, so the two things it could not see
+# were exactly the critical/major findings and the ones that overflowed. R1 files
+# a critical, R2 sees a clean delta, APPROVE, section 5 dismisses the standing
+# block, and a real bug is silently unblocked.
+#
+# WHY IT IS APPENDED HERE, after truncation, after expansion, after the footer:
+# so the budget can never evict it and it can never evict content. It is not
+# measured by budget.awk and carries no {{LINK:}} placeholders.
+#
+# WHY IT IS NOT BUILT FROM meta.findings ALONE: meta is model-written and can be
+# empty or absent while three criticals post inline (tests (n) and (k5) both
+# exercise that). The floor is what the poster ITSELF decided to post — `kept`
+# and `dropped` — unioned with meta for the failure_scenario text.
+#
+# WHY IT IS SUPPRESSED FOR SKIP-MARKED BODIES: the guard's oversized block judged
+# nothing (pr-review.yml writes /tmp/review.json from it). A state block there
+# would tell the next round "round N found nothing".
+echo "::group::Review state"
+echo '[]' > "$WORK/carried.json"
+if is_skip_marked; then
+  echo "Skip-marked review (judged nothing) — no state block."
+else
+  jq -n --argjson round "$ROUND" \
+     --slurpfile rj "$REVIEW_JSON" \
+     --slurpfile kp "$WORK/comments.json" \
+     --slurpfile sp "$WORK/split.json" '
+    def csev:
+      ((.body // "") | ascii_downcase)
+      | if test("^\\s*\\*\\*critical\\*\\*") then "critical"
+        elif test("^\\s*\\*\\*major\\*\\*") then "major"
+        elif test("^\\s*\\*\\*minor\\*\\*") then "minor"
+        else "" end;
+    def num: ((. // 0) | tostring | tonumber?) // 0;
+    (($rj[0].meta.findings // [])
+     | map({p: (.path // ""), l: (.line | num), sev: ((.severity // "") | ascii_downcase),
+            t: (.title // ""), fs: (.failure_scenario // ""),
+            cf: (.carried_from // ""), inline: false, _o: 0}))
+    + (($kp[0] // [])
+       | map({p: (.path // ""), l: (.line | num), sev: csev,
+              t: ((.body // "") | split("\n") | (.[0] // "")
+                  | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "")),
+              fs: (((.body // "") | split("\n\n")) | (.[1] // "")),
+              cf: "", inline: true, _o: 1}))
+    + ((($sp[0].dropped) // [])
+       | map({p: (.path // ""), l: (.line | num), sev: (.severity // ""),
+              t: (.title // ""), fs: "", cf: "", inline: false, _o: 2}))
+    | map(select(.p != "" and .t != "")) | map(. + {r: $round})' > "$WORK/round.json" \
+    || echo '[]' > "$WORK/round.json"
+
+  : > "$WORK/round-ids.txt"
+  jq -r "$JQ_NORM"'.[] | .p + "\t" + (.t | norm)' "$WORK/round.json" 2>/dev/null \
+    | while IFS=$'\t' read -r rp rt; do finding_id "$rp" "$rt" >> "$WORK/round-ids.txt"; done
+
+  PRIORS="$PRIOR_FINDINGS_JSON"
+  if ! jq -e 'type == "array"' "$PRIOR_FINDINGS_JSON" >/dev/null 2>&1; then
+    echo '[]' > "$WORK/no-priors.json"
+    PRIORS="$WORK/no-priors.json"
+  fi
+
+  # `carried_from` is the re-wording escape valve: a finding the model kept under
+  # new words adopts the old id and the round it was FIRST seen, so it counts once.
+  jq --rawfile idsraw "$WORK/round-ids.txt" --slurpfile pri "$PRIORS" '
+    ($idsraw | split("\n") | map(select(length > 0))) as $ids
+    | ($pri[0] // []) as $prior
+    | to_entries | map(.value + {id: ($ids[.key] // "")})
+    | map(select(.id != ""))
+    | map(. as $f
+          | ($prior | map(select(.id == $f.cf)) | .[0]) as $old
+          | if ($f.cf != "") and ($old != null)
+            then $f + {id: $f.cf, r: ($old.r // $f.r)}
+            else $f end)
+    | map(del(.cf))
+    | group_by(.id)
+    | map(sort_by(._o)
+          | (.[0]) as $b
+          | $b + {fs: ([.[] | (.fs // "") | select(. != "")] | (.[0] // "")),
+                  inline: ([.[] | .inline] | any),
+                  l: ([.[] | (.l // 0) | select(. > 0)] | (.[0] // 0)),
+                  r: ([.[] | .r] | min)})
+    | map(del(._o))' "$WORK/round.json" > "$WORK/this-round.json" \
+    || echo '[]' > "$WORK/this-round.json"
+
+  # Silence is not a bucket: a carried finding this round neither re-listed nor
+  # accounted for in resolved_prior/refuted stays in the state and is announced.
+  # It does NOT touch the verdict, the body, or the dismissal in section 5.
+  jq --slurpfile rj "$REVIEW_JSON" --slurpfile this "$WORK/this-round.json" '
+    ([($rj[0].meta.resolved_prior // [])[] | .id // empty]
+     + [($rj[0].meta.refuted // [])[] | .id // empty]
+     + [($this[0] // [])[] | .id]) as $seen
+    | map(select((.id | IN($seen[])) | not))' "$PRIORS" > "$WORK/carried.json" \
+    || echo '[]' > "$WORK/carried.json"
+
+  jq -r '.[] | "::warning::Carried finding \(.id) (\(.sev // "?"), \(.p)) was neither re-listed nor resolved this round — kept in the review state."' \
+    "$WORK/carried.json"
+
+  # A literal `-->` inside a title would terminate the comment early and spill
+  # JSON into the rendered review, so it is neutralised before anything is emitted.
+  jq -s 'def srank: if .sev == "critical" then 0 elif .sev == "major" then 1 elif .sev == "minor" then 2 else 3 end;
+         (.[0] + .[1]) | unique_by(.id) | sort_by([srank, .r])
+         | walk(if type == "string" then gsub("-->"; "—>") else . end)' \
+    "$WORK/this-round.json" "$WORK/carried.json" > "$WORK/state-findings.json" \
+    || echo '[]' > "$WORK/state-findings.json"
+
+  TRUNCATED=0
+  emit_state
+  # Degrade in the order that costs the next round least: the failure scenarios
+  # of findings it can re-read from the inline comments, then the longest
+  # scenarios, then the least severe findings (the list is severity-sorted).
+  if [ "$(state_bytes)" -gt "$STATE_MAX" ]; then
+    TRUNCATED=1
+    jq 'map(if .inline then del(.fs) else . end)' "$WORK/state-findings.json" > "$WORK/sf.tmp" \
+      && mv "$WORK/sf.tmp" "$WORK/state-findings.json"
+    emit_state
+  fi
+  while [ "$(state_bytes)" -gt "$STATE_MAX" ]; do
+    jq 'if ([.[] | select((.fs // "") != "")] | length) == 0 then empty
+        else ([to_entries[] | select((.value.fs // "") != "")] | max_by(.value.fs | length) | .key) as $k
+             | del(.[$k].fs) end' "$WORK/state-findings.json" > "$WORK/sf.tmp"
+    [ -s "$WORK/sf.tmp" ] || break
+    mv "$WORK/sf.tmp" "$WORK/state-findings.json"
+    emit_state
+  done
+  while [ "$(state_bytes)" -gt "$STATE_MAX" ]; do
+    jq 'if length <= 1 then empty else .[0:-1] end' "$WORK/state-findings.json" > "$WORK/sf.tmp"
+    [ -s "$WORK/sf.tmp" ] || break
+    mv "$WORK/sf.tmp" "$WORK/state-findings.json"
+    emit_state
+  done
+
+  { printf '\n<!-- claude-review-state\n'
+    cat "$WORK/state.json"
+    printf -- '-->\n'
+  } >> "$WORK/body.md"
+  echo "Review state: $(jq '.findings | length' "$WORK/state.json") finding(s), $(wc -c < "$WORK/state.json") bytes (invisible to the reader, cap $STATE_MAX)"
+fi
+echo "::endgroup::"
+
 # ── 5. Dismiss own stale blocking reviews (keep COMMENTED for audit trail) ──
 # Only a review that JUDGED the diff may clear a standing one. A skip-marked
 # body (guard.sh's oversized split request) read no code, so dismissing on its
 # way in would (a) un-block a PR nobody re-reviewed and (b) leave the next
 # judged round reading `prior_verdict` off a DISMISSED review, which means "the
 # author opted out" (see prior-review-state.sh). Leave it standing.
-#
-# Matched on the FIRST LINE only. An unanchored grep also matches a JUDGED
-# review that quotes a marker in a finding, and would then leave the stale
-# review it is supposed to dismiss standing.
 echo "::group::Dismiss stale reviews"
-if head -n1 "$WORK/body.md" 2>/dev/null \
-     | grep -qE '^[[:space:]]*<!-- claude-review-(skipped|oversized) -->[[:space:]]*$'; then
+if is_skip_marked; then
   echo "Skip-marked review (judged nothing) — leaving standing reviews in place."
   STALE_IDS=""
 else
@@ -609,6 +775,8 @@ echo "::endgroup::"
 # ── 8. Step summary ──────────────────────────────────────────────────────────
 FINDING_COUNT=$(jq '(.meta.findings // []) | length' "$REVIEW_JSON")
 HUMAN_COUNT=$(jq '(.meta.human_review // []) | length' "$REVIEW_JSON")
+RESOLVED_COUNT=$(jq '(.meta.resolved_prior // []) | length' "$REVIEW_JSON")
+CARRY_COUNT=$(jq 'length' "$WORK/carried.json" 2>/dev/null || echo 0)
 {
   echo "## Claude Review: $VERDICT"
   echo ""
@@ -618,6 +786,16 @@ HUMAN_COUNT=$(jq '(.meta.human_review // []) | length' "$REVIEW_JSON")
     echo ""
     echo "### For a human to review ($HUMAN_COUNT)"
     jq -r '(.meta.human_review // [])[] | "- `\(.path // "?"):\(.line // "?")` — \(.what_to_check // "")"' "$REVIEW_JSON"
+  fi
+  if [ "$RESOLVED_COUNT" -gt 0 ]; then
+    echo ""
+    echo "### Resolved since earlier rounds ($RESOLVED_COUNT)"
+    jq -r '(.meta.resolved_prior // [])[] | "- `\(.id // "?")` — \(.evidence // "")"' "$REVIEW_JSON"
+  fi
+  if [ "$CARRY_COUNT" -gt 0 ]; then
+    echo ""
+    echo "### Carried from earlier rounds ($CARRY_COUNT)"
+    jq -r '.[] | "- **\(.sev | ascii_upcase)** `\(.p):\(.l)` — \(.t) _(first seen round \(.r))_"' "$WORK/carried.json"
   fi
   echo ""
   echo "Review posted${REVIEW_ID:+ (review #$REVIEW_ID)} on \`${HEAD_SHA:-HEAD}\`."

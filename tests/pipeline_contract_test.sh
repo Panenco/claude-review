@@ -238,10 +238,18 @@ want "…and why it was dropped" "$VERIFY" \
 want "…and refuted stays diagnostics-only" "$VERIFY" \
   'refuted.{0,30}never appear in .{0,10}body.{0,10} or in a comment'
 # Structural, not a wording preference: the poster reads meta.findings and
-# meta.human_review. If it ever learns to read meta.refuted, diagnostics become
-# review prose and the suppression audit trail turns into noise on the PR.
-never "post-review.sh never reads meta.refuted into the review" "$POSTER" \
-  'meta\.refuted|\.refuted'
+# meta.human_review. It may look at meta.refuted for exactly ONE thing — the ids
+# the model consciously dropped, so a refuted carry stops being carried. The
+# REASONS stay diagnostics: the moment one reaches the body, the suppression
+# audit trail turns into noise on the PR.
+BAD_REFUTED=$(grep -nE '\.refuted' "$POSTER" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -vE '\.id')
+if [ -z "$BAD_REFUTED" ]; then
+  ok "post-review.sh reads meta.refuted only for the ids it must stop carrying"
+else
+  bad "post-review.sh reads meta.refuted beyond ids: $BAD_REFUTED"
+fi
+never "…and no refutation reason reaches the review" "$POSTER" \
+  'refuted.*reason|reason.*refuted'
 # Free-of-charge audit trail: verify.json is uploaded verbatim, so a human can
 # read the drops after a run without any new plumbing.
 want "the workflow uploads /tmp/verify.json as an artifact" "$WORKFLOW" \
@@ -564,6 +572,82 @@ never "review-config does not name the deleted validate step" "$CFG" \
 never "review-config does not name deleted v3 artifacts" "$CFG" \
   'build-review\.sh|core-meta\.json'
 want "…it names the v4 stages instead" "$CFG" 'review-scan.*review-verify'
+
+echo ""
+echo "── the round-2 carry-over crosses four files ──"
+# The defect: post-review.sh gives criticals and majors the inline slots and then
+# deletes their bullets from the body, and the truncator deletes the overflow.
+# The body was the only surface round 2 read, so the findings it could not see
+# were exactly the worst ones. Carrying them is allowed; PINNING the verdict to
+# them is the thing v4 deleted and must never come back.
+PF="$ROOT/scripts/prior-findings.sh"
+[ -f "$PF" ] || { echo "FAIL: scripts/prior-findings.sh not found"; exit 1; }
+
+want "review-scan reads the consolidated carry-over file" "$SCAN" \
+  '`?Read`? /tmp/prior-findings\.md'
+never "…and no longer treats a fixed finding as something to say nothing about" "$SCAN" \
+  'say nothing at all about the fixed ones'
+want "…every carried finding lands in one of two buckets" "$SCAN" \
+  'Silence is not a bucket'
+want "…the fixed ones named, with evidence" "$SCAN" \
+  'resolved_prior'
+want "…and \"looks fixed\" is not evidence" "$SCAN" \
+  'evidence.{0,40}names the change that closed it|Looks fixed'
+want "…uncertainty keeps a carried finding alive" "$SCAN" \
+  'If you cannot tell, it is unresolved'
+want "…and a re-worded carry keeps its id" "$SCAN" \
+  'carried_from'
+
+want "review-verify states the flipped default for carried findings" "$VERIFY" \
+  'already survived.*refutation|KEPT when you are uncertain'
+want "…and demands a written reason to refute one" "$VERIFY" \
+  'meta\.refuted'
+# THE PIN. Making a finding VISIBLE is the fix; making a verdict STICK is the bug
+# that produced twelve rounds of flip-flop. Both halves must stay on the page.
+want "review-verify still forbids the ladder, the ratchet and the pinning" "$VERIFY" \
+  'no ladder, no ratchet and no pinning'
+want "…and says outright that carrying is not pinning" "$VERIFY" \
+  'Carrying a finding is not pinning a verdict'
+# Case-sensitive and comment-free on purpose: the prose in section 5 explains why
+# a skip-marked post must not dismiss, and mentions `prior_verdict` doing so. What
+# must never exist is the poster READING one.
+if grep -nE 'PRIOR_VERDICT' "$POSTER" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+  bad "post-review.sh reads PRIOR_VERDICT — the verdict is recomputed every round"
+else
+  ok "post-review.sh takes no verdict input from the prior round"
+fi
+never "dismissal is not gated on carried findings" "$POSTER" \
+  'STALE_IDS.*carried|carried.*STALE_IDS'
+
+# The state block must be appended AFTER the footer, i.e. after truncation and
+# after link expansion — otherwise the budget can evict the carry-over, which is
+# the exact failure it exists to prevent.
+FOOTER_LINE=$(grep -n "printf '%s' \"\$FOOTER\" >> \"\$WORK/body.md\"" "$POSTER" | head -1 | cut -d: -f1)
+STATE_LINE=$(grep -n "claude-review-state" "$POSTER" | tail -1 | cut -d: -f1)
+if [ -n "$FOOTER_LINE" ] && [ -n "$STATE_LINE" ] && [ "$STATE_LINE" -gt "$FOOTER_LINE" ]; then
+  ok "the state block is written after the footer (footer=$FOOTER_LINE state=$STATE_LINE)"
+else
+  bad "the state block must be appended after the footer (footer=${FOOTER_LINE:-?} state=${STATE_LINE:-?})"
+fi
+
+# One identity, two scripts. A drift here means the poster and the consolidator
+# disagree about what "the same finding" is, and every carry becomes a duplicate.
+NORM_POSTER=$(grep -n '^JQ_NORM=' "$POSTER" | head -1 | cut -d: -f2-)
+NORM_PF=$(grep -n '^JQ_NORM=' "$PF" | head -1 | cut -d: -f2-)
+if [ -n "$NORM_POSTER" ] && [ "$NORM_POSTER" = "$NORM_PF" ]; then
+  ok "post-review.sh and prior-findings.sh share the finding identity byte for byte"
+else
+  bad "the JQ_NORM definitions have drifted between post-review.sh and prior-findings.sh"
+fi
+
+want "pr-review.yml verifies prior-findings.sh installed" "$WORKFLOW" \
+  'prior-findings\.sh'
+want "action.yml verifies it too" "$ROOT/action.yml" \
+  'prior-findings\.sh'
+want "prior-findings.sh reads the JUDGED review list" "$PF" \
+  'prior-reviews\.json'
+never "…and never the standing list, which includes reviews that judged nothing" "$PF" \
+  'bot-reviews\.json'
 
 echo ""
 echo "── no stale references to deleted assets ──"

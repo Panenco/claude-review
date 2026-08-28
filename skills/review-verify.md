@@ -43,7 +43,7 @@ Then emit it as a normal finding meeting the full bar (`path`, in-hunk `line`, `
 
 Everything else in that file is discarded silently. A failed, crashed or skipped functional run **never** lowers the verdict on its own (contract: the tester can neither raise nor lower a verdict), never derives severity from the PR title, and never gets its own body section — it appears as a finding or a human-review item or not at all.
 
-`prior_findings` (round 2+) are findings the last review raised that scan re-checked and believes are STILL unresolved at HEAD. Refute them exactly like new ones — re-read the code, keep only what you can restate yourself. Survivors are findings and count like any other.
+`prior_findings` (round 2+) are findings an earlier round raised that scan re-checked and believes are STILL unresolved at HEAD. **They carry the opposite default to a new finding.** A new claim is refuted when you are uncertain; a carried one already survived a full scan and a full refutation pass once, so it is KEPT when you are uncertain. Refute one only by showing what changed — the guard that now exists, the caller that now handles it, the line that no longer runs — and when you do, record it in `meta.refuted` with `"kind": "finding"`, its `id`, and that reason. Survivors are findings and count like any other. Copy scan's `resolved_prior` into `meta.resolved_prior` after spot-checking the two highest-severity entries against the code; drop any whose `evidence` you cannot confirm, and it goes back to being a finding.
 
 ## Verdict
 
@@ -54,6 +54,8 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 **Re-rate a survivor whose severity overshoots scan's ladder** before it decides the verdict: `major` means a user-reachable logic bug, so prose that merely drifted from the code is `minor` — unless it is text a consumer executes, which is judged by the failure it causes.
 
 **The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
+
+**Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote. The verdict is still computed from surviving findings alone, every round, from scratch.
 
 Carry through up to 3 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own categories.
 
@@ -117,13 +119,16 @@ The suggestion block must be a valid, committable replacement for the commented 
   ],
   "meta": {
     "findings": [
-      {"path": "src/foo.ts", "line": 42, "title": "...", "severity": "critical|major|minor",
+      {"id": "7f3a1c2b", "carried_from": "", "path": "src/foo.ts", "line": 42,
+       "title": "...", "severity": "critical|major|minor",
        "failure_scenario": "...", "fix": "...", "placement": "inline|body", "convention": false}
     ],
+    "resolved_prior": [{"id": "1a2b3c4d", "evidence": "what at HEAD now prevents it"}],
     "human_review": [
       {"path": "...", "line": 12, "what_to_check": "...", "why_unresolved": "..."}
     ],
-    "refuted": [{"kind": "finding|human_review", "path": "...", "line": 12, "title": "<title, or the what_to_check that was asked>",
+    "refuted": [{"kind": "finding|human_review", "id": "<carried id, when refuting a carried finding>",
+                 "path": "...", "line": 12, "title": "<title, or the what_to_check that was asked>",
                  "reason": "suppressed by <file> | already mitigated at the cited line | answered: <answer> | <one line>"}],
     "depth_used": "light|full",
     "review_effort": 3,

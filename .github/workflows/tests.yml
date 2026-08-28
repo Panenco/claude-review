@@ -52,6 +52,9 @@ jobs:
       - name: Run prior_review_state_test.sh
         run: bash tests/prior_review_state_test.sh
 
+      - name: Run prior_findings_test.sh
+        run: bash tests/prior_findings_test.sh
+
       - name: Run post_review_test.sh
         run: bash tests/post_review_test.sh
 

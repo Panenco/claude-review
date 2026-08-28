@@ -43,9 +43,12 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 `ROUND` and `PRIOR_HEAD_SHA` are in your env. When `PRIOR_HEAD_SHA` is non-empty and is not HEAD, the previous round already read the rest of this PR and charging for it again is pure waste:
 
 - Review **only** `git diff ${PRIOR_HEAD_SHA}..HEAD`. Read the wider file for context, but do not hunt for new findings outside that delta.
-- Read the last review: `jq -r 'sort_by(.submitted_at) | last | .body' /tmp/prior-reviews.json`.
-- For each finding it lists, `Read` that code at HEAD and decide **fixed** or **unresolved** — from the code, not from any reply. Put the unresolved ones in `prior_findings` (a finding object plus `"carried": true`); say nothing at all about the fixed ones.
-- Never re-raise something the last review already raised as a fresh finding. Carry it, or drop it.
+- `Read /tmp/prior-findings.md` — every finding this bot has filed on this PR, with its `id`, severity, `path:line` **as of the round that filed it**, and the failure scenario. Consolidated for you from the review state block, the inline comments and the review bodies; do not go reconstructing it from `/tmp/prior-reviews.json`. Missing or empty on round 2+ means the carry-over could not be read, not that earlier rounds were clean.
+- **Account for every one of them. Silence is not a bucket.** For each, `Read` that code at HEAD — from the code, never from a reply or a resolved thread — and put it in exactly one of:
+  - `prior_findings` — still reachable at HEAD. Copy the finding object, keep its `id`, re-anchor `line` from your Read, and add `"carried": true`.
+  - `resolved_prior` — `{"id": "<id>", "evidence": "<what at HEAD now prevents it, <=160 chars>"}`. **`evidence` names the change that closed it.** "Looks fixed", "no longer applies" and an empty string are not evidence; if that is all you have, it is unresolved.
+- **If you cannot tell, it is unresolved.** A carried finding already survived a full scan and a full refutation pass once. That is not true of anything you raise fresh, so it does not get the fresh claim's benefit of the doubt.
+- Never re-file a carried finding as a new one. Carry it under its own `id`. If your wording differs from the carried title, set `"carried_from": "<id>"` on the finding so the two are not counted twice.
 
 **Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. Record which you chose in `depth_used` with one clause saying why. Target ≤15 turns; write the file by turn 25 whatever you have.
 
@@ -125,8 +128,11 @@ The functional tester is dispatched in the **same response** as you and runs to 
     }
   ],
   "prior_findings": [
-    {"path": "src/foo.ts", "line": 42, "title": "...", "failure_scenario": "...",
+    {"id": "7f3a1c2b", "path": "src/foo.ts", "line": 42, "title": "...", "failure_scenario": "...",
      "evidence": "...", "fix": "...", "severity": "major", "carried": true}
+  ],
+  "resolved_prior": [
+    {"id": "1a2b3c4d", "evidence": "the tenant id is now part of the cache key at line 138"}
   ],
   "human_review": [
     {"path": "src/foo.ts", "line": 42, "what_to_check": "...", "why_unresolved": "..."}

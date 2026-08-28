@@ -95,10 +95,18 @@ run_poster() {
     GITHUB_SERVER_URL="${SERVER_URL:-https://github.com}" GITHUB_RUN_ID="${RUN_ID:-}" \
     JOB_START="${JOB_START:-$work/no-job-start}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
+    REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
+    ROUND="${ROUND_N:-}" \
+    PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS:-$work/no-such-priors.json}" \
     bash "$POSTER" 2>&1)
   RC=$?
 }
 payload_of() { cat "$1"/capture/* 2>/dev/null || echo '{}'; }
+# The posted body minus the round-2 state block. The block is invisible to the
+# reader and outside the 1200-byte budget, so every assertion about what the
+# HUMAN sees, and every byte count, is against this — not against the raw body.
+visible_body() { local v; v=$(printf '%s' "$1" | sed '/<!-- claude-review-state/,/^-->$/d'); printf '%s' "$v"; }
+state_block()  { printf '%s' "$1" | sed -n '/<!-- claude-review-state/,/^-->$/p' | sed '1d;$d'; }
 
 # Shared fixtures: one hunk in src/foo.ts covering RIGHT lines 10-13.
 FILES_FIXTURE=$(mktemp)
@@ -423,7 +431,7 @@ jq -n --rawfile b "$W/long-body.md" \
 printf '{"total_cost_usd": 0.5}\n' > "$W/orchestrator-output.txt"
 RUN_ID=99 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(payload_of "$W" | jq -r '.body')
-BYTES=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+BYTES=$(visible_body "$BODY" | wc -c | tr -d ' ')
 assert_eq "exit 0" "0" "$RC"
 if [ "$BYTES" -le 1200 ]; then
   echo "OK:   body held to the budget ($BYTES bytes)"
@@ -472,7 +480,7 @@ jq -n --rawfile b "$W/linked-body.md" \
   '{verdict: "REQUEST_CHANGES", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(payload_of "$W" | jq -r '.body')
-BYTES=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+BYTES=$(visible_body "$BODY" | wc -c | tr -d ' ')
 assert_eq "exit 0" "0" "$RC"
 if [ "$BYTES" -gt 1200 ]; then
   echo "OK:   expansion really does push it past 1200 ($BYTES bytes) — the case is live"
@@ -535,7 +543,7 @@ jq -n --arg b "$LONGLINE" \
   '{verdict: "COMMENT", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(payload_of "$W" | jq -r '.body')
-BYTES=$(printf '%s' "$BODY" | wc -c | tr -d ' ')
+BYTES=$(visible_body "$BODY" | wc -c | tr -d ' ')
 assert_eq "exit 0" "0" "$RC"
 assert_contains "the verdict header survives" "## Claude review — COMMENT" "$BODY"
 assert_contains "real content survives the hard cut" "one unbroken line" "$BODY"
@@ -572,10 +580,17 @@ PAYLOAD=$(payload_of "$W")
 BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
 assert_eq "both findings posted inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_not_contains "the emptied Findings header is gone" "### Findings" "$BODY"
-assert_not_contains "the critical is not repeated in the body" "alpha loops forever" "$BODY"
-assert_not_contains "the major is not repeated in the body" "another tenant" "$BODY"
-assert_contains "the verdict prose survives" "Two blocking findings." "$BODY"
+VIS=$(visible_body "$BODY")
+STATE=$(state_block "$BODY")
+assert_not_contains "the emptied Findings header is gone" "### Findings" "$VIS"
+assert_not_contains "the critical is not repeated to the reader" "alpha loops forever" "$VIS"
+assert_not_contains "the major is not repeated to the reader" "another tenant" "$VIS"
+# …and the whole reason the strip is safe: both survive where round 2 will look.
+assert_contains "the critical is carried in the review state" "alpha loops forever" "$STATE"
+assert_contains "the major is carried in the review state" "another tenant" "$STATE"
+assert_eq "both findings are in the state block" "2" "$(echo "$STATE" | jq '.findings | length')"
+assert_eq "state block is machine-readable" "1" "$(echo "$STATE" | jq '.v')"
+assert_contains "the verdict prose survives" "Two blocking findings." "$VIS"
 assert_contains "the strip is announced in the log" "duplicating an inline comment" "$OUT"
 rm -rf "$W"
 
@@ -593,7 +608,7 @@ BODY=$(payload_of "$W" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
 assert_contains "the header is renumbered to the survivor count" "### Findings (1)" "$BODY"
 assert_not_contains "the stale count is gone" "### Findings (2)" "$BODY"
-assert_not_contains "the inlined finding is stripped" "alpha loops forever" "$BODY"
+assert_not_contains "the inlined finding is stripped" "alpha loops forever" "$(visible_body "$BODY")"
 assert_contains "the body-only finding survives" "another tenant" "$BODY"
 rm -rf "$W"
 
@@ -634,7 +649,7 @@ assert_eq "exit 0" "0" "$RC"
 assert_contains "the human-review section survives" "### What a human should review" "$BODY"
 assert_contains "the human-review item on the same line survives" \
   "confirm the retry budget matches the gateway timeout" "$BODY"
-assert_not_contains "the duplicated finding is stripped" "alpha loops forever" "$BODY"
+assert_not_contains "the duplicated finding is stripped" "alpha loops forever" "$(visible_body "$BODY")"
 assert_not_contains "and its emptied header with it" "### Findings" "$BODY"
 rm -rf "$W"
 
@@ -712,7 +727,7 @@ BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
 assert_eq "the re-anchored comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_eq "at the line verify re-anchored it to" "42" "$(echo "$PAYLOAD" | jq '.comments[0].line')"
-assert_not_contains "the bullet two lines off is still stripped" "cache key omits the tenant" "$BODY"
+assert_not_contains "the bullet two lines off is still stripped" "cache key omits the tenant" "$(visible_body "$BODY")"
 assert_not_contains "and its emptied header with it" "### Findings" "$BODY"
 rm -rf "$W"
 
@@ -773,7 +788,7 @@ PAYLOAD=$(payload_of "$W")
 BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
 assert_eq "the comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_not_contains "the backtick/em-dash title still matches" "never caps" "$BODY"
+assert_not_contains "the backtick/em-dash title still matches" "never caps" "$(visible_body "$BODY")"
 assert_not_contains "and its emptied header with it" "### Findings" "$BODY"
 rm -rf "$W"
 
@@ -794,7 +809,7 @@ PAYLOAD=$(payload_of "$W")
 BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
 assert_eq "only the in-hunk comment posts inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_not_contains "the inlined finding's bullet is stripped" "theta double-frees" "$BODY"
+assert_not_contains "the inlined finding's bullet is stripped" "theta double-frees" "$(visible_body "$BODY")"
 assert_contains "the dropped comment's bullet survives" "zeta leaks the handle" "$BODY"
 assert_contains "the header renumbers to the one survivor" "### Findings (1)" "$BODY"
 assert_contains "and it is also listed as a fallback" "### Also flagged (1)" "$BODY"
@@ -818,7 +833,7 @@ BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
 assert_eq "the one comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_eq "exactly one of the twin bullets is stripped" "1" \
-  "$(echo "$BODY" | grep -c 'unchecked cast')"
+  "$(visible_body "$BODY" | grep -c 'unchecked cast')"
 assert_not_contains "the bullet that claimed the comment is gone" "[src/foo.ts:40]" "$BODY"
 assert_contains "the finding no comment carries survives" "[src/foo.ts:41]" "$BODY"
 assert_contains "the header renumbers to the survivor" "### Findings (1)" "$BODY"
@@ -839,7 +854,7 @@ PAYLOAD=$(payload_of "$W")
 BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
 assert_eq "both comments are posted inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_not_contains "both twin bullets are stripped" "unchecked cast" "$BODY"
+assert_not_contains "both twin bullets are stripped" "unchecked cast" "$(visible_body "$BODY")"
 assert_not_contains "and the emptied header with them" "### Findings" "$BODY"
 assert_contains "the verdict prose survives" "Two blocking findings." "$BODY"
 rm -rf "$W" "$REANCHOR_FILES"
@@ -933,14 +948,241 @@ assert_eq "posts an empty comment array" "0" "$(payload_of "$W" | jq '.comments 
 assert_contains "step summary still renders" "## Claude Review: COMMENT" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
+# ── (p) round-2 state block ──────────────────────────────────────────────────
+# The state block is the ONLY surface that carries a finding into the next round
+# intact: 4a deletes inlined findings from the body and the truncator deletes
+# overflow. It is appended after truncation, after expansion and after the
+# footer, so it can neither evict content nor be evicted.
+echo ""
+echo "── (p) round-2 state block ──"
+P_WIDE=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -1,20 +1,20 @@\n" + ([range(20) | " ctx"] | join("\n")))}]' > "$P_WIDE"
+
+# p1: two inline + one body-only finding, all three in the state block.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nThree findings.\n\n"
+               + "### Findings (3)\n"
+               + "- **critical** {{LINK:src/foo.ts:3}} — alpha loops forever\n"
+               + "- **major** {{LINK:src/foo.ts:4}} — beta returns another tenant\n"
+               + "- **minor** {{LINK:src/foo.ts:5}} — gamma logs the token"),
+        comments: [{path: "src/foo.ts", line: 3, side: "RIGHT", body: "**critical** alpha loops forever"},
+                   {path: "src/foo.ts", line: 4, side: "RIGHT", body: "**major** beta returns another tenant"}],
+        meta: {findings: [
+          {path: "src/foo.ts", line: 3, title: "alpha loops forever", severity: "critical", failure_scenario: "a 401 spins the refresh"},
+          {path: "src/foo.ts", line: 4, title: "beta returns another tenant", severity: "major", failure_scenario: "warm cache serves tenant A to B"},
+          {path: "src/foo.ts", line: 5, title: "gamma logs the token", severity: "minor", failure_scenario: "the bearer lands in stdout"}]}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the state block carries all three findings" "3" "$(echo "$STATE" | jq '.findings | length')"
+assert_eq "it is versioned" "1" "$(echo "$STATE" | jq '.v')"
+assert_eq "and stamped with the round" "1" "$(echo "$STATE" | jq '.round')"
+assert_eq "every finding has an 8-hex id" "3" \
+  "$(echo "$STATE" | jq '[.findings[] | select(.id | test("^[0-9a-f]{8}$"))] | length')"
+assert_eq "every finding has path, line, severity and title" "3" \
+  "$(echo "$STATE" | jq '[.findings[] | select(.p != "" and .l > 0 and .sev != "" and .t != "")] | length')"
+assert_eq "the critical sorts first" "critical" "$(echo "$STATE" | jq -r '.findings[0].sev')"
+rm -rf "$W"
+
+# p2: THE HEADLINE REGRESSION. The truncator eats the whole `### Findings`
+# section; the finding it deleted is still readable by the next round.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nThe broker rewrite drops a lock on the retry path and the tenant cache key is incomplete, so two user-reachable defects survive verification here.\n\n"
+               + "### Findings (1)\n"
+               + "- **critical** {{LINK:src/foo.ts:5}} — delta drops the lock"),
+        comments: [],
+        meta: {findings: [{path: "src/foo.ts", line: 5, title: "delta drops the lock",
+                           severity: "critical", failure_scenario: "two writers enter the section"}]}}' > "$W/review.json"
+BODY_MAX=200 FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+VIS=$(visible_body "$BODY")
+STATE=$(state_block "$BODY")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the reader is told the body was cut" "truncated to fit" "$VIS"
+assert_not_contains "and the finding really is gone from the body" "delta drops the lock" "$VIS"
+assert_contains "but round 2 can still see it" "delta drops the lock" "$STATE"
+assert_eq "with its severity intact" "critical" "$(echo "$STATE" | jq -r '.findings[0].sev')"
+rm -rf "$W"
+
+# p3: the block is outside the budget — adding findings must not shrink what the
+# human sees.
+W=$(mktemp -d)
+P_BODY="## Claude review — COMMENT\n\nNothing blocking; two notes are posted inline."
+jq -n --arg b "$P_BODY" '{verdict: "COMMENT", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+VIS_EMPTY=$(visible_body "$(payload_of "$W" | jq -r '.body')" | wc -c | tr -d ' ')
+rm -rf "$W"
+W=$(mktemp -d)
+jq -n --arg b "$P_BODY" '{verdict: "COMMENT", body: $b,
+  comments: [{path: "src/foo.ts", line: 3, side: "RIGHT", body: "**major** epsilon leaks the handle"},
+             {path: "src/foo.ts", line: 4, side: "RIGHT", body: "**minor** zeta logs too much"}],
+  meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+VIS_FULL=$(visible_body "$(payload_of "$W" | jq -r '.body')" | wc -c | tr -d ' ')
+assert_eq "the state block costs the reader nothing" "$VIS_EMPTY" "$VIS_FULL"
+assert_eq "even though it carries two findings" "2" \
+  "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq '.findings | length')"
+rm -rf "$W"
+
+# p4: meta absent entirely — the floor is what the POSTER decided to post.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nno meta at all.",
+        comments: [{path: "src/foo.ts", line: 3, side: "RIGHT", body: "**critical** eta corrupts the ledger"}]}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+STATE=$(state_block "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the inline comment alone builds the state" "1" "$(echo "$STATE" | jq '.findings | length')"
+assert_contains "with the finding's own words" "eta corrupts the ledger" "$STATE"
+rm -rf "$W"
+
+# p5: a skip-marked body judged nothing — a state block there would tell round 2
+# "round N found nothing", and section 5 must still leave the standing block up.
+W=$(mktemp -d)
+jq -n --arg body '<!-- claude-review-oversized -->
+
+## Claude review — REQUEST_CHANGES
+
+Too large to review well.' '{verdict: "REQUEST_CHANGES", body: $body, comments: [], meta: {findings: []}}' > "$W/review.json"
+REVIEWS_FIXTURE=$(mktemp)
+cat > "$REVIEWS_FIXTURE" <<'EOF'
+[
+  {"id": 778, "user": {"login": "claude-bot[bot]"}, "state": "CHANGES_REQUESTED",
+   "body": "## Claude review — REQUEST_CHANGES\n\nprior round", "commit_id": "old2",
+   "submitted_at": "2026-06-02T00:00:00Z"}
+]
+EOF
+FIXTURE_REVIEWS="$REVIEWS_FIXTURE" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_not_contains "no state block on a review that judged nothing" "claude-review-state" "$BODY"
+assert_not_contains "standing block still NOT dismissed" "dismissals" "$(cat "$W/gh.log")"
+rm -rf "$W" "$REVIEWS_FIXTURE"
+
+# p6: carry-forward, and the explicit NO-GATE test. A carried finding nobody
+# accounted for stays in the state and gets a warning — it does NOT touch the
+# verdict, and an APPROVE still posts as an APPROVE.
+W=$(mktemp -d)
+P_PRIORS=$(mktemp)
+jq -n '[{id: "7f3a1c2b", p: "src/foo.ts", l: 42, sev: "critical",
+         t: "cache key omits the tenant", fs: "tenant B sees A rows", r: 1}]' > "$P_PRIORS"
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nThe delta is clean.",
+        comments: [], meta: {findings: [], resolved_prior: []}}' > "$W/review.json"
+PRIOR_FINDINGS="$P_PRIORS" ROUND_N=2 FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+STATE=$(state_block "$(echo "$PAYLOAD" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the verdict is still the model's own" "APPROVE" "$(echo "$PAYLOAD" | jq -r '.event')"
+assert_eq "the unaccounted critical is still carried" "1" "$(echo "$STATE" | jq '.findings | length')"
+assert_eq "under its original id" "7f3a1c2b" "$(echo "$STATE" | jq -r '.findings[0].id')"
+assert_eq "and its original first-seen round" "1" "$(echo "$STATE" | jq '.findings[0].r')"
+assert_contains "the run log names it" "::warning::Carried finding 7f3a1c2b" "$OUT"
+assert_contains "the step summary lists it" "### Carried from earlier rounds (1)" "$(cat "$W/summary.md")"
+rm -rf "$W"
+
+# p7: the same carry, resolved with evidence — gone from the state, no warning.
+W=$(mktemp -d)
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nThe delta is clean.",
+        comments: [], meta: {findings: [],
+        resolved_prior: [{id: "7f3a1c2b", evidence: "the tenant id joins the cache key at line 138"}]}}' > "$W/review.json"
+PRIOR_FINDINGS="$P_PRIORS" ROUND_N=2 FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+STATE=$(state_block "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the resolved finding is no longer carried" "0" "$(echo "$STATE" | jq '.findings | length')"
+assert_not_contains "and nothing is warned about" "::warning::Carried finding" "$OUT"
+assert_contains "the summary records it as resolved" "### Resolved since earlier rounds (1)" "$(cat "$W/summary.md")"
+assert_contains "with the evidence that closed it" "joins the cache key at line 138" "$(cat "$W/summary.md")"
+rm -rf "$W"
+
+# p8: re-wording. `carried_from` re-keys the new finding to the old id, so the
+# same defect is counted once and keeps the round it was FIRST seen.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nStill broken.",
+        comments: [],
+        meta: {findings: [{path: "src/foo.ts", line: 44, title: "the cache key still ignores tenancy",
+                           severity: "critical", failure_scenario: "tenant B sees A rows",
+                           carried_from: "7f3a1c2b"}]}}' > "$W/review.json"
+PRIOR_FINDINGS="$P_PRIORS" ROUND_N=2 FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+STATE=$(state_block "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the re-worded finding is not a second finding" "1" "$(echo "$STATE" | jq '.findings | length')"
+assert_eq "it adopts the carried id" "7f3a1c2b" "$(echo "$STATE" | jq -r '.findings[0].id')"
+assert_eq "and keeps the round it was first seen" "1" "$(echo "$STATE" | jq '.findings[0].r')"
+assert_contains "under this round's wording" "still ignores tenancy" "$STATE"
+assert_not_contains "no unaccounted-carry warning" "::warning::Carried finding" "$OUT"
+rm -rf "$W" "$P_PRIORS"
+
+# p9: a title carrying every character that could break the carrier — a quote, a
+# newline, backticks, an em dash, and a literal comment terminator.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne odd title.",
+        comments: [],
+        meta: {findings: [{path: "src/foo.ts", line: 3, severity: "major",
+                           title: "`retry()` says \"soon\" — but -->\nnever caps",
+                           failure_scenario: "the -->\"backoff\" never caps"}]}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the state block is still valid JSON" "1" "$(echo "$STATE" | jq '.findings | length')"
+assert_not_contains "no literal terminator can close the block early" "\-\->" "$STATE"
+assert_eq "one closing delimiter in the posted body" "1" \
+  "$(printf '%s' "$BODY" | grep -c '^-->$')"
+rm -rf "$W"
+
+# p10: the state block has its own cap, so it can never evict visible content.
+# It degrades by dropping failure scenarios, then the least severe findings.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nSix findings.",
+        comments: [],
+        meta: {findings: [
+          {path: "src/a.ts", line: 3, title: "c1", severity: "critical", failure_scenario: "a long scenario that eats the budget all on its own"},
+          {path: "src/b.ts", line: 4, title: "c2", severity: "critical", failure_scenario: "another long scenario that eats the budget"},
+          {path: "src/c.ts", line: 5, title: "m1", severity: "major", failure_scenario: "a major scenario, also long"},
+          {path: "src/d.ts", line: 6, title: "m2", severity: "major", failure_scenario: "a second major scenario, also long"},
+          {path: "src/e.ts", line: 7, title: "n1", severity: "minor", failure_scenario: "a minor scenario"},
+          {path: "src/f.ts", line: 8, title: "n2", severity: "minor", failure_scenario: "another minor scenario"}]}}' > "$W/review.json"
+STATE_MAX=300 FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the block says it was degraded" "true" "$(echo "$STATE" | jq -r '.truncated')"
+assert_eq "no minor survives the cap" "0" \
+  "$(echo "$STATE" | jq '[.findings[] | select(.sev == "minor")] | length')"
+if [ "$(echo "$STATE" | jq '[.findings[] | select(.sev == "critical")] | length')" -ge 1 ]; then
+  echo "OK:   a critical survives the cap"
+else
+  echo "FAIL: the cap dropped every critical"; fail=$((fail + 1))
+fi
+STATE_BYTES=$(printf '%s' "$STATE" | wc -c | tr -d ' ')
+if [ "$STATE_BYTES" -le 300 ]; then
+  echo "OK:   the block held its own cap ($STATE_BYTES bytes)"
+else
+  echo "FAIL: the block is $STATE_BYTES bytes, over the 300 cap"; fail=$((fail + 1))
+fi
+rm -rf "$W"
+
+# p11: no carry-over file at all — round 1, or a run whose consolidation failed.
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+PRIOR_FINDINGS="$W/definitely-not-here.json" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "exit 0 with no prior-findings file" "0" "$RC"
+assert_contains "and a state block is still written" "claude-review-state" "$(payload_of "$W" | jq -r '.body')"
+rm -rf "$W" "$P_WIDE"
+
 # ── (o) house rules ──────────────────────────────────────────────────────────
 echo ""
 echo "── (o) house rules ──"
-if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$POSTER"; then
-  echo "FAIL: post-review.sh uses set -e (banned, bugbot.md)"; fail=$((fail + 1))
-else
-  echo "OK:   post-review.sh does not use set -e"
-fi
+for sh in "$POSTER" "$(pwd)/scripts/prior-findings.sh"; do
+  if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$sh"; then
+    echo "FAIL: ${sh##*/} uses set -e (banned, bugbot.md)"; fail=$((fail + 1))
+  else
+    echo "OK:   ${sh##*/} does not use set -e"
+  fi
+done
 for dead in '\.resolve_threads' '\.bot_replies' resolveReviewThread functional-meta.json start_line; do
   if grep -qE "$dead" "$POSTER"; then
     echo "FAIL: post-review.sh still handles '$dead', which the v4 pipeline never produces"
