@@ -25,6 +25,7 @@ POSTER="$ROOT/scripts/post-review.sh"
 WORKFLOW="$ROOT/.github/workflows/pr-review.yml"
 CMD="$ROOT/scripts/review-command.sh"
 BUILDSPEC="$ROOT/scripts/build-spec.sh"
+GUARD="$ROOT/scripts/guard.sh"
 fail=0
 
 ok()   { echo "OK:   $1"; }
@@ -36,7 +37,7 @@ never() { # never <label> <file> <extended-regex>
   if grep -qiE "$3" "$2"; then bad "$1 — unexpected match for /$3/ in ${2#"$ROOT"/}"; else ok "$1"; fi
 }
 
-for f in "$SCAN" "$VERIFY" "$ORCH" "$POSTER" "$WORKFLOW" "$CMD" "$BUILDSPEC"; do
+for f in "$SCAN" "$VERIFY" "$ORCH" "$POSTER" "$WORKFLOW" "$CMD" "$BUILDSPEC" "$GUARD"; do
   [ -f "$f" ] || { echo "FAIL: $f not found"; exit 1; }
 done
 
@@ -809,6 +810,99 @@ for a in review-scan review-verify review-functional-tester; do
     bad "onboarding must name agents/$a.md, and the file must exist"
   fi
 done
+
+echo ""
+echo "── the docs-only prose channel: gated, capped, and unable to move a verdict ──"
+# Hand-validated against 8 real docs PRs. 13 of the 14 defensible findings came
+# from ONE generic instruction — does this document contradict itself, another
+# document in the same diff, or a standard it itself cites — and the two style
+# rules asked for most loudly ("short", "no walls of text") produced ZERO. So the
+# channel is narrow by construction, and length is a trigger to read, never a
+# defect. The two config paths keep one read site each; the exactly-once loop
+# above is what pins that, and a third mention anywhere would break it.
+want "guard.sh classifies a docs-only PR for the review" "$GUARD" \
+  "printf 'docs_only=%s"
+want "…and the workflow hands it to the review agent" "$WORKFLOW" \
+  'DOCS_ONLY: \$\{\{ steps\.guard\.outputs\.docs_only \}\}'
+
+# Assert on the SECTION, not the file: "max 2" and "minor" already appear in the
+# convention rules, so a file-wide grep would pass with no prose channel at all.
+PROSE_SCAN=$(mktemp)
+awk '/^### Prose defects/{f=1} f&&/^Out of scope, always/{f=0} f' "$SCAN" > "$PROSE_SCAN"
+if [ -s "$PROSE_SCAN" ]; then
+  ok "review-scan carries a prose-defect section"
+  want "…gated on DOCS_ONLY" "$PROSE_SCAN" 'DOCS_ONLY'
+  want "…stating the reader-harm sentence the model must complete" "$PROSE_SCAN" \
+    'named reader.{0,40}named task.{0,20}cannot'
+  want "…with a named role, never \"a reader\"" "$PROSE_SCAN" \
+    'role that exists in this repo'
+  want "…kind 1: self-contradiction, or another document in the same diff" "$PROSE_SCAN" \
+    'contradicts itself'
+  want "…kind 2: a standard the document itself cites" "$PROSE_SCAN" \
+    'standard it itself cites'
+  want "…kind 3: the rendered artefact disagrees with the prose" "$PROSE_SCAN" \
+    'does not say what the prose around it says'
+  want "…and nothing else qualifies" "$PROSE_SCAN" \
+    'nothing else does'
+  want "…length is a reason to read, never itself a finding" "$PROSE_SCAN" \
+    'never itself a finding'
+  want "…wordiness and layout preferences are refused by name" "$PROSE_SCAN" \
+    'wordiness'
+  want "…capped at 2 per review" "$PROSE_SCAN" '(max|most) \*{0,2}2\*{0,2} per review'
+  want "…always minor" "$PROSE_SCAN" 'severity.{0,4}minor'
+  want "…and never able to reach REQUEST_CHANGES" "$PROSE_SCAN" \
+    'NEVER produce REQUEST_CHANGES'
+else
+  bad "review-scan has no '### Prose defects' section"
+fi
+rm -f "$PROSE_SCAN"
+
+want "review-scan exposes the prose flag in its findings table" "$SCAN" \
+  '^\| `prose` \|'
+want "…and in its output schema" "$SCAN" '"prose": false'
+# The channel is an exemption for ONE class. Everything else keeps the old bar.
+want "the ordinary failure_scenario bar still governs every other finding" "$SCAN" \
+  'A finding without a `failure_scenario`.*MUST NOT be emitted'
+never "no rule turns a length measurement into a finding" "$SCAN" \
+  '(line|word|character|paragraph) count[^.]*finding|finding[^.]*(line|word|character) count|(over|more than|longer than) [0-9]+ (lines|words)[^.]*finding'
+
+# Verify side: the verdict RULE excludes the class, so the exclusion is
+# structural rather than a convention the model is asked to honour.
+RC_PROSE=$(grep -n 'REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
+if [ -n "$RC_PROSE" ] && sed -n "${RC_PROSE}p" "$VERIFY" | grep -qiE 'nor a prose finding|"prose": true.{0,60}NEVER'; then
+  ok "review-verify's REQUEST_CHANGES rule excludes prose findings on the rule line itself"
+else
+  bad "review-verify's REQUEST_CHANGES rule must exclude prose findings on line ${RC_PROSE:-?}"
+fi
+PV=$(grep -F 'A finding carrying `"prose": true`' "$VERIFY")
+if [ -n "$PV" ]; then
+  ok "review-verify has a refute rule for prose findings"
+  case "$PV" in
+    *'uncertain → refuted'*) ok "…uncertain is refuted, same default as any fresh claim" ;;
+    *) bad "…must refute a prose finding it cannot confirm" ;;
+  esac
+  case "$PV" in
+    *'`severity` to `minor`'*) ok "…severity is forced to minor" ;;
+    *) bad "…must force prose severity to minor" ;;
+  esac
+  case "$PV" in
+    *'at most **2**'*) ok "…and at most 2 survive" ;;
+    *) bad "…must keep at most 2 prose findings" ;;
+  esac
+  case "$PV" in
+    *length*) ok "…and a length complaint is refuted whatever it is labelled" ;;
+    *) bad "…must refuse a length complaint wearing the prose label" ;;
+  esac
+else
+  bad "review-verify has no refute rule for prose findings"
+fi
+want "review-verify exposes the prose flag in meta.findings" "$VERIFY" '"prose": false'
+
+# Regression pin. The channel was deliberately NOT paid for by making the
+# consumer's own docs rules reachable: one corpus PR EDITS .claude/rules/docs.md
+# in the same diff that rule would judge, and only 1 of 14 findings needed it.
+want "build-spec still excludes .claude/** from spec assembly" "$BUILDSPEC" \
+  '\.claude/\*\|\*/\.claude/\*'
 
 echo ""
 if [ "$fail" -eq 0 ]; then

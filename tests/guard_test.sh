@@ -26,6 +26,11 @@ summary_of() {
 body_of() {
   env "$@" bash "$SCRIPT" | awk '/^body<<GUARD_BODY$/{f=1;next} /^GUARD_BODY$/{f=0} f'
 }
+# docs_only_of KEY=VAL... → the emitted docs_only value, "-" when no line was emitted
+docs_only_of() {
+  local v; v=$(env "$@" bash "$SCRIPT" | sed -n 's/^docs_only=//p' | head -1)
+  printf '%s' "${v:--}"
+}
 
 assert_gate() {
   local label="$1" want="$2"; shift 2
@@ -34,6 +39,16 @@ assert_gate() {
     echo "OK:   $label → $got"
   else
     echo "FAIL: $label — want '$want' got '$got'"
+    fail=$((fail + 1))
+  fi
+}
+assert_docs_only() {
+  local label="$1" want="$2"; shift 2
+  local got; got=$(docs_only_of "$@")
+  if [ "$got" = "$want" ]; then
+    echo "OK:   $label → docs_only=$got"
+  else
+    echo "FAIL: $label — want docs_only='$want' got '$got'"
     fail=$((fail + 1))
   fi
 }
@@ -212,6 +227,30 @@ assert_gate "unset GATE_FILES_TSV" "false empty -" \
   GATE_SKIP_LABEL=skip-review
 
 echo
+echo "── 5) docs_only — the proceed path tells the review there is no code to break ──"
+# On a docs-only PR the failure_scenario bar deletes every finding an honest
+# reader could make, so review-scan opens a narrow prose channel on this flag.
+# It is a classification, never a gate: the run proceeds identically either way.
+assert_docs_only "an all-markdown PR" "true" \
+  GATE_FILES_TSV=$'docs/plan.md\t40\t2\nREADME.md\t3\t0'
+assert_docs_only "one source file beside the docs drops it" "false" \
+  GATE_FILES_TSV=$'docs/plan.md\t40\t2\nsrc/app.ts\t1\t1'
+# Generated files are excluded from the size count, so they cannot flip this either.
+assert_docs_only "a lockfile beside the docs does not" "true" \
+  GATE_FILES_TSV=$'docs/plan.md\t40\t2\npnpm-lock.yaml\t900\t900'
+assert_docs_only "LICENSE counts as a document" "true" \
+  GATE_FILES_TSV=$'LICENSE\t1\t1'
+# Proceed-path output only: a short-circuited run has no review to configure.
+assert_docs_only "not emitted on the oversized gate" "-" \
+  GATE_FILES_TSV="$BIG_FILES"
+assert_docs_only "not emitted on the skip label" "-" \
+  GATE_LABELS=$'skip-review' GATE_FILES_TSV=$'README.md\t2\t0'
+assert_docs_only "not emitted on the unchanged gate" "-" \
+  GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES='' GATE_FILES_TSV=$'README.md\t2\t0'
+assert_docs_only "not emitted when nothing is reviewable" "-" \
+  GATE_FILES_TSV=$'pnpm-lock.yaml\t900\t900'
+
+echo
 echo "── house rules ──"
 if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$SCRIPT"; then
   echo "FAIL: guard.sh uses set -e (banned, bugbot.md)"
@@ -225,11 +264,12 @@ if grep -q 'gh \|curl \|wget ' "$SCRIPT"; then
 else
   echo "OK:   guard.sh makes no network calls"
 fi
-# 110, raised from 100 when `deep-review` was added, and NOT raised again when
-# `/review deep` joined it. The ceiling guards against the tier ladder creeping
-# back in, not against a comment or a single override.
+# 115: 100 → 110 when `deep-review` was added, → 115 for the docs_only
+# classification (one loop branch and one printf). NOT raised for `/review deep`.
+# The ceiling guards against the tier ladder creeping back in, not against a
+# comment, a single override, or one more line of output.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 110 ]; then
+if [ "$LINES" -le 115 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"

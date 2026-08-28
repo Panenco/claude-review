@@ -7,6 +7,7 @@
 #
 # Output — GITHUB_OUTPUT-shaped lines on stdout, appendable verbatim:
 #   proceed=true|false · gate=ok|label|unchanged|oversized|empty · reason=<one line>
+#   docs_only=true|false — proceed path only; nothing but documents changed.
 #   verdict=REQUEST_CHANGES + body<<GUARD_BODY…GUARD_BODY — oversized only; that
 #   split request is posted as-is, with no model call.
 #
@@ -63,11 +64,12 @@ if [ -n "${GATE_PRIOR_HEAD_SHA:-}" ] && [ "${GATE_HUMAN_REQUESTED:-false}" != "t
   fi
 fi
 
-ng_lines=0; ng_files=0
+ng_lines=0; ng_files=0; docs_only=true
 while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
   is_generated "$path" && continue
   ng_files=$(( ng_files + 1 ))
+  case "$path" in *.md|LICENSE) ;; *) docs_only=false ;; esac
   [[ "${adds:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + adds ))
   [[ "${dels:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + dels ))
 done <<< "${GATE_FILES_TSV:-}"
@@ -105,4 +107,6 @@ if [ "$ng_files" -eq 0 ]; then
   exit 0
 fi
 
+# No code to break, so review-scan's failure_scenario bar alone would silence it.
+printf 'docs_only=%s\n' "$docs_only"
 emit true ok "" "Reviewing ${ng_files} files / ${ng_lines} non-generated lines."

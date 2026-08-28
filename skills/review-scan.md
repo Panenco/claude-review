@@ -84,6 +84,7 @@ Every finding carries all of:
 | `fix` | a committable replacement for the cited lines — real code, not advice |
 | `severity` | `critical` (security, data loss, broken build) / `major` (user-reachable logic bug) / `minor` (real but non-blocking) |
 | `convention` | `true` only for a quoted documented-convention violation (then `failure_scenario` may be `""`); `false` for every normal finding |
+| `prose` | `true` only for a `DOCS_ONLY` prose defect that completes the reader-harm sentence; `false` for every normal finding |
 
 **Inaccurate prose is `minor`.** A comment, README, changelog or doc that has drifted from the code is not a user-reachable logic bug, so it never reaches `major` on its own. The exception is text this repo *executes* — skill prompts, the setup recipe, workflow and action files — where a consumer runs the stale wording as an instruction: rate that by the failure it causes, exactly like code.
 
@@ -92,6 +93,26 @@ Every finding carries all of:
 When the diff changes a user-facing string making a factual claim about behaviour — a duration, a limit, a count, a price, a URL, what a link does — `Grep` for the constant that implements the claim and compare the two values. This is the one place you go looking rather than waiting for code to look wrong: on byte-identical code, a review carrying this instruction found the defect and a review without it missed it.
 
 A mismatch is an **ordinary finding at the ordinary bar**, and the failure scenario writes itself — the user believes the copy, acts on it, and the code does something else. Measured: invitation copy said "expires in 7 days" while `ACTIVATION_TTL_MS` was 72 hours; recipients who trusted it hit an expired-token error on day 4. Copy is runtime behaviour, not documentation, so the prose-is-minor rule above does not apply to it.
+
+### Prose defects — only when `DOCS_ONLY=true`
+
+`DOCS_ONLY` is in your env. When it is `true` every changed file is a document: there is no code to break, so the ordinary `failure_scenario` bar would delete every finding an honest reader could make. This is the ONLY channel exempt from that bar, and it is open ONLY on such a run.
+
+**The bar is reader harm, and it is a sentence you must be able to complete:**
+
+> *a ⟨named reader⟩ doing ⟨named task⟩ cannot ⟨specific thing⟩*
+
+The reader is a role that exists in this repo's world — a dev picking up the task plan, a PM reading the PRD, a clinician, an admin, the external body the document is addressed to. Not "a reader". Not "someone". `reader_harm` replaces `failure_scenario` **as the bar** — that sentence is what you write in the `failure_scenario` field — and nothing else changes: `path`, in-hunk `line`, `title`, `evidence` and `fix` are all still required at the full bar.
+
+**Three kinds qualify, and nothing else does:**
+
+1. **The document contradicts itself, or another document in this same diff.** Two passages that cannot both be true. Quote both in `evidence`.
+2. **The document does not meet a standard it itself cites.** It names a rule, a contract, a required element or a source of truth, and then does not supply it. Quote the standard and show what is missing.
+3. **A table, list or diagram does not say what the prose around it says** — a row that renders outside its table, a count that disagrees with the rows, a column the prose needs that is not there. The test is that the rendered artefact disagrees with the prose, never that the formatting is ugly.
+
+**Never a prose defect, whatever costume it arrives in:** wordiness, sentence length, paragraph length, tone, heading style, "this could be a table", "this should be a diagram", a missing section, or a document being longer than a convention says. **Length is a reason to READ more carefully. It is never itself a finding**, and neither is anything you would phrase as a preference.
+
+**Max 2 per review**, each carrying `"prose": true`, always `severity: "minor"`, always advisory — a prose finding can NEVER produce REQUEST_CHANGES. Zero is the normal and correct output. Suppression still comes first and applies to a prose finding exactly as to any other; do not go hunting for the repo's documentation conventions beyond the two files above.
 
 Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences.
 
@@ -134,7 +155,8 @@ The functional tester is dispatched in the **same response** as you and runs to 
       "evidence": "...",
       "fix": "...",
       "severity": "critical|major|minor",
-      "convention": false
+      "convention": false,
+      "prose": false
     }
   ],
   "prior_findings": [

@@ -32,6 +32,8 @@ Never invent a new finding. You only kill, keep, or re-anchor — with the singl
 
 A finding carrying `"convention": true` is judged on a different bar: keep it only if its `evidence` quotes the rule **verbatim** from one of those two files (that quote replaces `failure_scenario`); refute it if you cannot find that text there. Force `severity` to `minor` and keep at most **2**. Ordinary findings keep the full `failure_scenario` bar — nothing here relaxes it.
 
+A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2**.
+
 ## Functional results — the one exception
 
 You are the only consumer of `/tmp/functional.json`. The tester is dispatched alongside `review-scan` and finishes after it, so scan never sees this file; you run after both.
@@ -50,7 +52,7 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 
 ## Verdict
 
-- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES — it is always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
+- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is neither a convention nor a prose finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES, and neither can a `"prose": true` finding — both are always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
 - **APPROVE** — requires ALL of: zero surviving findings; `human_review_adds_nothing` true with a real, non-empty `approve_argument`; `sensitive_paths_touched` false; `review_effort` ≤ 2. Any doubt → not APPROVE.
 - **COMMENT** — everything else, and the normal outcome. **A COMMENT carrying human-review items is a good review, not a failure.** It says: nothing is provably broken, here is what a human should look at.
 
@@ -124,7 +126,7 @@ The suggestion block must be a valid, committable replacement for the commented 
     "findings": [
       {"id": "7f3a1c2b", "carried_from": "", "path": "src/foo.ts", "line": 42,
        "title": "...", "severity": "critical|major|minor",
-       "failure_scenario": "...", "fix": "...", "placement": "inline|body", "convention": false}
+       "failure_scenario": "...", "fix": "...", "placement": "inline|body", "convention": false, "prose": false}
     ],
     "resolved_prior": [{"id": "1a2b3c4d", "evidence": "what at HEAD now prevents it"}],
     "human_review": [

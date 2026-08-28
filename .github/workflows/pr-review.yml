@@ -945,6 +945,7 @@ jobs:
           # The same value the dev-env and browser steps gated on, so the tester can
           # never land in an unbuilt environment.
           RUN_FUNCTIONAL: ${{ steps.guard.outputs.functional }}
+          DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
