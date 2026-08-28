@@ -371,10 +371,24 @@ want "assembly source 3: the external tracker hook, also a SUMMARY" "$BUILDSPEC"
   'Spec source — external tracker.*SUMMARY'
 want "…invoked as .github/claude-review/fetch-issue.sh when executable" "$BUILDSPEC" \
   '\.github/claude-review/fetch-issue\.sh'
-want "assembly source 4: the PR body, as the fallback" "$BUILDSPEC" \
+never "the PR body is no longer a spec source — judging a diff against its own summary is circular" "$BUILDSPEC" \
   'Spec source — the PR body'
-want "…and a bot-generated summary is called out as not a spec" "$BUILDSPEC" \
-  'bot-generated summary'
+want "not every markdown file is a specification" "$BUILDSPEC" \
+  'CONTEXT — NOT A SPECIFICATION'
+want "a doc this PR wrote is labelled, not trusted to settle its own questions" "$BUILDSPEC" \
+  'WRITTEN BY THIS PR'
+want "runbooks and reference material are never a specification" "$BUILDSPEC" \
+  'docs/runbooks'
+want "the assembler records whether a spec resolved" "$BUILDSPEC" \
+  '/tmp/spec-status'
+want "the poster makes 'no spec' visible" "$POSTER" \
+  'No spec resolved'
+never "…and it is not a verdict gate" "$POSTER" \
+  'spec.*APPROVE|APPROVE.*spec'
+want "review-scan is told a context section asks for nothing" "$SCAN" \
+  'CONTEXT — NOT A SPECIFICATION'
+never "review-scan no longer knows a PR-body spec fallback" "$SCAN" \
+  'PR-body fallback'
 want "the file names the source that governs THIS run" "$BUILDSPEC" \
   'GOVERNING SOURCE'
 want "…states the precedence rule outright" "$BUILDSPEC" \
@@ -479,8 +493,8 @@ want "review-scan raises out-of-scope work at all" "$SCAN" \
   'out-of-scope work|Out-of-scope work'
 want "…gated on a governing source that is a document, issue or ticket" "$SCAN" \
   'GOVERNING SOURCE.{0,20}must be an in-repo spec document'
-want "…never off the PR-body fallback" "$SCAN" \
-  'Never off the PR-body fallback'
+want "…never off a context section" "$SCAN" \
+  'never off a .CONTEXT'
 want "…never off a partial spec" "$SCAN" \
   'never off a partial spec'
 want "…and put more carefully when only a summary governs" "$SCAN" \
@@ -524,8 +538,8 @@ want "the tester names review-verify as the consumer of its output" "$TESTER" \
 # and a PR body that summarises the very diff it is supposed to be testing.
 want "the tester's criteria come from the governing spec source" "$ORCH" \
   'in-repo spec document section of /tmp/spec\.md when one resolved, otherwise the linked issue'
-want "…never the tracker hook output, never the PR-body fallback" "$ORCH" \
-  'Never the external-tracker section and never the PR-body fallback'
+want "…never the tracker hook output, never a context section" "$ORCH" \
+  'Never the external-tracker section and never a CONTEXT section'
 want "…and the tester runs diff-touched criteria first" "$ORCH" \
   'the ones the diff touches first'
 want "the tester still refuses to invent a plan with no criteria" "$TESTER" \

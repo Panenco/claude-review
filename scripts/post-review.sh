@@ -54,7 +54,7 @@ set -uo pipefail
 #
 # Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, REVIEW_BOT_USER
 # Optional env: HEAD_SHA, GITHUB_STEP_SUMMARY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
-#               REVIEW_JSON, ORCH_LOG, JOB_START, REVIEW_BODY_MAX,
+#               REVIEW_JSON, ORCH_LOG, JOB_START, SPEC_STATUS, REVIEW_BODY_MAX,
 #               REVIEW_COMMENT_MAX, REVIEW_COMMENT_LIMIT, ROUND,
 #               PRIOR_FINDINGS_JSON, REVIEW_STATE_MAX
 
@@ -64,6 +64,7 @@ BOT="${REVIEW_BOT_USER:-github-actions[bot]}"
 REVIEW_JSON="${REVIEW_JSON:-/tmp/review.json}"
 ORCH_LOG="${ORCH_LOG:-/tmp/orchestrator-output.txt}"
 JOB_START="${JOB_START:-/tmp/job-start}"
+SPEC_STATUS="${SPEC_STATUS:-/tmp/spec-status}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 SERVER="${GITHUB_SERVER_URL:-https://github.com}"
 BODY_MAX="${REVIEW_BODY_MAX:-1200}"
@@ -230,6 +231,17 @@ if [ "${#FOOTER_PARTS[@]}" -gt 0 ]; then
   done
   FOOTER+=$'</sub>\n'
 fi
+
+# ── 2b. "No spec resolved" ───────────────────────────────────────────────────
+# build-spec.sh writes one token; only the two states where NOTHING specified
+# this PR produce a line. A missing or unrecognised file emits nothing, so a
+# partial run never invents a claim about the spec. It is a statement of fact
+# appended after the verdict is chosen — never an input to it.
+SPEC_NOTICE=""
+case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
+  context-only|none)
+    SPEC_NOTICE=$'\n<sub>No spec resolved — reviewed on the diff alone. Link an issue, or commit the intent doc, to have the next review check against what was asked.</sub>\n' ;;
+esac
 
 # ── 3. Inline comments: in-hunk only, deduped, 5 max, 700 bytes each ────────
 # GitHub 422s the whole atomic POST if any comment line is outside a diff hunk,
@@ -526,7 +538,7 @@ if [ -s "$WORK/fallback.md" ]; then
 fi
 
 TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
-AVAIL=$(( BODY_MAX - $(blen "$FOOTER") ))
+AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") ))
 MEASURED=$(LC_ALL=C awk -v mode=measure -f "$WORK/budget.awk" "$WORK/body.raw")
 if [ "${MEASURED:-0}" -gt "$AVAIL" ]; then
   echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating."
@@ -580,6 +592,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$WORK/body.raw"
 
 printf '%s' "$FOOTER" >> "$WORK/body.md"
+printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
 echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"
 echo "::endgroup::"
 

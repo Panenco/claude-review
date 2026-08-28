@@ -22,13 +22,23 @@ ok()  { echo "OK:   $1"; }
 bad() { echo "FAIL: $1"; fail=$((fail + 1)); }
 has()    { if grep -qF -- "$2" "$3"; then ok "$1"; else bad "$1 — no '$2' in ${3##*/}"; fi; }
 hasnt()  { if grep -qF -- "$2" "$3"; then bad "$1 — unexpected '$2' in ${3##*/}"; else ok "$1"; fi; }
+# The poster reads this one token to decide whether to say "no spec resolved".
+# It is written on EVERY run, so every scenario below asserts it.
+status_is() { # status_is <label> <expected token>
+  local got; got=$(cat /tmp/spec-status 2>/dev/null)
+  case "$got" in
+    document|summary|context-only|none) ;;
+    *) bad "$1 — /tmp/spec-status holds '${got:-<missing>}', not one of the four tokens"; return 0 ;;
+  esac
+  if [ "$got" = "$2" ]; then ok "$1"; else bad "$1 — spec-status is '$got', want '$2'"; fi
+}
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 # run <pr-json> <issue-json-stream> — fresh workspace-independent invocation.
 run() {
-  rm -f /tmp/spec.md /tmp/external-issue.md /tmp/external-issue-candidates.json
+  rm -f /tmp/spec.md /tmp/spec-status /tmp/external-issue.md /tmp/external-issue-candidates.json
   printf '%s' "$1" > /tmp/pr.json
   printf '%s' "$2" > /tmp/issue.json
   ( cd "$WS" && GITHUB_WORKSPACE="$WS" PR_NUMBER=7 GITHUB_REPOSITORY=o/r \
@@ -50,6 +60,7 @@ new_repo
 run '{"title":"chore: bump","body":"","headRefName":"chore/bump"}' ''
 if [ -f /tmp/spec.md ] && [ ! -s /tmp/spec.md ]; then ok "spec.md exists and is empty"; else bad "spec.md must exist and be empty"; fi
 has "…and the run log says so" "no spec source resolved" /tmp/build-spec.out
+status_is "…and the status file says nothing resolved" none
 
 echo ""
 echo "── the linked GitHub issue: present, but labelled a SUMMARY ──"
@@ -63,6 +74,7 @@ has "…under a banner marking the whole file untrusted" "UNTRUSTED DATA" /tmp/s
 has "the precedence block names the governing source" "GOVERNING SOURCE: linked GitHub issue" /tmp/spec.md
 has "…and warns that no document resolved, so this may be thinner than the spec" \
   "No in-repo spec document resolved" /tmp/spec.md
+status_is "…and the status file says a summary governs" summary
 
 echo ""
 echo "── the external tracker hook ──"
@@ -113,6 +125,12 @@ run '{"title":"feat: widget","body":"no reference to any doc here","headRefName"
 has "a doc the PR itself adds is found with no reference at all" "must persist across restarts" /tmp/spec.md
 has "…as the authoritative source" 'in-repo spec document `docs/plans/widget.md` (AUTHORITATIVE' /tmp/spec.md
 has "…and it governs the run" "GOVERNING SOURCE: in-repo spec document" /tmp/spec.md
+status_is "…and the status file says a document governs" document
+# Circularity is LABELLED, not excluded: dropping self-written docs would cost
+# more real specs than it saves. The label bounds what the doc may be used FOR.
+has "…labelled as written by the PR it is judging" "WRITTEN BY THIS PR" /tmp/spec.md
+has "…and the label says what that costs it" \
+  "cannot settle a question this PR itself leaves open" /tmp/spec.md
 
 echo ""
 echo "── …and a doc-shaped file that is not a spec still cannot poison it ──"
@@ -158,6 +176,18 @@ has "a declared directory resolves with no reference in issue or PR" "must charg
 has "…as the authoritative source" 'in-repo spec document `docs/specs/checkout.md`' /tmp/spec.md
 
 echo ""
+echo "── …and a declared path is a spec BY DECLARATION, whatever it is named ──"
+# The tier filter is the first thing that can reject a repo's docs, so the one
+# line a repo writes about itself has to be able to override it.
+new_repo
+mkdir -p "$WS/.github"
+printf 'Spec documents: product/notes/x.md\n' > "$WS/.github/review-config.md"
+track "product/notes/x.md" "SPEC: refunds are idempotent"
+run '{"title":"feat","body":"","headRefName":"f"}' ''
+has "a declared path no convention would have matched still governs" "refunds are idempotent" /tmp/spec.md
+has "…as the authoritative source" 'in-repo spec document `product/notes/x.md` (AUTHORITATIVE' /tmp/spec.md
+
+echo ""
 echo "── …and a declared glob works too ──"
 new_repo
 mkdir -p "$WS/.github"
@@ -165,6 +195,10 @@ printf 'Specs: product/**/*.md\n' > "$WS/.github/review-config.md"
 track "product/2026/billing.md" "SPEC: invoices are immutable"
 run '{"title":"feat","body":"","headRefName":"f"}' ''
 has "a declared glob resolves" "invoices are immutable" /tmp/spec.md
+# `product/2026/` matches no naming convention: route (b) is the only reason
+# this document is here at all.
+has "…and it is the declaration that gives it authority" \
+  'in-repo spec document `product/2026/billing.md` (AUTHORITATIVE' /tmp/spec.md
 
 echo ""
 echo "── discovery (c): spec documents at ANY repo path, referenced explicitly ──"
@@ -191,16 +225,16 @@ run '{"title":"feat: billing","body":"per the billing-prd","headRefName":"f"}' '
 has "a -prd mention resolves without a configured directory" "invoices are immutable" /tmp/spec.md
 
 echo ""
-echo "── the PR body is the last resort, and ONLY when nothing else resolved ──"
+echo "── the PR body is NOT a spec source ──"
+# It is written by the author, often by a bot summarising the diff, so judging
+# the diff against it is circular. review-scan still reads the body itself; it
+# just cannot produce a spec finding from it.
 new_repo
 run '{"title":"feat: x","body":"## Acceptance criteria\n- must retry twice","headRefName":"f"}' ''
-has "PR body is the last resort" "## Spec source — the PR body (fallback)" /tmp/spec.md
-has "…and says a bot summary is not a spec" "not a spec" /tmp/spec.md
-has "…and is named as the governing source, so scan knows how thin it is" \
-  "GOVERNING SOURCE: the PR body (fallback)" /tmp/spec.md
-new_repo
-run '{"title":"feat: x","body":"some body prose","headRefName":"f"}' '{"number":4,"title":"T","body":"AC: from the issue"}'
-hasnt "…suppressed once a higher-priority source resolved" "the PR body (fallback)" /tmp/spec.md
+if [ -f /tmp/spec.md ] && [ ! -s /tmp/spec.md ]; then ok "a PR with only a body resolves no spec"; else bad "spec.md must be empty when only the PR body exists"; fi
+hasnt "…and the body is never stamped as a source" "must retry twice" /tmp/spec.md
+has "…and the run log says nothing resolved" "no spec source resolved" /tmp/build-spec.out
+status_is "…and so does the status file" none
 
 echo ""
 echo "── precedence: the in-repo document governs, the summaries follow it ──"
@@ -245,6 +279,118 @@ has "…and telling scan not to infer absence from it" \
 has "the precedence block flags the whole file as partial" "SPEC IS PARTIAL" /tmp/spec.md
 has "…and the run log warns too" "::warning::spec.md is PARTIAL" /tmp/build-spec.out
 hasnt "…and the cut really happened" "AC-LAST: never reached" /tmp/spec.md
+
+echo ""
+echo "── the docs axis: a runbook and a reference are not specifications ──"
+# Both used to resolve as AUTHORITATIVE. A runbook is operational instructions
+# and a reference is a table: neither asks for anything, so every mismatch
+# between them and the diff was a finding about nothing.
+new_repo
+track "docs/runbooks/install.md"        "RUNBOOK BODY: run the installer"
+track "docs/references/inventory.md"    "INVENTORY TABLE: 12 prototypes"
+track "docs/system/features/billing.md" "CURRENT STATE: invoices are emailed nightly"
+track "docs/adr/0001-x.md"              "DECISION: we chose Postgres"
+run '{"title":"feat","body":"see docs/runbooks/install.md docs/references/inventory.md docs/system/features/billing.md docs/adr/0001-x.md","headRefName":"f"}' ''
+hasnt "no runbook or reference becomes the specification" "AUTHORITATIVE" /tmp/spec.md
+hasnt "…the runbook is not included at all"   "RUNBOOK BODY"    /tmp/spec.md
+hasnt "…nor is the reference table"           "INVENTORY TABLE" /tmp/spec.md
+has   "…while current-state docs are kept as grounding" "CURRENT STATE" /tmp/spec.md
+has   "…and so are decision records"                    "DECISION: we chose Postgres" /tmp/spec.md
+has   "…both stamped as asking for nothing" "CONTEXT — NOT A SPECIFICATION" /tmp/spec.md
+status_is "…and the status file says context only" context-only
+hasnt "context never governs" "GOVERNING SOURCE: in-repo spec document" /tmp/spec.md
+run '{"title":"feat","body":"see docs/system/features/billing.md","headRefName":"f"}' \
+    '{"number":4,"title":"T","body":"AC: bill monthly"}'
+has "…and with an issue present, the issue governs, not the context doc" \
+  "GOVERNING SOURCE: linked GitHub issue" /tmp/spec.md
+status_is "…which is a summary, not a document" summary
+
+echo ""
+echo "── …and the document of intent outranks both ──"
+new_repo
+track "docs/planned/e/e-prd.md" "SPEC: exports must be resumable"
+track "docs/runbooks/r.md"      "RUNBOOK BODY"
+track "docs/adr/1.md"           "DECISION RECORD"
+run '{"title":"feat","body":"docs/planned/e/e-prd.md docs/runbooks/r.md docs/adr/1.md","headRefName":"f"}' ''
+has "the PRD is the governing source" 'GOVERNING SOURCE: in-repo spec document `docs/planned/e/e-prd.md`' /tmp/spec.md
+hasnt "…and the runbook still never enters" "RUNBOOK BODY" /tmp/spec.md
+status_is "…status: a document governs" document
+
+echo ""
+echo "── selection is ranked, not first-come: the PRD and the architecture win ──"
+# Discovery order used to decide the four slots, so a task file could take the
+# budget the PRD needed.
+new_repo
+track "docs/planned/e/e-prd.md" "PRD-MARKER: exports must be resumable"
+{ echo "ARCH-MARKER"; for i in $(seq 2 120); do echo "design $i"; done; } > "$WORK/arch.md"
+mkdir -p "$WS/docs/planned/e/tasks"
+cp "$WORK/arch.md" "$WS/docs/planned/e/e-architecture.md"
+for n in 01 02 03; do
+  { echo "TASK-$n"; for i in $(seq 2 900); do echo "step $i"; done; } > "$WS/docs/planned/e/tasks/$n.md"
+done
+git -C "$WS" add -f docs >/dev/null 2>&1
+run '{"title":"feat","body":"docs/planned/e/e-prd.md docs/planned/e/e-architecture.md docs/planned/e/tasks/01.md docs/planned/e/tasks/02.md docs/planned/e/tasks/03.md","headRefName":"f"}' ''
+has "the PRD is included" "PRD-MARKER" /tmp/spec.md
+has "…and the architecture doc with it" "ARCH-MARKER" /tmp/spec.md
+has "…the PRD first of all" 'GOVERNING SOURCE: in-repo spec document `docs/planned/e/e-prd.md`' /tmp/spec.md
+has "…and a task file that did not fit is listed, not dropped" "NOT included (budget exhausted)" /tmp/spec.md
+
+echo ""
+echo "── a document that does not fit is SKIPPED, not the end of the selection ──"
+new_repo
+mkdir -p "$WS/docs/planned/z"
+for n in a b c; do
+  { echo "BIG-$n"; for i in $(seq 2 1400); do echo "line $i"; done; } > "$WS/docs/planned/z/$n-architecture.md"
+done
+printf 'SMALL-MARKER: refunds are idempotent\n' > "$WS/docs/planned/z/small.md"
+git -C "$WS" add -f docs >/dev/null 2>&1
+run '{"title":"feat","body":"docs/planned/z/a-architecture.md docs/planned/z/b-architecture.md docs/planned/z/c-architecture.md docs/planned/z/small.md","headRefName":"f"}' ''
+has "the small doc after the ones that exhausted the budget still arrives" "SMALL-MARKER" /tmp/spec.md
+has "…and the one that did not fit is named" "c-architecture.md" /tmp/spec.md
+
+echo ""
+echo "── an ambiguous reference resolves by tier, then by depth, else not at all ──"
+new_repo
+track "docs/planned/x/security.md" "SPEC: tokens rotate hourly"
+track "backend/java/security.md"   "JAVA NOTES, not a spec"
+run '{"title":"feat","body":"per security.md","headRefName":"f"}' ''
+has "a spec-tier candidate beats a shallower non-spec one" "tokens rotate hourly" /tmp/spec.md
+hasnt "…and the non-spec file is not inlined" "JAVA NOTES" /tmp/spec.md
+
+new_repo
+track "docs/plans/one/thing.md" "FIRST COPY"
+track "docs/plans/two/thing.md" "SECOND COPY"
+run '{"title":"feat","body":"see thing.md","headRefName":"f"}' ''
+if [ -f /tmp/spec.md ] && [ ! -s /tmp/spec.md ]; then ok "two equally good candidates → the ref is dropped, not guessed"; else bad "an unresolvable basename must resolve to nothing"; fi
+status_is "…and the run resolves no spec at all" none
+
+new_repo
+track "docs/planned/_old/f-architecture.md" "STALE COPY"
+track "docs/planned/new/f-architecture.md"  "REAL: the queue drains in order"
+run '{"title":"feat","body":"see f-architecture.md","headRefName":"f"}' ''
+has "a _-prefixed directory is never the spec" "the queue drains in order" /tmp/spec.md
+hasnt "…so the template copy cannot win on sort order" "STALE COPY" /tmp/spec.md
+
+new_repo
+track "docs/planned/a/tasks/06-x.md" "REAL: poll every 5s"
+track "docs/specs/06-x.md"           "OTHER DOC"
+run '{"title":"feat","body":"see tasks/06-x.md","headRefName":"f"}' ''
+has "a path suffix resolves before the bare basename does" "poll every 5s" /tmp/spec.md
+hasnt "…so the shallower same-named doc is not picked" "OTHER DOC" /tmp/spec.md
+
+echo ""
+echo "── a document the PR did not write outranks one it did ──"
+new_repo
+track "src/app.txt" "base"
+mkdir -p "$WS/docs/plans"
+{ echo "OLDER SPEC: refunds are idempotent"; for i in $(seq 2 30); do echo "criterion $i"; done; } > "$WS/docs/plans/a-design.md"
+git -C "$WS" add -f docs src >/dev/null 2>&1; commit "base"
+git -C "$WS" checkout -q -b feat/z
+track "docs/plans/b-design.md" "NEWER SPEC written in this very PR"
+commit "work"
+run '{"title":"feat","body":"see docs/plans/a-design.md","headRefName":"feat/z","baseRefName":"main"}' ''
+has "the doc the PR did not write governs" 'GOVERNING SOURCE: in-repo spec document `docs/plans/a-design.md`' /tmp/spec.md
+has "…and the self-written one is still included, labelled" "WRITTEN BY THIS PR" /tmp/spec.md
 
 echo ""
 echo "── repo rules ──"

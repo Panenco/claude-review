@@ -26,7 +26,7 @@ echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 
 Each `${VAR}` below means that literal value. Task `model:` must be the exact model id from env (`claude-opus-5`), never an alias.
 
-`build-spec.sh` assembles `/tmp/spec.md` in precedence order — **in-repo spec documents first (authoritative)**, then the linked issue, then the consumer's `.github/claude-review/fetch-issue.sh` tracker hook, then the PR body — each under a header naming its origin and its authority, under a block naming the `GOVERNING SOURCE`. The document is the specification; an issue or ticket is a summary of it. It is the ONLY spec artifact anything downstream reads, and an empty file is a normal outcome. Never fatal: if it fails, dispatch anyway.
+`build-spec.sh` assembles `/tmp/spec.md` in precedence order — **in-repo spec documents first (authoritative)**, then the linked issue, then the consumer's `.github/claude-review/fetch-issue.sh` tracker hook — each under a header naming its origin and its authority, under a block naming the `GOVERNING SOURCE`. The document is the specification; an issue or ticket is a summary of it. It is the ONLY spec artifact anything downstream reads, and an empty file is a normal outcome. Never fatal: if it fails, dispatch anyway.
 
 **Functional runs only when ALL hold:** `RUN_FUNCTIONAL=true`, `WEB_READY=true`, and the governing spec source carries explicit acceptance criteria — the in-repo spec document section of `/tmp/spec.md` when one resolved, otherwise the linked issue in `/tmp/issue.json`. Otherwise dispatch no tester and write nothing about it — no criteria means no test plan, and inventing scenarios is the failure mode this rule exists to kill.
 
@@ -43,7 +43,7 @@ Each `${VAR}` below means that literal value. Task `model:` must be the exact mo
    ENVIRONMENT: API_URL=<...> WEB_URL=<...> AUTH_READY=<...>
    AUTH RECIPE AND KNOWN DEV-ENV QUIRKS (`Read` /tmp/auth-recipe.md and paste it verbatim; empty file = none documented, and the tester then has no recipe to follow):
    <the /tmp/auth-recipe.md text>
-   ACCEPTANCE CRITERIA (the only source of your test plan — verbatim from the GOVERNING source: the in-repo spec document section of /tmp/spec.md when one resolved, otherwise the linked issue in /tmp/issue.json. Never the external-tracker section and never the PR-body fallback — third-party hook output and a bot summary of the diff are not a test plan. Quote the criteria, not the whole document, and put the ones the diff touches first):
+   ACCEPTANCE CRITERIA (the only source of your test plan — verbatim from the GOVERNING source: the in-repo spec document section of /tmp/spec.md when one resolved, otherwise the linked issue in /tmp/issue.json. Never the external-tracker section and never a CONTEXT section — third-party hook output and a description of what already exists are not a test plan. Quote the criteria, not the whole document, and put the ones the diff touches first):
    <the AC text>
    Output: /tmp/functional.json.
    ```

@@ -8,22 +8,35 @@ set -uo pipefail
 #   1. in-repo spec document(s)  AUTHORITATIVE — the real specification
 #   2. linked GitHub issue       a SUMMARY of it
 #   3. external tracker ticket   a SUMMARY of it
-#   4. the PR body               last resort, only when nothing else resolved
 # Teams keep a short summary in the tracker and the extensive specification in
 # the repo, so the document governs: where a summary disagrees with it, the
 # document wins. spec.md says so at the top and in every header, because
 # review-scan reads the file and never learns where any of it came from.
 #
-# WHY A SCRIPT AND NOT PROMPT LINES: review-scan must not learn four spec
-# sources. It reads one file. Everything here is deterministic file plumbing —
-# paying a model to redo it every run costs tokens and is less reliable than
-# bash that a fixture test pins (tests/build_spec_test.sh).
+# THE PR BODY IS NOT A SPEC SOURCE. It is written by the author — often by a bot
+# summarising the diff — so judging the diff against it is circular: it agrees
+# with the code by construction. It is not lost: review-scan's own `gh pr view`
+# still reads it. It just carries no authority to produce a spec finding.
+#
+# NOT EVERY MARKDOWN FILE IS A SPECIFICATION (see doc_tier). A document of
+# intent — a PRD, a plan, an RFC, an architecture or design doc — is the spec. A
+# runbook is operational instructions and a reference is a table; both were
+# resolving as AUTHORITATIVE and asking for work no PR ever promised.
+# current-state docs (docs/system/**) and decision records (docs/adr/**) are real
+# grounding but describe what IS and what WAS DECIDED, never what this PR should
+# do, so they are included as CONTEXT and never govern.
+#
+# WHY A SCRIPT AND NOT PROMPT LINES: review-scan must not learn the spec sources.
+# It reads one file. Everything here is deterministic file plumbing — paying a
+# model to redo it every run costs tokens and is less reliable than bash that a
+# fixture test pins (tests/build_spec_test.sh).
 #
 # Reads (written by the orchestrator's turn 1, before this runs):
 #   /tmp/pr.json      gh pr view --json title,body,headRefName,baseRefName
 #   /tmp/issue.json   concatenated `gh issue view` objects (may be empty)
 # Writes:
 #   /tmp/spec.md                       the assembled spec (EMPTY when nothing resolved)
+#   /tmp/spec-status                   one token: document|summary|context-only|none
 #   /tmp/external-issue-candidates.json  the fetch-issue.sh hook's documented input
 #   /tmp/external-issue.md               raw hook stdout
 #
@@ -37,6 +50,7 @@ set -uo pipefail
 WS="${GITHUB_WORKSPACE:-$PWD}"
 OUT=/tmp/spec.md
 TMP=/tmp/spec.parts
+STATUS_FILE="${SPEC_STATUS:-/tmp/spec-status}"
 : > "$OUT"
 : > "$TMP"
 
@@ -47,6 +61,10 @@ TMP=/tmp/spec.parts
 DOC_MAX=4
 DOC_LINE_CAP=1500
 DOC_TOTAL_CAP=3000
+# Context is grounding, not criteria: it is drawn from what SPEC left of the same
+# total, so the worst case is unchanged.
+CONTEXT_MAX=2
+CONTEXT_LINE_CAP=200
 
 PR_JSON=/tmp/pr.json
 ISSUE_JSON=/tmp/issue.json
@@ -68,6 +86,7 @@ nonblank() { [ -n "$(printf '%s' "${1:-}" | tr -d '[:space:]')" ]; }
 
 GOVERNING=""
 PARTIAL=""
+SUMMARY_RESOLVED=""
 
 # ── Source 1 (AUTHORITATIVE): spec documents committed in this repo ──
 # Discovery, in descending order of signal. Every route is a way for the real
@@ -77,27 +96,111 @@ TRACKED_MD=$(git -C "$WS" ls-files '*.md' 2>/dev/null) || TRACKED_MD=""
 CFG="$WS/.github/review-config.md"
 
 SPEC_DOCS=""
-add_doc() { # add_doc <repo-relative path>
+CONTEXT_DOCS=""
+DECLARED_DOCS=""
+CHANGED_DOCS=""
+
+doc_tier() { # doc_tier <repo-relative path> → spec | context | excluded
   case "$1" in
-    ''|.github/*|*/node_modules/*) return 0 ;;
-    README.md|*/README.md|CHANGELOG.md|*/CHANGELOG.md) return 0 ;;
-    CONTRIBUTING.md|*/CONTRIBUTING.md|LICENSE.md|*/LICENSE.md) return 0 ;;
-    SECURITY.md|*/SECURITY.md|CODE_OF_CONDUCT.md|*/CODE_OF_CONDUCT.md) return 0 ;;
+    ''|.github/*|*/node_modules/*) echo excluded; return 0 ;;
+    README.md|*/README.md|CHANGELOG.md|*/CHANGELOG.md) echo excluded; return 0 ;;
+    CONTRIBUTING.md|*/CONTRIBUTING.md|LICENSE.md|*/LICENSE.md) echo excluded; return 0 ;;
+    SECURITY.md|*/SECURITY.md|CODE_OF_CONDUCT.md|*/CODE_OF_CONDUCT.md) echo excluded; return 0 ;;
     # Agent instruction files and the review's own rule files are prompts, not
     # specs: inlining them would feed the reviewer instructions as requirements.
     # Whole directories, not just well-known basenames — a repo that ships
     # subagent prompts (this one does) would otherwise resolve them as the
     # AUTHORITATIVE spec. Found by the reviewer, on the PR that added this list.
-    CLAUDE.md|*/CLAUDE.md|AGENTS.md|*/AGENTS.md|bugbot.md|*/bugbot.md) return 0 ;;
-    skills/*|*/skills/*|agents/*|*/agents/*|.claude/*|*/.claude/*) return 0 ;;
-    prompts/*|*/prompts/*) return 0 ;;
+    CLAUDE.md|*/CLAUDE.md|AGENTS.md|*/AGENTS.md|bugbot.md|*/bugbot.md) echo excluded; return 0 ;;
+    skills/*|*/skills/*|agents/*|*/agents/*|.claude/*|*/.claude/*) echo excluded; return 0 ;;
+    prompts/*|*/prompts/*) echo excluded; return 0 ;;
+    # A `_`-prefixed segment is the convention for a template or an archived
+    # copy. `docs/planned/_document-templates/` beat the real document because
+    # `_` sorts before every letter.
+    _*|*/_*) echo excluded; return 0 ;;
   esac
-  case " $SPEC_DOCS " in *" $1 "*) return 0 ;; esac
-  [ -f "$WS/$1" ] && SPEC_DOCS="$SPEC_DOCS $1"
+  # A repo that declares where its specs live outranks the conventions below —
+  # this is the only knob a repo has when its layout matches none of them.
+  case " $DECLARED_DOCS " in *" $1 "*) echo spec; return 0 ;; esac
+  case "$1" in
+    docs/system/*|*/docs/system/*|docs/adr/*|*/docs/adr/*|adr/*) echo context; return 0 ;;
+  esac
+  case "$1" in
+    planned/*|*/planned/*|plans/*|*/plans/*|plan/*|*/plan/*) echo spec; return 0 ;;
+    specs/*|*/specs/*|spec/*|*/spec/*) echo spec; return 0 ;;
+    prd/*|*/prd/*|prds/*|*/prds/*|rfc/*|*/rfc/*|rfcs/*|*/rfcs/*) echo spec; return 0 ;;
+    design-docs/*|*/design-docs/*) echo spec; return 0 ;;
+    *-prd.md|*.prd.md|*-spec.md|*-rfc.md) echo spec; return 0 ;;
+    *-architecture.md|*-design.md|*-plan.md) echo spec; return 0 ;;
+  esac
+  # docs/runbooks/**, docs/references/**, notes, meeting minutes: real
+  # documents, but none of them asks for anything, and every one of them used
+  # to govern. Not on the list above is not on the list.
+  echo excluded
 }
 
+add_doc() { # add_doc <repo-relative path>
+  [ -n "${1:-}" ] || return 0
+  case " $SPEC_DOCS $CONTEXT_DOCS " in *" $1 "*) return 0 ;; esac
+  [ -f "$WS/$1" ] || return 0
+  case "$(doc_tier "$1")" in
+    spec)    SPEC_DOCS="$SPEC_DOCS $1" ;;
+    context) CONTEXT_DOCS="$CONTEXT_DOCS $1" ;;
+  esac
+}
+
+# pick_doc <allow-context 0|1>; candidate paths on stdin → at most one path.
+# A reference that stays ambiguous is DROPPED, never guessed: the other routes
+# run independently, and the wrong document is worse than no document.
+pick_doc() {
+  local allow_ctx="$1" list keep="" p n best="" bestn=0 ties=0
+  list=$(cat)
+  for p in $list; do
+    [ "$(doc_tier "$p")" = spec ] && keep="$keep $p"
+  done
+  if [ -z "$keep" ] && [ "$allow_ctx" = 1 ]; then
+    for p in $list; do
+      [ "$(doc_tier "$p")" = context ] && keep="$keep $p"
+    done
+  fi
+  [ -n "$keep" ] || return 0
+  for p in $keep; do
+    n=$(printf '%s' "$p" | tr -cd '/' | wc -c | tr -d ' ')
+    if [ -z "$best" ] || [ "$n" -lt "$bestn" ]; then
+      best="$p"; bestn="$n"; ties=1
+    elif [ "$n" -eq "$bestn" ]; then
+      ties=$((ties + 1))
+    fi
+  done
+  [ "$ties" -eq 1 ] || return 0
+  printf '%s\n' "$best"
+}
+
+# (b) resolved FIRST, because a declared location confers spec authority on
+# paths the tier classifier would otherwise reject — every later route needs to
+# know that before it classifies anything.
+if [ -f "$CFG" ]; then
+  DECLARED=$(grep -iE '^[[:space:]]*[-*#]*[[:space:]]*\**[[:space:]]*(specs?|spec (docs?|documents?|location))[[:space:]]*\**[[:space:]]*:' "$CFG" \
+    | sed 's/^[^:]*://' | tr ',' '\n' | tr -d '`' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$') || DECLARED=""
+  for entry in $DECLARED; do
+    entry="${entry#./}"; entry="${entry#/}"
+    if [ -f "$WS/$entry" ]; then
+      DECLARED_DOCS="$DECLARED_DOCS $entry"
+      continue
+    fi
+    pat=$(printf '%s' "$entry" \
+      | sed -e 's/[.[\$^]/\\&/g' -e 's/\*\*/@GLOBSTAR@/g' -e 's/\*/[^\/]*/g' -e 's/@GLOBSTAR@/.*/g')
+    for f in $(printf '%s\n' "$TRACKED_MD" | grep -E "^$pat" 2>/dev/null); do
+      DECLARED_DOCS="$DECLARED_DOCS $f"
+    done
+  done
+fi
+
 # (a) Markdown added or modified by THIS PR. A planning document committed
-# alongside the work it plans is the strongest signal there is.
+# alongside the work it plans is the strongest signal there is. It is LABELLED,
+# not excluded: excluding it would cost more real specs than the circularity it
+# avoids (a self-written doc must not CLOSE a question — see the header stamp).
 MERGE_BASE=""
 if [ -n "$BASE" ]; then
   for ref in "origin/$BASE" "$BASE"; do
@@ -108,43 +211,32 @@ if [ -n "$BASE" ]; then
 fi
 if [ -n "$MERGE_BASE" ]; then
   for f in $(git -C "$WS" diff --name-only --diff-filter=AM "$MERGE_BASE" HEAD -- '*.md' 2>/dev/null); do
+    CHANGED_DOCS="$CHANGED_DOCS $f"
     add_doc "$f"
   done
 fi
 
-# (b) A location the repo declares for itself. The convention varies per repo,
-# so a repo needs one line to say where its specs live — a `Spec documents:`
-# line in .github/review-config.md, holding a path, a directory or a glob.
-if [ -f "$CFG" ]; then
-  DECLARED=$(grep -iE '^[[:space:]]*[-*#]*[[:space:]]*\**[[:space:]]*(specs?|spec (docs?|documents?|location))[[:space:]]*\**[[:space:]]*:' "$CFG" \
-    | sed 's/^[^:]*://' | tr ',' '\n' | tr -d '`' \
-    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$') || DECLARED=""
-  for entry in $DECLARED; do
-    entry="${entry#./}"; entry="${entry#/}"
-    if [ -f "$WS/$entry" ]; then
-      add_doc "$entry"
-      continue
-    fi
-    pat=$(printf '%s' "$entry" \
-      | sed -e 's/[.[\$^]/\\&/g' -e 's/\*\*/@GLOBSTAR@/g' -e 's/\*/[^\/]*/g' -e 's/@GLOBSTAR@/.*/g')
-    for f in $(printf '%s\n' "$TRACKED_MD" | grep -E "^$pat" 2>/dev/null); do
-      add_doc "$f"
-    done
-  done
-fi
+for entry in $DECLARED_DOCS; do
+  add_doc "$entry"
+done
 
-# (c) An explicit repo-relative path referenced from the issue or the PR body.
-# A URL to a doc resolves by basename, which is how a `.../blob/main/docs/foo.md`
-# link lands on the tracked file.
+# (c) An explicit repo-relative path referenced from the issue. Exact path, then
+# a full path SUFFIX (what a stripped `.../blob/main/tasks/06-x.md` URL needs),
+# then the basename — each disambiguated by pick_doc rather than `head -1`.
 SPEC_REFS=$(printf '%s\n%s' "$BODY" "$ISSUES" \
   | grep -oE '[A-Za-z0-9][A-Za-z0-9._/-]*\.md' | sort -u) || SPEC_REFS=""
 for ref in $SPEC_REFS; do
   ref="${ref#./}"; ref="${ref#/}"
   if [ -f "$WS/$ref" ]; then
     add_doc "$ref"
-  else
-    add_doc "$(printf '%s\n' "$TRACKED_MD" | grep -iE "(^|/)$(basename "$ref")\$" | head -1)"
+    continue
   fi
+  esc=$(printf '%s' "$ref" | sed 's/[.[\$^*]/\\&/g')
+  CANDS=$(printf '%s\n' "$TRACKED_MD" | grep -E "/$esc\$") || CANDS=""
+  if [ -z "$CANDS" ]; then
+    CANDS=$(printf '%s\n' "$TRACKED_MD" | grep -iE "(^|/)$(basename "$esc")\$") || CANDS=""
+  fi
+  add_doc "$(printf '%s\n' "$CANDS" | pick_doc 1)"
 done
 
 # (d) Last-resort naming convention: a bare `<name>-prd` / `-spec` / `-rfc`
@@ -153,27 +245,58 @@ done
 if [ -z "$SPEC_DOCS" ]; then
   for name in $(printf '%s\n%s' "$BODY" "$ISSUES" \
       | grep -oiE '[a-z0-9][a-z0-9-]*-(prd|spec|rfc)\b' | tr '[:upper:]' '[:lower:]' | sort -u); do
-    add_doc "$(printf '%s\n' "$TRACKED_MD" | grep -i "$name" | head -1)"
+    CANDS=$(printf '%s\n' "$TRACKED_MD" | grep -i "$name") || CANDS=""
+    add_doc "$(printf '%s\n' "$CANDS" | pick_doc 0)"
   done
 fi
+
+# Ranking. Discovery order is "whichever route ran first", which is not an order
+# of usefulness: it put a task file ahead of the PRD that governs it and, when a
+# document did not fit, stopped the loop. Sort by kind, then prefer a document
+# this PR did NOT write, then smallest first — and skip what does not fit
+# instead of ending the selection.
+doc_kind() {
+  case "$1" in
+    *-prd.md|*.prd.md) echo 0 ;;
+    *-architecture.md|*-design.md|*-spec.md|*-rfc.md) echo 1 ;;
+    tasks/*|*/tasks/*) echo 2 ;;
+    *) echo 3 ;;
+  esac
+}
+written_by_pr() { case " $CHANGED_DOCS " in *" $1 "*) return 0 ;; esac; return 1; }
+
+RANKED=$(for doc in $SPEC_DOCS; do
+  lines=$(wc -l < "$WS/$doc" 2>/dev/null | tr -d ' ') || lines=0
+  self=0; written_by_pr "$doc" && self=1
+  printf '%s %s %s %s\n' "$(doc_kind "$doc")" "$self" "${lines:-0}" "$doc"
+done | sort -k1,1n -k2,2n -k3,3n)
 
 DOC_N=0
 DOC_TOTAL=0
 OMITTED=""
-for doc in $SPEC_DOCS; do
-  LINES=$(wc -l < "$WS/$doc" 2>/dev/null | tr -d ' ') || LINES=0
+while read -r _kind _self LINES doc; do
+  [ -n "${doc:-}" ] || continue
   REMAINING=$((DOC_TOTAL_CAP - DOC_TOTAL))
-  if [ "$DOC_N" -ge "$DOC_MAX" ] || [ "$REMAINING" -le 0 ]; then
+  TAKE=$LINES
+  [ "$TAKE" -gt "$DOC_LINE_CAP" ] && TAKE=$DOC_LINE_CAP
+  if [ "$DOC_N" -ge "$DOC_MAX" ] || [ "$TAKE" -gt "$REMAINING" ]; then
     OMITTED="$OMITTED $doc"
     continue
   fi
-  TAKE=$LINES
-  [ "$TAKE" -gt "$DOC_LINE_CAP" ] && TAKE=$DOC_LINE_CAP
-  [ "$TAKE" -gt "$REMAINING" ] && TAKE=$REMAINING
-  { echo "## Spec source — in-repo spec document \`$doc\` (AUTHORITATIVE — this governs)"
+  SELF=""
+  written_by_pr "$doc" && SELF=1
+  { if [ -n "$SELF" ]; then
+      echo "## Spec source — in-repo spec document \`$doc\` (AUTHORITATIVE — this governs; WRITTEN BY THIS PR)"
+    else
+      echo "## Spec source — in-repo spec document \`$doc\` (AUTHORITATIVE — this governs)"
+    fi
     echo
     echo "This document is the specification. Any GitHub issue or tracker ticket below is a SUMMARY of it: where the two disagree, THIS wins."
     echo
+    if [ -n "$SELF" ]; then
+      echo "**This document was added or changed by this PR.** It records the intent the author is asserting in the same change. Judge the code against it, but it cannot settle a question this PR itself leaves open and it is never proof that the code is right."
+      echo
+    fi
     if [ "$TAKE" -lt "$LINES" ]; then
       echo "> **TRUNCATED — THE SPEC BELOW IS PARTIAL.** Lines 1-$TAKE of $LINES are included; everything after line $TAKE is NOT in this file. Do not treat a criterion's absence here as proof the spec never asked for it."
       echo
@@ -185,7 +308,9 @@ for doc in $SPEC_DOCS; do
   DOC_N=$((DOC_N + 1))
   DOC_TOTAL=$((DOC_TOTAL + TAKE))
   [ -n "$GOVERNING" ] || GOVERNING="in-repo spec document \`$doc\`"
-done
+done <<RANKED_EOF
+$RANKED
+RANKED_EOF
 if [ -n "$OMITTED" ]; then
   { echo "## Spec source — in-repo spec documents NOT included (budget exhausted)"
     echo
@@ -201,6 +326,7 @@ if nonblank "$ISSUES"; then
     echo
     printf '%s\n\n' "$ISSUES"
   } >> "$TMP"
+  SUMMARY_RESOLVED=1
   [ -n "$GOVERNING" ] || GOVERNING="linked GitHub issue"
 fi
 
@@ -241,18 +367,33 @@ if [ -s /tmp/external-issue.md ]; then
     cat /tmp/external-issue.md
     echo
   } >> "$TMP"
+  SUMMARY_RESOLVED=1
   [ -n "$GOVERNING" ] || GOVERNING="external tracker ticket"
 fi
 
-# ── Source 4: the PR body, only when nothing above resolved ──
-if [ ! -s "$TMP" ] && nonblank "$BODY"; then
-  { echo "## Spec source — the PR body (fallback)"
+# ── Context: current-state docs and decision records. NEVER a specification ──
+CTX_N=0
+for doc in $CONTEXT_DOCS; do
+  REMAINING=$((DOC_TOTAL_CAP - DOC_TOTAL))
+  [ "$CTX_N" -ge "$CONTEXT_MAX" ] && break
+  [ "$REMAINING" -gt 0 ] || break
+  LINES=$(wc -l < "$WS/$doc" 2>/dev/null | tr -d ' ') || LINES=0
+  TAKE=${LINES:-0}
+  [ "$TAKE" -gt "$CONTEXT_LINE_CAP" ] && TAKE=$CONTEXT_LINE_CAP
+  [ "$TAKE" -gt "$REMAINING" ] && TAKE=$REMAINING
+  { echo "## Spec source — in-repo document \`$doc\` (CONTEXT — NOT A SPECIFICATION)"
     echo
-    echo "Take the ACCEPTANCE CRITERIA from it and nothing else. A bot-generated summary block (Cursor, Bugbot, CodeRabbit, Gemini, Claude Code) describes what the diff DOES, not what it SHOULD do — that is a code summary, not a spec."
+    echo "This describes how the system already works, or a decision already taken. It grounds your reading and it asks for NOTHING: code that differs from it is not a spec violation, and it never governs."
     echo
-    printf '%s\n' "$BODY"
+    [ "$TAKE" -lt "$LINES" ] && { echo "> First $TAKE lines of $LINES."; echo; }
+    head -n "$TAKE" "$WS/$doc"
+    echo
   } >> "$TMP"
-  GOVERNING="the PR body (fallback)"
+  CTX_N=$((CTX_N + 1))
+  DOC_TOTAL=$((DOC_TOTAL + TAKE))
+done
+if [ -z "$GOVERNING" ] && [ "$CTX_N" -gt 0 ]; then
+  GOVERNING="none — only context documents resolved"
 fi
 
 if [ -s "$TMP" ]; then
@@ -264,24 +405,43 @@ if [ -s "$TMP" ]; then
     echo "GOVERNING SOURCE: $GOVERNING"
     if [ "$DOC_N" -eq 0 ]; then
       echo
-      echo "No in-repo spec document resolved, so the governing source is a SUMMARY and may be thinner than the real specification. Judge against what is here; do not assume it is complete."
+      if [ -n "$SUMMARY_RESOLVED" ]; then
+        echo "No in-repo spec document resolved, so the governing source is a SUMMARY and may be thinner than the real specification. Judge against what is here; do not assume it is complete."
+      else
+        echo "No in-repo spec document resolved, and no issue or ticket either. NOTHING below specifies what this PR should do — the context sections describe what already exists. Review the diff on its own merits and raise no spec finding."
+      fi
     fi
     if [ -n "$PARTIAL" ]; then
       echo
       echo "SPEC IS PARTIAL: at least one spec document was truncated or left out (see its marker below). Criteria you cannot see may exist."
     fi
     echo
-    echo "An in-repo spec document is the authoritative specification. A GitHub issue or tracker ticket is a summary of it and does NOT override it; the PR body is a last resort and overrides nothing. Sources appear below in that order."
+    echo "An in-repo spec document is the authoritative specification. A GitHub issue or tracker ticket is a summary of it and does NOT override it. A CONTEXT section describes what already exists and asks for nothing. Sources appear below in that order."
     echo
     cat "$TMP"
   } > "$OUT"
 fi
 rm -f "$TMP"
 
+# One token, always written: the poster says "no spec resolved" out loud when
+# nothing specified this PR, and cannot without knowing. It is a statement of
+# fact for the reader — nothing downstream may gate a verdict on it.
+if [ "$DOC_N" -gt 0 ]; then
+  STATUS=document
+elif [ -n "$SUMMARY_RESOLVED" ]; then
+  STATUS=summary
+elif [ "$CTX_N" -gt 0 ]; then
+  STATUS=context-only
+else
+  STATUS=none
+fi
+printf '%s\n' "$STATUS" > "$STATUS_FILE" \
+  || echo "::warning::could not write $STATUS_FILE — the review will not mention a missing spec."
+
 if [ -s "$OUT" ]; then
-  echo "spec.md assembled ($(wc -l < "$OUT") lines), governing source: $GOVERNING"
+  echo "spec.md assembled ($(wc -l < "$OUT") lines), governing source: $GOVERNING [$STATUS]"
   grep '^## Spec source' "$OUT" || true
   [ -n "$PARTIAL" ] && echo "::warning::spec.md is PARTIAL — a spec document was truncated or omitted."
 else
-  echo "spec.md is empty — no spec source resolved."
+  echo "spec.md is empty — no spec source resolved. [$STATUS]"
 fi

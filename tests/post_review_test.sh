@@ -84,6 +84,10 @@ run_poster() {
   mkdir -p "$work/capture"
   : > "$work/gh.log"
   : > "$work/summary.md"
+  # build-spec.sh writes this token on every run; `document` is the ordinary
+  # case, so only the cases that set SPEC_STATE see the "no spec" notice.
+  printf '%s\n' "${SPEC_STATE:-document}" > "$work/spec-status"
+  [ "${SPEC_STATE:-document}" = absent ] && rm -f "$work/spec-status"
   OUT=$(cd "$work" && \
     PATH="$MOCK_BIN:$PATH" \
     GH_LOG="$work/gh.log" GH_CAPTURE_DIR="$work/capture" \
@@ -94,6 +98,7 @@ run_poster() {
     HEAD_SHA=abc123 GITHUB_STEP_SUMMARY="$work/summary.md" \
     GITHUB_SERVER_URL="${SERVER_URL:-https://github.com}" GITHUB_RUN_ID="${RUN_ID:-}" \
     JOB_START="${JOB_START:-$work/no-job-start}" \
+    SPEC_STATUS="$work/spec-status" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
     REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
     ROUND="${ROUND_N:-}" \
@@ -415,6 +420,38 @@ W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nfine.", comments: [], meta: {}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 assert_not_contains "no footer when nothing is known" "<sub>" "$(payload_of "$W" | jq -r '.body')"
+rm -rf "$W"
+
+# ── (j2) "no spec resolved" is visible, and is NEVER a verdict gate ──────────
+# 42% of real PRs resolve no spec. Saying so is honest; withholding a verdict
+# over it would be a ratchet, so APPROVE with no spec still approves.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nfine.", comments: [], meta: {}}' > "$W/review.json"
+SPEC_STATE=none FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_contains "a run with no spec says so in the body" \
+  "No spec resolved — reviewed on the diff alone" "$(visible_body "$(payload_of "$W" | jq -r '.body')")"
+rm -rf "$W"
+
+W=$(mktemp -d)
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nNothing to flag.", comments: [], meta: {}}' > "$W/review.json"
+SPEC_STATE=none FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…and it does not fail the run" "0" "$RC"
+assert_eq "…the review is still submitted as an approval" "APPROVE" "$(payload_of "$W" | jq -r '.event')"
+assert_contains "…and the body still says APPROVE" "APPROVE" "$(payload_of "$W" | jq -r '.body')"
+assert_contains "…alongside the notice" "No spec resolved" "$(payload_of "$W" | jq -r '.body')"
+rm -rf "$W"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nfine.", comments: [], meta: {}}' > "$W/review.json"
+SPEC_STATE=document FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_not_contains "a run that had a spec says nothing about it" "No spec resolved" "$(payload_of "$W" | jq -r '.body')"
+rm -rf "$W"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nfine.", comments: [], meta: {}}' > "$W/review.json"
+SPEC_STATE=absent FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…and a missing status file is not a crash" "0" "$RC"
+assert_not_contains "…nor an invented claim" "No spec resolved" "$(payload_of "$W" | jq -r '.body')"
 rm -rf "$W"
 
 # ── (k) body budget: 1200 chars, cut on a line boundary, footer kept ─────────

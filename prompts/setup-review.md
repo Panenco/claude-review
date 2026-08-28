@@ -461,7 +461,7 @@ Do **not** promote to `## Auth` / `## Known service ports` — the dev-env probe
 
 ## Step 4.7: External issue tracker (optional)
 
-The reviewer assembles one spec file per run, in precedence order: the repo's own spec documents first (they are authoritative), then the linked GitHub issue, then the PR body. A tracker ticket, like a GitHub issue, counts as a *summary* of the document — it supplements it and never overrides it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can add that source with a hook that fetches the external spec. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
+The reviewer assembles one spec file per run, in precedence order: the repo's own spec documents first (they are authoritative), then the linked GitHub issue. The PR body is not a spec source — it describes the diff, so judging the diff against it is circular — though a spec document it *links to* still resolves. A tracker ticket, like a GitHub issue, counts as a *summary* of the document — it supplements it and never overrides it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can add that source with a hook that fetches the external spec. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
 
 Walk through this decision even if the project looks GitHub-only; confirm it explicitly so you don't leave a Linear-using repo silently missing spec context.
 

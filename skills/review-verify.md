@@ -81,7 +81,7 @@ Render exactly this, omitting any section that would be empty:
 
 - Total ≤1200 chars, aim ~600. Count `{{LINK:path:line}}` as `path:line`.
 - `{{LINK:path:line}}` is a literal placeholder — `post-review.sh` expands it into the GitHub file link. **Never build a URL yourself.**
-- No footer (the poster appends duration/cost/logs), no banners, no "Spec sources", no setup-health bullets, no functional section, no "consolidated from N judges", no explanation of where comments were posted.
+- No footer (the poster appends duration/cost/logs and, when nothing specified this PR, a one-line note saying so), no banners, no "Spec sources", no setup-health bullets, no functional section, no "consolidated from N judges", no explanation of where comments were posted.
 - Verdict sentence: what the PR does and why this verdict. No praise, no restating the sections below it. If the PR exists to fix something, it says whether the fix holds at HEAD — confirm scan's `summary` against the code yourself before repeating it.
 
 ## Inline comments
