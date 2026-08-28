@@ -23,7 +23,7 @@ Never invent a new finding. You only kill, keep, or re-anchor — with the singl
 
 `Read` `.github/review-config.md` and `bugbot.md` **only if they exist**, once each. No globbing, no other config files.
 
-**Suppression is unconditional and comes first, before any other test in this file.** Refute — with reason `"suppressed by <file>"` — every finding those files call intentional, an accepted trade-off, or say not to flag, whatever its severity and even if scan emitted it anyway.
+**Suppression is unconditional and comes first, before any other test in this file.** Refute — with reason `"suppressed by <file>"` — every finding **and drop every `human_review` item** those files call intentional, an accepted trade-off, or say not to flag, whatever its severity and even if scan emitted it anyway.
 
 A finding carrying `"convention": true` is judged on a different bar: keep it only if its `evidence` quotes the rule **verbatim** from one of those two files (that quote replaces `failure_scenario`); refute it if you cannot find that text there. Force `severity` to `minor` and keep at most **2**. Ordinary findings keep the full `failure_scenario` bar — nothing here relaxes it.
 
@@ -53,7 +53,7 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 
 Carry through up to 3 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own categories.
 
-**Refute the checkboxes too.** If an item can be answered from HEAD, the diff, or a pinned dependency the repo already references, answer it and drop the item — promote what you found to a finding if it is one. A `why_unresolved` that amounts to "not checked" or "unverifiable here" is a refutation, not a reason.
+**Refute the checkboxes too.** If an item can be answered from the checkout — HEAD, the diff, anything already on disk — answer it and drop the item; promote what you found to a finding if it is one. Nothing outside the checkout is reachable, so "the source is not in the checkout" stands as a reason; "not checked" or "unverifiable here" does not.
 
 ## The body — hard budgets
 

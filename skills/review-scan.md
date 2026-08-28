@@ -70,9 +70,13 @@ Out of scope, always: formatting, pre-existing issues in untouched files, specul
 
 0–3 items. Each is something a human should look at that **you could not settle yourself**. Do not pick from a category list; there is no category list. Do not pad to three — zero is fine, and a made-up item is worse than none.
 
-**Try to answer it before you emit it.** An item is only legitimate when the question *cannot* be answered from the repo at HEAD, the PR diff, or a pinned dependency the repo already references. Callers, sibling code in the same file, tests and the SHA-pinned action you depend on are all in reach — go read them. Once answered, it becomes a finding or it becomes nothing; it never becomes a checkbox.
+**Try to answer it before you emit it.** An item is only legitimate when the question *cannot* be answered from what is in the checkout: the repo at HEAD, the PR diff, and whatever is already on disk (vendored code, lockfiles, installed packages). Callers, sibling code in the same file and tests are all in reach — go read them. Once answered, it becomes a finding or it becomes nothing; it never becomes a checkbox.
 
-Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` names the real blocker — needs production data, needs a human policy decision, needs runtime access, the intent is genuinely ambiguous. "I did not check", "unverifiable here" and "for safety" are not blockers; if that is your reason, go check it.
+**Nothing outside the checkout is reachable, and you must not go fetch it.** A dependency whose source is not on disk genuinely cannot be read, so "cannot verify from the checkout" IS a legitimate blocker — say that plainly rather than dropping the item.
+
+**Already-mitigated is not an item.** If the code at the cited line already documents the risk and mitigates it — a comment right there naming the concern and how it is handled — there is nothing left for a human to check. You are already reading the surrounding lines; read those too.
+
+Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` names the real blocker — needs production data, needs a human policy decision, needs runtime access, the source is not in the checkout, the intent is genuinely ambiguous. "I did not check", "unverifiable here" and "for safety" are not blockers; if that is your reason, go check it.
 
 ## The approval position
 

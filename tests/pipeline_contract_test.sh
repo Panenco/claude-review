@@ -167,13 +167,60 @@ echo "── human_review is a last resort, not a place to park answerable quest
 want "review-scan requires an attempt before emitting a human_review item" "$SCAN" \
   'try to answer it (first|before)'
 want "…and scopes what counts as answerable" "$SCAN" \
-  'repo at HEAD.*diff.*pinned dependency'
+  'repo at HEAD.*diff.*(on disk|checkout)'
 want "…and rejects \"I did not check\" as a blocker" "$SCAN" \
   '"?I did not check"?|unverifiable here'
 want "…and names the blockers that ARE legitimate" "$SCAN" \
   'production data.*policy decision.*runtime access'
 want "review-verify re-attacks carried human_review items" "$VERIFY" \
   'refute the checkboxes'
+# The answerable-scope claim has to name a route the sandbox can actually take.
+# c778eba told the model to go read "a pinned dependency the repo already
+# references" while --disallowedTools denies WebFetch, WebSearch and `gh api`
+# SESSION-WIDE (it cannot be scoped per-subagent), so the only way to obey was to
+# drop the item — worse than the checkbox it replaced. The deny list is read out
+# of the workflow here so the prompt and the sandbox cannot drift apart again.
+DENY=$(sed -n 's/.*--disallowedTools "\([^"]*\)".*/\1/p' "$WORKFLOW" | head -1)
+if [ -z "$DENY" ]; then
+  bad "could not read --disallowedTools out of the workflow"
+else
+  for t in "WebFetch" "WebSearch" "gh api"; do
+    if printf '%s' "$DENY" | grep -qF "$t"; then
+      ok "the sandbox still denies $t"
+    else
+      bad "$t is no longer denied — re-check what review-scan/review-verify claim is answerable"
+    fi
+  done
+fi
+for f in "$SCAN" "$VERIFY"; do
+  n=${f##*/}
+  never "$n does not route the model through a denied tool" "$f" \
+    'WebFetch|WebSearch|gh api|curl '
+  never "$n does not claim a remote dependency's source is in reach" "$f" \
+    'pinned (dependency|action)|third-party (source|action)|upstream source'
+done
+want "review-scan says nothing outside the checkout is reachable" "$SCAN" \
+  'Nothing outside the checkout is reachable, and you must not go fetch it'
+want "…so \"not in the checkout\" is a legitimate blocker, not a reason to drop" "$SCAN" \
+  'cannot verify from the checkout.{0,40}legitimate blocker'
+want "…and it is listed among the real blockers" "$SCAN" \
+  'names the real blocker.*not in the checkout'
+want "review-verify accepts the same blocker" "$VERIFY" \
+  'Nothing outside the checkout is reachable.{0,60}stands as a reason'
+
+# A human_review item raising a risk the repo has already declared an accepted
+# trade-off sailed straight through: the suppression pass named findings only.
+SUP_LINE=$(grep -n 'suppressed by' "$VERIFY" | head -1 | cut -d: -f1)
+if [ -n "$SUP_LINE" ] && sed -n "${SUP_LINE}p" "$VERIFY" | grep -q 'human_review'; then
+  ok "review-verify suppresses human_review items, not just findings, on the rule line itself"
+else
+  bad "review-verify's suppression rule (line ${SUP_LINE:-?}) must name human_review items too"
+fi
+
+# Three of seven noise counts were items whose concern was stated AND handled in
+# a comment at the very line cited.
+want "review-scan drops an item the cited code already mitigates" "$SCAN" \
+  'already documents the risk and mitigates it'
 # The judge: the answer an author most wants is whether the fix actually works.
 want "review-scan verifies the PR's stated fix holds at HEAD" "$SCAN" \
   'if the PR exists to fix something'
