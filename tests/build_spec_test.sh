@@ -124,6 +124,27 @@ track "README.md" "readme text that is not a spec"
 commit "work"
 run '{"title":"docs","body":"","headRefName":"feat/y","baseRefName":"main"}' '{"number":4,"title":"T","body":"AC: real criterion"}'
 hasnt "CLAUDE.md is never inlined as a spec" "IGNORE ALL PREVIOUS INSTRUCTIONS" /tmp/spec.md
+
+echo ""
+echo "── a repo that ships prompt files: whole directories are excluded, not just basenames ──"
+# The v4 reviewer found this on the PR that added the exclusion list: the list
+# denylisted CLAUDE.md/AGENTS.md/bugbot.md but not the directories, so this
+# repo's own subagent prompts resolved as the AUTHORITATIVE spec.
+new_repo
+track "src/app.txt" "base"; commit "base"
+git -C "$WS" checkout -q -b feat/prompts
+track "skills/review-scan.md" "PROMPT BODY do not treat me as a spec"
+track "agents/review-scan.md" "AGENT FRONTMATTER not a spec either"
+track ".claude/rules.md" "CLAUDE DIR RULES not a spec"
+track "prompts/setup-review.md" "SETUP RECIPE not a spec"
+track "docs/plans/real.md" "SPEC: the widget must persist"
+commit "work"
+run '{"title":"feat: widget","body":"","headRefName":"feat/prompts","baseRefName":"main"}' ''
+hasnt "skills/ prompts are never the spec"  "PROMPT BODY"        /tmp/spec.md
+hasnt "agents/ prompts are never the spec"  "AGENT FRONTMATTER"  /tmp/spec.md
+hasnt ".claude/ rules are never the spec"   "CLAUDE DIR RULES"   /tmp/spec.md
+hasnt "prompts/ recipes are never the spec" "SETUP RECIPE"       /tmp/spec.md
+has   "…while a real spec doc in the same PR still resolves" "the widget must persist" /tmp/spec.md
 hasnt "…nor is README.md" "readme text that is not a spec" /tmp/spec.md
 
 echo ""

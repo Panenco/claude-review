@@ -85,7 +85,12 @@ add_doc() { # add_doc <repo-relative path>
     SECURITY.md|*/SECURITY.md|CODE_OF_CONDUCT.md|*/CODE_OF_CONDUCT.md) return 0 ;;
     # Agent instruction files and the review's own rule files are prompts, not
     # specs: inlining them would feed the reviewer instructions as requirements.
+    # Whole directories, not just well-known basenames — a repo that ships
+    # subagent prompts (this one does) would otherwise resolve them as the
+    # AUTHORITATIVE spec. Found by the reviewer, on the PR that added this list.
     CLAUDE.md|*/CLAUDE.md|AGENTS.md|*/AGENTS.md|bugbot.md|*/bugbot.md) return 0 ;;
+    skills/*|*/skills/*|agents/*|*/agents/*|.claude/*|*/.claude/*) return 0 ;;
+    prompts/*|*/prompts/*) return 0 ;;
   esac
   case " $SPEC_DOCS " in *" $1 "*) return 0 ;; esac
   [ -f "$WS/$1" ] && SPEC_DOCS="$SPEC_DOCS $1"
