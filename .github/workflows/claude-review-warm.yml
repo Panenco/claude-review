@@ -1,0 +1,38 @@
+name: Claude Review Cache Warm
+
+# The producer half of the review cache. It is a SEPARATE workflow from
+# claude-review.yml because only a write-capable trigger may create entries in
+# the default branch's cache scope, and a reusable workflow inherits the caller's
+# event — so the warm cannot live beside a trigger like `issue_comment`.
+#
+# `push` keeps the store in step with dependency changes; the schedule covers the
+# 7-day idle eviction on a quiet week. Both are cheap when already warm: the
+# lookup-only probe lands in seconds.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/pnpm-lock.yaml'
+      - '**/package-lock.json'
+      - '.github/workflows/warm-cache.yml'
+  schedule:
+    - cron: '0 5 * * 1' # Monday 05:00 UTC — before the 7-day idle eviction bites
+  workflow_dispatch:
+
+# One warm at a time; a queued duplicate would only re-probe a warm store.
+concurrency:
+  group: claude-review-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    # Local path, not `panenco/claude-review/...@v3` — same dogfood reason as
+    # claude-review.yml: the in-PR copy is what gets exercised.
+    uses: ./.github/workflows/warm-cache.yml
+    permissions:
+      contents: read
+    with:
+      # MUST stay explicit, exactly as in claude-review.yml: the
+      # `panenco-claude-review` default is an org runner group created with
+      # allows_public_repositories:false, and this repo is public.
+      runner: ubuntu-latest

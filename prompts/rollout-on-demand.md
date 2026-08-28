@@ -29,8 +29,17 @@ Change exactly these, and keep every other input as-is (`runner`, `dev_cache_*`,
       types: [created]
   ```
 
-- **Keep `pull_request_target`** if present — it only warms the cache and never
-  reviews. Do not add it if absent.
+- **Delete `pull_request_target`** if present. It used to run a cache-warm job,
+  but that trigger only gets read-only access to the cache scope, so the warm
+  stored nothing while claiming a runner on every PR. Never add it.
+
+- **If the repo uses `/review functional`**, add
+  `.github/workflows/claude-review-warm.yml` calling
+  `panenco/claude-review/.github/workflows/warm-cache.yml@v3` on `push` to the
+  default branch + a weekly `schedule` + `workflow_dispatch`, with the SAME
+  `runner` (and the same `dev_cache_*` values) as the review caller. Those are
+  the triggers that can write the default branch's cache scope; a read-only one
+  makes the whole workflow a no-op. See `prompts/setup-review.md`.
 
 - **`workflow_dispatch`**: add alongside `pr_number`
 
@@ -70,8 +79,8 @@ run. Cut history, measurements and rationale that the code already shows.
 
 Worth keeping where present: why `free_disk_space` must stay `off` on
 self-hosted, why the `permissions:` block is required in full, why
-`dev_cache_key_files` takes globs rather than a hash, why `pull_request_target`
-is pinned to `types: [opened]`.
+`dev_cache_key_files` takes globs rather than a hash, why the cache warm needs
+its own workflow with a write-capable trigger.
 
 Aim well under half the comment lines you started with.
 

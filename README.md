@@ -26,14 +26,13 @@ Reusable PR review pipeline powered by Claude Code. A single orchestrator agent 
 
 ### 1. Add the caller workflow
 
-Create `.github/workflows/claude-review.yml` in your repo. Track the `@v3` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v3 + secrets: inherit` on every PR.
+Create `.github/workflows/claude-review.yml` in your repo. Track the `@v3` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 4 so the reviewer does not re-flag `@v3 + secrets: inherit` on every PR.
 
 ```yaml
 name: Claude PR Review
 on:
   issue_comment:
     types: [created]
-  pull_request_target: # warms the browser cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -67,7 +66,7 @@ jobs:
 
 You do **not** forward the comment body. A reusable workflow sees the caller's `github` context, so it reads `github.event.comment.body` itself; `command` exists only for `workflow_dispatch`, which has no comment to read (an empty command there means a plain judge review — clicking *Run workflow* is the opt-in).
 
-`pull_request_target` only warms the browser/dependency cache; it never reviews. Keep it if your team uses `/review functional` regularly, drop it otherwise.
+There is deliberately **no `pull_request_target`**. Earlier versions used it to run a cache-warm job here; that trigger has read-only access to the cache and the warm stored nothing. Warming now lives in its own workflow — see *Add the cache-warm workflow* below.
 
 The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. Add `id-token: write` now even though nothing uses it yet — the reviewer will soon mint an OIDC token to draw on the requester's own Claude seat, and a caller that lacks the line then fails at startup with no logs. `actions: read` is **no longer required** — round-2 state is derived from the PR's own review history, not from workflow artifacts; existing callers that still grant it are unaffected and can leave it in. See `prompts/setup-review.md` for the full troubleshooting flow.
 
@@ -92,7 +91,7 @@ Without `pipeline_ref`, the install defaults to `@v3` and consumers get new orch
 
 Empty (the default) skips all bot-initiated runs. Two notes for allowed bots: dependabot-triggered events receive *Dependabot secrets*, not Actions secrets — add `CLAUDE_CODE_OAUTH_TOKEN` there too or the token picker fails. And bot-authored PRs waive the manual-spec gate (a machine PR can never link a human spec), so they can reach APPROVE on review merit alone.
 
-**Caching the dev-env build (`dev_cache_*`).** The functional tester runs `dev-start.sh` on a fresh runner every review, so any compiled/downloaded artefacts (a Gradle/Maven build, a Go module cache, a Rust `target`, …) are rebuilt cold each time — often the single biggest chunk of bring-up wall-time. The pnpm/npm store is already cached for you; everything else is opt-in and **stack-agnostic** via four inputs. It reuses the same producer/consumer split as the package store — the lightweight **warm-cache job** (which runs in `main` scope on `pull_request_target`) populates the cache, and the functional job only restores it:
+**Caching the dev-env build (`dev_cache_*`).** The functional tester runs `dev-start.sh` on a fresh runner every review, so any compiled/downloaded artefacts (a Gradle/Maven build, a Go module cache, a Rust `target`, …) are rebuilt cold each time — often the single biggest chunk of bring-up wall-time. The pnpm/npm store is already cached for you; everything else is opt-in and **stack-agnostic** via four inputs. It reuses the same producer/consumer split as the package store — the lightweight **warm-cache workflow** (below) populates the cache, and the functional job only restores it. Pass the same four values to both workflows:
 
 ```yaml
 with:
@@ -112,10 +111,10 @@ You pass **globs, not a pre-hashed key**: a reusable-workflow caller's `with:` h
 
 Other stacks are the same shape — Go: `~/go/pkg/mod`, key files `**/go.sum`, warm `go mod download`; Maven: `~/.m2/repository`, key files `**/pom.xml`, warm `mvn -q dependency:go-offline`; Rust: `~/.cargo`, key files `**/Cargo.lock`, warm `cargo fetch`.
 
-> The warm-cache job is a vanilla runner (`ubuntu-latest` unless you set `runner`) with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
+> The warm-cache workflow is a vanilla runner (`ubuntu-latest` unless you set `runner`) with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
 
 How it works and how far the warmth reaches:
-- **`dev_cache_warm_command`** runs in the warm-cache job — `main` scope, against the trusted **base ref** (never PR head). Because it writes to `main` scope, **every** PR's functional job restores it, not just re-pushes of the same branch. It runs **only on a cache miss** (i.e. after the key rotates), so steady-state it's a no-op. Keep it cheap and PR-code-free — a dependency *resolve/prefetch*, not a full build.
+- **`dev_cache_warm_command`** runs in the warm-cache workflow — the default branch's cache scope, against the default branch (never PR head). `pr-review.yml` accepts the input too but ignores it; only the warm workflow acts on it. Because it writes to the default branch's scope, **every** PR's functional job restores it, not just re-pushes of the same branch. It runs **only on a cache miss** (i.e. after the key rotates), so steady-state it's a no-op. Keep it cheap and PR-code-free — a dependency *resolve/prefetch*, not a full build.
 - The functional job **restores** the cache after disk cleanup, before the bring-up, so `dev-start.sh` builds warm. It does **not** save (no extra weight on the long review job).
 - Omit `dev_cache_warm_command` and only the restore runs — useful if your **own** main CI already writes a cache under the same key/prefix (Actions caches are repo-scoped, so it's reused here).
 - Leave all of it unset to disable caching entirely — no cache step runs.
@@ -133,11 +132,11 @@ with:
 
 **This default fails closed, not open.** ARC resolves the label through the runner group; a repo the group does not list gets no runner and no fallback — the job queues until GitHub's 24 h timeout and then fails. Two rules follow. A repo must be added to the `claude-review` group's selected-repositories list *before* it inherits this default. And the group is created with `allows_public_repositories: false`, so **every public repo must pass `runner: ubuntu-latest`** — including `panenco/claude-review` itself, which is why its own caller sets it explicitly.
 
-`runner` sets `runs-on` for **both** the review job and the warm-cache job — one input, deliberately, because the two must land on the same fleet. The Actions cache is a repo-scoped remote service, so a self-hosted job *can* restore what a hosted job saved, but cache keys are scoped by `runner.os` **and** `runner.arch`: a warm-cache job on hosted x64 and a review job on an arm64 fleet would never match keys, and every review would run cold.
+Pass the **same `runner` to `pr-review.yml` and `warm-cache.yml`** — the two must land on the same fleet. The Actions cache is a repo-scoped remote service, so a self-hosted job *can* restore what a hosted job saved, but cache keys are scoped by `runner.os` **and** `runner.arch`: a warm on hosted x64 and a review job on an arm64 fleet would never match keys, and every review would run cold.
 
 Two things your fleet needs. It must have **network egress to the GitHub Actions cache service** — without it, caching silently degrades to always-cold (reviews still work, just slower). And the image should carry **Chrome's shared libraries** (`libnss3`, `libatk1.0-0t64`, `libgbm1`, `libasound2t64`, … — what `playwright install --with-deps` or `agent-browser install --with-deps` apt-installs): the browser binary itself unpacks into `$HOME` and needs no root, but those libs do, and a non-root container cannot apt-install them at review time. The pipeline preflights the browser and warns rather than failing when they're missing; the functional tester then reports `CRASH` instead of testing.
 
-The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Note that it inherits `runner` too, so a caller that wires the `pull_request_target` trigger lands a `secrets: inherit` job on the fleet; callers that would rather keep that combination off self-hosted infrastructure simply omit the trigger.
+The warm-cache workflow is PR-code-free by construction — it runs off the default branch, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. It needs no secrets at all.
 
 **Second opinion: the native `code-review` pass (`/review native`).** With `native`, a review runs **two** reviewers: this pipeline's own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin, run exactly as Anthropic ships it. The second one is not a separate job — it is the `review-native` subagent, dispatched by the orchestrator **inside the existing review session**, in the same response as the judges and the functional tester. It therefore costs **no extra runner, no second checkout, no second Claude CLI install and no second OAuth probe**, and it adds no wall-clock: it overlaps the judges and the functional tester, which already dominate the run. It runs only when a comment asks for it (`/review native`) — the infra cost is gone, but the token draw on the shared 5-hour Claude window is not, so spending it is a per-PR decision rather than a repo-wide setting.
 
@@ -163,7 +162,52 @@ Confidence maps onto this pipeline's severities as: 95-100 in the security/data-
 **Only when asked.** It is a second complete review pass, and although it costs no runner it does draw on the **same 5-hour Claude subscription window** as everything else, so per-PR token consumption is meaningfully higher. It no longer keys off the review tier: a `light` plan on a small diff is exactly when a second opinion is worth having, so `/review native` gets it either way. `skip` still runs nothing at all — the `gate_skip_label` (default `skip-review`) and the oversized ceilings silence **both** reviewers. If the token draw is scarce, add a token to the `CLAUDE_CODE_OAUTH_TOKENS` pool. On a monorepo, `native_review_scope` is free text injected into the native reviewer's prompt as a *narrowing* constraint; the plugin knows nothing about this pipeline's gate rules, so scope it away from generated and vendored paths or it will spend its budget there.
 
 
-### 2. Set secrets
+### 2. Add the cache-warm workflow
+
+Create `.github/workflows/claude-review-warm.yml`. This is the **producer** half of the review cache; the review job only ever restores.
+
+```yaml
+name: Claude Review Cache Warm
+on:
+  push:
+    branches: [main]          # your default branch
+    paths:
+      - '**/pnpm-lock.yaml'
+      - '**/package-lock.json'
+  schedule:
+    - cron: '0 5 * * 1'       # covers the 7-day idle eviction on a quiet week
+  workflow_dispatch:
+
+concurrency:
+  group: claude-review-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    uses: panenco/claude-review/.github/workflows/warm-cache.yml@v3
+    permissions:
+      contents: read
+    with:
+      # Same value you pass to pr-review.yml. Public repos MUST set
+      # ubuntu-latest — see "Self-hosted runners" below.
+      runner: panenco-claude-review
+      # Only if you use the dev_cache_* feature — same four values as the
+      # review caller. Add the key-file globs to `paths:` above too.
+      # dev_cache_paths: |
+      #   ~/.gradle/caches/modules-2
+      # dev_cache_key_files: |
+      #   **/gradle/libs.versions.toml
+      # dev_cache_key_prefix: gradle
+      # dev_cache_warm_command: cd backend/java && ./gradlew :api:dependencies --no-daemon
+```
+
+**Why this is a separate workflow, and why the trigger list is not negotiable.** GitHub lets only `push`, `workflow_dispatch`, `repository_dispatch`, `schedule`, `delete`, `registry_package` and `page_build` create or overwrite caches in the default branch's scope. Every other event that resolves to the default branch gets **read-only** access — explicitly including `pull_request_target`, `issue_comment` and `workflow_run`, whose payload or initiating actor can be influenced from outside the repo. It is cache-poisoning protection and it cannot be granted away; `actions: write` makes no difference.
+
+A reusable workflow inherits the **caller's** event, so a warm job living next to the review trigger inherits a read-only one and every save is refused. GitHub reports that refusal as a warning, not a failure — which is why the earlier design ran green while storing nothing for a month ([#101](https://github.com/panenco/claude-review/issues/101)). `warm-cache.yml` now asserts its caller's event up front and **fails** if it cannot write, so a misconfigured trigger is visible on the first run.
+
+Skip this workflow entirely if your team does not use `/review functional`: without it reviews still work, they just install cold.
+
+### 3. Set secrets
 
 Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo or org secret. Generate it with:
 
@@ -175,7 +219,7 @@ Optional — when one Claude.ai subscription's 5-hour rate-limit window keeps bl
 
 Optional: for a custom review bot identity, also set `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, and `CLAUDE_REVIEW_APP_SLUG`.
 
-### 3. (Optional) Add project config
+### 4. (Optional) Add project config
 
 For best results, add two optional files:
 
