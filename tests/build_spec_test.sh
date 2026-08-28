@@ -41,9 +41,21 @@ run() {
   rm -f /tmp/spec.md /tmp/spec-status /tmp/external-issue.md /tmp/external-issue-candidates.json
   printf '%s' "$1" > /tmp/pr.json
   printf '%s' "$2" > /tmp/issue.json
-  ( cd "$WS" && GITHUB_WORKSPACE="$WS" PR_NUMBER=7 GITHUB_REPOSITORY=o/r \
+  ( cd "$WS" && PATH="${STUB_BIN:+$STUB_BIN:}$PATH" \
+      GITHUB_WORKSPACE="$WS" PR_NUMBER=7 GITHUB_REPOSITORY=o/r \
       TRACKER_SECRETS="${TRACKER_SECRETS:-}" "$SCRIPT" ) > /tmp/build-spec.out 2>&1
 }
+
+# A `gh` on PATH that serves ONE canned `gh pr view --json files` answer, or
+# fails. Route (a)'s reconciliation is the only thing in this script that shells
+# out to GitHub, and both of its outcomes have to be pinned offline.
+STUB_DIR=$(mktemp -d "$WORK/stub.XXXXXX")
+cat > "$STUB_DIR/gh" <<'STUB'
+#!/usr/bin/env bash
+[ -s "${GH_STUB_FILES:-/dev/null}" ] || exit 1
+cat "$GH_STUB_FILES"
+STUB
+chmod +x "$STUB_DIR/gh"
 
 new_repo() {
   WS=$(mktemp -d "$WORK/ws.XXXXXX")
@@ -391,6 +403,47 @@ commit "work"
 run '{"title":"feat","body":"see docs/plans/a-design.md","headRefName":"feat/z","baseRefName":"main"}' ''
 has "the doc the PR did not write governs" 'GOVERNING SOURCE: in-repo spec document `docs/plans/a-design.md`' /tmp/spec.md
 has "…and the self-written one is still included, labelled" "WRITTEN BY THIS PR" /tmp/spec.md
+
+echo ""
+echo "── route (a) on an ALREADY-MERGED PR: git says nothing changed, GitHub knows better ──"
+# HEAD is an ancestor of the base, so `merge-base origin/main HEAD` IS HEAD and
+# the git diff is empty — what a /review comment or a dispatch on a merged PR
+# gets. The spec document is then discoverable ONLY through the PR file list.
+merged_pr_repo() {
+  new_repo
+  track "src/app.txt" "work"
+  track "docs/plans/thing-design.md" "SPEC: the thing must persist across restarts"
+  commit "the PR"
+  MERGED_HEAD=$(git -C "$WS" rev-parse HEAD)
+  track "src/later.txt" "base moved on"
+  commit "later main"
+  git -C "$WS" checkout -q --detach "$MERGED_HEAD"
+  # Nothing but route (a) may resolve this doc: no body/issue reference, and the
+  # name matches no `-prd`/`-spec`/`-rfc` convention route (d) would catch.
+  MERGED_PR_JSON='{"title":"feat: the thing","body":"no references here","headRefName":"feat/thing","baseRefName":"main"'
+}
+PR_FILES="$WORK/pr-files.txt"
+printf 'src/app.txt\ndocs/plans/thing-design.md\n' > "$PR_FILES"
+
+merged_pr_repo
+STUB_BIN="$STUB_DIR" GH_STUB_FILES="" \
+  run "$MERGED_PR_JSON,\"files\":[{\"path\":\"src/app.txt\"},{\"path\":\"docs/plans/thing-design.md\"}]}" ''
+has "the doc still governs, from the PR file list in pr.json" \
+  'GOVERNING SOURCE: in-repo spec document `docs/plans/thing-design.md`' /tmp/spec.md
+has "…and the diff/file-list divergence is announced, not swallowed" \
+  "::warning::git reports no markdown changed by this PR but GitHub lists" /tmp/build-spec.out
+status_is "…and the status file says a document governs" document
+
+merged_pr_repo
+STUB_BIN="$STUB_DIR" GH_STUB_FILES="$PR_FILES" run "$MERGED_PR_JSON}" ''
+has "…and when pr.json carries no .files, gh pr view is the fallback" \
+  'GOVERNING SOURCE: in-repo spec document `docs/plans/thing-design.md`' /tmp/spec.md
+
+merged_pr_repo
+STUB_BIN="$STUB_DIR" GH_STUB_FILES="" run "$MERGED_PR_JSON}" ''
+hasnt "with NO GitHub at all, route (a) contributes nothing and nothing is invented" \
+  "thing must persist" /tmp/spec.md
+status_is "…and the status file says nothing resolved" none
 
 echo ""
 echo "── repo rules ──"

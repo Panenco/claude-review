@@ -32,7 +32,7 @@ set -uo pipefail
 # fixture test pins (tests/build_spec_test.sh).
 #
 # Reads (written by the orchestrator's turn 1, before this runs):
-#   /tmp/pr.json      gh pr view --json title,body,headRefName,baseRefName
+#   /tmp/pr.json      gh pr view --json title,body,headRefName,baseRefName,files
 #   /tmp/issue.json   concatenated `gh issue view` objects (may be empty)
 # Writes:
 #   /tmp/spec.md                       the assembled spec (EMPTY when nothing resolved)
@@ -209,12 +209,40 @@ if [ -n "$BASE" ]; then
     [ -n "$MERGE_BASE" ] && break
   done
 fi
+GIT_MD=""
 if [ -n "$MERGE_BASE" ]; then
-  for f in $(git -C "$WS" diff --name-only --diff-filter=AM "$MERGE_BASE" HEAD -- '*.md' 2>/dev/null); do
-    CHANGED_DOCS="$CHANGED_DOCS $f"
-    add_doc "$f"
-  done
+  GIT_MD=$(git -C "$WS" diff --name-only --diff-filter=AM "$MERGE_BASE" HEAD -- '*.md' 2>/dev/null) || GIT_MD=""
 fi
+
+# THE GIT DIFF IS NOT ENOUGH ONCE THE PR IS MERGED. `merge-base origin/<base> HEAD`
+# returns HEAD itself when HEAD is an ancestor of the base — a `/review` comment or
+# a workflow_dispatch on an already-merged PR, which nothing in the pipeline gates
+# on. The diff is then empty and the STRONGEST spec signal disappears silently.
+# GitHub computes the file list correctly regardless of merge state, so the two
+# are unioned. `.files` is already in /tmp/pr.json when the orchestrator fetched it
+# (zero extra API calls); `gh pr view` is the fallback, and the fixture tests carry
+# no PR JSON and no gh at all, so they keep running on the git path alone.
+PR_MD=""
+if jq -e 'has("files")' "$PR_JSON" >/dev/null 2>&1; then
+  # The key being PRESENT is what settles it — a PR that changed no markdown has
+  # an empty list, not a missing one, and must not trigger the fetch below.
+  PR_MD=$(jq -r '(.files // [])[] | .path // empty' "$PR_JSON" 2>/dev/null | grep -E '\.md$') || PR_MD=""
+elif [ -n "${PR_NUMBER:-}" ] && command -v gh >/dev/null 2>&1; then
+  GH_REPO_ARG=()
+  [ -n "${GITHUB_REPOSITORY:-}" ] && GH_REPO_ARG=(--repo "$GITHUB_REPOSITORY")
+  PR_MD=$(gh pr view "$PR_NUMBER" "${GH_REPO_ARG[@]+"${GH_REPO_ARG[@]}"}" --json files \
+            --jq '(.files // [])[] | .path // empty' 2>/dev/null | grep -E '\.md$') || PR_MD=""
+fi
+
+if [ -z "$GIT_MD" ] && [ -n "$PR_MD" ]; then
+  echo "::warning::git reports no markdown changed by this PR but GitHub lists $(printf '%s\n' "$PR_MD" | grep -c ''). The base ref is stale (an already-merged PR does this) — using GitHub's file list."
+fi
+
+for f in $(printf '%s\n%s\n' "$GIT_MD" "$PR_MD" | sort -u); do
+  case " $CHANGED_DOCS " in *" $f "*) continue ;; esac
+  CHANGED_DOCS="$CHANGED_DOCS $f"
+  add_doc "$f"
+done
 
 for entry in $DECLARED_DOCS; do
   add_doc "$entry"

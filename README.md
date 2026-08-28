@@ -625,6 +625,40 @@ The script uses your local `gh` auth (already cross-org), discovers repos via `g
 
 ---
 
+## Local review runs (`scripts/review-local.sh`)
+
+Run the real pipeline against a real PR, on your machine, and **post nothing**.
+
+```bash
+cp .eval.env.example .eval.env      # set EVAL_REPO, and EVAL_PRS for a sweep
+bash scripts/review-local.sh 1234              # full review
+bash scripts/review-local.sh 1234 --spec-only  # spec assembly only — no model, free
+make eval          # sweep EVAL_PRS
+make eval-spec     # sweep, spec assembly only
+```
+
+It composes the same steps `pr-review.yml` composes, in the same order — `prior-review-state.sh`, `prior-findings.sh`, `guard.sh`, `build-spec.sh`, one `claude -p` orchestrator session with the real `--agents` and the real `--disallowedTools` sandbox, then `post-review.sh`. It works against a detached worktree of a local clone, with `origin/<base>` pinned to the PR's true fork point (`gh api compare`) so `build-spec.sh` sees what CI would see even on a merged PR. Each run gets its own directory in place of `/tmp`, so concurrent runs cannot clobber each other.
+
+Everything the review would have sent to GitHub lands in `<EVAL_ROOT>/results/<pr>/posted/`: `verdict`, `body.md` (the final expanded body), `comments.json` (the inline comments as they would be posted), `meta.json`, `summary.md`, and `actions.log` — one line per suppressed GitHub call (`POST review APPROVE 2 comments`, `DISMISS 12345`, …), which is what makes a dry run auditable rather than merely quiet.
+
+### The `REVIEW_OUT_DIR` seam
+
+`scripts/post-review.sh` is the **only** writer to GitHub on the review path, so one seam in one file covers the whole pipeline. Set `REVIEW_OUT_DIR=<dir>` and every GitHub *write* becomes an artifact in that directory instead of a call. Reads still happen — hunk validation is what decides which comments go inline, and a dry run that skipped it would report a different review than the real one.
+
+**It is a path, not a flag,** deliberately. `DRY_RUN=1` / `true` / `yes` / `0` / `false` all have a truthiness surface somebody eventually gets wrong. A path is set and meaningful, or unset and inert.
+
+Three independent barriers keep it out of production:
+
+1. `workflow_call` cannot inject arbitrary env into a called workflow, so a consumer cannot set it on the production path even deliberately.
+2. `tests/pipeline_contract_test.sh` asserts the name appears in neither `.github/workflows/pr-review.yml` nor `action.yml`.
+3. `post-review.sh` **refuses outright** when `REVIEW_OUT_DIR` is set and `GITHUB_ACTIONS=true` — `::error::` and `exit 1`. Loud, never silent.
+
+### What a sweep costs
+
+Banked from a v4 corpus run: **$1.94 mean per PR, ~250s wall clock**. A 10-PR sweep is roughly **$19 and ~42 minutes**. `--spec-only` sweeps run no model and are free.
+
+---
+
 ## Versioning
 
 - `@v3` — current floating tag, always points to the latest v3.x release. Use this for auto-updates.

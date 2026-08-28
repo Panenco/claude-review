@@ -10,6 +10,9 @@ docs/prds/review-cost-reduction.md
 docs/metrics/
 .metrics.env
 
+# Local-eval corpus manifest — names private repos. Never commit (.eval.env.example is the template).
+.eval.env
+
 # macOS junk
 .DS_Store
 

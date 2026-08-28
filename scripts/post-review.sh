@@ -56,7 +56,25 @@ set -uo pipefail
 # Optional env: HEAD_SHA, GITHUB_STEP_SUMMARY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
 #               REVIEW_JSON, ORCH_LOG, JOB_START, SPEC_STATUS, REVIEW_BODY_MAX,
 #               REVIEW_COMMENT_MAX, REVIEW_COMMENT_LIMIT, ROUND,
-#               PRIOR_FINDINGS_JSON, REVIEW_STATE_MAX
+#               PRIOR_FINDINGS_JSON, REVIEW_STATE_MAX,
+#               REVIEW_OUT_DIR (LOCAL-EVAL SEAM — see below)
+#
+# REVIEW_OUT_DIR IS THE DRY-RUN SEAM, AND IT IS A PATH, NOT A FLAG. This script
+# is the only writer to GitHub on the review path, so one seam here covers the
+# whole pipeline: set it and every GitHub WRITE becomes an artifact in that
+# directory (verdict, body.md, comments.json, meta.json, summary.md and an
+# actions.log naming each suppressed call). Reads still happen — hunk validation
+# decides which comments go inline, so a dry run that skipped it would report a
+# different review than the real one.
+#
+# A path, because truthiness is where this kind of switch goes wrong: `0`,
+# `false`, `no` and `""` all have to mean the same thing to a boolean and never
+# quite do. A path is set and meaningful, or unset and inert. Three independent
+# barriers keep it out of production: `workflow_call` cannot inject arbitrary env
+# into a called workflow; tests/pipeline_contract_test.sh asserts the name appears
+# in neither pr-review.yml nor action.yml; and the check below refuses outright
+# under GITHUB_ACTIONS. Loudly — a dry run that silently swallowed a real review
+# is the only failure mode that matters here.
 
 REPO="$GITHUB_REPOSITORY"
 PR="$PR_NUMBER"
@@ -76,6 +94,21 @@ STATE_MAX="${REVIEW_STATE_MAX:-4000}"
 # Shared byte-for-byte with prior-findings.sh: the two must never disagree about
 # what "the same finding" is. Line is deliberately not part of the identity.
 JQ_NORM='def norm: gsub("[\r\n]+"; " ") | sub("^[ \t]*\\*\\*(critical|major|minor)\\*\\*[ \t]*"; ""; "i") | gsub("[`*]"; "") | gsub("[ \t]+"; " ") | sub("^ "; "") | sub(" $"; "") | ascii_downcase | sub("[.!?]+$"; "");'
+OUT_DIR="${REVIEW_OUT_DIR:-}"
+if [ -n "$OUT_DIR" ] && [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  echo "::error::REVIEW_OUT_DIR is a local-eval seam and must never be set in CI"
+  exit 1
+fi
+if [ -n "$OUT_DIR" ]; then
+  mkdir -p "$OUT_DIR" || { echo "::error::could not create REVIEW_OUT_DIR '$OUT_DIR'"; exit 1; }
+  : > "$OUT_DIR/actions.log"
+  # There is no step summary locally, so the artifact IS the summary sink.
+  SUMMARY="$OUT_DIR/summary.md"
+  : > "$SUMMARY"
+fi
+# One line per GitHub call this run did not make — the record that makes a dry
+# run auditable rather than merely quiet.
+log_suppressed() { printf '%s\n' "$1" >> "$OUT_DIR/actions.log"; }
 WORK=$(mktemp -d) || { echo "::error::mktemp failed"; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 
@@ -109,7 +142,10 @@ supersede_crash_banners() {
   body=$'<!-- claude-review-superseded -->\n\n_Superseded by a newer Claude review run on this PR._'
   while IFS= read -r id; do
     [ -z "$id" ] && continue
-    if gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$id" -f body="$body" >/dev/null 2>&1; then
+    if [ -n "$OUT_DIR" ]; then
+      log_suppressed "PATCH crash-banner $id"
+      echo "Would supersede prior crash review #$id"
+    elif gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$id" -f body="$body" >/dev/null 2>&1; then
       echo "Superseded prior crash review #$id"
     else
       echo "::warning::Could not supersede crash review #$id"
@@ -178,8 +214,14 @@ crash_exit() {
     esac
     [ -n "$run_link" ] && crash_msg+=$'\n'">"$'\n'"> [Run logs]($run_link)"
     payload=$(jq -n --arg body "$crash_msg" '{event: "COMMENT", body: $body}')
-    gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input - <<<"$payload" >/dev/null \
-      || echo "::warning::Failed to post crash notification review"
+    if [ -n "$OUT_DIR" ]; then
+      log_suppressed "POST review COMMENT crash-banner ($kind)"
+      printf '%s' "$crash_msg" > "$OUT_DIR/body.md"
+      printf '%s\n' "COMMENT" > "$OUT_DIR/verdict"
+    else
+      gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input - <<<"$payload" >/dev/null \
+        || echo "::warning::Failed to post crash notification review"
+    fi
   fi
   exit 1
 }
@@ -763,9 +805,13 @@ fi
 while IFS= read -r id; do
   [ -z "$id" ] && continue
   echo "Dismissing review $id"
-  gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
-    -f message="Superseded by new Claude review on updated commit." >/dev/null 2>&1 \
-    || echo "::warning::Could not dismiss review $id (non-fatal)"
+  if [ -n "$OUT_DIR" ]; then
+    log_suppressed "DISMISS $id"
+  else
+    gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+      -f message="Superseded by new Claude review on updated commit." >/dev/null 2>&1 \
+      || echo "::warning::Could not dismiss review $id (non-fatal)"
+  fi
 done <<< "$STALE_IDS"
 echo "::endgroup::"
 
@@ -781,13 +827,23 @@ jq -n \
   --rawfile body "$WORK/body.md" \
   --slurpfile comments "$WORK/comments.json" \
   '{event: $event, body: $body, comments: $comments[0]}' > "$WORK/payload.json" || crash_exit "could not build review payload."
-echo "Posting $VERDICT review with $(jq '.comments | length' "$WORK/payload.json") inline comments"
-if ! POST_RESPONSE=$(gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input "$WORK/payload.json" 2>&1); then
+COMMENT_COUNT=$(jq '.comments | length' "$WORK/payload.json")
+echo "Posting $VERDICT review with $COMMENT_COUNT inline comments"
+REVIEW_ID=""
+if [ -n "$OUT_DIR" ]; then
+  log_suppressed "POST review $VERDICT $COMMENT_COUNT comments"
+  printf '%s\n' "$VERDICT" > "$OUT_DIR/verdict"
+  cp "$WORK/body.md" "$OUT_DIR/body.md"
+  cp "$WORK/comments.json" "$OUT_DIR/comments.json"
+  jq '.meta // {}' "$REVIEW_JSON" > "$OUT_DIR/meta.json" || echo '{}' > "$OUT_DIR/meta.json"
+  echo "Dry run — wrote the review to $OUT_DIR instead of posting it"
+elif ! POST_RESPONSE=$(gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input "$WORK/payload.json" 2>&1); then
   echo "::endgroup::"
   crash_exit "Review POST failed — verdict is $VERDICT but no PR review was created: $(echo "$POST_RESPONSE" | head -c 400)"
+else
+  REVIEW_ID=$(echo "$POST_RESPONSE" | jq -r '.id // empty' 2>/dev/null || echo "")
+  echo "Posted review${REVIEW_ID:+ #$REVIEW_ID}"
 fi
-REVIEW_ID=$(echo "$POST_RESPONSE" | jq -r '.id // empty' 2>/dev/null || echo "")
-echo "Posted review${REVIEW_ID:+ #$REVIEW_ID}"
 echo "::endgroup::"
 
 # ── 8. Step summary ──────────────────────────────────────────────────────────

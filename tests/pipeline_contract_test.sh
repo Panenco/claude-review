@@ -898,6 +898,38 @@ else
 fi
 want "review-verify exposes the prose flag in meta.findings" "$VERIFY" '"prose": false'
 
+echo ""
+echo "── the local-eval seam cannot reach production ──"
+# REVIEW_OUT_DIR turns every GitHub write in post-review.sh into an artifact.
+# That is exactly the shape of a change that could silently suppress a real
+# review, so it gets three independent barriers. Two of them are asserted here;
+# the third is structural (workflow_call cannot inject arbitrary env into a
+# called workflow, so a consumer cannot set it even deliberately).
+never "the seam is named nowhere in the reusable workflow" "$WORKFLOW" \
+  'REVIEW_OUT_DIR'
+never "…nor in the composite action" "$ROOT/action.yml" \
+  'REVIEW_OUT_DIR'
+want "post-review.sh refuses the seam under GITHUB_ACTIONS" "$POSTER" \
+  'GITHUB_ACTIONS.*\}" = "true"'
+want "…and says so as an ::error:: before exiting 1" "$POSTER" \
+  '::error::REVIEW_OUT_DIR is a local-eval seam and must never be set in CI'
+
+echo ""
+echo "── build-spec route (a) does not trust the git diff alone ──"
+# `merge-base origin/<base> HEAD` returns HEAD on an already-merged PR, so the
+# git diff is empty and the strongest spec signal vanishes with no warning. The
+# reconciliation against GitHub's own file list is what closes that, and the
+# `gh pr view` fallback is what makes it work when pr.json predates the change.
+want "route (a) reads the PR file list out of pr.json" "$BUILDSPEC" \
+  '\(\.files // \[\]\)\[\] \| \.path'
+want "…falls back to gh pr view --json files when pr.json has none" "$BUILDSPEC" \
+  'gh pr view "\$PR_NUMBER".*--json files'
+want "…and warns when the two disagree" "$BUILDSPEC" \
+  '::warning::git reports no markdown changed'
+want "the orchestrator fetches files in turn 1, so it costs no extra call" "$ORCH" \
+  'gh pr view .*--json .*,files'
+
+echo ""
 # Regression pin. The channel was deliberately NOT paid for by making the
 # consumer's own docs rules reachable: one corpus PR EDITS .claude/rules/docs.md
 # in the same diff that rule would judge, and only 1 of 14 findings needed it.

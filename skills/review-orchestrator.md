@@ -16,7 +16,7 @@ Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `FUNCTIONAL_BUDGET_SECO
 
 ```bash
 printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
-gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesReferences > /tmp/pr.json
+gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesReferences,files > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
 awk '/^#{2,3} /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md

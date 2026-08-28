@@ -70,6 +70,9 @@ jobs:
       - name: Run pipeline_contract_test.sh
         run: bash tests/pipeline_contract_test.sh
 
+      - name: Run review_local_test.sh
+        run: bash tests/review_local_test.sh
+
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh infra/*.sh
 
