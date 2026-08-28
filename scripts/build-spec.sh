@@ -101,27 +101,34 @@ DECLARED_DOCS=""
 CHANGED_DOCS=""
 
 doc_tier() { # doc_tier <repo-relative path> → spec | context | excluded
+  # ── NEVER a spec, whatever any repo declares ──
+  # Agent instruction files and the review's own rule files are PROMPTS: inlining
+  # one would feed the reviewer its own instructions as requirements, which is a
+  # prompt-injection surface, not a layout preference. Whole directories, not just
+  # well-known basenames — a repo that ships subagent prompts (this one does)
+  # would otherwise resolve them as the AUTHORITATIVE spec. Found by the reviewer,
+  # on the PR that added this list. A declaration must NOT be able to reopen it.
   case "$1" in
-    ''|.github/*|*/node_modules/*) echo excluded; return 0 ;;
-    README.md|*/README.md|CHANGELOG.md|*/CHANGELOG.md) echo excluded; return 0 ;;
-    CONTRIBUTING.md|*/CONTRIBUTING.md|LICENSE.md|*/LICENSE.md) echo excluded; return 0 ;;
-    SECURITY.md|*/SECURITY.md|CODE_OF_CONDUCT.md|*/CODE_OF_CONDUCT.md) echo excluded; return 0 ;;
-    # Agent instruction files and the review's own rule files are prompts, not
-    # specs: inlining them would feed the reviewer instructions as requirements.
-    # Whole directories, not just well-known basenames — a repo that ships
-    # subagent prompts (this one does) would otherwise resolve them as the
-    # AUTHORITATIVE spec. Found by the reviewer, on the PR that added this list.
+    ''|*/node_modules/*) echo excluded; return 0 ;;
     CLAUDE.md|*/CLAUDE.md|AGENTS.md|*/AGENTS.md|bugbot.md|*/bugbot.md) echo excluded; return 0 ;;
     skills/*|*/skills/*|agents/*|*/agents/*|.claude/*|*/.claude/*) echo excluded; return 0 ;;
     prompts/*|*/prompts/*) echo excluded; return 0 ;;
+  esac
+  # A repo that declares where its specs live outranks every convention below —
+  # this is the only knob a repo has when its layout matches none of them, and it
+  # must reach the places a repo actually keeps a spec, `.github/` included.
+  case " $DECLARED_DOCS " in *" $1 "*) echo spec; return 0 ;; esac
+  # ── excluded by convention: a declaration above overrides these ──
+  case "$1" in
+    .github/*) echo excluded; return 0 ;;
+    README.md|*/README.md|CHANGELOG.md|*/CHANGELOG.md) echo excluded; return 0 ;;
+    CONTRIBUTING.md|*/CONTRIBUTING.md|LICENSE.md|*/LICENSE.md) echo excluded; return 0 ;;
+    SECURITY.md|*/SECURITY.md|CODE_OF_CONDUCT.md|*/CODE_OF_CONDUCT.md) echo excluded; return 0 ;;
     # A `_`-prefixed segment is the convention for a template or an archived
     # copy. `docs/planned/_document-templates/` beat the real document because
     # `_` sorts before every letter.
     _*|*/_*) echo excluded; return 0 ;;
   esac
-  # A repo that declares where its specs live outranks the conventions below —
-  # this is the only knob a repo has when its layout matches none of them.
-  case " $DECLARED_DOCS " in *" $1 "*) echo spec; return 0 ;; esac
   case "$1" in
     docs/system/*|*/docs/system/*|docs/adr/*|*/docs/adr/*|adr/*) echo context; return 0 ;;
   esac
@@ -129,13 +136,24 @@ doc_tier() { # doc_tier <repo-relative path> → spec | context | excluded
     planned/*|*/planned/*|plans/*|*/plans/*|plan/*|*/plan/*) echo spec; return 0 ;;
     specs/*|*/specs/*|spec/*|*/spec/*) echo spec; return 0 ;;
     prd/*|*/prd/*|prds/*|*/prds/*|rfc/*|*/rfc/*|rfcs/*|*/rfcs/*) echo spec; return 0 ;;
-    design-docs/*|*/design-docs/*) echo spec; return 0 ;;
+    # `design-docs/` was here; `design/` and `architecture/` are the same
+    # document under the name most repos actually use, and both fell through to
+    # `excluded` — reading as "no spec resolved" on a repo that has one. Note
+    # `docs/system/**` is matched ABOVE, so an as-built tree stays context.
+    design-docs/*|*/design-docs/*|design/*|*/design/*) echo spec; return 0 ;;
+    architecture/*|*/architecture/*) echo spec; return 0 ;;
+    proposals/*|*/proposals/*|requirements/*|*/requirements/*) echo spec; return 0 ;;
     *-prd.md|*.prd.md|*-spec.md|*-rfc.md) echo spec; return 0 ;;
     *-architecture.md|*-design.md|*-plan.md) echo spec; return 0 ;;
+    # The bare-name forms of the four above. `*-prd.md` matched `billing-prd.md`
+    # but not the `docs/PRD.md` a smaller repo writes instead.
+    SPEC.md|*/SPEC.md|PRD.md|*/PRD.md) echo spec; return 0 ;;
+    DESIGN.md|*/DESIGN.md|ARCHITECTURE.md|*/ARCHITECTURE.md) echo spec; return 0 ;;
+    RFC.md|*/RFC.md) echo spec; return 0 ;;
   esac
-  # docs/runbooks/**, docs/references/**, notes, meeting minutes: real
-  # documents, but none of them asks for anything, and every one of them used
-  # to govern. Not on the list above is not on the list.
+  # docs/runbooks/**, docs/references/**, docs/features/**, notes, meeting
+  # minutes: real documents, but none of them asks for anything, and every one
+  # of them used to govern. Not on the list above is not on the list.
   echo excluded
 }
 

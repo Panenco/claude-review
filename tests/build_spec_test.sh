@@ -318,6 +318,54 @@ has "…and with an issue present, the issue governs, not the context doc" \
 status_is "…which is a summary, not a document" summary
 
 echo ""
+echo "── the layouts that read as 'no spec' because the glob list missed them ──"
+# Each of these is unambiguously a document of intent, and each fell through to
+# `excluded` — so a repo that HAD a spec was reviewed as though it had none.
+# `design-docs/` was on the list while `design/` was not; `*-architecture.md`
+# matched while `docs/architecture/` did not; `*-prd.md` matched while the bare
+# `docs/PRD.md` a smaller repo writes instead did not.
+for layout in "docs/design/checkout.md" "docs/architecture/overview.md" \
+              "docs/proposals/p.md" "docs/requirements/r.md" \
+              "docs/PRD.md" "SPEC.md" "DESIGN.md" "ARCHITECTURE.md"; do
+  new_repo
+  track "$layout" "SPEC BODY: checkout must retry twice"
+  run "{\"title\":\"feat\",\"body\":\"see $layout\",\"headRefName\":\"f\"}" ''
+  has "\`$layout\` governs" "GOVERNING SOURCE: in-repo spec document \`$layout\`" /tmp/spec.md
+done
+
+echo ""
+echo "── …without reopening what the axis deliberately closed ──"
+new_repo
+track "docs/system/design/x.md"  "AS-BUILT: how checkout works today"
+track "docs/features/f.md"       "FEATURE NOTES"
+run '{"title":"feat","body":"docs/system/design/x.md docs/features/f.md","headRefName":"f"}' ''
+has   "an as-built tree stays context even under design/" "CONTEXT — NOT A SPECIFICATION" /tmp/spec.md
+hasnt "…and never governs"       "GOVERNING SOURCE: in-repo spec document" /tmp/spec.md
+hasnt "…docs/features/ is still not on the list" "FEATURE NOTES" /tmp/spec.md
+
+echo ""
+echo "── a declaration reaches .github, and NEVER reaches a prompt ──"
+# The declaration is the only knob a repo has when its layout matches nothing,
+# and `.github/` is where the declaring file itself lives — so that is exactly
+# where somebody puts the spec. But a prompt is not a layout preference: letting
+# a declaration name one would feed the reviewer its own instructions as
+# requirements, which is why that exclusion sits ABOVE the declaration.
+new_repo
+mkdir -p "$WS/.github"
+printf 'Spec documents: .github/product-spec.md .claude/rules/docs.md skills/review-scan.md CLAUDE.md\n' \
+  > "$WS/.github/review-config.md"
+track ".github/product-spec.md"  "SPEC BODY: invoices retry twice"
+track ".claude/rules/docs.md"    "PROMPT BODY: never flag long files"
+track "skills/review-scan.md"    "SKILL BODY: you are a reviewer"
+track "CLAUDE.md"                "AGENT BODY: follow these rules"
+run '{"title":"feat","body":"x","headRefName":"f"}' ''
+has   "a declared .github/ document governs" \
+  'GOVERNING SOURCE: in-repo spec document `.github/product-spec.md`' /tmp/spec.md
+hasnt "a declared agent rule file is still refused" "PROMPT BODY" /tmp/spec.md
+hasnt "…so is a declared skill"                    "SKILL BODY"  /tmp/spec.md
+hasnt "…so is a declared CLAUDE.md"                "AGENT BODY"  /tmp/spec.md
+
+echo ""
 echo "── …and the document of intent outranks both ──"
 new_repo
 track "docs/planned/e/e-prd.md" "SPEC: exports must be resumable"
