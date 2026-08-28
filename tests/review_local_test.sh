@@ -206,5 +206,70 @@ assert_file_has "…and keeps the workflow's deny list verbatim" \
   "Bash(gh api:*),Bash(gh pr comment:*)" "$LOCAL"
 
 echo ""
+echo "── the local run must not be SHALLOWER than CI ──"
+# CI installs the subagents from agents/*.md, whose frontmatter carries the
+# effort. An --agents JSON that omits it runs them at the session's own
+# --effort, so review-scan — the finding-producing stage — searched less hard
+# than production and biased the only recall number this harness produces.
+assert_file_has "the agents JSON carries an effort for review-scan" 'effort: $se' "$LOCAL"
+assert_file_has "…and one for review-verify" 'effort: $ve' "$LOCAL"
+assert_file_has "…read from the frontmatter, so the two cannot drift" 'agent_effort()' "$LOCAL"
+for a in review-scan review-verify; do
+  want=$(sed -n '/^---$/,/^---$/p' "$ROOT/agents/$a.md" | sed -n 's/^effort:[[:space:]]*\([a-z]*\).*/\1/p' | head -1)
+  case "$want" in
+    low|medium|high) ok "agents/$a.md declares effort: $want" ;;
+    *) bad "agents/$a.md has no readable 'effort:' — review-local.sh refuses to run without one" ;;
+  esac
+done
+
+echo ""
+echo "── concurrent runs must not share a base ref ──"
+# `refs/remotes/*` is shared across worktrees (only HEAD and the index are
+# per-worktree), so pinning origin/<base> in a worktree is a GLOBAL write: two
+# runs in flight gave each other the wrong base, and with it the wrong diff
+# scope and the wrong answer from review-verify's absence-claim lookup.
+if grep -qE 'worktree add' "$LOCAL"; then
+  bad "review-local.sh still checks out with 'git worktree add' — refs/remotes is shared"
+else
+  ok "the checkout is not a worktree"
+fi
+assert_file_has "…it is a per-run --shared clone" 'git clone -q --shared --no-checkout' "$LOCAL"
+assert_file_has "…living inside the run directory" 'WT="$RUNDIR/repo"' "$LOCAL"
+if grep -qE 'git -C "\$CLONE" update-ref' "$LOCAL"; then
+  bad "the base ref is still pinned in the SHARED clone"
+else
+  ok "the base ref is pinned in the per-run clone, never the shared one"
+fi
+
+echo ""
+echo "── .eval.env is read as data, not executed ──"
+# The file has two readers with incompatible syntax: `make` needs EVAL_PRS
+# unquoted and space-separated, which the shell reads as a command plus
+# arguments. Sourcing it ran `102` and printed 'command not found' on every run.
+if grep -qE '^[[:space:]]*\.[[:space:]]+"\$ROOT/\.eval\.env"' "$LOCAL"; then
+  bad "review-local.sh still sources .eval.env"
+else
+  ok "review-local.sh does not source .eval.env"
+fi
+assert_file_has "…it parses the keys it uses" 'read_eval_env()' "$LOCAL"
+# The shipped example must survive being read, whatever a `make` reader needs.
+EXAMPLE="$ROOT/.eval.env.example"
+if [ -f "$EXAMPLE" ]; then
+  SANDBOX=$(mktemp -d)
+  mkdir -p "$SANDBOX/scripts"
+  cp "$LOCAL" "$SANDBOX/scripts/"
+  cp "$EXAMPLE" "$SANDBOX/.eval.env"
+  cp -R "$ROOT/agents" "$SANDBOX/" 2>/dev/null
+  OUT=$(cd "$SANDBOX" && bash scripts/review-local.sh 2>&1)
+  case "$OUT" in
+    *"command not found"*) bad "the shipped .eval.env.example still executes when read" ;;
+    *) ok "the shipped .eval.env.example is read without executing anything" ;;
+  esac
+  rm -rf "$SANDBOX"
+else
+  bad ".eval.env.example is missing — the template the docs point at"
+fi
+
+echo ""
 if [ "$fail" -eq 0 ]; then echo "All review-local tests passed."; exit 0; fi
 echo "$fail review-local test(s) failed."; exit 1
