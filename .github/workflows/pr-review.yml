@@ -59,7 +59,7 @@ on:
         type: string
         default: "skip-review"
       gate_deep_label:
-        description: "DEPRECATED and ignored — there are no depth tiers to force any more; review-scan self-scales. Kept so callers passing it do not break."
+        description: "Label that overrides the oversized size ceiling, so a PR that genuinely cannot be split is reviewed anyway. Persistent: it applies to every push, where a `/review deep` comment applies only to the run it starts."
         type: string
         default: "deep-review"
       gate_small_ceiling:
@@ -444,6 +444,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMD_FUNCTIONAL: ${{ steps.cmd.outputs.run_functional }}
+          # `/review deep` lifts the size ceiling for THIS run; the `deep-review`
+          # label (GATE_FORCE_LABEL, read off the PR below) does it persistently.
+          # Either one is enough — guard.sh gate 3.
+          GATE_FORCE_DEEP: ${{ steps.cmd.outputs.force_deep }}
+          GATE_TRIGGER: ${{ inputs.command_trigger }}
+          GATE_FORCE_LABEL: ${{ inputs.gate_deep_label }}
           GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
           GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
           GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}

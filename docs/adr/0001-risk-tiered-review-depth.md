@@ -7,10 +7,13 @@ date: 2026-06-04
 # 0001 — Risk-tiered review depth
 
 > **SUPERSEDED by [ADR 0003](0003-two-call-review.md) (2026-08-27).** There are
-> no depth tiers any more. `scripts/review-plan.sh`, `docs/review-plan.md` and
-> the `deep-review` label are deleted; `skills/review-scan.md` reads the diff and
+> no depth tiers any more. `scripts/review-plan.sh` and `docs/review-plan.md`
+> are deleted; `skills/review-scan.md` reads the diff and
 > scales its own depth, and `scripts/guard.sh` decides only whether a model runs
-> at all. `gate_deep_label`, `gate_small_ceiling`, `gate_tiny_ceiling` and
+> at all. The `deep-review` label survives, but it no longer selects a depth —
+> it only overrides the oversized size ceiling, and `/review deep` in a comment
+> does the same for a single run. `gate_deep_label` names that label and is live;
+> `gate_small_ceiling`, `gate_tiny_ceiling` and
 > `gate_sensitive_globs` survive as deprecated, ignored workflow inputs. The
 > sensitive-path list moved to review-verify, where it gates APPROVE rather than
 > forcing a tier. Everything below is kept for the record.

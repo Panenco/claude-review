@@ -63,8 +63,12 @@ assert_gate "promotion branch (no promotion tier)" "true ok -" \
   GATE_BASE_REF=main GATE_HEAD_REF=staging GATE_FILES_TSV=$'apps/web/x.ts\t10\t2'
 assert_gate "an unrelated label changes nothing" "true ok -" \
   GATE_LABELS=$'enhancement' GATE_FILES_TSV=$'src/app.ts\t40\t5'
-assert_gate "deep-review is no longer a thing" "true ok -" \
+# The override only lifts the SIZE ceiling. On a PR that was never oversized
+# neither input changes anything — there is no depth tier left for them to pick.
+assert_gate "deep-review on a normal PR changes nothing" "true ok -" \
   GATE_LABELS=$'deep-review' GATE_FILES_TSV=$'src/app.ts\t40\t5'
+assert_gate "/review deep on a normal PR changes nothing" "true ok -" \
+  GATE_FORCE_DEEP=true GATE_FILES_TSV=$'src/app.ts\t40\t5'
 
 echo
 echo "── 1) skip-review label → no post at all ──"
@@ -221,8 +225,9 @@ if grep -q 'gh \|curl \|wget ' "$SCRIPT"; then
 else
   echo "OK:   guard.sh makes no network calls"
 fi
-# 110, raised from 100 when `deep-review` was added. The ceiling guards against
-# the tier ladder creeping back in, not against a comment or a single override.
+# 110, raised from 100 when `deep-review` was added, and NOT raised again when
+# `/review deep` joined it. The ceiling guards against the tier ladder creeping
+# back in, not against a comment or a single override.
 LINES=$(grep -c '' "$SCRIPT")
 if [ "$LINES" -le 110 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
@@ -234,22 +239,54 @@ fi
 echo
 
 
-# --- deep-review overrides the size ceiling -------------------------------
+# --- two equivalent overrides for the size ceiling -------------------------
 # A PR that genuinely cannot be split is worse off unreviewed than reviewed
 # imperfectly: PR #106 (6692 lines, credential handling) merged with no review.
+#
+# `/review deep` (GATE_FORCE_DEEP, from review-command.sh) covers the run it
+# started. The `deep-review` label covers every push, so a big PR that cannot be
+# split does not need the command re-typed each round. EITHER is sufficient.
 big="$(printf 'a.ts\t9000\t0')"
 assert_gate "oversized blocks by default" "false oversized REQUEST_CHANGES" \
   "GATE_FILES_TSV=$big"
-assert_gate "deep-review overrides oversized" "true ok -" \
+assert_gate "neither input → still blocked" "false oversized REQUEST_CHANGES" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=enhancement" "GATE_FORCE_DEEP=false"
+assert_gate "deep-review label overrides oversized" "true ok -" \
   "GATE_FILES_TSV=$big" "GATE_LABELS=deep-review"
+assert_gate "/review deep overrides oversized" "true ok -" \
+  "GATE_FILES_TSV=$big" "GATE_FORCE_DEEP=true"
+assert_gate "command + label together is not a conflict" "true ok -" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=deep-review" "GATE_FORCE_DEEP=true"
+# skip-review is label-only ON PURPOSE — "never review this PR" is persistent
+# state, so there is no one-shot comment form of it. It outranks both overrides.
 assert_gate "skip-review still wins over deep-review" "false label -" \
   "GATE_FILES_TSV=$big" "GATE_LABELS=$(printf 'deep-review\nskip-review')"
+assert_gate "skip-review still wins over /review deep" "false label -" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=skip-review" "GATE_FORCE_DEEP=true"
 assert_gate "a near-miss label is not the override" "false oversized REQUEST_CHANGES" \
   "GATE_FILES_TSV=$big" "GATE_LABELS=deep-review-please"
 assert_gate "custom GATE_FORCE_LABEL is honoured" "true ok -" \
   "GATE_FILES_TSV=$big" "GATE_LABELS=huge-ok" "GATE_FORCE_LABEL=huge-ok"
-assert_contains "split request names the override label" "deep-review" \
-  "$(body_of "GATE_FILES_TSV=$big")"
+# Only the literal "true": a workflow expression that resolved to anything else
+# (empty, "True", the string "run_functional") must not silently lift the ceiling.
+for v in "" "TRUE" "yes" "1"; do
+  assert_gate "GATE_FORCE_DEEP='$v' does not override" "false oversized REQUEST_CHANGES" \
+    "GATE_FILES_TSV=$big" "GATE_FORCE_DEEP=$v"
+done
+# The split request is the only place the author is told how to proceed, so it
+# must name BOTH routes, not just the label it used to name.
+OVER=$(body_of "GATE_FILES_TSV=$big")
+assert_contains "split request names the override label" "deep-review" "$OVER"
+assert_contains "split request names the /review deep command" '`/review deep`' "$OVER"
+assert_contains "split request still names the opt-out label" '`skip-review`' "$OVER"
+assert_contains "split request honours a custom trigger" '`/claude deep`' \
+  "$(body_of "GATE_FILES_TSV=$big" "GATE_TRIGGER=/claude")"
+if [ "${#OVER}" -le 1200 ]; then
+  echo "OK:   split body still fits the 1200-char budget (${#OVER})"
+else
+  echo "FAIL: split body is ${#OVER} chars, over the 1200 budget"
+  fail=$((fail + 1))
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "All guard tests passed."

@@ -12,14 +12,17 @@ Reusable PR review pipeline powered by Claude Code. **Two model calls:** a revie
 | `/review code` | The code review. It picks its own depth from the diff. |
 | `/review functional` | The code review **+** the browser tester (dev-env bring-up, smoke, screenshots). |
 | `/review all` | Both. |
+| `/review … deep` | Adds the size-ceiling override — see below. Combines with any pass: `/review code deep`, `/review all deep`. |
 
 **Combine passes in one comment.** `/review code functional` runs them in one session and posts **one** review. Separate comments queue up and post separate reviews.
 
-- Aliases: `judges` = `code`, `browser`/`e2e`/`smoke` = `functional`.
-- `native` and `deep` are **accepted but inert.** The native (`code-review` plugin) pass is deleted and there are no depth tiers left to force; typing either still gets you a normal code review rather than an error.
+**`deep` is the only depth control, and it is not about depth.** An oversized PR (over 3000 non-generated lines or 60 files) is normally blocked with a split request and never read. `deep` reviews it anyway. It applies to **the run it starts**; the `deep-review` **label** does exactly the same thing but persistently, so a big PR that genuinely cannot be split does not need the command re-typed on every push. Either input is enough. `full` is an alias for `deep`.
+
+- Aliases: `judges` = `code`, `browser`/`e2e`/`smoke` = `functional`, `full` = `deep`.
+- `native` is **accepted but inert.** The native (`code-review` plugin) pass is deleted; typing it still gets you a normal code review rather than an error.
 - The trigger must **start** the comment — mentioning `/review all` mid-sentence does nothing.
 - Only `OWNER`/`MEMBER`/`COLLABORATOR` can trigger a run. Everyone else is ignored silently.
-- **Not opt-in:** the code review, and its depth. The command picks the passes, not how hard the reviewer thinks.
+- **Not opt-in:** the code review, and how hard it thinks. The command picks the passes; `deep` only decides whether an oversized PR is read at all.
 
 ## Quick Start
 
@@ -642,7 +645,7 @@ permissions:
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
 - **Runtime-evidence gate** — a PR the planner judged has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}`) is blocked with `REQUEST_CHANGES` only when the smoke run actually ran and `FAIL`ed. If the smoke never ran (no `.github/claude-review/dev-start.sh`, a bring-up that fails/times out, a tester crash), the verdict is capped at `COMMENT` — never `APPROVE` — and the review body's **⚙️ Review setup health** section states exactly what's broken and how to fix it. Docs-only / non-runtime PRs are exempt.
-- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with **no model call at all** — `guard.sh` renders that body itself. Ask again after splitting and the block re-evaluates against the new size. If the PR genuinely cannot be split, the `deep-review` label reviews it anyway; `skip-review` parks a PR the bot must not touch and wins over both. (`/review deep` is inert — depth is the scan's call now, not a flag.)
+- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with **no model call at all** — `guard.sh` renders that body itself. Ask again after splitting and the block re-evaluates against the new size. If the PR genuinely cannot be split, comment `/review deep` (or `/review code deep`, `/review all deep` — it composes with any pass) to review it anyway; the `deep-review` label is the persistent equivalent, applying to every push instead of one run. Either input alone lifts the ceiling. `skip-review` parks a PR the bot must not touch and wins over both — it stays label-only, because "never review this PR" is state, not a one-shot request.
 - **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
 
 These gates compose: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff. `REQUEST_CHANGES` is reserved for evidence against the PR (findings, a failed smoke run, an unreviewably large diff); setup problems surface loudly but downgrade to `COMMENT` instead of blocking.

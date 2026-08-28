@@ -81,7 +81,7 @@ wrong.
 ## Consequences
 
 - ADR 0001 is **superseded**. `scripts/review-plan.sh`, `docs/review-plan.md`,
-  the six tiers are gone (`deep-review` survives, but only as an override for the size ceiling — it no longer selects a depth). `gate_deep_label`,
+  the six tiers are gone. What survives is a single override for the size ceiling, reachable two ways: `/review deep` in the comment (one run) or the `deep-review` label (every push). Neither selects a depth — they only decide whether an oversized PR is read at all. The comment is the primary interface; the label stays because it is persistent state, which a comment cannot be, and a large PR that legitimately cannot be split should not need the command re-typed each round. `skip-review` stays label-only for the same reason, in reverse. `gate_deep_label` is therefore live again — it names that label, and the workflow now passes it to the guard as `GATE_FORCE_LABEL` alongside the comment's `GATE_FORCE_DEEP`.
   `gate_small_ceiling`, `gate_tiny_ceiling`, `gate_sensitive_globs`,
   `gate_promotion_*` and `model_fast` remain as **deprecated, ignored** inputs:
   a reusable workflow errors on an undefined input, so removing one breaks every
