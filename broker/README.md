@@ -4,7 +4,6 @@ Per-developer Claude credentials for the review pipeline. A developer registers
 their own Claude Team seat token once; a review run draws on the seat of
 whoever typed `/review`.
 
-Design: `docs/superpowers/specs/2026-08-26-token-broker-design.md`.
 Deploy: `docs/runbooks/token-broker-setup.md` (the runbook is the only place
 that knows the manual GitHub App steps).
 

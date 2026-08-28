@@ -8,7 +8,6 @@ you can run.
 The whole file is **idempotent** — safe to re-run from the top. A step that is
 already done reports so and changes nothing.
 
-Design: `docs/superpowers/specs/2026-08-26-token-broker-design.md`.
 Code: `broker/` (the service), `infra/` (the Pulumi program).
 
 **Named config used throughout.** Set these once in your shell; nothing below
