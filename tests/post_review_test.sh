@@ -454,6 +454,32 @@ assert_eq "…and a missing status file is not a crash" "0" "$RC"
 assert_not_contains "…nor an invented claim" "No spec resolved" "$(payload_of "$W" | jq -r '.body')"
 rm -rf "$W"
 
+# ── (j3) the injection flag is a RECORD: it marks the review, moves nothing ──
+# v3 escalated prompt_injection_detected to human review, which is a verdict
+# gate; ADR 0003 bans those. So it must reach the reader and stop there.
+echo ""
+echo "── (j3) prompt_injection_detected marks without gating ──"
+W=$(mktemp -d)
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nNothing to flag.",
+        comments: [], meta: {findings: [], human_review: [], prompt_injection_detected: false}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+CLEAN_RC=$RC
+CLEAN_EVENT=$(payload_of "$W" | jq -r '.event')
+assert_not_contains "no marker when the flag is false" "injection-shaped" "$(payload_of "$W" | jq -r '.body')"
+rm -rf "$W"
+
+W=$(mktemp -d)
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nNothing to flag.",
+        comments: [], meta: {findings: [], human_review: [], prompt_injection_detected: true}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_contains "the footer carries the marker" "injection-shaped text in the PR input" \
+  "$(payload_of "$W" | jq -r '.body')"
+assert_contains "the step summary says the verdict did not move" "no verdict changed" \
+  "$(cat "$W/summary.md")"
+assert_eq "…and the verdict is unchanged" "$CLEAN_EVENT" "$(payload_of "$W" | jq -r '.event')"
+assert_eq "…and so is the exit code" "$CLEAN_RC" "$RC"
+rm -rf "$W"
+
 # ── (k) body budget: 1200 chars, cut on a line boundary, footer kept ─────────
 # Prompt-only budgets historically did not hold (measured median body 1560
 # chars), so the cap is enforced here.

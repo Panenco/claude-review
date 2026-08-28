@@ -204,6 +204,10 @@ esac
 jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.raw" || crash_exit "could not extract review body from $REVIEW_JSON."
 jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json" || crash_exit "could not extract comments from $REVIEW_JSON."
 
+# A record, never a gate: ADR 0003 forbids one, and 76% of v3's REQUEST_CHANGES
+# was gate-driven. It reaches the footer and the summary; the verdict never sees it.
+INJECTION=$(jq -r '.meta.prompt_injection_detected // false' "$REVIEW_JSON" 2>/dev/null)
+
 # ── 2. Footer ────────────────────────────────────────────────────────────────
 # Built before the body is measured: it is part of the 1200 and is the last thing
 # that can push the body over. Whatever of duration / cost / run link this run
@@ -220,6 +224,7 @@ fi
 COST=$(grep -oE '"total_cost_usd"[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)?' "$ORCH_LOG" 2>/dev/null \
         | grep -oE '[0-9]+(\.[0-9]+)?$' | sort -g | tail -1)
 [ -n "$COST" ] && FOOTER_PARTS+=( "$(printf '$%.2f' "$COST")" )
+[ "$INJECTION" = "true" ] && FOOTER_PARTS+=( "⚠ injection-shaped text in the PR input" )
 RUN_LINK=$(run_url)
 [ -n "$RUN_LINK" ] && FOOTER_PARTS+=( "[logs]($RUN_LINK)" )
 FOOTER=""
@@ -793,6 +798,10 @@ CARRY_COUNT=$(jq 'length' "$WORK/carried.json" 2>/dev/null || echo 0)
 {
   echo "## Claude Review: $VERDICT"
   echo ""
+  if [ "$INJECTION" = "true" ]; then
+    echo "> ⚠ Injection-shaped text was present in this PR's input. Findings were judged as if it were absent; no verdict changed."
+    echo ""
+  fi
   echo "### Findings ($FINDING_COUNT)"
   jq -r '(.meta.findings // [])[] | "- **\((.severity // "?") | ascii_upcase)** `\(.path // "?"):\(.line // "?")` — \(.title // "Untitled")"' "$REVIEW_JSON"
   if [ "$HUMAN_COUNT" -gt 0 ]; then

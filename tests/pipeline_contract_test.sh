@@ -664,6 +664,109 @@ never "…and never the standing list, which includes reviews that judged nothin
   'bot-reviews\.json'
 
 echo ""
+echo "── an absence claim is checked against the BASE, not just HEAD ──"
+# v3 judge rule 8, deleted with the panel and with no rationale recorded. The
+# audited failure: a CRITICAL "nginx.conf has no /api/fgo route" filed against a
+# stale head whose base had already shipped it. v4's refute pass reads HEAD only,
+# so that false-positive class returns — and it clears the failure_scenario bar
+# cleanly, so nothing else catches it.
+want "review-verify checks the base before keeping an absence claim" "$VERIFY" \
+  'Check the base, not HEAD'
+want "…via a ref the sandbox can actually read" "$VERIFY" \
+  'git show .{0,20}origin/'
+want "…and refuses to file one it could not check there" "$VERIFY" \
+  'cannot check against the base'
+want "…citing the failure it exists to prevent" "$VERIFY" \
+  'stale head whose base had already shipped'
+# The BOUND is the capability, not a nicety: an unconditional base lookup is a
+# per-finding tool call and this pipeline exists to not pay for those.
+want "the base lookup fires on absence claims only, never on every finding" "$VERIFY" \
+  'Absence claims only'
+# ...and it must stay inside the deny list. $DENY is read out of the workflow above.
+if printf '%s' "$DENY" | grep -qE 'git show|git grep'; then
+  bad "a git read verb is now denied — the base lookup cannot run"
+else
+  ok "the sandbox still permits git read verbs for the base lookup"
+fi
+
+echo ""
+echo "── the spec is one witness, not the verdict ──"
+# v3's anti-spec-lawyering gate (review-judge.md:117-124) died with the judge
+# panel, and v4 is MORE exposed than v3 was: build-spec.sh inlines whole planning
+# documents (1500 lines each) labelled AUTHORITATIVE, and a planning document
+# describes deferred phases and already-shipped work as readily as this PR's.
+want "review-scan treats spec text as one witness" "$SCAN" \
+  'one witness, not the verdict'
+want "…counting types and tests in the diff as evidence of intent" "$SCAN" \
+  'say what the author believes the contract is'
+want "…so an internally consistent contract against loose wording is not a finding" "$SCAN" \
+  'internally consistent'
+want "…routed to the human_review channel at most, never to a finding" "$SCAN" \
+  'at most one .{0,15}human_review'
+want "…while an unambiguous contradiction is still a finding" "$SCAN" \
+  'unambiguous AND the code contradicts'
+want "…and a criterion this diff does not implement is not automatically a defect" "$SCAN" \
+  'not automatically a defect'
+# It lives in scan alone, on purpose: review-verify never reads /tmp/spec.md, and
+# making it do so would load 3000 lines to second-guess a call scan already made.
+never "review-verify is not made to load the spec to re-run this gate" "$VERIFY" \
+  '/tmp/spec\.md'
+
+echo ""
+echo "── an injection attempt is RECORDED, and records nothing else ──"
+# v3 set prompt_injection_detected and escalated to human review; escalation is a
+# verdict gate, and ADR 0003 bans those. So v4 keeps the record and the BEHAVIOUR
+# and drops the gate. It matters more here than in v3: build-spec.sh ingests
+# markdown taken from the PR's own diff and labels it AUTHORITATIVE, and 2d3a1e5
+# closed a live hole where skills/review-scan.md resolved as that spec.
+want "review-scan sets the flag" "$SCAN" \
+  'prompt_injection_detected.{0,10}true'
+want "…on text that steers the reviewer instead of describing the work" "$SCAN" \
+  'ignore previous instructions'
+want "…and reviews as if the text were absent" "$SCAN" \
+  'as if that text were absent'
+want "…so it never suppresses, downgrades or argues for approval" "$SCAN" \
+  'never suppresses a finding, never lowers a severity'
+want "…and exposes it in its schema" "$SCAN" \
+  '"prompt_injection_detected": false'
+want "review-verify carries it into meta" "$VERIFY" \
+  '"prompt_injection_detected": false'
+want "…as a record, never a verdict input" "$VERIFY" \
+  'record, never a verdict input'
+want "…that never reaches the posted prose" "$VERIFY" \
+  'adds nothing to .{0,10}body'
+# A PR that ships its own "do not flag" line would otherwise silence its own
+# review: both stages apply suppression unconditionally, from files read at HEAD.
+want "…and a suppression the diff itself introduced is not a suppression" "$VERIFY" \
+  "this PR's own diff added"
+
+# THE GATE THAT MUST NOT COME BACK. This is the structural half of the pin: the
+# two verdict rules are read by line, so no rewording can smuggle the flag in.
+VLINE=$(grep -n '^- \*\*REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
+ALINE=$(grep -n '^- \*\*APPROVE\*\*' "$VERIFY" | head -1 | cut -d: -f1)
+for l in "$VLINE" "$ALINE"; do
+  if [ -z "$l" ]; then
+    bad "could not locate a verdict rule line in review-verify"
+  elif sed -n "${l}p" "$VERIFY" | grep -qi 'injection'; then
+    bad "the verdict rule on line $l names the injection flag — it must never gate a verdict"
+  else
+    ok "verdict rule on line $l is free of the injection flag"
+  fi
+done
+
+# Surfacing is the poster's job: deterministic, outside the model's byte budget,
+# and structurally unable to touch the verdict or the exit code.
+want "post-review.sh reads the flag" "$POSTER" \
+  'meta\.prompt_injection_detected'
+want "…and surfaces it on the PR without the model's help" "$POSTER" \
+  'injection-shaped text in the PR input'
+if grep -n 'INJECTION' "$POSTER" | grep -qiE 'VERDICT=|exit |crash_exit'; then
+  bad "post-review.sh lets the injection flag reach a verdict or exit path"
+else
+  ok "the injection flag never reaches a verdict or an exit code"
+fi
+
+echo ""
 echo "── no stale references to deleted assets ──"
 never "require-review-json.sh does not name v3 artifacts" "$ROOT/scripts/require-review-json.sh" \
   'judge-\*\.json|functional-\*\.json'
