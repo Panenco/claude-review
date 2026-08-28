@@ -874,12 +874,24 @@ jobs:
           mkdir -p "$HOME/.claude"
           S="$HOME/.claude/settings.json"
           [ -s "$S" ] || echo '{}' > "$S"
-          if ! jq empty "$S" >/dev/null 2>&1; then
-            echo "::warning::$S was not valid JSON; replacing it with the hook config only"
+          if ! jq -e 'type == "object"' "$S" >/dev/null 2>&1; then
+            echo "::warning::$S was not a JSON object; replacing it with the hook config only"
             echo '{}' > "$S"
           fi
-          jq --arg cmd "$HOOK" \
-            '.hooks.Stop = [{"hooks": [{"type": "command", "command": $cmd}]}]' \
+          # APPEND to whatever Stop hooks are already there — a plain assignment
+          # would silently drop the image's own, which is what the comment above
+          # promises never happens. A stale copy of OUR command is dropped first,
+          # so re-registering on a reused runner cannot stack duplicates.
+          # Extracted verbatim by tests/require_review_json_test.sh; keep the
+          # STOP_HOOK_JQ='...' delimiters on their own lines.
+          STOP_HOOK_JQ='
+            def stop_entries: if (.hooks.Stop? | type) == "array" then .hooks.Stop else [] end;
+            .hooks = (if (.hooks? | type) == "object" then .hooks else {} end)
+            | .hooks.Stop = (stop_entries
+                | map(select([.hooks[]?.command] | index($cmd) | not))
+                + [{"hooks": [{"type": "command", "command": $cmd}]}])
+          '
+          jq --arg cmd "$HOOK" "$STOP_HOOK_JQ" \
             "$S" > "$S.tmp" && mv "$S.tmp" "$S" || {
               echo "::error::failed to register the Stop hook in $S"; exit 1; }
           echo "Stop hook registered: $HOOK"

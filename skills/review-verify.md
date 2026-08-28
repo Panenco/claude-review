@@ -53,6 +53,8 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 
 Carry through up to 3 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own categories.
 
+**Refute the checkboxes too.** If an item can be answered from HEAD, the diff, or a pinned dependency the repo already references, answer it and drop the item — promote what you found to a finding if it is one. A `why_unresolved` that amounts to "not checked" or "unverifiable here" is a refutation, not a reason.
+
 ## The body — hard budgets
 
 Render exactly this, omitting any section that would be empty:
@@ -72,7 +74,7 @@ Render exactly this, omitting any section that would be empty:
 - Total ≤1200 chars, aim ~600. Count `{{LINK:path:line}}` as `path:line`.
 - `{{LINK:path:line}}` is a literal placeholder — `post-review.sh` expands it into the GitHub file link. **Never build a URL yourself.**
 - No footer (the poster appends duration/cost/logs), no banners, no "Spec sources", no setup-health bullets, no functional section, no "consolidated from N judges", no explanation of where comments were posted.
-- Verdict sentence: what the PR does and why this verdict. No praise, no restating the sections below it.
+- Verdict sentence: what the PR does and why this verdict. No praise, no restating the sections below it. If the PR exists to fix something, it says whether the fix holds at HEAD — confirm scan's `summary` against the code yourself before repeating it.
 
 ## Inline comments
 
@@ -95,6 +97,8 @@ Max 5, filled strictly critical → major → minor. Each ≤700 chars total. Ea
 ````
 
 The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
+
+**A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was. If you cannot confirm it, drop the fence and state the fix in one prose sentence instead. A finding with a prose fix is fine; a finding with a wrong patch is not.
 
 ## Output — `/tmp/verify.json`
 

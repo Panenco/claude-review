@@ -16,6 +16,8 @@ gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences
 
 Then `Read`/`Grep` the changed files **at HEAD** for anything you intend to flag. Skip lockfiles, snapshots, `dist/`, generated clients — a diff is not a defect.
 
+**If the PR exists to fix something, say whether the fix holds at HEAD.** Trace the fixed path yourself and put the answer in `summary` — that is the one thing an author most wants from a review, and you are well placed to check it.
+
 ## Round 2+ — review only what changed since last time
 
 `ROUND` and `PRIOR_HEAD_SHA` are in your env. When `PRIOR_HEAD_SHA` is non-empty and is not HEAD, the previous round already read the rest of this PR and charging for it again is pure waste:
@@ -62,7 +64,9 @@ Out of scope, always: formatting, pre-existing issues in untouched files, specul
 
 0–3 items. Each is something a human should look at that **you could not settle yourself**. Do not pick from a category list; there is no category list. Do not pad to three — zero is fine, and a made-up item is worse than none.
 
-Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` says what stopped you (no spec, no runtime access, behavior depends on production data, the intent is ambiguous), never "for safety".
+**Try to answer it before you emit it.** An item is only legitimate when the question *cannot* be answered from the repo at HEAD, the PR diff, or a pinned dependency the repo already references. Callers, sibling code in the same file, tests and the SHA-pinned action you depend on are all in reach — go read them. Once answered, it becomes a finding or it becomes nothing; it never becomes a checkbox.
+
+Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` names the real blocker — needs production data, needs a human policy decision, needs runtime access, the intent is genuinely ambiguous. "I did not check", "unverifiable here" and "for safety" are not blockers; if that is your reason, go check it.
 
 ## The approval position
 

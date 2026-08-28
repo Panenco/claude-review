@@ -159,6 +159,40 @@ for f in "$SCAN" "$VERIFY"; do
 done
 
 echo ""
+echo "── human_review is a last resort, not a place to park answerable questions ──"
+# v3-vs-v4 head-to-head (6 PRs): v4's biggest weakness was punting questions it
+# could have answered into checkboxes — a caller in the same file, a SHA-pinned
+# action — while v3 checked them and reported the answer. A checkbox the model
+# could have resolved is worse than no checkbox: it looks like diligence.
+want "review-scan requires an attempt before emitting a human_review item" "$SCAN" \
+  'try to answer it (first|before)'
+want "…and scopes what counts as answerable" "$SCAN" \
+  'repo at HEAD.*diff.*pinned dependency'
+want "…and rejects \"I did not check\" as a blocker" "$SCAN" \
+  '"?I did not check"?|unverifiable here'
+want "…and names the blockers that ARE legitimate" "$SCAN" \
+  'production data.*policy decision.*runtime access'
+want "review-verify re-attacks carried human_review items" "$VERIFY" \
+  'refute the checkboxes'
+# The judge: the answer an author most wants is whether the fix actually works.
+want "review-scan verifies the PR's stated fix holds at HEAD" "$SCAN" \
+  'if the PR exists to fix something'
+want "review-verify puts that answer in the verdict sentence" "$VERIFY" \
+  'if the PR exists to fix something'
+
+echo ""
+echo "── a committable suggestion must be checked against tests and callers ──"
+# PR98: right diagnosis, and a ```suggestion``` fence whose patch would have
+# broken an existing test asserting the opposite behaviour. A wrong sentence is
+# argued with; a wrong patch is clicked.
+want "review-verify checks suggestions against tests and callers" "$VERIFY" \
+  'grep.{0,40}tests and callers|tests and callers that exercise'
+want "…and falls back to prose instead of shipping an unconfirmed patch" "$VERIFY" \
+  'state the fix in .{0,10}prose'
+want "…and says which failure mode is worse" "$VERIFY" \
+  'wrong patch is worse than a wrong sentence'
+
+echo ""
 echo "── this repo's own review-config is not v3-stale ──"
 # It is a config file the reviewer now actually reads and acts on, so stale
 # claims in it become wrong instructions to the model.
