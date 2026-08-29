@@ -64,6 +64,12 @@ capture() {
   local dest="$GH_CAPTURE_DIR/post-$(date +%s%N).json"
   if [ "$INPUT" = "-" ]; then cat > "$dest"; elif [ -n "$INPUT" ]; then cp "$INPUT" "$dest"; fi
 }
+# Real `gh api --input -` reads the body. A mock that exits without reading kills
+# the upstream `jq` with SIGPIPE, and upload-screenshots.sh runs under
+# `set -o pipefail` with `|| continue` — so a SUCCESSFUL upload is silently
+# skipped, racily, on whichever file loses. Drain, don't keep: these payloads
+# would otherwise land in GH_CAPTURE_DIR, which `payload_of` cats wholesale.
+drain() { [ "$INPUT" = "-" ] && cat > /dev/null; return 0; }
 case "$args" in
   *"--method PUT"*)
     echo '{}' ;;
@@ -76,9 +82,11 @@ case "$args" in
   *"git/refs/heads/review-assets"*)
     exit 1 ;;
   *"git/blobs"*)
+    drain
     [ "${GH_ASSETS_FAIL:-0}" = "1" ] && exit 1
     echo "blobsha333" ;;
   *"git/trees"*)
+    drain
     echo "treesha444" ;;
   *"git/commits"*"--method POST"*)
     echo "commitsha555" ;;
