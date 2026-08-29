@@ -156,6 +156,16 @@ done
 assert "the bake probe does not launch a browser" \
   "$(sed -n '/id: ab_baked/,/GITHUB_OUTPUT/p' "$WARM" | grep -q 'doctor' && echo no || echo yes)"
 
+# Node caps its own heap at ~4 GB regardless of the container limit; qiv aborted
+# there while 12Gi of the pod's 16Gi went unused. The ceiling must stay under the
+# smaller of the two targets (16Gi pod / 16 GB ubuntu-latest) or a caught JS
+# abort becomes an OOMKilled pod.
+HEAP=$(sed -n 's/.*--max-old-space-size=\([0-9]*\).*/\1/p' "$WARM" | head -1)
+assert "the store warm raises Node's heap ceiling" \
+  "$([ -n "$HEAP" ] && echo yes || echo no)"
+assert "the ceiling (${HEAP:-none} MB) stays under the 16 GB pod limit" \
+  "$([ -n "$HEAP" ] && [ "$HEAP" -le 12288 ] && echo yes || echo no)"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "All warm-cache wiring tests passed."
