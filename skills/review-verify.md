@@ -24,7 +24,7 @@ Never invent a new finding. You only kill, keep, or re-anchor — with the singl
 
 ## Repo conventions — the two config files, plus the rules the team wrote
 
-`Read` `.github/review-config.md` and `bugbot.md` **only if they exist**, once each. Then, only if `.claude/rules/` exists, one `ls` and **at most 4** of the `.md` files there — the ones governing what this diff touches, plus `comments.md` and `general.md` when present. Obey a `paths:` glob in a file's frontmatter. Nothing else: no globbing, no recursing, no other config files.
+`Read` `.github/review-config.md` and `bugbot.md` **only if they exist**, once each. Do NOT read `.claude/rules/` upfront — scan already read it and every convention finding must name the rule file its `evidence` came from, so re-reading up to 4 files here is duplicated work. Read **at most 4** rule files, and only the single `.md` file a finding's evidence actually cites, at the moment you check that finding — including `comments.md` and `general.md` when a finding cites them. Obey a `paths:` glob in that file's frontmatter. Nothing else: no globbing, no recursing, no `ls` of the directory, no other config files.
 
 **Suppression is unconditional and comes first, before any other test in this file.** Refute — with reason `"suppressed by <file>"` — every finding **and drop every `human_review` item** those files call intentional, an accepted trade-off, or say not to flag, whatever its severity and even if scan emitted it anyway.
 
@@ -32,7 +32,9 @@ Never invent a new finding. You only kill, keep, or re-anchor — with the singl
 
 A finding carrying `"convention": true` is judged on a different bar: keep it only if its `evidence` quotes the rule **verbatim** from one of the files above (that quote replaces `failure_scenario`); refute it if you cannot find that text there — including when scan quoted a rule file you did not need to read, in which case read that one file and check.
 
-**A comment-noise finding** (`"prose": true`, filed against comments in code rather than a document) is kept only if you can see the comments yourself at the cited line and they restate the code, narrate the change or its origin, are commented-out code, or run longer than what they explain. Refute it when the comments carry a real *why* — a constraint, an invariant, a workaround, a warning. Deleting those is the harm this class exists to avoid causing. At most **2**, `minor`, advisory, and one per file: a finding naming a single comment is refuted. Force `severity` to `minor` and keep at most **2**. Ordinary findings keep the full `failure_scenario` bar — nothing here relaxes it.
+**A comment-noise finding** (`"comment_noise": true`, filed against comments in code rather than a document) is judged on its own bar, not the docs-only prose bar: keep it only if you can see the comments yourself at the cited line and they restate the code, narrate the change or its origin with no reasoning, or are commented-out code. Its `failure_scenario` may be `""` — the quoted comments stand in for it — but refute it when the comments carry a real *why*: a constraint, an invariant, a workaround, a warning, or a pointer to where the reasoning lives. That override outranks every criterion, and length never triggers this class. Deleting those is the harm this class exists to avoid causing. At most **2**, `minor`, advisory, and one per file: a finding naming a single comment is refuted. Force `severity` to `minor` and keep at most **2**. Ordinary findings keep the full `failure_scenario` bar — nothing here relaxes it.
+
+**This class never carries a ```suggestion``` fence.** A committable patch that deletes comments is dangerous and nothing downstream checks it, so strip the fence and state the removal in one prose sentence. That is a verdict on the patch only; the comment-noise item itself stands or falls on the bar above.
 
 A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2**.
 
@@ -54,7 +56,7 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 
 ## Verdict
 
-- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is neither a convention nor a prose finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES, and neither can a `"prose": true` finding — both are always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
+- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding, not a prose finding and not a comment-noise finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES, and neither can a `"prose": true` nor a `"comment_noise": true` finding — all three are always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test, a gate, or an unanswered question.
 - **APPROVE** — requires ALL of: zero surviving findings; `human_review_adds_nothing` true with a real, non-empty `approve_argument`; `sensitive_paths_touched` false; `review_effort` ≤ 2. Any doubt → not APPROVE.
 - **COMMENT** — everything else, and the normal outcome. **A COMMENT carrying human-review items is a good review, not a failure.** It says: nothing is provably broken, here is what a human should look at.
 
@@ -104,7 +106,7 @@ Two kinds go inline: **findings** and **checks**. Each ≤700 chars total. Each 
 
 The poster caps the total and orders it for you: findings first by severity, checks last. So under pressure the slots go to defects and the questions fall back — the right way round, and not something you should pre-empt by dropping either. Nothing is lost: whatever does not fit, or does not land in a diff hunk, comes back as a body bullet.
 
-**Do not hand-maintain that invariant — `post-review.sh` enforces it.** After it has worked out which comments really go inline (in-hunk, deduped, within the 5-cap), it deletes any `### Findings` bullet matching one of them — same path and line, or same path and title (so re-anchoring a comment to a different line still de-duplicates) — renumbers `### Findings (<n>)` to what survives, and drops the header if nothing does. So:
+**Do not hand-maintain that invariant — `post-review.sh` enforces it.** After it has worked out which comments really go inline (in-hunk, deduped, within the 10-cap), it deletes any `### Findings` bullet matching one of them — same path and line, or same path and title (so re-anchoring a comment to a different line still de-duplicates) — renumbers `### Findings (<n>)` to what survives, and drops the header if nothing does. So:
 
 - Write each finding in ONE place. If you slip and write both, the body copy is removed, not the comment.
 - Do NOT pre-emptively omit a body bullet for a comment you fear may not post. A comment that lands outside a diff hunk or past the cap is put back into the body by the poster under `### Also flagged` — nothing is lost.
@@ -167,7 +169,8 @@ The `**check**` prefix is load-bearing — the poster reads it to route a check 
     "findings": [
       {"id": "7f3a1c2b", "carried_from": "", "path": "src/foo.ts", "line": 42,
        "title": "...", "severity": "critical|major|minor",
-       "failure_scenario": "...", "fix": "...", "placement": "inline|body", "convention": false, "prose": false}
+       "failure_scenario": "...", "fix": "...", "placement": "inline|body", "convention": false, "prose": false,
+       "comment_noise": false}
     ],
     "resolved_prior": [{"id": "1a2b3c4d", "evidence": "what at HEAD now prevents it"}],
     "human_review": [

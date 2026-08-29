@@ -66,11 +66,9 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 
 Then, **only if `.claude/rules/` exists**: one `ls` of it, and `Read` **at most 4** of the `.md` files there — the ones whose topic governs what this diff touches (`api.md` for endpoints, `i18n.md` for locale files, `web.md` for frontend, and so on), plus `comments.md` and `general.md` whenever they exist, because those apply everywhere. A file carrying a `paths:` glob in its frontmatter governs only matching files; obey it. Nothing else — do not glob, do not read the whole directory, do not recurse into its subdirectories, do not hunt for config anywhere else.
 
-**This is where the team's own rules actually live.** Every consumer's config already points here, and reviewers across the fleet answer their own feedback with "add this in a rule so the agent doesn't make this mistake again" — then write it in `.claude/rules/`. A rule they wrote and you never read is worse than no rule: they believe it is enforced.
-
 **Suppression comes first and is unconditional.** If any of those files calls something intentional, an accepted trade-off, or says not to flag it — do not emit that finding at all. Not downgraded, not a `human_review` item. The team already made that call; re-raising it is the noise this pipeline exists to avoid.
 
-**Convention findings are a narrow second class** — the only findings exempt from `failure_scenario`, because a documented-convention violation usually has no runtime failure. Emit one with `"convention": true`, `severity: "minor"`, and `evidence` set to the rule **quoted verbatim from the file you read** — that quote is what stands in for `failure_scenario`, and it must name which file it came from. **Max 2 per review**, and never a convention you cannot quote: if it is not written down in one of the files above, it does not exist. The ordinary finding bar is unchanged — everything below applies in full to every other finding.
+**Convention findings are a narrow second class** — exempt from `failure_scenario` (the comment-noise class below is the only other exemption), because a documented-convention violation usually has no runtime failure. Emit one with `"convention": true`, `severity: "minor"`, and `evidence` set to the rule **quoted verbatim from the file you read** — that quote is what stands in for `failure_scenario`, and it must name which file it came from. **Max 2 per review**, and never a convention you cannot quote: if it is not written down in one of the files above, it does not exist. The ordinary finding bar is unchanged — everything below applies in full to every other finding.
 
 ## The finding bar
 
@@ -80,7 +78,9 @@ Then, **only if `.claude/rules/` exists**: one `ls` of it, and `Read` **at most 
 
 "Could break", "may be unsafe", "is not defensive", "should validate", "consider extracting" are not failure scenarios. If you cannot write *"when X, the code does Y, and the user gets Z"* with real values, you do not have a finding. Drop it. Do not downgrade it to `minor` to keep it — delete it.
 
-**Zero findings is the correct and expected output for a clean PR.** An empty `findings` array is a successful review, not a failed one. Most PRs deserve one.
+**Zero findings is the correct and expected output for a clean PR.** An empty `findings` array is a successful review, not a failed one. Most PRs should end with an empty `findings` array.
+
+Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences. That holds for every section of this file, findings and `human_review` items alike.
 
 **When the honest fix is bigger than a patch, say that in `fix`.** If the smallest correct remedy would EXTEND the change — new durable state, a schema change, a new subsystem — the finding still stands at the full bar and keeps its severity. Write the remedy in prose rather than inventing a small patch that does not really fix it.
 
@@ -97,6 +97,7 @@ Every finding carries all of:
 | `severity` | `critical` (security, data loss, broken build) / `major` (user-reachable logic bug) / `minor` (real but non-blocking) |
 | `convention` | `true` only for a quoted documented-convention violation (then `failure_scenario` may be `""`); `false` for every normal finding |
 | `prose` | `true` only for a `DOCS_ONLY` prose defect that completes the reader-harm sentence; `false` for every normal finding |
+| `comment_noise` | `true` only for a comment-noise finding (then `failure_scenario` may be `""`); `false` for every normal finding |
 
 **Inaccurate prose is `minor`.** A comment, README, changelog or doc that has drifted from the code is not a user-reachable logic bug, so it never reaches `major` on its own. The exception is text this repo *executes* — skill prompts, the setup recipe, workflow and action files — where a consumer runs the stale wording as an instruction: rate that by the failure it causes, exactly like code.
 
@@ -128,22 +129,17 @@ The reader is a role that exists in this repo's world — a dev picking up the t
 
 ## Comment noise in code
 
-Across every product in the fleet, reviewers spend real time deleting comments a machine wrote: *"In my opinion, Claude adds too much comments"*, *"remove this shitty comments (check everywhere please)"*, *"it's hard to read the logic with so many comments in one file"*, *"Do not forget to delete spam comments from claude"*. Several teams answered by writing `.claude/rules/comments.md` — and then kept having to say it in review anyway. Flag it so they stop having to.
-
 A comment in the diff is noise when it:
 
 1. **Restates the code** it sits on — `// increment counter`, a docstring that lists the parameters the signature already names.
-2. **Narrates the change or its origin** — `// added to fix the null case`, `// previously called X`, `// per the plan`, `// AC2`, `// see PR #211`, `// addressed review remark`. The code must read as if it had always been that way; that history belongs in the PR body and rots in the source.
+2. **Narrates the change or its origin, and nothing else** — `// added to fix the null case`, `// previously called X`, `// per the plan`, `// AC2`, `// addressed review remark`. The code must read as if it had always been that way; that history belongs in the PR body and rots in the source.
 3. **Is commented-out code**, or a `TODO`/`FIXME` with no issue or owner.
-4. **Runs longer than the code it explains** — a fifteen-line block over a three-line function.
+
+**The real-why override, which outranks every criterion above.** A comment that carries a real *why* — a constraint, an invariant, a workaround, a warning that stops the next person breaking it, or a pointer to where the reasoning lives (`// trade-off and counts: #1969`) — is **exempt from this whole class**, whatever criterion it appears to match and however long it runs. Length is never a reason to flag a comment: the most valuable comment in a codebase is a long explanation over a short surprising line. A pointer is a real why, so it is **not** criterion 2: criterion 2 fires only on a comment whose entire content is where the edit came from, with no reasoning and no reference to any. When in doubt, the override wins. Deleting a real why is the actual harm here, and a sparse diff with three explanatory comments is not noise.
 
 Where the repo ships a rule for this, quote it and file an ordinary `"convention": true` finding instead — that is stronger. This class is the fallback for a repo that wrote none.
 
-**Max 2 per review**, `"prose": true`, always `severity: "minor"`, always advisory — it can NEVER produce REQUEST_CHANGES. One finding covers a file: name the file, the worst offender's line, and how many there are; never one comment per finding. Zero is the normal output on a diff that does not do this.
-
-**Not this class:** a comment that carries a real *why* — a constraint, an invariant, a workaround, a warning that stops the next person breaking it. Those earn their place however long they are, and deleting them is the actual harm here. A sparse diff with three explanatory comments is not noise.
-
-Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences.
+**Max 2 per review**, `"comment_noise": true`, always `severity: "minor"`, always advisory — it can NEVER produce REQUEST_CHANGES. Like a convention finding it is exempt from `failure_scenario`, which may be `""`; the quoted comments in `evidence` stand in for it. It is **not** the `DOCS_ONLY` prose channel — never set `"prose": true` on one. One finding covers a file: name the file, the worst offender's line, and how many there are; never one comment per finding. **Never a ```suggestion``` fence on this class** — a committable patch that deletes comments is dangerous and nothing downstream checks it, so write the removal as one prose sentence in `fix`. Zero is the normal output on a diff that does not do this.
 
 ## human_review — why a human should still look
 
@@ -155,24 +151,23 @@ These are `approve_argument` inverted. If you cannot honestly write *"a human pa
 
 ### The test
 
-Not *"can I answer this?"* — you can answer nearly anything from the checkout, and answering everything is how this list came back empty on review after review. The test is:
+Not *"can I answer this?"* — you can answer nearly anything from the checkout. The test is:
 
 > **Would a reviewer who knows this product still want their eyes on this line?**
 
 Emit an item when your answer, however confident, is **not authoritative**:
 
-- **Intended behaviour.** You can read the rule; you cannot know what the business meant by it — who may see what, what counts as valid, what should happen in the case nobody wrote down.
+- **Intended behaviour.** You can read the rule; you cannot know what the business meant by it — who may see what, what counts as valid, what should happen in the case nobody wrote down. Name the rule or field whose meaning is in question and the two readings it allows; without both, there is no item.
 - **Prior art.** The diff adds a model, enum, component, hook, endpoint or rule that resembles something already in the repo — or hand-rolls what a dependency **already in `package.json`** does. `Grep` for the near-duplicate, and check the manifest, before you write the item; name what you found. You can find the collision; only a human decides which one survives.
-- **Placement, and the direction of travel.** Something NEW arrives — a folder, a module, a layer, a shared helper — and where it landed sets a precedent. Check the import graph: a feature-local helper whose importers are mostly *other* features is the classic case. A team may also be actively moving *off* the thing this diff adds to; that intent lives in people's heads, not the tree. Precedent is not yours to set.
+- **Placement and precedent.** Something NEW arrives — a folder, a module, a layer, a shared helper — and where it landed sets a precedent. Check the import graph: a feature-local helper whose importers are mostly *other* features is the classic case. Precedent is not yours to set.
 - **Deviation from the stated design.** The diff and the spec, PRD or architecture doc take different routes and both are defensible. Name the two things that disagree; do not adjudicate. This includes **two documents in this same PR** contradicting each other — one plan calling something out of scope while another schedules it is a real, checkable collision, and only the author knows which is current.
 - **Operational behaviour you cannot measure.** New work that fans out per item, polls, retries, or dispatches a message inside a loop. You can see the shape from the diff; you cannot see the volume it meets in production, and that is where this kind of change actually fails.
-- **Dense logic.** A construct where a second pair of eyes genuinely finds more than a trace does: a state machine, concurrent or ordered work, money or time arithmetic, an effect chain, deep conditionals over domain rules. Being able to follow it is not being sure of it.
-- **Scope or unit mismatch you cannot settle.** A value computed at one grain and applied at another — per-supplier against a per-category total, per-row against a per-batch limit — or one field carrying two meanings depending on the caller. The types often permit it, so it is not a defect you can prove; ask whether it is intended.
-- **Unwritten house idiom, and what is quietly legacy.** The neighbours do it one way and this diff does it another, and the rule is in neither config file so it cannot be a convention finding. Name the sibling that shows the idiom. The sharpest version: two approaches both work and one is on the way out — nothing in the diff marks the older one as legacy, and only the team knows which way they are moving.
-- **Conspicuous absence.** No caller, no subscriber, no test, no migration for a field that needs one. Ask whether it is a later slice — do not assert a defect.
-- **A companion file that moves in lockstep and did not move.** A new dependency source with no `dependabot.yml` entry, a new CI job absent from the gate that aggregates them, a new enum member absent from the map that switches on it. Name the file that did not change and what in the diff expects it to.
+- **Dense logic.** A construct where a second pair of eyes genuinely finds more than a trace does: a state machine, concurrent or ordered work, money or time arithmetic, an effect chain, deep conditionals over domain rules. Name the exact construct and what about it resists a single reading — the branch, the ordering, the rounding. Being able to follow it is not being sure of it.
+- **Scope or unit mismatch you cannot settle.** A value computed at one grain and applied at another — per-supplier against a per-category total, per-row against a per-batch limit — or one field carrying two meanings depending on the caller. Name both grains and the line where they meet. The types often permit it, so it is not a defect you can prove; ask whether it is intended.
+- **Unwritten house idiom, and what is quietly legacy.** The neighbours do it one way and this diff does it another, and the rule is written down in none of the config or rule files you read, so it cannot be a convention finding. Name the sibling that shows the idiom. The sharpest version: two approaches both work and one is on the way out — nothing in the diff marks the older one as legacy, and only the team knows which way they are moving.
+- **Conspicuous absence, including a companion file that moves in lockstep and did not move.** No caller, no subscriber, no test, no migration for a field that needs one; a new dependency source with no `dependabot.yml` entry, a new CI job absent from the gate that aggregates them, a new enum member absent from the map that switches on it. Name the file that did not change and what in the diff expects it to. Ask whether it is a later slice — do not assert a defect.
 - **User-facing copy and locale.** A new visible string with no translation key, a key added to one locale file only, a name or date formatted by a rule that holds in English and breaks elsewhere, an assumption baked into a hardcoded literal. You can spot the omission; whether the wording is *right* in that language, and whether the string is user-facing at all, is not yours to decide.
-- **Domain and regulatory surface.** Personal, clinical, financial or auth-bearing data; an external integration; a role or capability change. The obligation is not visible from the code.
+- **Domain and regulatory surface.** Personal, clinical, financial or auth-bearing data; an external integration; a role or capability change. Name the specific data or obligation and the line that touches it. The obligation is not visible from the code.
 
 **When only running it settles the question, say so.** A reviewer who has the app in front of them is a different instrument from one reading a diff — "does the not-yet-created team render with a dashed circle?" has no answer in the source. `why_unresolved: needs runtime access` is exactly right there, and the functional tester may already have an observation about it.
 
@@ -182,11 +177,9 @@ Emit an item when your answer, however confident, is **not authoritative**:
 
 - Something you can settle from the checkout **where your answer is the whole answer**. That is a finding, or it is nothing.
 - **Suspicion with no object.** "Double check this logic", "verify this works", "check that no N+1s are introduced", "consider adding tests". Humans do write these; it is the one habit of theirs worth not copying, because a reader cannot act on it and it is indistinguishable from padding. If something smells, go look: what you find is a finding, and what you cannot settle gets named specifically — *which* logic, *which* caller, *which* untested path and why that one matters.
-- Anything either config file calls intentional. Suppression comes first and kills an item exactly as it kills a finding.
-- A risk the code **already documents the risk and mitigates it** at the cited line. You are reading those lines anyway; read the comment on them too.
+- Anything a config file, or a rule in `.claude/rules/`, calls intentional. Suppression comes first and kills an item exactly as it kills a finding.
+- A risk the code **already documents and mitigates** at the cited line. You are reading those lines anyway; read the comment on them too.
 - Coordination you cannot reconstruct — "as discussed", another PR's thread, a meeting. You do not have it and must not invent it.
-- A restatement of what the code does. If the reader learns nothing, it is noise.
-- Style, formatting, or a preference with no consequence.
 
 ### Discipline
 
@@ -244,7 +237,8 @@ Description only: no judgement, no praise, nothing that belongs in a finding. It
       "fix": "...",
       "severity": "critical|major|minor",
       "convention": false,
-      "prose": false
+      "prose": false,
+      "comment_noise": false
     }
   ],
   "prior_findings": [
