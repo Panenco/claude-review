@@ -727,6 +727,27 @@ else
                   inline: ([.[] | .inline] | any),
                   l: ([.[] | (.l // 0) | select(. > 0)] | (.[0] // 0)),
                   r: ([.[] | .r] | min)})
+    # ONE finding, two surfaces, two wordings. The id is path + normalised
+    # TITLE, and the model routinely words the inline comment differently from
+    # its own meta.findings entry ("A failed save fetch leaves the button
+    # reading X" vs "Failed save fetch leaves the button on X"), so the same
+    # defect landed in the state twice. Round 2 then had to account for a
+    # finding that does not exist, and "if you cannot tell, it is unresolved"
+    # makes a phantom STICKY — it carries forward every round after.
+    # The XOR rule already guarantees a finding occupies exactly ONE surface,
+    # so the same path+line+severity appearing on BOTH is that split, not two
+    # defects. Merge only that exact signature: a group carrying an inline and
+    # a non-inline entry. Anything else stays as many findings as it looks.
+    | group_by([.p, (.l // 0), .sev])
+    | map(if (length > 1) and ((.[0].l // 0) > 0)
+             and (([.[] | .inline] | unique | length) == 2)
+          then [ sort_by(._o)
+                 | (.[0]) as $b
+                 | $b + {fs: ([.[] | (.fs // "") | select(. != "")] | (.[0] // "")),
+                         inline: true,
+                         r: ([.[] | .r] | min)} ]
+          else . end)
+    | add // []
     | map(del(._o))' "$WORK/round.json" > "$WORK/this-round.json" \
     || echo '[]' > "$WORK/this-round.json"
 

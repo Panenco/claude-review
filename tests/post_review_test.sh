@@ -1102,6 +1102,49 @@ assert_eq "the inline comment alone builds the state" "1" "$(echo "$STATE" | jq 
 assert_contains "with the finding's own words" "eta corrupts the ledger" "$STATE"
 rm -rf "$W"
 
+# p4b: ONE finding worded two ways is ONE finding in the state.
+# Observed live on qiv #1442: the model emitted 2 findings, and the state block
+# recorded 3. Its meta.findings title ("Failed save fetch leaves the button on
+# X") differed from the title it wrote at the top of the inline comment ("A
+# failed save fetch leaves the button reading X"), and the id is path +
+# normalised TITLE — so the same defect split in two. Round 2 then has to
+# account for a finding that does not exist, and because a carried finding is
+# KEPT when uncertain, the phantom carries forward every round after.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne finding.\n\n"
+               + "### Findings (1)\n"
+               + "- **minor** {{LINK:src/foo.ts:3}} — Failed save leaves the button on Saving"),
+        comments: [{path: "src/foo.ts", line: 3, side: "RIGHT",
+                    body: "**minor** A failed save fetch leaves the button reading Saving forever"}],
+        meta: {findings: [
+          {path: "src/foo.ts", line: 3, title: "Failed save leaves the button on Saving",
+           severity: "minor", failure_scenario: "a rejected fetch never updates the label"}]}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "one defect on two surfaces is ONE state entry" "1" "$(echo "$STATE" | jq '.findings | length')"
+assert_eq "…and it is recorded as having taken the inline slot" "true" \
+  "$(echo "$STATE" | jq -r '.findings[0].inline')"
+
+# …but two DIFFERENT findings on the same line are still two.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nTwo findings.\n\n"
+               + "### Findings (2)\n"
+               + "- **minor** {{LINK:src/foo.ts:3}} — the label never resets\n"
+               + "- **minor** {{LINK:src/foo.ts:3}} — the token is logged here too"),
+        comments: [],
+        meta: {findings: [
+          {path: "src/foo.ts", line: 3, title: "the label never resets",
+           severity: "minor", failure_scenario: "a rejected fetch never updates the label"},
+          {path: "src/foo.ts", line: 3, title: "the token is logged here too",
+           severity: "minor", failure_scenario: "the bearer lands in stdout"}]}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+STATE=$(state_block "$(payload_of "$W" | jq -r '.body')")
+assert_eq "two real findings on one line stay two" "2" "$(echo "$STATE" | jq '.findings | length')"
+
 # p5: a skip-marked body judged nothing — a state block there would tell round 2
 # "round N found nothing", and section 5 must still leave the standing block up.
 W=$(mktemp -d)
