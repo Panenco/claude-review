@@ -95,6 +95,10 @@ case "$args" in
   *"--method POST"*"/pulls/"*"/reviews"*)
     capture
     if [ "${GH_POST_FAIL:-0}" = "1" ]; then echo "HTTP 422: boom" >&2; exit 1; fi
+    # GH_POST_NO_ID=1: the POST succeeds but the response carries no id. The
+    # poster now reads the review list AFTER posting, so with no id to exclude
+    # it cannot tell its own fresh review from a stale one.
+    if [ "${GH_POST_NO_ID:-0}" = "1" ]; then echo '{"node_id": "PRR_x"}'; exit 0; fi
     echo '{"id": 9001, "node_id": "PRR_x"}' ;;
   *"/pulls/"*"/files"*)
     cat "${GH_FIXTURE_FILES:-/dev/null}" 2>/dev/null || echo '[]' ;;
@@ -128,7 +132,7 @@ run_poster() {
     PATH="$MOCK_BIN:$PATH" \
     GH_LOG="$work/gh.log" GH_CAPTURE_DIR="$work/capture" \
     GH_FIXTURE_REVIEWS="${FIXTURE_REVIEWS:-}" GH_FIXTURE_FILES="${FIXTURE_FILES:-}" \
-    GH_POST_FAIL="${POST_FAIL:-0}" \
+    GH_POST_FAIL="${POST_FAIL:-0}" GH_POST_NO_ID="${POST_NO_ID:-0}" \
     GH_TOKEN=x GITHUB_REPOSITORY=o/r PR_NUMBER=7 \
     REVIEW_BOT_USER="claude-bot[bot]" \
     HEAD_SHA=abc123 GITHUB_STEP_SUMMARY="$work/summary.md" \
@@ -300,7 +304,13 @@ FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 assert_eq "exit 0" "0" "$RC"
 assert_contains "emits ::warning::" "::warning::" "$OUT"
 assert_contains "names the verdict" "REQUEST_CHANGES" "$OUT"
-assert_contains "states finding count" "1 blocking finding" "$OUT"
+# TWO, not one. $VALID_REVIEW's meta lists a single finding while the poster
+# actually posts two — the in-hunk comment AND the out-of-hunk one that fell
+# back to `### Also flagged`. #134 moved the summary onto the same floor the
+# state block uses (`kept` + `dropped`, unioned with meta), because meta is
+# model-written: a REQUEST_CHANGES carrying two criticals used to render
+# `### Findings (0)`. The old "1" was the model's claim, not the review.
+assert_contains "states the count the poster actually posted" "2 blocking finding" "$OUT"
 assert_contains "step summary has verdict header" "## Claude Review: REQUEST_CHANGES" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
@@ -614,9 +624,17 @@ rm -rf "$W"
 # ── (k3) genuinely over budget with links → truncate, drop the empty header ──
 # A `### Findings (2)` header above nothing reads as a rendering bug and tells
 # the reader the review lost content without saying what.
+#
+# THE FIXTURE CHANGED IN #134 AND THE ASSERTION DID NOT. It used to make the two
+# findings merely LATE in the file, which emptied the section only because the
+# truncator cut by POSITION — the very defect #134 fixed. A **major** finding
+# outranking twenty unrated checklist items is now the correct outcome, so the
+# section is emptied the only way that is still meaningful: bullets that cannot
+# fit at ANY position.
 echo ""
 echo "── (k3) truncation never leaves a dangling section header ──"
 W=$(mktemp -d)
+OVERLONG=$(python3 -c 'print("a bullet longer than the entire byte budget, " * 45, end="")')
 { echo "## Claude review — COMMENT"; echo ""
   echo "### What a human should review"
   for i in $(seq 1 20); do
@@ -624,8 +642,8 @@ W=$(mktemp -d)
   done
   echo ""
   echo "### Findings (2)"
-  echo "- **major** {{LINK:src/late/one.ts:9}} — this bullet is past the budget"
-  echo "- **minor** {{LINK:src/late/two.ts:9}} — so is this one"
+  echo "- **major** {{LINK:src/late/one.ts:9}} — $OVERLONG"
+  echo "- **minor** {{LINK:src/late/two.ts:9}} — $OVERLONG"
 } > "$W/long-linked.md"
 jq -n --rawfile b "$W/long-linked.md" \
   '{verdict: "COMMENT", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
@@ -2676,6 +2694,433 @@ assert_not_contains "no raw tag from the rc file reaches the HTML block" "<b>" "
 assert_not_contains "…nor its closer" "</b>" "$BODY"
 assert_contains "it is escaped instead" "&lt;b&gt;" "$BODY"
 assert_contains "…ampersand first, so the entities are not double-escaped" "&amp;amp;" "$BODY"
+rm -rf "$W"
+
+# ── (aa) the FOURTH audit: a budget that cut by position, an ASCII-only blank,
+#        a title cut on two different strings, and a dismissal that ran too early
+# Every block names the defect it pins. Each was verified to FAIL against the
+# script as #133 left it.
+
+# ── (aa1) THE BUDGET MUST CUT BY VALUE, NOT BY POSITION ──────────────────────
+# `### What a human should review` and `### Also flagged` are appended to the END
+# of the body, and the truncator cut positionally — so overflow always ate them
+# first. Those are the sections whose items could NOT be posted inline: they have
+# no other surface, and cutting one deletes the finding from the review outright.
+# Reproduced at the DEFAULT budget: an out-of-hunk **critical** vanished from
+# every surface while two **minor** nits survived, and `### Also flagged (1)`
+# renumbered honestly so nothing on the page hinted at the loss.
+echo ""
+echo "── (aa1) overflow eats prose, never the findings with no other surface ──"
+
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'VALUECUT'
+import json, sys
+filler = "The broker rewrite touches the retry path and the tenant cache key. " * 24
+lines = ["## Claude review — REQUEST_CHANGES", "", filler, "",
+         "### Findings (2)",
+         "- **minor** {{LINK:src/foo.ts:11}} — the variable name is unclear",
+         "- **minor** {{LINK:src/foo.ts:12}} — this comment restates the code"]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines),
+           "comments": [{"path": "src/foo.ts", "line": 99, "side": "RIGHT",
+                         "body": "**critical** auth middleware is skipped for admin routes"}],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+VALUECUT
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the body really was over budget" "truncated to fit" "$BODY"
+assert_contains "the critical that has no other surface survives" \
+  "auth middleware is skipped for admin routes" "$BODY"
+assert_contains "…under its own heading" "### Also flagged (1)" "$BODY"
+assert_not_contains "ordinary prose is what the budget took instead" \
+  "The broker rewrite touches the retry path" "$BODY"
+assert_honest_counts "and every header still counts what follows it" "$BODY"
+rm -rf "$W"
+
+# (aa1b) SEVERITY IS RESPECTED INSIDE THE PRIORITISED SECTIONS TOO. A critical
+# that fell back outranks a minor in `### Findings`, and both outrank prose.
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'SEVCUT'
+import json, sys
+lines = ["## Claude review — REQUEST_CHANGES", "",
+         "### Findings (2)",
+         "- **minor** {{LINK:src/foo.ts:11}} — " + ("the variable name is unclear and " * 6),
+         "- **minor** {{LINK:src/foo.ts:12}} — " + ("this comment restates the code and " * 6)]
+cs = [{"path": "src/foo.ts", "line": 900 + i, "side": "RIGHT",
+       "body": "**critical** dropped critical number %d about the admin auth path" % i}
+      for i in range(1, 4)]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines), "comments": cs,
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+SEVCUT
+BODY_MAX=420 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+for n in 1 2 3; do
+  assert_contains "dropped critical $n outranks a minor for the budget" \
+    "dropped critical number $n" "$BODY"
+done
+assert_honest_counts "counts stay honest under value-ordered truncation" "$BODY"
+rm -rf "$W"
+
+# (aa1c) AND IF ONE IS STILL CUT, IT IS NAMED. The only diagnostic used to be a
+# generic "over the 1800-byte budget — truncating"; a finding with no other
+# surface disappeared with nothing on the page or in the log pointing at it.
+# This file's own banner: NOTHING IS SILENTLY DROPPED.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nsee below.",
+        comments: [range(1;13) | {path: "src/foo.ts", line: (900 + .), side: "RIGHT",
+                                  body: "**major** dropped finding number \(.) on the admin auth path"}],
+        meta: {findings: []}}' > "$W/review.json"
+BODY_MAX=300 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a cut fallback item is named in the log" \
+  "::warning::Over the 300-byte body budget: dropped" "$OUT"
+assert_contains "…and the log says where it now reaches the reader" \
+  "reaches the reader nowhere" "$OUT"
+LOST_NAMED=$(printf '%s\n' "$OUT" | grep -c 'Over the 300-byte body budget: dropped')
+LOST_MISSING=0
+for n in $(seq 1 12); do
+  case "$BODY" in *"dropped finding number $n "*) ;; *) LOST_MISSING=$((LOST_MISSING + 1)) ;; esac
+done
+assert_eq "every item the budget cut is named, none more" "$LOST_MISSING" "$LOST_NAMED"
+rm -rf "$W"
+
+# ── (aa2) ONE NON-ASCII "BLANK" LINE DELETED THE REST OF THE BODY ────────────
+# isblank() was `/^[ \t]*$/` — ASCII only — and it is shared by mode=strip,
+# mode=fit and prune(). A U+00A0, a U+200B or a lone CR on the line after a
+# stripped `### Findings` bullet therefore never cleared `skipping`, so every
+# line to the end of the body went with the duplicate. Measured: 7 lines gone,
+# the body ending at the title, and the only diagnostic was "Dropped 7 body
+# line(s) duplicating an inline comment" — they duplicated nothing.
+echo ""
+echo "── (aa2) an invisible character is a blank line, not content ──"
+
+# The codepoint is passed as a NUMBER, not as a character: a shell round-trip
+# through a heredoc is exactly where an invisible byte gets normalised away, and
+# a test that silently posted a plain empty line would pass against the bug.
+for pair in "nbsp:160" "zwsp:8203" "cr:13" "nnbsp:8239" "bom:65279"; do
+  name="${pair%%:*}"; esc="${pair#*:}"
+  W=$(mktemp -d)
+  python3 - "$W/review.json" "$esc" <<'INVIS'
+import json, sys
+blank = chr(int(sys.argv[2]))
+lines = ["## Claude review — REQUEST_CHANGES", "",
+         "### Findings (2)",
+         "- **minor** {{LINK:src/foo.ts:12}} — the log line is noisy",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens",
+         blank,
+         "The same helper backs the admin console, so the blast radius is the whole tenant.",
+         "A reviewer should read the migration notes before merging this."]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines),
+           "comments": [{"path": "src/foo.ts", "line": 11, "side": "RIGHT",
+                         "body": "**critical** the auth guard is bypassed for expired tokens"}],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+INVIS
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+  assert_contains "[$name] the stripped bullet does not swallow the prose below it" \
+    "the blast radius is the whole tenant" "$BODY"
+  assert_contains "[$name] …nor the line after that" \
+    "read the migration notes" "$BODY"
+  assert_contains "[$name] the surviving finding is still there" \
+    "the log line is noisy" "$BODY"
+  assert_contains "[$name] the header counts what is left" "### Findings (1)" "$BODY"
+  rm -rf "$W"
+done
+
+# (aa2b) THE SAME PREDICATE IN mode=fit. An invisible line between a paragraph
+# the budget cannot fit and the prose after it meant the prose was treated as a
+# continuation of the dropped block and went with it.
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'INVISFIT'
+import json, sys
+big = "a paragraph far longer than the whole byte budget, " * 20
+lines = ["## Claude review — COMMENT", "", big, " ",
+         "The tenant cache key omits the region, so a lookup can cross tenants."]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+INVISFIT
+BODY_MAX=400 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_not_contains "the over-long paragraph is still what goes" \
+  "a paragraph far longer than the whole byte budget" "$BODY"
+assert_contains "the prose after an invisible blank is not part of it" \
+  "a lookup can cross tenants" "$BODY"
+rm -rf "$W"
+
+# ── (aa3) THE TWO SURFACES MUST CUT THE SAME STRING ──────────────────────────
+# t90() cuts 90 bytes of the NORMALISED title; jq's `title` cut 90 CODEPOINTS of
+# the RAW one. Any title over 90 characters whose normalisation changes length
+# inside that window desyncs the two keys — and #133's double-print comes back.
+echo ""
+echo "── (aa3) the 90-character identity is cut on one string, not two ──"
+
+# (aa3a) 40 A, TWO spaces, 60 B — one finding, one path, one line, one severity.
+for gap in "  " $'\t ' $' \r'; do
+  W=$(mktemp -d)
+  TITLE="$(printf 'A%.0s' $(seq 1 40))${gap}$(printf 'B%.0s' $(seq 1 60))"
+  jq -n --arg t "$TITLE" \
+    '{verdict: "REQUEST_CHANGES",
+      body: ("## Claude review — REQUEST_CHANGES\n\n### Findings (1)\n- **critical** {{LINK:src/foo.ts:99}} — " + $t),
+      comments: [{path: "src/foo.ts", line: 99, side: "RIGHT", body: ("**critical** " + $t)}],
+      meta: {findings: []}}' > "$W/review.json"
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+  HITS=$(printf '%s\n' "$BODY" | grep -c 'BBBBBBBBBB')
+  assert_eq "a whitespace-drifted 102-char title is printed once, not twice" "1" "$HITS"
+  assert_not_contains "…so no second heading is opened for it" "### Also flagged" "$BODY"
+  rm -rf "$W"
+done
+
+# (aa3b) THE CONTROL: the single-space form deduped even before the fix, so the
+# assertion above is pinning the desync and not the de-duplication itself.
+W=$(mktemp -d)
+TITLE="$(printf 'A%.0s' $(seq 1 40)) $(printf 'B%.0s' $(seq 1 60))"
+jq -n --arg t "$TITLE" \
+  '{verdict: "REQUEST_CHANGES",
+    body: ("## Claude review — REQUEST_CHANGES\n\n### Findings (1)\n- **critical** {{LINK:src/foo.ts:99}} — " + $t),
+    comments: [{path: "src/foo.ts", line: 99, side: "RIGHT", body: ("**critical** " + $t)}],
+    meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "the single-space control still prints once" "1" \
+  "$(printf '%s\n' "$BODY" | grep -c 'BBBBBBBBBB')"
+rm -rf "$W"
+
+# (aa3c) THE MIRROR. The same desync deletes a GENUINELY DIFFERENT finding: the
+# raw 90-codepoint cut of the dropped comment, once normalised, was byte-equal to
+# the body bullet of an unrelated shorter finding on the same path — so the
+# fallback bullet was filtered out and BETA reached the reader nowhere.
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'MIRROR'
+import json, sys
+P = "X" * 40
+R = "Y" * 43 + "ALPHA"          # 48 chars
+alpha = P + " " + R             # 89 chars, a finding of its own
+beta  = P + "  " + R + "BETA"   # raw-cut at 90 normalises to exactly `alpha`
+lines = ["## Claude review — REQUEST_CHANGES", "",
+         "### Findings (1)",
+         "- **critical** {{LINK:src/foo.ts:11}} — " + alpha]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines),
+           "comments": [{"path": "src/foo.ts", "line": 99, "side": "RIGHT",
+                         "body": "**critical** " + beta}],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+MIRROR
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the body finding is untouched" "### Findings (1)" "$BODY"
+assert_contains "the genuinely different dropped finding still reaches the reader" \
+  "### Also flagged (1)" "$BODY"
+assert_contains "…anchored at its own line" "src/foo.ts:99" "$BODY"
+rm -rf "$W"
+
+# ── (aa4) A REJECTED POST MUST NOT LEAVE THE PR UNBLOCKED ────────────────────
+# Section 5 dismissed the standing CHANGES_REQUESTED BEFORE section 7 posted the
+# replacement. On a 422 the sequence was: dismiss succeeds, POST fails, exit 1 —
+# and the PR was left with no blocking review at all. The banner then classified
+# on `[ -s "$REVIEW_JSON" ]`, always true by then, so it told the reader the
+# output "could not be parsed", called it "a transient serialization slip" and
+# advised a re-run. The output parsed fine and a re-run hits the same 422.
+echo ""
+echo "── (aa4) a POST rejection leaves the block standing and says so ──"
+
+W=$(mktemp -d)
+STANDING=$(mktemp)
+cat > "$STANDING" <<'EOF'
+[{"id": 778, "state": "CHANGES_REQUESTED", "user": {"login": "claude-bot[bot]"}, "body": "prior review"}]
+EOF
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+POST_FAIL=1 FIXTURE_REVIEWS="$STANDING" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+GH_CALLS=$(cat "$W/gh.log")
+assert_eq "exit 1" "1" "$RC"
+assert_not_contains "the standing blocking review is NOT dismissed" "dismissals" "$GH_CALLS"
+PAYLOAD=$(payload_of "$W")
+assert_contains "the banner names the real failure" "GitHub rejected the review" "$PAYLOAD"
+assert_not_contains "not the unreadable-output variant" "result unreadable" "$PAYLOAD"
+assert_not_contains "…and it does not promise a retry will work" \
+  "usually succeeds on retry" "$PAYLOAD"
+assert_contains "it says a re-run hits the same rejection" \
+  "will be rejected the same way" "$PAYLOAD"
+assert_contains "…and that the standing review was left alone" \
+  "left in place" "$PAYLOAD"
+rm -rf "$W" "$STANDING"
+
+# (aa4b) THE OTHER DIRECTION: a POST that succeeds still dismisses. Guards
+# against "fixing" (aa4) by never dismissing at all.
+W=$(mktemp -d)
+STANDING=$(mktemp)
+cat > "$STANDING" <<'EOF'
+[{"id": 778, "state": "CHANGES_REQUESTED", "user": {"login": "claude-bot[bot]"}, "body": "prior review"}]
+EOF
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="$STANDING" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+GH_CALLS=$(cat "$W/gh.log")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the stale block is dismissed once the replacement is up" \
+  "reviews/778/dismissals" "$GH_CALLS"
+rm -rf "$W" "$STANDING"
+
+# (aa4c) THE HAZARD THE MOVE CREATED, CLOSED. The review list is now re-read
+# AFTER the POST, so the review this run just created is in it — and a
+# REQUEST_CHANGES review dismissing itself would unblock the PR just as surely
+# as the old order did. The id the POST returned is excluded by id.
+W=$(mktemp -d)
+STANDING=$(mktemp)
+cat > "$STANDING" <<'EOF'
+[{"id": 778, "state": "CHANGES_REQUESTED", "user": {"login": "claude-bot[bot]"}, "body": "prior review"},
+ {"id": 9001, "state": "CHANGES_REQUESTED", "user": {"login": "claude-bot[bot]"}, "body": "the review this run just posted"}]
+EOF
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="$STANDING" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+GH_CALLS=$(cat "$W/gh.log")
+assert_contains "the stale one is still dismissed" "reviews/778/dismissals" "$GH_CALLS"
+assert_not_contains "the review this run just posted never dismisses itself" \
+  "reviews/9001/dismissals" "$GH_CALLS"
+rm -rf "$W" "$STANDING"
+
+# (aa4d) …and with NO id to exclude, nothing is dismissed at all. A stale block
+# is a nuisance; an unblocked PR is the failure this whole section exists to
+# prevent, so the ambiguous case resolves the safe way and says so.
+W=$(mktemp -d)
+STANDING=$(mktemp)
+cat > "$STANDING" <<'EOF'
+[{"id": 778, "state": "CHANGES_REQUESTED", "user": {"login": "claude-bot[bot]"}, "body": "prior review"}]
+EOF
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+POST_NO_ID=1 FIXTURE_REVIEWS="$STANDING" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "the review still posted" "0" "$RC"
+assert_not_contains "nothing is dismissed without an id to exclude" \
+  "dismissals" "$(cat "$W/gh.log")"
+assert_contains "…and the run log says why" "returned no review id" "$OUT"
+rm -rf "$W" "$STANDING"
+
+# ── (aa5) THE STEP SUMMARY MUST COUNT WHAT THE POSTER POSTED ─────────────────
+# It counted `meta.findings` alone. 4c documents that meta is model-written and
+# can be empty while three criticals post inline — and rebuilds the state block
+# from `kept` + `dropped`. The summary was never moved onto that floor, so a
+# REQUEST_CHANGES carrying two criticals rendered `### Findings (0)` and
+# `::warning::Claude review: REQUEST_CHANGES — 0 blocking finding(s).`
+echo ""
+echo "── (aa5) a blocking review never reports zero findings ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nSee the inline comments.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**critical** the auth guard is bypassed for expired tokens"},
+                   {path: "src/foo.ts", line: 12, side: "RIGHT",
+                    body: "**critical** the token compare is not constant time"}],
+        meta: {}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+SUMMARY_TEXT=$(cat "$W/summary.md")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "both criticals really went inline" "2" "$(payload_of "$W" | jq '.comments | length')"
+assert_contains "the summary counts them" "### Findings (2)" "$SUMMARY_TEXT"
+assert_not_contains "…and never claims zero" "### Findings (0)" "$SUMMARY_TEXT"
+assert_contains "the first is listed" "the auth guard is bypassed" "$SUMMARY_TEXT"
+assert_contains "the second too" "the token compare is not constant time" "$SUMMARY_TEXT"
+assert_contains "the annotation agrees with the summary" \
+  "REQUEST_CHANGES — 2 blocking finding(s)" "$OUT"
+rm -rf "$W"
+
+# (aa5b) meta is still USED — it carries the model's own wording and its
+# failure_scenario. A review whose meta lists findings the poster posted inline
+# must not double-count them.
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+SUMMARY_TEXT=$(cat "$W/summary.md")
+assert_contains "meta and the inline comment are one finding, not two" \
+  "### Findings (2)" "$SUMMARY_TEXT"
+assert_eq "the summary count matches the state block" \
+  "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq '.findings | length')" \
+  "$(printf '%s\n' "$SUMMARY_TEXT" | sed -n 's/^### Findings (\([0-9]*\))$/\1/p')"
+rm -rf "$W"
+
+# ── (aa6) "FIRST SEEN" MUST NOT RESET WHEN A FINDING IS RE-LISTED ────────────
+# `r` was inherited only through `carried_from`, the re-wording escape valve. A
+# finding the model simply re-listed in the same words got a fresh id match, no
+# `carried_from`, and `r: $round`. Verified over three rounds: R1 files it (r:1),
+# R2 re-lists it verbatim (r:2), R3 reports `_(first seen round 2)_` — which
+# understates the age of exactly the findings that have been ignored longest.
+echo ""
+echo "── (aa6) the round a finding was first seen survives a re-list ──"
+
+W=$(mktemp -d)
+FID=$(printf '%s\n%s' "src/foo.ts" "the auth guard is bypassed for expired tokens" \
+      | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -c1-8)
+cat > "$W/priors.json" <<EOF
+[{"id": "$FID", "p": "src/foo.ts", "l": 11, "sev": "critical",
+  "t": "the auth guard is bypassed for expired tokens", "r": 1, "inline": true}]
+EOF
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nStill open.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**critical** the auth guard is bypassed for expired tokens"}],
+        meta: {findings: []}}' > "$W/review.json"
+ROUND_N=2 PRIOR_FINDINGS="$W/priors.json" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+STATE=$(state_block "$(payload_of "$W" | jq -r '.body')")
+assert_eq "the re-listed finding keeps the round it was first seen" "1" \
+  "$(echo "$STATE" | jq -r --arg id "$FID" '.findings[] | select(.id == $id) | .r')"
+assert_eq "…and the round stamp on the block is still this round" "2" \
+  "$(echo "$STATE" | jq '.round')"
+rm -rf "$W"
+
+# ── (aa7) `### Findings (0)` OVER LOOSE PROSE IS STILL REACHABLE ─────────────
+# #133 closed the sub-bullet route. Blank-line-separated prose inside the section
+# is the other one: prune() saw a non-blank line and kept the header, renumber()
+# counted top-level bullets and wrote (0).
+echo ""
+echo "── (aa7) a findings section with no findings is dropped, prose and all ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\n### Findings (1)\n- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens\n\nThe same helper backs the admin console, so the blast radius is the whole tenant.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**critical** the auth guard is bypassed for expired tokens"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_not_contains "no header claiming zero findings" "### Findings (0)" "$BODY"
+assert_not_contains "the emptied section is gone outright" "### Findings" "$BODY"
+assert_not_contains "…and so is the prose stranded inside it" \
+  "the blast radius is the whole tenant" "$BODY"
+rm -rf "$W"
+
+# (aa7b) THE OTHER DIRECTION: a section that still has a bullet keeps its prose.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\n### Findings (2)\n- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens\n- **minor** {{LINK:src/foo.ts:12}} — the log line is noisy\n\nBoth land on the same admin path.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**critical** the auth guard is bypassed for expired tokens"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the section that kept a finding stays" "### Findings (1)" "$BODY"
+assert_contains "…with its prose" "Both land on the same admin path" "$BODY"
+rm -rf "$W"
+
+# ── (aa8) fbindex MUST USE istop, NOT THE LOOSE BULLET PREDICATE ─────────────
+# It still inlined the `/^[ \t]*[-*][ \t]/` that #133 deleted `isbullet` to
+# prevent. An indented detail line carrying a {{LINK:}} of its own was indexed as
+# a body finding — enough for fbdup() to delete the real fallback bullet at that
+# path, which is the only surface that finding had.
+echo ""
+echo "── (aa8) an indented detail line is not a body finding ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\n### Findings (1)\n- **minor** {{LINK:src/foo.ts:12}} — the log line is noisy\n  - see also {{LINK:src/foo.ts:99}} — auth bypass on admin routes",
+        comments: [{path: "src/foo.ts", line: 99, side: "RIGHT",
+                    body: "**critical** auth bypass on admin routes"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the dropped critical still gets its fallback bullet" \
+  "### Also flagged (1)" "$BODY"
+assert_contains "…carrying its severity" "**critical**" "$BODY"
 rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
