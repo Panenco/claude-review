@@ -311,16 +311,35 @@ doc_kind() {
 }
 written_by_pr() { case " $CHANGED_DOCS " in *" $1 "*) return 0 ;; esac; return 1; }
 
+# How much of THIS PR's document work sits in the same directory as `$1`. The
+# governing slot is just the first ranked document, so before this the tiebreak
+# between two equally-ranked PRDs was FILE SIZE — and a PR touching two epics
+# was governed by whichever epic's PRD happened to be shorter. Measured on
+# qiv #1453 ("docs(notifications): PRD and architecture for the in-app
+# notifications epic"): it changed 7 documents under docs/planned/notifications
+# and 2 under docs/planned/surgery-fulfillment, and the 151-line
+# surgery-fulfillment PRD governed over the 209-line notifications one.
+# Size is a budget-packing signal; it was never a relevance signal.
+sibling_weight() { # sibling_weight <doc> → how many changed docs share its directory
+  local dir="${1%/*}" d n=0
+  [ "$dir" = "$1" ] && dir=""
+  for d in $CHANGED_DOCS; do
+    case "$d" in "$dir"/*) n=$((n + 1)) ;; esac
+  done
+  printf '%s' "$n"
+}
+
 RANKED=$(for doc in $SPEC_DOCS; do
   lines=$(wc -l < "$WS/$doc" 2>/dev/null | tr -d ' ') || lines=0
   self=0; written_by_pr "$doc" && self=1
-  printf '%s %s %s %s\n' "$(doc_kind "$doc")" "$self" "${lines:-0}" "$doc"
-done | sort -k1,1n -k2,2n -k3,3n)
+  # negated so that MORE siblings sorts FIRST under an ascending numeric sort
+  printf '%s %s %s %s %s\n' "$(doc_kind "$doc")" "$self" "-$(sibling_weight "$doc")" "${lines:-0}" "$doc"
+done | sort -k1,1n -k2,2n -k3,3n -k4,4n)
 
 DOC_N=0
 DOC_TOTAL=0
 OMITTED=""
-while read -r _kind _self LINES doc; do
+while read -r _kind _self _sib LINES doc; do
   [ -n "${doc:-}" ] || continue
   REMAINING=$((DOC_TOTAL_CAP - DOC_TOTAL))
   TAKE=$LINES

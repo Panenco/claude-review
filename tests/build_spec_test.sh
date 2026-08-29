@@ -318,6 +318,37 @@ has "…and with an issue present, the issue governs, not the context doc" \
 status_is "…which is a summary, not a document" summary
 
 echo ""
+echo "── a PR touching two epics is governed by the one it is actually about ──"
+# The governing slot is the FIRST ranked document, and two PRDs both written by
+# the PR tie on kind and on self — so the tiebreak was file size, and the
+# SHORTER unrelated epic governed. Measured on qiv #1453 ("docs(notifications):
+# PRD and architecture for the in-app notifications epic"): 7 changed documents
+# under docs/planned/notifications, 2 under docs/planned/surgery-fulfillment,
+# and the 151-line surgery-fulfillment PRD governed over the 209-line
+# notifications one. Size is a budget signal; it was never a relevance signal.
+new_repo
+track "src/app.txt" "base"; commit "base"
+git -C "$WS" checkout -q -b docs/notifications
+# The epic this PR is about: many documents, and a DELIBERATELY LONGER PRD.
+{ echo "PRD: notifications must batch per recipient"; i=0
+  while [ $i -lt 200 ]; do echo "detail line $i"; i=$((i+1)); done; } > "$WS/docs-prd-tmp" 2>/dev/null \
+  || true
+mkdir -p "$WS/docs/planned/notifications/tasks"
+cp "$WS/docs-prd-tmp" "$WS/docs/planned/notifications/notifications-prd.md"; rm -f "$WS/docs-prd-tmp"
+git -C "$WS" add -f "docs/planned/notifications/notifications-prd.md" >/dev/null 2>&1
+track "docs/planned/notifications/notifications-architecture.md" "ARCH: notifications fan out"
+track "docs/planned/notifications/tasks/01-a.md" "TASK A"
+track "docs/planned/notifications/tasks/02-b.md" "TASK B"
+# An unrelated epic the same PR happens to touch, with a SHORTER PRD.
+track "docs/planned/other-epic/other-epic-prd.md" "PRD: something else entirely"
+commit "work"
+run '{"title":"docs(notifications): the notifications epic","body":"no reference to any doc here","headRefName":"docs/notifications","baseRefName":"main"}' ''
+has "the epic this PR is about governs, not the shorter unrelated one" \
+  'GOVERNING SOURCE: in-repo spec document `docs/planned/notifications/notifications-prd.md`' /tmp/spec.md
+has "…and the unrelated epic is still included, just not governing" \
+  "other-epic-prd.md" /tmp/spec.md
+
+echo ""
 echo "── the layouts that read as 'no spec' because the glob list missed them ──"
 # Each of these is unambiguously a document of intent, and each fell through to
 # `excluded` — so a repo that HAD a spec was reviewed as though it had none.
