@@ -1707,6 +1707,45 @@ assert_not_contains "…and the tail is dropped" "already landed" "$BODY"
 assert_contains "it ends on a whole word" "refusal notification…" "$BODY"
 rm -rf "$W"
 
+# (q2c) untested criteria are surfaced. A live qiv run verified 3 of 7 criteria,
+# listed the other 4 in `untested` with real reasons, and correctly reported
+# PASS — "everything you exercised held". The body then said only
+# "Functional pass: PASS — 2 screenshots", so a reader saw a green functional
+# pass over a third of the spec. The tester was honest; the poster lost it.
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png
+jq -n '{overall: "PASS", summary: "Partial.", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1 — list page"}],
+        untested: ["AC2 — the dev seed has only one tenant-admin persona",
+                   "AC3 — same seed limitation as AC2",
+                   "AC7 — fill dialog not reached before the time budget ran out"]}' \
+  > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the gap count is in the summary line, not buried" \
+  "PASS — 1 screenshot · 3 criteria not verified</summary>" "$BODY"
+assert_contains "the gaps are listed" "**Not verified by this run**" "$BODY"
+assert_contains "…each one of them" "- AC7 — fill dialog not reached before the time budget ran out" "$BODY"
+assert_contains "…alongside the screenshot" "**AC1 — list page**" "$BODY"
+rm -rf "$W"
+
+# (q2d) a run with gaps but NO screenshots still reports them. Nothing to
+# upload is not the same as nothing to say.
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+jq -n '{overall: "WARN", summary: "Could not reach the app.", observations: [],
+        screenshots: [], untested: ["AC1 — login wall, no seeded credentials"]}' \
+  > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/no-shots" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "gaps reach the reader with no screenshots" "0 screenshots · 1 criteria not verified" "$BODY"
+assert_contains "…and are listed" "AC1 — login wall, no seeded credentials" "$BODY"
+assert_eq "…without calling the upload" "0" "$(grep -c 'git/blobs' "$W/gh.log")"
+rm -rf "$W"
+
 # (q3) the tester named a shot the upload could not publish → no half-broken
 # embed, and the job log says how many were lost
 W=$(mktemp -d)

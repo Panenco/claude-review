@@ -358,16 +358,27 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; t
       echo "::group::Functional screenshots"
       NAMED=$(jq '[(.screenshots // [])[] | select((.file // "") | test("\\.png$"; "i"))] | length' \
                 "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
-      if [ "${NAMED:-0}" -eq 0 ]; then
-        echo "Tester reported $FN_OVERALL but named no PNG — nothing to publish."
+      # WHY `untested` IS PART OF THIS BLOCK AND NOT AN AFTERTHOUGHT. On a live
+      # qiv run the tester verified 3 of 7 acceptance criteria, listed the other
+      # 4 in `untested` with real reasons, and reported PASS — which is correct
+      # per its own contract, PASS means "everything you exercised held". The
+      # review body then said `Functional pass: PASS — 2 screenshots` and nothing
+      # else, so a reader saw a green functional pass over a third of the spec.
+      # The tester was honest and the poster threw the honesty away.
+      UNTESTED=$(jq '(.untested // []) | length' "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
+      UNTESTED=${UNTESTED:-0}
+      if [ "${NAMED:-0}" -eq 0 ] && [ "$UNTESTED" -eq 0 ]; then
+        echo "Tester reported $FN_OVERALL with no PNG and nothing untested — nothing to publish."
       else
         # stdout is one embeddable URL per uploaded file; diagnostics go to stderr
         # and stay in the job log. Non-fatal by contract: no URLs means no gallery,
         # never a failed review.
         : > "$WORK/shot-urls.txt"
-        PR_NUMBER="$PR" GITHUB_REPOSITORY="$REPO" \
-          "$UPLOAD_SCREENSHOTS_SH" > "$WORK/shot-urls.txt" \
-          || echo "::warning::upload-screenshots.sh failed — posting the review without the gallery."
+        if [ "${NAMED:-0}" -gt 0 ]; then
+          PR_NUMBER="$PR" GITHUB_REPOSITORY="$REPO" \
+            "$UPLOAD_SCREENSHOTS_SH" > "$WORK/shot-urls.txt" \
+            || echo "::warning::upload-screenshots.sh failed — posting the review without the gallery."
+        fi
         # `|| true`, not `|| echo 0`: grep already PRINTS 0 for an empty file and
         # then exits 1, so a fallback echo makes this two lines and every integer
         # test below a syntax error.
@@ -376,6 +387,8 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; t
         echo "Published $UPLOADED of $NAMED screenshot(s) named by the tester."
         [ "$UPLOADED" -lt "$NAMED" ] && \
           echo "::warning::$(( NAMED - UPLOADED )) screenshot(s) the tester named were not published — they remain in the run's claude-review artifact."
+        [ "$UNTESTED" -gt 0 ] && \
+          echo "::notice::$UNTESTED criterion(s) the tester could not reach — surfaced in the review body."
         # Captions are model-written and land inside an HTML block and a markdown
         # image label, so `[`, `]`, `<` and `>` are stripped rather than escaped —
         # one stray bracket would otherwise swallow the URL or open a tag.
@@ -388,6 +401,10 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; t
                      | sub("^ "; "") | sub(" $"; "")
                      | if length <= 80 then .
                        else (.[0:79] | sub("\\s+\\S*$"; "")) + "…" end;
+          def clean140: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
+                     | sub("^ "; "") | sub(" $"; "")
+                     | if length <= 140 then .
+                       else (.[0:139] | sub("\\s+\\S*$"; "")) + "…" end;
           ($urls | split("\n") | map(select(length > 0))
            | map({key: (split("/") | last), value: .}) | from_entries) as $u
           | [ (.screenshots // [])[]
@@ -395,11 +412,23 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; t
               | (.file | split("/") | last) as $base
               | {cap: ((.description | clean) as $c | if $c == "" then $base else $c end),
                  url: ($u[$base] // "")}
-              | select(.url != "") ]
-          | if length == 0 then ""
-            else "\n<details><summary>Functional pass: \($overall) — \(length) screenshot"
-                 + (if length == 1 then "" else "s" end) + "</summary>\n\n"
-                 + (map("**\(.cap)**\n\n![](\(.url))\n") | join("\n"))
+              | select(.url != "") ] as $shots
+          # 140, longer than a caption: these carry a reason, and a truncated
+          # reason ("time budget ran" / "the seed only has") is worse than none.
+          | [ (.untested // [])[] | select(type == "string")
+              | clean140 | select(length > 0) ] as $gaps
+          | (($shots | length) as $n
+             | "Functional pass: \($overall) — \($n) screenshot"
+               + (if $n == 1 then "" else "s" end)) as $shotpart
+          | (if ($gaps | length) > 0
+             then " · \($gaps | length) criteria not verified" else "" end) as $gappart
+          | if ($shots | length) == 0 and ($gaps | length) == 0 then ""
+            else "\n<details><summary>" + $shotpart + $gappart + "</summary>\n\n"
+                 + ($shots | map("**\(.cap)**\n\n![](\(.url))\n") | join("\n"))
+                 + (if ($gaps | length) > 0
+                    then "\n**Not verified by this run**\n\n"
+                         + ($gaps | map("- \(.)") | join("\n")) + "\n"
+                    else "" end)
                  + "\n</details>\n"
             end' "$FUNCTIONAL_JSON" 2>/dev/null) || SHOT_GALLERY=""
       fi
