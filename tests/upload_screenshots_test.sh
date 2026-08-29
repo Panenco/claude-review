@@ -57,6 +57,8 @@ mkdir -p "$MOCK_BIN"
 cat > "$MOCK_BIN/gh" <<'MOCK'
 #!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
+# GH_SLEEP simulates a hung GitHub call — the whole point of the time budget.
+[ "${GH_SLEEP:-0}" != "0" ] && sleep "$GH_SLEEP"
 args="$*"
 INPUT=""
 prev=""
@@ -105,6 +107,30 @@ run() {
     GITHUB_REPO_TOKEN=tok SCREENSHOT_DIR="$dir" \
     bash "$SCRIPT" 2>&1)
   RC=$?
+}
+
+# run2 <shots-dir> — like run(), but keeps stdout (OUT) and stderr (ERR) APART.
+# The stdout contract ("every line is an https:// URL and nothing else") is not
+# assertable through run()'s `2>&1`. Extra knobs, all inert at their defaults:
+# OUT_DIR_OVERRIDE (the dry-run seam), GHA_OVERRIDE (GITHUB_ACTIONS),
+# BUDGET_OVERRIDE (seconds), GH_SLEEP (hang every mocked call),
+# FORCE_WATCHDOG=1 (hide `timeout`, exercising the pure-bash fallback).
+run2() {
+  local dir="$1"
+  local -a envv
+  : > "$WORK/gh.log"
+  rm -rf "$WORK/capture"; mkdir -p "$WORK/capture"
+  envv=(PATH="$MOCK_BIN:$PATH"
+        GH_LOG="$WORK/gh.log" GH_CAPTURE_DIR="$WORK/capture"
+        GH_NO_BRANCH="${NO_BRANCH:-0}" GH_SLEEP="${GH_SLEEP:-0}"
+        GITHUB_REPOSITORY="${REPO_OVERRIDE-o/r}" PR_NUMBER="${PR_OVERRIDE-7}"
+        GITHUB_REPO_TOKEN=tok SCREENSHOT_DIR="$dir"
+        REVIEW_OUT_DIR="${OUT_DIR_OVERRIDE-}" GITHUB_ACTIONS="${GHA_OVERRIDE-}"
+        SCREENSHOT_UPLOAD_TIMEOUT_SECONDS="${BUDGET_OVERRIDE-60}")
+  [ "${FORCE_WATCHDOG:-0}" = "1" ] && envv+=(UPLOAD_TIMEOUT_BIN=)
+  OUT=$(env "${envv[@]}" bash "$SCRIPT" 2>"$WORK/err.txt")
+  RC=$?
+  ERR=$(cat "$WORK/err.txt")
 }
 
 # A real 1x1 PNG — `file -b --mime-type` keys off the \x89PNG magic, so the bytes
@@ -194,7 +220,103 @@ TREE=$(ls "$WORK"/capture/tree-* 2>/dev/null | head -1)
 assert_eq "tree payload omits base_tree on a fresh branch" "null" \
   "$(jq -r '.base_tree // "null"' "$TREE" 2>/dev/null)"
 
-# ── 6. house rules ──────────────────────────────────────────────────────────
+# ── 6. the dry-run seam (REVIEW_OUT_DIR) ────────────────────────────────────
+# post-review.sh documents REVIEW_OUT_DIR as "set it and every GitHub WRITE
+# becomes an artifact", and it invokes THIS script unguarded — so a local dry run
+# with screenshots on disk used to POST blobs/trees/commits and PATCH a ref
+# against the live target repo. An audit had to stub this script out to keep from
+# writing to a real customer repo.
+SEAM="$WORK/seam"; mkdir -p "$SEAM"
+printf 'PRE-EXISTING LINE\n' > "$SEAM/actions.log"
+OUT_DIR_OVERRIDE="$SEAM" run2 "$SHOTS"
+SEAM_LOG=$(cat "$SEAM/actions.log")
+assert_eq "dry run exits 0" "0" "$RC"
+assert_eq "dry run makes NO write call" "0" \
+  "$(grep -c -e '--method POST' -e '--method PATCH' "$WORK/gh.log")"
+assert_contains "dry run still READS the review-assets ref" "git/refs/heads/review-assets" \
+  "$(cat "$WORK/gh.log")"
+assert_contains "dry run logs the suppressed blob POST" "POST git/blobs pr-7/01-list.png" "$SEAM_LOG"
+assert_contains "dry run logs the suppressed tree POST" "POST git/trees" "$SEAM_LOG"
+assert_contains "dry run logs the suppressed commit POST" "POST git/commits" "$SEAM_LOG"
+assert_contains "dry run logs the suppressed ref PATCH" "PATCH git/refs/heads/review-assets" "$SEAM_LOG"
+# post-review.sh created and already wrote to this log before calling us.
+assert_contains "dry run APPENDS to actions.log, never truncates it" "PRE-EXISTING LINE" "$SEAM_LOG"
+# The caller's rendering path must still be exercised by a dry run.
+assert_eq "dry run still prints the URL it would have produced" \
+  "https://github.com/o/r/raw/review-assets/pr-7/01-list.png" "$OUT"
+
+# The create arm is the other thing a dry run has to be able to report.
+NO_BRANCH=1 OUT_DIR_OVERRIDE="$SEAM" run2 "$SHOTS"
+assert_contains "dry run logs the CREATE arm when the branch is absent" \
+  "POST git/refs refs/heads/review-assets" "$(cat "$SEAM/actions.log")"
+
+# Same refusal as post-review.sh: a dry run that silently swallowed a real review
+# is the only failure mode that matters, so this one is loud.
+GHA_OVERRIDE=true OUT_DIR_OVERRIDE="$SEAM" run2 "$SHOTS"
+assert_eq "REVIEW_OUT_DIR under GITHUB_ACTIONS fails loudly" "1" "$RC"
+assert_contains "…with post-review.sh's wording" \
+  "::error::REVIEW_OUT_DIR is a local-eval seam and must never be set in CI" "$ERR"
+assert_eq "…and prints nothing on stdout" "" "$OUT"
+
+# ── 7. the total time budget ────────────────────────────────────────────────
+# post-review.sh invokes this bare and posts the review AFTERWARDS, so a hung
+# `gh api` here does not cost a gallery, it costs the whole review: the job burns
+# to the workflow timeout and the PR gets NO review at all.
+START=$(date +%s)
+GH_SLEEP=20 BUDGET_OVERRIDE=1 run2 "$SHOTS"
+ELAPSED=$(( $(date +%s) - START ))
+assert_eq "a hung upload still exits 0 (non-fatal by contract)" "0" "$RC"
+assert_eq "a hung upload prints nothing" "" "$OUT"
+assert_contains "a hung upload warns on stderr" "::warning::" "$ERR"
+assert_contains "…naming the budget it blew" "1s budget" "$ERR"
+assert_eq "the budget is actually enforced (returned in <10s, not 20s)" "yes" \
+  "$([ "$ELAPSED" -lt 10 ] && echo yes || echo "no (${ELAPSED}s)")"
+
+# macOS has no GNU `timeout` unless coreutils is installed; the CI runner does.
+# FORCE_WATCHDOG hides it so the pure-bash fallback is exercised on both.
+START=$(date +%s)
+FORCE_WATCHDOG=1 GH_SLEEP=20 BUDGET_OVERRIDE=1 run2 "$SHOTS"
+ELAPSED=$(( $(date +%s) - START ))
+assert_eq "the no-coreutils fallback also exits 0" "0" "$RC"
+assert_eq "the no-coreutils fallback prints nothing" "" "$OUT"
+assert_contains "the no-coreutils fallback warns" "::warning::" "$ERR"
+assert_eq "the no-coreutils fallback enforces the budget too" "yes" \
+  "$([ "$ELAPSED" -lt 10 ] && echo yes || echo "no (${ELAPSED}s)")"
+
+# The watchdog must not change the happy path.
+FORCE_WATCHDOG=1 run2 "$SHOTS"
+assert_eq "the fallback path still publishes normally" \
+  "https://github.com/o/r/raw/review-assets/pr-7/01-list.png" "$OUT"
+
+# ── 8. stdout is URLs or nothing ────────────────────────────────────────────
+# post-review.sh builds `![](<line>)` straight from these lines. Anything else on
+# stdout renders a BROKEN IMAGE in a public review and leaks an internal path;
+# a basename with a space or `)` breaks the markdown itself.
+NAMES="$WORK/names"; mkdir -p "$NAMES"
+png "$NAMES/01-list.png"
+png "$NAMES/01 my shot.png"
+png "$NAMES/02(evil).png"
+run2 "$NAMES"
+assert_eq "unsafe basenames do not stop the safe one" "0" "$RC"
+assert_eq "only the URL-safe capture is published" \
+  "https://github.com/o/r/raw/review-assets/pr-7/01-list.png" "$OUT"
+assert_eq "one blob POSTed, not three" "1" "$(grep -c 'git/blobs' "$WORK/gh.log")"
+assert_not_contains "a space never reaches stdout" " " "$OUT"
+assert_not_contains "a paren never reaches stdout (it would close the link early)" ")" "$OUT"
+assert_contains "the skipped space-named file is named in a warning" "01 my shot.png" "$ERR"
+assert_contains "the skipped paren-named file is named in a warning" "02(evil).png" "$ERR"
+assert_contains "…as a ::warning::, on stderr" "::warning::" "$ERR"
+assert_eq "every stdout line is a bare https:// URL" "0" \
+  "$(printf '%s\n' "$OUT" | grep -cvE '^https://[A-Za-z0-9._~:/-]+$')"
+
+# The last gate: whatever produced it, a line that is not a clean URL is dropped
+# rather than handed to the caller as an image source.
+REPO_OVERRIDE="o r/x" run2 "$SHOTS"
+assert_eq "a malformed URL is suppressed, not printed" "" "$OUT"
+assert_contains "…and reported on stderr" "::warning::" "$ERR"
+assert_eq "suppressing it is still non-fatal" "0" "$RC"
+
+# ── 9. house rules ──────────────────────────────────────────────────────────
 assert_eq "script does not use set -e (bugbot.md)" "yes" \
   "$(grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$SCRIPT" && echo no || echo yes)"
 assert_eq "action.yml verifies the script is installed" "yes" \
