@@ -62,7 +62,7 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 
 **Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote. The verdict is still computed from surviving findings alone, every round, from scratch.
 
-Carry through up to 3 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own categories.
+Carry through up to 3 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own categories. Each survivor becomes a **check comment** (see Inline comments) so a human can walk the review comment by comment instead of clicking a checklist; they stay in `meta.human_review` either way.
 
 **Refute the checkboxes too.** If an item can be answered from the checkout — HEAD, the diff, anything already on disk — answer it and drop the item; promote what you found to a finding if it is one. Nothing outside the checkout is reachable, so "the source is not in the checkout" stands as a reason; "not checked" or "unverifiable here" does not.
 
@@ -77,27 +77,32 @@ Render exactly this, omitting any section that would be empty:
 
 <one verdict sentence, <=240 chars>
 
-### What a human should review
-- [ ] {{LINK:<path>:<line>}} — <what_to_check> (<why_unresolved>)
+### Context
+<scan's context.area>
+- <each context.changes bullet>
 
 ### Findings (<n>)
 - **<severity>** {{LINK:<path>:<line>}} — <title>
 ```
 
-- Total ≤1200 chars, aim ~600. Count `{{LINK:path:line}}` as `path:line`.
+- Total ≤1800 chars, aim ~900. Count `{{LINK:path:line}}` as `path:line`.
+- **`### Context` is scan's, rendered verbatim** — you do not write it, shorten it or improve it. Omit the section when scan supplied none. If scan supplied a `context.mermaid`, put it in a ```mermaid fence directly under the bullets; never draw one yourself.
 - `{{LINK:path:line}}` is a literal placeholder — `post-review.sh` expands it into the GitHub file link. **Never build a URL yourself.**
+- **Never render `### What a human should review` yourself.** Checks are comments now; the poster owns that heading and writes it only for a check it could not anchor.
 - No footer (the poster appends duration/cost/logs and, when nothing specified this PR, a one-line note saying so), no banners, no "Spec sources", no setup-health bullets, no functional section, no "consolidated from N judges", no explanation of where comments were posted.
 - Verdict sentence: what the PR does and why this verdict. No praise, no restating the sections below it. If the PR exists to fix something, it says whether the fix holds at HEAD — confirm scan's `summary` against the code yourself before repeating it.
 
 ## Inline comments
 
-Max 5, filled strictly critical → major → minor. Each ≤700 chars total. Each finding appears **exactly once** — an inline comment OR a `### Findings` bullet, never both. Findings beyond the 5 inline slots become body bullets.
+Two kinds go inline: **findings** and **checks**. Each ≤700 chars total. Each finding appears **exactly once** — an inline comment OR a `### Findings` bullet, never both.
+
+The poster caps the total and orders it for you: findings first by severity, checks last. So under pressure the slots go to defects and the questions fall back — the right way round, and not something you should pre-empt by dropping either. Nothing is lost: whatever does not fit, or does not land in a diff hunk, comes back as a body bullet.
 
 **Do not hand-maintain that invariant — `post-review.sh` enforces it.** After it has worked out which comments really go inline (in-hunk, deduped, within the 5-cap), it deletes any `### Findings` bullet matching one of them — same path and line, or same path and title (so re-anchoring a comment to a different line still de-duplicates) — renumbers `### Findings (<n>)` to what survives, and drops the header if nothing does. So:
 
 - Write each finding in ONE place. If you slip and write both, the body copy is removed, not the comment.
 - Do NOT pre-emptively omit a body bullet for a comment you fear may not post. A comment that lands outside a diff hunk or past the cap is put back into the body by the poster under `### Also flagged` — nothing is lost.
-- `### What a human should review` is never touched. An item there may point at the same `path:line` as a finding.
+- `### What a human should review` is not yours to write. The poster adds it only for checks that could not be anchored, after this strip has run, and an item there may point at the same `path:line` as a finding.
 
 ````
 **<severity>** <title>
@@ -110,6 +115,16 @@ Max 5, filled strictly critical → major → minor. Each ≤700 chars total. Ea
 ````
 
 The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
+
+A **check** comment is the other shape — one per surviving `human_review` item:
+
+```
+**check** <what_to_check>
+
+<why_unresolved>
+```
+
+No ```suggestion``` fence: a check is a question, not a patch. The `**check**` prefix is load-bearing — the poster reads it to route a check it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a question would read as an accusation.
 
 **A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead. A finding with a prose fix is fine; a finding with a wrong patch is not.
 

@@ -11,6 +11,10 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 POSTER="$(pwd)/scripts/post-review.sh"
+# The body budget the poster enforces (REVIEW_BODY_MAX default). These tests
+# pin the MECHANISM — enforced, cut on a line boundary, hard cut when nothing
+# fits — so the number lives here once instead of in every assertion.
+BUDGET=1800
 [ -f "$POSTER" ] || { echo "FAIL: $POSTER not found"; exit 1; }
 
 fail=0
@@ -226,7 +230,7 @@ assert_contains "the critical reaches the body instead" \
 assert_contains "with its title" "unbounded read of attacker input" "$BODY"
 rm -rf "$W" "$NOPATCH_FILES"
 
-# ── (d3) comments past the 5-cap fall back too ───────────────────────────────
+# ── (d3) comments past the inline cap fall back too ─────────────────────────
 echo ""
 echo "── (d3) over-cap comments fall back to the body ──"
 W=$(mktemp -d)
@@ -234,17 +238,17 @@ WIDE=$(mktemp)
 jq -n '[{filename: "src/foo.ts",
          patch: ("@@ -1,20 +1,20 @@\n" + ([range(20) | " ctx"] | join("\n")))}]' > "$WIDE"
 jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nsee comments.",
-        comments: [range(1;9) | {path: "src/foo.ts", line: (1 + .), side: "RIGHT",
+        comments: [range(1;14) | {path: "src/foo.ts", line: (1 + .), side: "RIGHT",
                                  body: "**major** finding \(.)"}],
         meta: {findings: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE" run_poster "$W"
 PAYLOAD=$(payload_of "$W")
 BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "exit 0" "0" "$RC"
-assert_eq "still capped at 5 inline" "5" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_eq "still capped inline" "10" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_contains "the 3 over the cap are listed in the body" "### Also flagged (3)" "$BODY"
 assert_contains "over-cap fallback is announced" "over the inline cap" "$OUT"
-for n in 6 7 8; do
+for n in 11 12 13; do
   assert_contains "finding $n survives in the body" "finding $n" "$BODY"
 done
 rm -rf "$W" "$WIDE"
@@ -480,11 +484,11 @@ assert_eq "…and the verdict is unchanged" "$CLEAN_EVENT" "$(payload_of "$W" | 
 assert_eq "…and so is the exit code" "$CLEAN_RC" "$RC"
 rm -rf "$W"
 
-# ── (k) body budget: 1200 chars, cut on a line boundary, footer kept ─────────
+# ── (k) body budget: enforced, cut on a line boundary, footer kept ──────────
 # Prompt-only budgets historically did not hold (measured median body 1560
 # chars), so the cap is enforced here.
 echo ""
-echo "── (k) 1200-char body budget ──"
+echo "── (k) body budget ──"
 W=$(mktemp -d)
 { echo "## Claude review — COMMENT"; echo ""
   for i in $(seq 1 60); do echo "- **major** finding number $i that goes on and on about a thing"; done
@@ -496,10 +500,10 @@ RUN_ID=99 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(payload_of "$W" | jq -r '.body')
 BYTES=$(visible_body "$BODY" | wc -c | tr -d ' ')
 assert_eq "exit 0" "0" "$RC"
-if [ "$BYTES" -le 1200 ]; then
+if [ "$BYTES" -le "$BUDGET" ]; then
   echo "OK:   body held to the budget ($BYTES bytes)"
 else
-  echo "FAIL: body is $BYTES bytes, over the 1200 budget"; fail=$((fail + 1))
+  echo "FAIL: body is $BYTES bytes, over the $BUDGET budget"; fail=$((fail + 1))
 fi
 assert_contains "truncation is announced to the reader" "truncated" "$BODY"
 assert_contains "the footer survives truncation" "[logs](" "$BODY"
@@ -522,7 +526,15 @@ W=$(mktemp -d)
 { echo "## Claude review — REQUEST_CHANGES"; echo ""
   echo "Reworks the broker's claim handling and the tenant cache; two user-reachable defects survive verification, and two questions need a human who knows the upstream timeout policy and the tenancy model to settle them properly."
   echo ""
+  echo "### Context"
+  echo "Claim handling turns an uploaded claim into a broker submission, scoped per tenant."
+  echo "- moves retry and backoff out of the handler and into the service"
+  echo "- adds a warm-start path to the tenant cache"
+  echo "- reworks the 401 refresh so a claim is never submitted twice"
+  echo ""
   echo "### What a human should review"
+  echo "- [ ] {{LINK:src/alpha/policy.ts:31}} — confirm the backoff ceiling still honours the broker contract after the move (needs the contract)"
+  echo "- [ ] {{LINK:src/beta/warm.ts:18}} — confirm the warm-start path cannot serve a cache entry built for another tenant (needs prod data)"
   echo "- [ ] {{LINK:src/alpha/service.ts:120}} — confirm the retry budget matches the upstream gateway timeout; the policy doc is out of date (no spec)"
   echo "- [ ] {{LINK:src/beta/handler.ts:44}} — confirm the cache key includes the tenant id on every path, including the warm-start branch (needs prod data)"
   echo ""
@@ -534,10 +546,10 @@ NLINKS=$(grep -o '{{LINK:' "$W/linked-body.md" | wc -l | tr -d ' ')
 # What the model was told to count: the placeholder measured as `path:line`,
 # i.e. the raw bytes minus the 9-byte `{{LINK:` … `}}` wrapper.
 MEASURED=$(( $(wc -c < "$W/linked-body.md") - 9 * NLINKS ))
-if [ "$MEASURED" -le 1200 ]; then
+if [ "$MEASURED" -le "$BUDGET" ]; then
   echo "OK:   the fixture is a budget-compliant body ($MEASURED bytes as the model counts them)"
 else
-  echo "FAIL: fixture is $MEASURED bytes pre-expansion — it must be UNDER 1200 to test this"; fail=$((fail + 1))
+  echo "FAIL: fixture is $MEASURED bytes pre-expansion — it must be UNDER $BUDGET to test this"; fail=$((fail + 1))
 fi
 jq -n --rawfile b "$W/linked-body.md" \
   '{verdict: "REQUEST_CHANGES", body: $b, comments: [], meta: {findings: []}}' > "$W/review.json"
@@ -545,8 +557,8 @@ FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(payload_of "$W" | jq -r '.body')
 BYTES=$(visible_body "$BODY" | wc -c | tr -d ' ')
 assert_eq "exit 0" "0" "$RC"
-if [ "$BYTES" -gt 1200 ]; then
-  echo "OK:   expansion really does push it past 1200 ($BYTES bytes) — the case is live"
+if [ "$BYTES" -gt "$BUDGET" ]; then
+  echo "OK:   expansion really does push it past $BUDGET ($BYTES bytes) — the case is live"
 else
   echo "FAIL: expanded body is only $BYTES bytes; the fixture no longer exercises the interaction"
   fail=$((fail + 1))
@@ -555,6 +567,7 @@ assert_not_contains "nothing was truncated" "truncated to fit" "$BODY"
 assert_contains "the Findings header survives" "### Findings (2)" "$BODY"
 assert_contains "the critical finding survives" "token refresh loops forever on a 401" "$BODY"
 assert_contains "the major finding survives" "another tenant's rows" "$BODY"
+assert_contains "the context block survives with the findings" "### Context" "$BODY"
 assert_eq "all four placeholders expanded" "$NLINKS" \
   "$(printf '%s' "$BODY" | grep -c 'files#diff-')"
 assert_not_contains "no placeholder survives" "{{LINK:" "$BODY"
@@ -611,10 +624,10 @@ assert_eq "exit 0" "0" "$RC"
 assert_contains "the verdict header survives" "## Claude review — COMMENT" "$BODY"
 assert_contains "real content survives the hard cut" "one unbroken line" "$BODY"
 assert_contains "truncation is announced" "truncated to fit" "$BODY"
-if [ "$BYTES" -gt 900 ] && [ "$BYTES" -le 1200 ]; then
+if [ "$BYTES" -gt $(( BUDGET - 400 )) ] && [ "$BYTES" -le "$BUDGET" ]; then
   echo "OK:   the single line was cut mid-line to fill the budget ($BYTES bytes)"
 else
-  echo "FAIL: single-line body came out $BYTES bytes — expected a mid-line cut near the 1200 budget"
+  echo "FAIL: single-line body came out $BYTES bytes — expected a mid-line cut near the $BUDGET budget"
   fail=$((fail + 1))
 fi
 rm -rf "$W"
@@ -922,7 +935,7 @@ assert_not_contains "and the emptied header with them" "### Findings" "$BODY"
 assert_contains "the verdict prose survives" "Two blocking findings." "$BODY"
 rm -rf "$W" "$REANCHOR_FILES"
 
-# ── (l) inline comments: 5 max, critical/major first ─────────────────────────
+# ── (l) inline comments: capped, critical/major first ───────────────────────
 echo ""
 echo "── (l) inline-comment cap ──"
 W=$(mktemp -d)
@@ -932,17 +945,17 @@ jq -n '[{filename: "src/foo.ts",
 jq -n '
   {verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nsee comments.",
    comments: (
-     [range(1;5)  | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**minor** minor \(.)"}] +
-     [range(5;9)  | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**critical** critical \(.)"}] +
-     [range(9;13) | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**major** major \(.)"}]),
+     [range(1;5)   | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**minor** minor \(.)"}] +
+     [range(5;11)  | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**critical** critical \(.)"}] +
+     [range(11;17) | {path: "src/foo.ts", line: (1 + .), side: "RIGHT", body: "**major** major \(.)"}]),
    meta: {findings: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FILES" run_poster "$W"
 PAYLOAD=$(payload_of "$W")
 assert_eq "exit 0" "0" "$RC"
-assert_eq "capped at 5" "5" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_eq "all 4 criticals kept" "4" \
+assert_eq "capped" "10" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_eq "all 6 criticals kept" "6" \
   "$(echo "$PAYLOAD" | jq '[.comments[] | select(.body | startswith("**critical**"))] | length')"
-assert_eq "the 5th slot goes to a major, not a minor" "1" \
+assert_eq "the remaining slots go to majors, not minors" "4" \
   "$(echo "$PAYLOAD" | jq '[.comments[] | select(.body | startswith("**major**"))] | length')"
 assert_eq "no minor survives the cap" "0" \
   "$(echo "$PAYLOAD" | jq '[.comments[] | select(.body | startswith("**minor**"))] | length')"
@@ -1297,6 +1310,83 @@ for dead in '\.resolve_threads' '\.bot_replies' resolveReviewThread functional-m
     echo "OK:   no dead path for '$dead'"
   fi
 done
+
+# ── (k) human-review checks are inline comments ─────────────────────────────
+# A check is a question, not a defect: it goes inline so a human can walk the
+# review comment by comment, it carries no severity, and one that cannot be
+# anchored comes back under its own heading rather than "Also flagged".
+echo ""
+echo "── (k) checks as inline comments ──"
+
+# (k1) an anchorable check posts inline and writes no body section
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nOne finding.\n\n### Findings (1)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one",
+  "comments": [
+    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**check** confirm the tenant guard covers admins\n\nneeds a product decision"}
+  ],
+  "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11}],
+           "human_review": [{"path": "src/foo.ts", "line": 12, "what_to_check": "confirm the tenant guard covers admins", "why_unresolved": "needs a product decision"}]}
+}
+EOF
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "the check posts inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "it keeps its **check** prefix" "**check** confirm the tenant guard" \
+  "$(echo "$PAYLOAD" | jq -r '.comments[0].body')"
+assert_not_contains "an anchored check writes no body heading" "What a human should review" "$BODY"
+assert_contains "the unrelated finding bullet survives" "off-by-one" "$BODY"
+rm -rf "$W"
+
+# (k2) an unanchorable check returns under its own heading, never "Also flagged"
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nNothing is provably broken.",
+  "comments": [
+    {"path": "src/foo.ts", "line": 99, "side": "RIGHT", "body": "**check** confirm the migration is reversible\n\nneeds production data"}
+  ],
+  "meta": {"findings": [],
+           "human_review": [{"path": "src/foo.ts", "line": 99, "what_to_check": "confirm the migration is reversible", "why_unresolved": "needs production data"}]}
+}
+EOF
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "nothing posts inline" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "it comes back under the human heading" "### What a human should review" "$BODY"
+assert_contains "rendered as a checkbox with its question" \
+  "- [ ] [src/foo.ts:99](" "$BODY"
+assert_contains "the question survives the round trip" "confirm the migration is reversible" "$BODY"
+assert_not_contains "a question is never 'Also flagged'" "Also flagged" "$BODY"
+rm -rf "$W"
+
+# (k3) a check must not strip a body bullet at the same path:line
+# A check may legitimately sit on the same line as a finding. If it entered the
+# inline-XOR-body strip index, it would delete that finding's `### Findings`
+# bullet — and the finding is not posted inline, so it would vanish entirely.
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nOne finding.\n\n### Findings (2)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one\n- **minor** {{LINK:src/foo.ts:12}} — other",
+  "comments": [
+    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**minor** other"},
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**check** is this loop bound intentional\n\nthe intent is ambiguous"}
+  ],
+  "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11},
+                        {"title": "other", "severity": "minor", "path": "src/foo.ts", "line": 12}],
+           "human_review": [{"path": "src/foo.ts", "line": 11, "what_to_check": "is this loop bound intentional", "why_unresolved": "the intent is ambiguous"}]}
+}
+EOF
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "both comments post inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the finding under the check keeps its bullet" "off-by-one" "$BODY"
+assert_not_contains "the inline finding's own bullet is still stripped" "— other" "$BODY"
+rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 

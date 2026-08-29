@@ -85,9 +85,9 @@ JOB_START="${JOB_START:-/tmp/job-start}"
 SPEC_STATUS="${SPEC_STATUS:-/tmp/spec-status}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 SERVER="${GITHUB_SERVER_URL:-https://github.com}"
-BODY_MAX="${REVIEW_BODY_MAX:-1200}"
+BODY_MAX="${REVIEW_BODY_MAX:-1800}"
 COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
-COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-5}"
+COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-10}"
 ROUND="${ROUND:-1}"
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
 STATE_MAX="${REVIEW_STATE_MAX:-4000}"
@@ -290,7 +290,7 @@ case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
     SPEC_NOTICE=$'\n<sub>No spec resolved — reviewed on the diff alone. Link an issue, or commit the intent doc, to have the next review check against what was asked.</sub>\n' ;;
 esac
 
-# ── 3. Inline comments: in-hunk only, deduped, 5 max, 700 bytes each ────────
+# ── 3. Inline comments: in-hunk only, deduped, capped, 700 bytes each ───────
 # GitHub 422s the whole atomic POST if any comment line is outside a diff hunk,
 # and GitHub omits `.patch` entirely for large files — so a critical finding in a
 # big file can derive no valid line. Those comments, and everything past the cap,
@@ -316,7 +316,9 @@ awk '
   || echo "::warning::Could not derive diff hunks from pulls/files — posting comments unvalidated."
 
 # One pass: normalise, order by severity then the model's own order, split into
-# the 5 that get posted inline and the rest that fall back to body bullets.
+# the ones that get posted inline and the rest that fall back to body bullets.
+# The cap is a brake on a runaway review, not a budget to spend: across the
+# banked corpus no review has ever reached it.
 #
 # `clamp` measures BYTES (jq's `length` is codepoints — 900 `é` is 900 by that
 # count and 1800 bytes on the wire). A ```suggestion fence the clamp cut through
@@ -332,6 +334,11 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
       elif ((.body // "") | test("^\\s*\\*\\*minor\\*\\*"; "i")) then "minor"
       else "" end;
   def rank: if . == "critical" then 0 elif . == "major" then 1 elif . == "minor" then 2 else 3 end;
+  # A `**check**` comment is a human-review question, not a defect. It carries no
+  # severity, so it already sorts behind every finding — under pressure the slots
+  # go to defects and the questions fall back, which is the right way round. A
+  # dropped one returns under the human-review heading, never under "Also flagged".
+  def kind: if ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) then "check" else "finding" end;
   def title:
     ((.body // "") | split("\n") | (.[0] // "")
      | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "") | .[:90] | sub("\\s+$"; ""))
@@ -369,7 +376,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   | { kept: ($in[:$limit] | map({path, line, side: (.side // "RIGHT"), body: ((.body // "") | clamp($cmax))})),
       dropped: ((($in[$limit:]) + $out)
                 | sort_by(._r, ._i)
-                | map({path, line, severity: sev, title: title,
+                | map({path, line, severity: sev, title: title, kind: kind,
                        reason: (if ._inhunk then "over the inline cap" else "outside a diff hunk" end)})) }
 ' "$WORK/comments.json" > "$WORK/split.json" \
   || { echo "::warning::Could not process inline comments — posting the body alone."
@@ -382,15 +389,23 @@ jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
 # consume the whole comment: both of its keys are spent together, so it can never
 # strip a second bullet. Derived from `kept`, post-hunk-filter, post-dedupe,
 # post-cap: a comment that fell back to the body is NOT in here.
-jq -r '.[] | .path + ":" + (.line | tostring) + "\t"
+# Checks are EXCLUDED. A check may legitimately sit at the same `path:line` as a
+# finding, and verify writes no body bullet for a check — so a check in this index
+# could only ever strip a `### Findings` bullet belonging to a finding that is not
+# posted inline, deleting it from the review entirely.
+jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)
+             | .path + ":" + (.line | tostring) + "\t"
              + ((.body // "") | split("\n") | (.[0] // ""))' \
   "$WORK/comments.json" > "$WORK/kept-keys.txt"
 # Each dropped comment becomes a body bullet — the finding must reach the reader
 # somewhere, and under the inline-XOR-body rule the body does not already list it.
-jq -r '.dropped[]
+jq -r '.dropped[] | select(.kind != "check")
        | "- " + (if .severity == "" then "" else "**" + .severity + "** " end)
          + "{{LINK:" + .path + ":" + (.line | tostring) + "}} — " + .title' \
   "$WORK/split.json" > "$WORK/fallback.md"
+jq -r '.dropped[] | select(.kind == "check")
+       | "- [ ] {{LINK:" + .path + ":" + (.line | tostring) + "}} — " + .title' \
+  "$WORK/split.json" > "$WORK/fallback-checks.md"
 DROPPED_COUNT=$(jq '.dropped | length' "$WORK/split.json")
 if [ "${DROPPED_COUNT:-0}" -gt 0 ]; then
   jq -r '.dropped | group_by(.reason)[]
@@ -577,6 +592,15 @@ if [ -s "$WORK/kept-keys.txt" ]; then
 fi
 
 # 4b. Anything that could not be posted inline comes back as a body bullet.
+# review-verify renders no `### What a human should review` section any more —
+# every check is an inline comment — so this is the only writer of that heading,
+# and it appears only for the checks that could not be anchored.
+if [ -s "$WORK/fallback-checks.md" ]; then
+  { echo ""
+    echo "### What a human should review"
+    cat "$WORK/fallback-checks.md"
+  } >> "$WORK/body.raw"
+fi
 if [ -s "$WORK/fallback.md" ]; then
   { echo ""
     echo "### Also flagged ($(grep -c '' "$WORK/fallback.md"))"

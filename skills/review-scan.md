@@ -16,7 +16,11 @@ gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences
 
 Then `Read`/`Grep` the changed files **at HEAD** for anything you intend to flag. Skip lockfiles, snapshots, `dist/`, generated clients — a diff is not a defect.
 
-**If the PR exists to fix something, say whether the fix holds at HEAD.** Trace the fixed path yourself and put the answer in `summary` — that is the one thing an author most wants from a review, and you are well placed to check it.
+**If the PR exists to fix something, say whether the fix holds at HEAD.** Trace the fixed path yourself and put the answer in `summary` — that is the one thing an author most wants from a review, and you are well placed to check it. Then check the siblings: name the failing sequence and the invariant that broke, and ask whether the same failure is still reachable by another caller or another path — a sibling that is, is an ordinary finding at the ordinary bar. That is where the second bug lives.
+
+**Trace a concrete input through the changed logic.** Pick a real value or state, walk it through the new code, and look for the case that returns a *wrong* result without erroring — a wrong value, label, count or set. That is the class reviews miss, because an error at least announces itself. How many paths you trace follows the depth you chose below.
+
+**A test shipping with the code it tests is a claim, not proof.** Would it still pass with the behaviour broken? One that only greps or snapshots source text always would, and a regression test that does not fail without the fix proves nothing. Use that to keep a finding a green suite would otherwise talk you out of.
 
 ## The spec — judge the code against it
 
@@ -54,7 +58,7 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 - **If you cannot tell, it is unresolved.** A carried finding already survived a full scan and a full refutation pass once. That is not true of anything you raise fresh, so it does not get the fresh claim's benefit of the doubt.
 - Never re-file a carried finding as a new one. Carry it under its own `id`. If your wording differs from the carried title, set `"carried_from": "<id>"` on the finding so the two are not counted twice.
 
-**Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. Record which you chose in `depth_used` with one clause saying why. Target ≤15 turns; write the file by turn 25 whatever you have.
+**Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. Record which you chose in `depth_used` with one clause saying why. Whichever you pick, enumerate — do not stop at the first valid finding. Target ≤15 turns; write the file by turn 25 whatever you have.
 
 ## Repo conventions — two files, one Read each
 
@@ -68,9 +72,13 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 
 **A finding without a `failure_scenario` — a concrete input or state that produces a concrete wrong output — MUST NOT be emitted. This is the single most important rule in this file.**
 
+**Depth is not licence to redesign.** Do not call something a systemic flaw from code shape, duplication or architectural preference alone, and where the code or the PR says a stopgap is deliberate, "a better fix exists" is not a finding.
+
 "Could break", "may be unsafe", "is not defensive", "should validate", "consider extracting" are not failure scenarios. If you cannot write *"when X, the code does Y, and the user gets Z"* with real values, you do not have a finding. Drop it. Do not downgrade it to `minor` to keep it — delete it.
 
 **Zero findings is the correct and expected output for a clean PR.** An empty `findings` array is a successful review, not a failed one. Most PRs deserve one.
+
+**When the honest fix is bigger than a patch, say that in `fix`.** If the smallest correct remedy would EXTEND the change — new durable state, a schema change, a new subsystem — the finding still stands at the full bar and keeps its severity. Write the remedy in prose rather than inventing a small patch that does not really fix it.
 
 Every finding carries all of:
 
@@ -90,7 +98,7 @@ Every finding carries all of:
 
 ### Copy that states a fact about the system
 
-When the diff changes a user-facing string making a factual claim about behaviour — a duration, a limit, a count, a price, a URL, what a link does — `Grep` for the constant that implements the claim and compare the two values. This is the one place you go looking rather than waiting for code to look wrong: on byte-identical code, a review carrying this instruction found the defect and a review without it missed it.
+When the diff changes a user-facing string making a factual claim about behaviour — a duration, a limit, a count, a price, a URL, what a link does — `Grep` for the constant that implements the claim and compare the two values. Go looking for this one rather than waiting for the code to look wrong: on byte-identical code, a review carrying this instruction found the defect and a review without it missed it.
 
 A mismatch is an **ordinary finding at the ordinary bar**, and the failure scenario writes itself — the user believes the copy, acts on it, and the code does something else. Measured: invitation copy said "expires in 7 days" while `ACTIVATION_TTL_MS` was 72 hours; recipients who trusted it hit an expired-token error on day 4. Copy is runtime behaviour, not documentation, so the prose-is-minor rule above does not apply to it.
 
@@ -138,11 +146,29 @@ Set `human_review_adds_nothing: true` only if you can WRITE the argument for it:
 
 The functional tester is dispatched in the **same response** as you and runs to its own wall-clock budget (up to 480s), so `/tmp/functional.json` does not exist while you are running. Do not wait for it, do not poll for it, do not mention it. `review-verify` runs after both of you and is the only consumer.
 
+## Context for the reader — orientation, not judgement
+
+The review body opens with this, and a reviewer should be oriented in under a minute. It is short by rule.
+
+- `context.area` — ONE sentence, ≤160 chars: what this part of the product does. **The area, not the PR.** The verdict sentence already says what the PR does; repeating it spends the reader's minute on nothing.
+- `context.changes` — 2–4 bullets, ≤90 chars each: what this diff does to that area.
+- On round 2+ write it from the PR title, body and file list you already have. Never re-read the whole diff for orientation.
+- On a `DOCS_ONLY` run the area is what the document set is for.
+
+Description only: no judgement, no praise, nothing that belongs in a finding. It never moves the verdict.
+
+**A `context.mermaid` diagram only when the diff changes how three or more named components talk to each other.** Never for a change inside one file or one component. Max 8 nodes, and if you cannot name every node from the diff there is no diagram. Zero diagrams is the normal and expected output — a diagram of a thing the reader could have read in the bullets costs them more time than it saves.
+
 ## Output — `/tmp/scan.json`
 
 ```json
 {
   "depth_used": "light|full",
+  "context": {
+    "area": "What this part of the product does, one sentence, <=160 chars",
+    "changes": ["what the diff does to it, <=90 chars", "..."],
+    "mermaid": ""
+  },
   "depth_reason": "one clause",
   "review_effort": 3,
   "summary": "What the PR does, one sentence, <=200 chars",
