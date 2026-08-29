@@ -137,6 +137,30 @@ for f in "$SCAN" "$VERIFY"; do
   want "$n does not weaken the ordinary bar" "$f" \
     'ordinary finding bar is unchanged|Ordinary findings keep the full `failure_scenario` bar'
 done
+# Every consumer's review-config.md POINTS AT `.claude/rules/`, and five of seven
+# repos keep 12-17 rule files there — including comments.md in two of them. The
+# reviewer read neither, so rules the teams wrote (and believed were enforced)
+# were invisible, and a violation could never meet the quote-it-verbatim bar.
+# Bounded on purpose: an ls plus at most 4 topical reads, never the whole tree.
+for f in "$SCAN" "$VERIFY"; do
+  n=${f##*/}
+  want "$n reads the team's own rules directory" "$f" '\.claude/rules/'
+  want "$n bounds how many rule files it reads" "$f" '(at most|most) \*{0,2}4\*{0,2}'
+  want "$n always reads the always-applicable ones" "$f" 'comments\.md.*general\.md'
+  want "$n honours a rule file's paths glob" "$f" 'paths:'
+done
+
+# Reviewers on three products spend review time deleting machine-written
+# comments ("remove this shitty comments (check everywhere please)"). The class
+# is capped, minor and advisory like prose, and must never delete a real why.
+want "review-scan can flag comment noise in code" "$SCAN" '## Comment noise in code'
+want "…and protects comments that carry a real why" "$SCAN" \
+  'constraint, an invariant, a workaround'
+want "…and files one finding per file, not per comment" "$SCAN" 'never one comment per finding'
+want "review-verify judges the class on what it can see" "$VERIFY" 'comment-noise finding'
+want "…and refutes a finding aimed at a single comment" "$VERIFY" \
+  'naming a single comment is refuted'
+
 # The verdict rule is the one that must name the exclusion, not just imply it.
 RC_LINE=$(grep -n 'REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
 if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE 'not a convention finding|convention.*NEVER produce'; then
