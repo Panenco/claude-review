@@ -98,6 +98,27 @@ jobs:
             **/package-lock.json
             ${{ inputs.dev_cache_key_files }}
           sparse-checkout-cone-mode: false
+      # THE KEY IS COMPUTED ONCE, HERE, AND NOWHERE ELSE.
+      #
+      # It used to be re-evaluated inline at the probe, the restore AND the save.
+      # `Widen checkout` and `pnpm fetch` both run in between, and `pnpm fetch`
+      # leaves lockfiles under node_modules/ that `**/package-lock.json` then
+      # matches — so the save hashed a different set than the probe and wrote a
+      # key nothing ever read. Measured on Panenco/seaters: read
+      # `pkg-store-442ffe65…`, wrote `pkg-store-8af17f91…`. The review job hashes
+      # a CLEAN tree, so it computed 442ffe65 too and missed every time — the
+      # store cache had never hit for anyone.
+      #
+      # Evaluating it here, on the clean checkout, is what makes this job's key
+      # equal to the review job's.
+      - name: Compute the store cache key
+        id: store_key
+        shell: bash
+        env:
+          LOCK_HASH: ${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+        run: |
+          echo "key=${RUNNER_OS}-${RUNNER_ARCH}-pkg-store-${LOCK_HASH}" >> "$GITHUB_OUTPUT"
+
       # lookup-only probe: when the store is already warm for this lockfile,
       # skip the whole fetch+save path and land in seconds.
       - name: Check store cache
@@ -107,14 +128,37 @@ jobs:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
-          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          key: ${{ steps.store_key.outputs.key }}
           lookup-only: true
+      # Image G bakes the pinned agent-browser AND runs `agent-browser install`,
+      # so the binary and its Chrome are already at ~/.agent-browser — outside
+      # the scale set's scratch .cache mount, so the bake survives. Caching that
+      # stores ~340 MiB of bytes the image already carries, and burns a cache
+      # entry against the repo's 10 GB budget that evicts things nothing bakes.
+      #
+      # Still cached for `runner: ubuntu-latest` consumers, which have no bake.
+      - name: Probe for a prebaked browser stack
+        id: ab_baked
+        shell: bash
+        run: |
+          set -uo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          baked=false
+          if command -v agent-browser >/dev/null 2>&1 \
+            && [ "$(agent-browser --version 2>/dev/null | awk '{print $2}')" = "${AGENT_BROWSER_VERSION}" ] \
+            && [ -d "$HOME/.agent-browser/browsers" ] \
+            && [ -n "$(ls -A "$HOME/.agent-browser/browsers" 2>/dev/null)" ]; then
+            baked=true
+          fi
+          echo "baked=${baked}" >> "$GITHUB_OUTPUT"
+          echo "prebaked browser stack: ${baked}"
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: steps.store_probe.outputs.cache-hit != 'true'
         with:
           node-version: "lts/*"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: steps.store_probe.outputs.cache-hit != 'true'
+        if: steps.store_probe.outputs.cache-hit != 'true' && steps.ab_baked.outputs.baked != 'true'
         with:
           path: |
             ~/.agent-browser/browsers
@@ -122,7 +166,7 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-ab-${{ env.AGENT_BROWSER_VERSION }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-ab-
-      - if: steps.store_probe.outputs.cache-hit != 'true'
+      - if: steps.store_probe.outputs.cache-hit != 'true' && steps.ab_baked.outputs.baked != 'true'
         shell: bash
         run: |
           # Best-effort warming: this job must never fail on the browser stack.
@@ -150,7 +194,7 @@ jobs:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
-          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          key: ${{ steps.store_key.outputs.key }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-pkg-store-
       # `pnpm fetch` reads the lockfile, but the store warm is best-effort across
@@ -184,7 +228,7 @@ jobs:
           path: |
             ~/.local/share/pnpm/store
             ~/.npm
-          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          key: ${{ steps.store_key.outputs.key }}
 
       # Generic dev build/dependency cache — warmed here in the DEFAULT BRANCH
       # scope (same as the package store above) so EVERY PR's functional job,
