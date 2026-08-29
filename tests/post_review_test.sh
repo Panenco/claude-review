@@ -1565,13 +1565,26 @@ assert_eq "…with a start_side GitHub requires" "RIGHT" "$(echo "$C" | jq -r '.
 assert_eq "…anchored at the end line" "13" "$(echo "$C" | jq -r '.line')"
 rm -rf "$W"
 
-# (r2) start_line outside the hunk → the WHOLE comment falls back, rather than
-# posting a range GitHub would 422 and taking every other comment down with it
+# (r2) a range only PARTLY in the diff degrades to a single-line comment. It must
+# not take the comment down with it: seaters#2134 asked for 226-253 across a
+# sparse diff, the whole check was rejected, and the question landed in the body
+# — the one place a check must never be, because there nobody reads it.
 W=$(mktemp -d); check_review 4 13 > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
-assert_eq "nothing posts inline" "0" "$(payload_of "$W" | jq '.comments | length')"
-assert_contains "the question is not lost" "### What a human should review" "$BODY"
+assert_eq "the check still posts inline" "1" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "…with the unusable range dropped" "null" \
+  "$(payload_of "$W" | jq -r '.comments[0].start_line // "null"')"
+assert_eq "…anchored at the end line" "13" "$(payload_of "$W" | jq -r '.comments[0].line')"
+assert_not_contains "and it is NOT pushed into the body" "### What a human should review" "$BODY"
+rm -rf "$W"
+
+# (r2b) only an anchor line that is itself out of hunk falls back to the body.
+W=$(mktemp -d); check_review 4 99 > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "an unanchorable check posts nothing inline" "0" "$(payload_of "$W" | jq '.comments | length')"
+assert_contains "…and only then reaches the body" "### What a human should review" "$BODY"
 rm -rf "$W"
 
 # (r3) a malformed range (start at or past the anchor) collapses to single-line

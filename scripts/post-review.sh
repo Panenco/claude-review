@@ -495,10 +495,22 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   | map(.value + {_i: .key, _r: (.value | sev | rank)})
   | unique_by([.path, .line, .body])
   | sort_by(._r, ._i)
+  # DEGRADE THE RANGE, NEVER THE PLACEMENT. A block a check wants to wrap is
+  # usually only partly in the diff — seaters#2134 asked for 226-253 across a
+  # sparse diff. Rejecting the comment for that put the question in the body,
+  # which is exactly where a check must never go: it is inline or it is unread.
+  # So an unusable range is dropped and the comment anchors at `line`, and only
+  # a `line` that is itself out of hunk falls back.
+  | map(. as $c | ($c.side // "RIGHT") as $side
+        | $c + {start_line:
+            (if ($c.start_line > 0) and $validated
+             then (if ([range($c.start_line; $c.line + 1)]
+                       | all($lset[($c.path + ":" + (. | tostring) + ":" + $side)] // false))
+                   then $c.start_line else 0 end)
+             else $c.start_line end)})
   | map(. as $c | ($c.side // "RIGHT") as $side | $c + {_inhunk:
       (if $validated
-       then ([range((if $c.start_line > 0 then $c.start_line else $c.line end); $c.line + 1)]
-             | all($lset[($c.path + ":" + (. | tostring) + ":" + $side)] // false))
+       then ($lset[($c.path + ":" + ($c.line | tostring) + ":" + $side)] // false)
        else true end)})
   | ([.[] | select(._inhunk)]) as $in
   | ([.[] | select(._inhunk | not)]) as $out
