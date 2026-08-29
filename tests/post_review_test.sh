@@ -1569,8 +1569,13 @@ BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
 assert_eq "exit 0" "0" "$RC"
 assert_eq "no comment was needed to publish them" "0" "$(payload_of "$W" | jq '.comments | length')"
 assert_contains "the gallery is there" "<details><summary>Functional pass: PASS — 2 screenshots</summary>" "$BODY"
-assert_contains "first shot embeds its uploaded URL"   "![AC1 — list page with seeded data](https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
-assert_contains "second shot too"   "![AC2 — detail view](https://github.com/o/r/raw/review-assets/pr-7/02-detail.png)" "$BODY"
+assert_contains "first shot is labelled once, above the image" "**AC1 — list page with seeded data**" "$BODY"
+assert_contains "…and embeds its uploaded URL" "![](https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
+# The alt text is invisible on GitHub, so repeating the caption there only
+# doubles the source the reader scrolls past to reach the next shot.
+assert_not_contains "the caption is not duplicated into the alt text" "![AC1 —" "$BODY"
+assert_contains "second shot too" "![](https://github.com/o/r/raw/review-assets/pr-7/02-detail.png)" "$BODY"
+assert_contains "…with its own label" "**AC2 — detail view**" "$BODY"
 assert_contains "the branch was actually written" "git/refs --method POST" "$(cat "$W/gh.log")"
 # The gallery is appended after truncation and never measured, exactly like the
 # state block — a run's own evidence must not evict a finding.
@@ -1590,6 +1595,25 @@ assert_contains "one shot reads as singular" "WARN — 1 screenshot</summary>" "
 assert_not_contains "a bracket cannot swallow the URL" "[bracketed]" "$BODY"
 assert_not_contains "a caption cannot open a tag" "<script>" "$BODY"
 assert_contains "the URL is still intact" "(https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
+rm -rf "$W"
+
+# (q2b) a long caption is cut on a word boundary, not mid-word. Observed on
+# seaters #2134: the tester's own descriptions ran past 120 chars and the body
+# rendered "…the app has already la" and "…access code has e".
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png
+jq -n '{overall: "FAIL", summary: "long", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png",
+                       description: "AC1 — after submitting sign-up with the exhausted code: refusal notification shown correctly, but the app has already landed the fan on the audience"}]}' \
+  > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a long caption is elided" "…" "$BODY"
+assert_not_contains "…not cut mid-word" "notificatio…" "$BODY"
+assert_not_contains "…and the tail is dropped" "already landed" "$BODY"
+assert_contains "it ends on a whole word" "refusal notification…" "$BODY"
 rm -rf "$W"
 
 # (q3) the tester named a shot the upload could not publish → no half-broken

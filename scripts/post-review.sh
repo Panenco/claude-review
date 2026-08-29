@@ -377,8 +377,14 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; t
         # image label, so `[`, `]`, `<` and `>` are stripped rather than escaped —
         # one stray bracket would otherwise swallow the URL or open a tag.
         SHOT_GALLERY=$(jq -r --rawfile urls "$WORK/shot-urls.txt" --arg overall "$FN_OVERALL" '
+          # 80 to match the cap the tester skill states, and cut on a WORD
+          # boundary: a hard slice ended live captions "the app has already la"
+          # and "access code has e". This is the safety net, not the rule —
+          # review-functional-tester.md is where the length is actually set.
           def clean: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
-                     | sub("^ "; "") | sub(" $"; "") | .[0:120];
+                     | sub("^ "; "") | sub(" $"; "")
+                     | if length <= 80 then .
+                       else (.[0:79] | sub("\\s+\\S*$"; "")) + "…" end;
           ($urls | split("\n") | map(select(length > 0))
            | map({key: (split("/") | last), value: .}) | from_entries) as $u
           | [ (.screenshots // [])[]
@@ -390,7 +396,7 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; t
           | if length == 0 then ""
             else "\n<details><summary>Functional pass: \($overall) — \(length) screenshot"
                  + (if length == 1 then "" else "s" end) + "</summary>\n\n"
-                 + (map("**\(.cap)**\n\n![\(.cap)](\(.url))\n") | join("\n"))
+                 + (map("**\(.cap)**\n\n![](\(.url))\n") | join("\n"))
                  + "\n</details>\n"
             end' "$FUNCTIONAL_JSON" 2>/dev/null) || SHOT_GALLERY=""
       fi

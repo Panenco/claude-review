@@ -69,6 +69,8 @@ Not observations: pre-existing failures on surfaces the diff never touched, know
 
 A screenshot is a capture of the live app you actually drove, or a rendered HTTP exchange you actually made. Never render prose or logs as an image. Check each caption against the latest snapshot — if the page is a login wall, a 404, or an error boundary, the caption must say so, or drop the shot. If you could not drive the app, report `CRASH` with no screenshots; never PASS from reading source.
 
+**`description` is a LABEL, ≤80 chars — not a sentence.** It is rendered verbatim above the image in the review, so a paragraph there is a wall of text the reader has to wade through to reach the next shot. Lead with the criterion, then the state the image proves: `AC5 — catalogue row reads 'Your version'`. What you *concluded* from the shot belongs in `summary` or an `observations` entry, never in the caption. The poster trims anything longer at a word boundary, so an over-long caption loses its own ending.
+
 ## Output — `/tmp/functional.json` (always write it, on every exit path)
 
 ```json
@@ -86,7 +88,7 @@ A screenshot is a capture of the live app you actually drove, or a rendered HTTP
       "screenshot": "/tmp/screenshots/03-filter.png or null"
     }
   ],
-  "screenshots": [{"file": "/tmp/screenshots/01-list.png", "description": "AC1 — list page with seeded data"}],
+  "screenshots": [{"file": "/tmp/screenshots/01-list.png", "description": "AC1 — list page, seeded data (<=80 chars)"}],
   "untested": ["Criteria you never reached, and why"]
 }
 ```
