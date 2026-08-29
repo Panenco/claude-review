@@ -2112,6 +2112,12 @@ rm -rf "$W" "$W_WIDE"
 # pass requested but skipped — the dev environment exited 5. No browser test
 # ran`. Both cannot be true. And the notice was appended AFTER the footer, so a
 # warning trailed the cost/logs line that is supposed to close the review.
+#
+# CORRECTED BY THE SECOND AUDIT. The first fix resolved the contradiction the
+# wrong way round — it deleted the screenshots and kept "No browser test ran",
+# even though a `functional.json` with a real `overall` is first-hand evidence
+# the tester ran and rc is only written by a LATER phase (see (y6)). The
+# contradiction is still impossible; the surviving side is now the evidence.
 echo ""
 echo "── (x) gallery and dev-env notice cannot contradict ──"
 
@@ -2129,11 +2135,13 @@ FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
   FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
 assert_eq "exit 0" "0" "$RC"
-assert_contains "the dev-env failure is disclosed" "Functional pass requested but skipped" "$BODY"
-assert_not_contains "…and no gallery claims a pass alongside it" "Functional pass: PASS" "$BODY"
-assert_not_contains "…no screenshot count either" "screenshots</summary>" "$BODY"
-assert_contains "the suppression is explained in the log" \
-  "suppressing the screenshot gallery" "$OUT"
+assert_contains "the screenshots the tester took survive a missing rc" \
+  "Functional pass: PASS — 3 screenshots" "$BODY"
+assert_contains "the dev-env record is still disclosed" "The dev environment exited 5" "$BODY"
+assert_not_contains "…but never as a claim that no browser test ran" \
+  "No browser test ran" "$BODY"
+assert_not_contains "…nor that the pass was skipped" "requested but skipped" "$BODY"
+assert_contains "the cause is still quoted" "API never became ready" "$BODY"
 rm -rf "$W"
 
 # (x2) THE FOOTER CLOSES THE REVIEW. The notice is content and belongs above it.
@@ -2169,6 +2177,320 @@ FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
 assert_contains "a healthy dev-env still publishes the gallery" "Functional pass: PASS" "$BODY"
 assert_not_contains "…and says nothing about a skip" "requested but skipped" "$BODY"
+rm -rf "$W"
+
+# ── (y) the SECOND audit: five regressions from #131, and two older holes ────
+# Everything below was introduced or left standing by the previous round's own
+# fixes. Each block names the defect it pins and the shape that produced it.
+
+# ── (y1) the fallback filter must not delete a DIFFERENT finding ─────────────
+# `fbfilter` reused `isdup()`, which matches path+line OR path+title and never
+# looks at severity. The XOR strip can afford that — it matches against comments
+# actually being posted, where the same comment supplies both keys — but the
+# fallback is matched against arbitrary `### Findings` bullets. So a dropped
+# CRITICAL was deleted outright because an unrelated MINOR happened to sit at the
+# same line, and the log announced the deletion as a de-duplication.
+echo ""
+echo "── (y1) a fallback bullet is only dropped when it is the same finding ──"
+
+# (y1a) the path:line key: a minor nit and a critical at the same line.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nOne nit, one real bug.\n\n### Findings (1)\n- **minor** {{LINK:src/foo.ts:99}} — variable name is unclear",
+        comments: [{path: "src/foo.ts", line: 99, side: "RIGHT",
+                    body: "**critical** SQL injection via string concatenation\n\ndetail"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the critical still reaches the reader" \
+  "SQL injection via string concatenation" "$BODY"
+assert_contains "…under Also flagged, where a dropped comment belongs" "### Also flagged (1)" "$BODY"
+assert_contains "…and the minor keeps its own bullet" "variable name is unclear" "$BODY"
+assert_not_contains "nothing is announced as a duplicate" \
+  "'Also flagged' bullet(s) the body already lists" "$OUT"
+rm -rf "$W"
+
+# (y1b) the path+title key: same words, different severity, different line.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nTwo unrelated items.\n\n### Findings (1)\n- **minor** {{LINK:src/foo.ts:11}} — unused import",
+        comments: [{path: "src/foo.ts", line: 77, side: "RIGHT",
+                    body: "**critical** unused import\n\nthe module is loaded for its side effect, which runs the migration twice"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a same-titled critical is not eaten by a minor" "### Also flagged (1)" "$BODY"
+assert_contains "…and it carries its own severity and line" "**critical** [src/foo.ts:77](" "$BODY"
+rm -rf "$W"
+
+# (y1c) THE OTHER DIRECTION: a genuine double-surface finding is still de-duped.
+# Guards against "fixing" (y1a) by never dropping anything — the bug #131 fixed.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nOne finding.\n\n### Findings (1)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one in the loop bound",
+        comments: [{path: "src/foo.ts", line: 99, side: "RIGHT",
+                    body: "**major** off-by-one in the loop bound\n\ndetail"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_not_contains "the same finding is not printed twice" "### Also flagged" "$BODY"
+assert_eq "…and it is printed once" "1" \
+  "$(printf '%s\n' "$BODY" | grep -c 'off-by-one in the loop bound')"
+rm -rf "$W"
+
+# ── (y2) a CHECK MUST NOT CARRY A COMMITTABLE FENCE ──────────────────────────
+# #131 kept ranges for checks on the strength of a prompt rule — "a check never
+# carries a fence". Nothing enforced it, so a `**check**` with a ```suggestion```
+# fence posted with start_line:10 line:13 AND the fence, and one click replaced
+# four lines of real code with one. The range is the feature; the fence is the
+# hazard, so the fence goes.
+echo ""
+echo "── (y2) a check keeps its range and loses its suggestion fence ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
+        comments: [{path: "src/foo.ts", start_line: 10, line: 13, side: "RIGHT",
+                    body: "**check** Should an expired token still refresh the session?\n\nThe block below assumes it may.\n\n```suggestion\n  if (token.expired) return null;\n```\n\nThat is the shape I would expect."}],
+        meta: {findings: [], human_review: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+C=$(payload_of "$W" | jq -c '.comments[0]')
+CBODY=$(echo "$C" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the check still posts inline" "1" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "…and keeps the range that is the whole point of a check" "10" "$(echo "$C" | jq -r '.start_line')"
+assert_eq "…anchored at the end line" "13" "$(echo "$C" | jq -r '.line')"
+assert_not_contains "no committable fence survives on a check" 'suggestion' "$CBODY"
+assert_not_contains "…nor the replacement code it would have committed" \
+  "if (token.expired) return null;" "$CBODY"
+assert_contains "the question itself is untouched" \
+  "Should an expired token still refresh the session?" "$CBODY"
+assert_contains "…and so is the prose after the fence" "That is the shape I would expect." "$CBODY"
+assert_contains "the strip is announced, never silent" "fence" "$OUT"
+rm -rf "$W"
+
+# (y2b) a FINDING's fence is still posted — it is single-line, so applying it
+# replaces exactly the line it is anchored to. Only the range is the danger.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne finding.",
+        comments: [{path: "src/foo.ts", start_line: 10, line: 13, side: "RIGHT",
+                    body: "**major** off-by-one in the loop bound\n\n```suggestion\n  for (let i = 0; i < xs.length; i++) {\n```"}],
+        meta: {findings: [], human_review: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+C=$(payload_of "$W" | jq -c '.comments[0]')
+assert_eq "a finding still carries no range" "null" "$(echo "$C" | jq -r '.start_line // "null"')"
+assert_contains "…and keeps its suggestion" "suggestion" "$(echo "$C" | jq -r '.body')"
+rm -rf "$W"
+
+# ── (y3) mode=fit must skip a BLOCK, not a LINE ──────────────────────────────
+# #131 turned `break` into `continue` so one long paragraph could not evict the
+# findings — but fit mode has none of strip mode's continuation tracking, so a
+# skipped bullet left its indented sub-bullets behind, dangling under the NEXT
+# bullet and reading as its detail. A skipped `###` header did the same to a
+# whole section: blocking findings reparented under `### Also flagged`, filed as
+# "could not be posted inline".
+echo ""
+echo "── (y3) a skipped line takes the block it owns with it ──"
+
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'ORPHAN'
+import json, sys
+big = "the token is compared with == against a user-supplied string, " * 30
+lines = ["## Claude review — REQUEST_CHANGES", "", "### Findings (2)",
+         "- **critical** {{LINK:src/foo.ts:11}} — " + big,
+         "  - the comparison is not constant-time",
+         "  - and the fallback path skips the audit log",
+         "- **minor** {{LINK:src/foo.ts:12}} — the variable name is unclear"]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+ORPHAN
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_not_contains "the over-long bullet is dropped" "the token is compared with ==" "$BODY"
+assert_not_contains "…and its first sub-bullet goes with it" "not constant-time" "$BODY"
+assert_not_contains "…and its second" "skips the audit log" "$BODY"
+assert_contains "the next finding still stands" "the variable name is unclear" "$BODY"
+assert_contains "…under a header that counts only what is left" "### Findings (1)" "$BODY"
+rm -rf "$W"
+
+# (y3b) the same rule one level up: a header that does not fit takes its bullets
+# with it, instead of leaving them under the PRECEDING heading.
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'REPARENT'
+import json, sys
+hdr = "### Findings (2) — " + ("the two blocking defects in the seat-allocation handler, " * 34)
+lines = ["## Claude review — REQUEST_CHANGES", "",
+         "### Also flagged (1)",
+         "- {{LINK:src/bar.ts:5}} — a small note about naming", "",
+         hdr,
+         "- **critical** {{LINK:src/foo.ts:11}} — auth bypass on the refresh path",
+         "- **major** {{LINK:src/foo.ts:12}} — the token leaks into the log"]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+REPARENT
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the section that fits is intact" "a small note about naming" "$BODY"
+assert_eq "…and its count is still honest" "1" \
+  "$(printf '%s\n' "$BODY" | grep -c '### Also flagged (1)')"
+assert_not_contains "a blocking finding never reparents under Also flagged" \
+  "auth bypass on the refresh path" "$BODY"
+assert_not_contains "…neither of them" "the token leaks into the log" "$BODY"
+rm -rf "$W"
+
+# ── (y4) renumber() counts FINDINGS, not lines that start with a dash ────────
+# It matched `^[ \t]*[-*][ \t]`, so every indented sub-bullet inflated the count
+# — and #131 made it run on EVERY truncation. A body whose Findings section lost
+# nothing came out as `### Findings (6)` over two findings.
+echo ""
+echo "── (y4) a header counts top-level bullets only ──"
+
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'SUBBULLETS'
+import json, sys
+para = "This PR reworks the seat-allocation pipeline end to end. " * 40
+lines = ["## Claude review — COMMENT", "", para, "", "### Findings (2)",
+         "- **major** {{LINK:src/foo.ts:11}} — the retry loop never caps",
+         "  - it backs off but has no ceiling",
+         "  - and the timer is never cleared",
+         "- **minor** {{LINK:src/foo.ts:12}} — the variable name is unclear",
+         "  - `x` is the tenant id",
+         "  - the call site reads as a count"]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+SUBBULLETS
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the body really was truncated" "truncated to fit" "$BODY"
+assert_contains "both findings survived whole" "the retry loop never caps" "$BODY"
+assert_contains "…including their detail" "the timer is never cleared" "$BODY"
+assert_contains "the header counts the two findings" "### Findings (2)" "$BODY"
+assert_not_contains "…not the six lines that start with a dash" "### Findings (6)" "$BODY"
+rm -rf "$W"
+
+# ── (y5) an INLINE check must not poison the round-2 state ───────────────────
+# #131 excluded checks from the `dropped` arm of the state builder and left the
+# `kept` arm alone — and inline is the NORMAL home for a check. The tell is the
+# severity: that arm derives one from the body text, and a check has none. The
+# result was a state finding with `sev: ""` that round 2 could never resolve.
+echo ""
+echo "── (y5) an inline check stays out of the state block ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question, one finding.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**check** Should an expired token still refresh the session?\n\ndetail"},
+                   {path: "src/foo.ts", line: 12, side: "RIGHT",
+                    body: "**major** the retry loop never caps\n\nit backs off forever"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "both still post inline" "2" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "no state finding carries an empty severity" "0" \
+  "$(echo "$STATE" | jq '[.findings[] | select(.sev == "")] | length')"
+assert_eq "the check is not a finding" "0" \
+  "$(echo "$STATE" | jq '[.findings[] | select(.t | test("expired token"))] | length')"
+assert_eq "the real finding still is" "1" "$(echo "$STATE" | jq '.findings | length')"
+
+# …and the proof it is not carried: feed this state back as round 2's priors.
+P2=$(mktemp)
+echo "$STATE" | jq '.findings' > "$P2"
+W2=$(mktemp -d)
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nThe delta is clean.",
+        comments: [], meta: {findings: [], resolved_prior: []}}' > "$W2/review.json"
+PRIOR_FINDINGS="$P2" ROUND_N=2 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W2"
+assert_not_contains "round 2 is not haunted by the question" \
+  "expired token" "$(payload_of "$W2" | jq -r '.body')"
+assert_not_contains "…and warns about no severity-less carry" \
+  "::warning::Carried finding" "$(printf '%s' "$OUT" | grep 'Carried finding' | grep '(, ' || true)"
+rm -rf "$W" "$W2" "$P2"
+
+# ── (y6) EVIDENCE THE TESTER RAN BEATS A MISSING rc FILE ─────────────────────
+# The gallery suppression keyed on `DEV_ENV_RC != 0`, but `/tmp/dev-env/rc` is
+# written only when setup-dev-env.sh RETURNS, while the orchestrator gates the
+# tester on `web_ready` — written much earlier. A slow or hung later phase means
+# the tester genuinely ran and produced screenshots while rc never appeared, and
+# #131 threw all of it away while asserting "No browser test ran". A
+# `functional.json` carrying a valid `overall` is direct evidence to the contrary.
+echo ""
+echo "── (y6) a completed functional run keeps its evidence ──"
+
+# (y6a) rc never written, tester ran: the gallery stands and nothing claims
+# otherwise.
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png 02-detail.png 03-cart.png
+jq -n '{overall: "PASS", summary: "Drove the order flow.", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1"},
+                      {file: "/tmp/screenshots/02-detail.png", description: "AC2"},
+                      {file: "/tmp/screenshots/03-cart.png", description: "AC3"}]}' > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
+  DEVENV_RC="$W/dev-env-rc-that-was-never-written" DEVENV_LOG="$W/no-such-log" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the screenshots the tester took are published" \
+  "Functional pass: PASS — 3 screenshots" "$BODY"
+assert_not_contains "…and nothing claims no browser test ran" "No browser test ran" "$BODY"
+assert_not_contains "…nor that the pass was skipped" "requested but skipped" "$BODY"
+rm -rf "$W"
+
+# (y6b) THE CONTRADICTION STAYS IMPOSSIBLE THE OTHER WAY. Dev-env failed and no
+# functional.json exists: nothing proves a browser ran, so the notice is the fact
+# and there is no gallery to disagree with it.
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+mkdir -p "$W/dev-env"; printf '5' > "$W/dev-env/rc"
+printf '::error::API never became ready at http://localhost:20001/api within 300s\n' > "$W/dev-env/log"
+FUNCTIONAL_REQ=true DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "with no evidence, the skip is still reported" \
+  "No browser test ran" "$BODY"
+assert_not_contains "…and no gallery contradicts it" "Functional pass:" "$BODY"
+assert_contains "the cause is quoted, not the tautology" "API never became ready" "$BODY"
+rm -rf "$W"
+
+# (y6c) an empty or malformed functional.json is NOT evidence.
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+printf '{"overall": "", "screenshots": []}' > "$W/functional.json"
+mkdir -p "$W/dev-env"; printf '5' > "$W/dev-env/rc"
+printf '::error::compose up failed\n' > "$W/dev-env/log"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" \
+  DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a functional.json with no verdict proves nothing" \
+  "No browser test ran" "$BODY"
+assert_not_contains "…and publishes nothing" "Functional pass:" "$BODY"
+rm -rf "$W"
+
+# ── (y7) `${tail//</&lt;}` IS A NO-OP ON BASH 5.2 ────────────────────────────
+# 5.2 turns on `patsub_replacement`, so `&` in the replacement expands to the
+# text that matched: the expansion yields `<lt;`, not `&lt;`. GitHub's
+# ubuntu-24.04 runners ship bash 5.2.x, so raw `<` from a consumer script's log
+# reached an HTML `<sub>`/`<code>` block in a public review.
+echo ""
+echo "── (y7) the last-error line is HTML-escaped on bash 5.1 and 5.2 alike ──"
+
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+mkdir -p "$W/dev-env"; printf '1' > "$W/dev-env/rc"
+printf '::error::parse failed near <Suspense fallback={<Spinner/>}> & then gave up\n' > "$W/dev-env/log"
+FUNCTIONAL_REQ=true DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the error is still quoted" "parse failed near" "$BODY"
+assert_contains "a raw < becomes an entity" "&lt;Suspense" "$BODY"
+assert_not_contains "…not bash 5.2's patsub artefact" "<lt;" "$BODY"
+assert_not_contains "…and no raw tag reaches the HTML block" "<Spinner" "$BODY"
+assert_contains "a raw > is escaped too" "&gt;" "$BODY"
+assert_contains "…and the ampersand before it" "&amp; then gave up" "$BODY"
 rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
