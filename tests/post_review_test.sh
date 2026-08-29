@@ -2493,6 +2493,191 @@ assert_contains "a raw > is escaped too" "&gt;" "$BODY"
 assert_contains "…and the ampersand before it" "&amp; then gave up" "$BODY"
 rm -rf "$W"
 
+# ── (z) the THIRD audit: two regressions, a fence hole, and two silent drops ──
+# Each block names the defect it pins and the shape that produced it. Every one
+# was verified to FAIL against the script as #132 left it.
+
+# ── (z1) the XOR strip must take a bullet's SUB-BULLETS with it ──────────────
+# The strip keyed on isbullet(), which allows leading whitespace. An indented
+# `  - ` detail line therefore entered the bullet arm, found no {{LINK:}}, got an
+# empty key, skipped the duplicate test entirely, was written out as "kept" — and
+# reset `skipping`, so the rest of the parent's block came back too. The parent
+# was stripped and its details survived, reparented under the header.
+#
+# The worst shape is not cosmetic: renumber() counts top-level bullets only, so a
+# Findings section holding nothing but orphans renders `### Findings (0)`, and
+# prune() sees a non-empty section and keeps it. A review then declares ZERO
+# findings directly above loose prose describing a critical auth bug. The orphans
+# also sit EARLIER in the file than the real findings, so they outrank them for
+# the byte budget.
+echo ""
+echo "── (z1) a stripped bullet takes its indented detail lines with it ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nTwo blocking findings.\n\n### Findings (2)\n- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens\n  - the helper is shared with the admin console\n- **critical** {{LINK:src/foo.ts:12}} — the token compare is not constant time\n  - an attacker can recover the token byte by byte",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**critical** the auth guard is bypassed for expired tokens\n\ndetail"},
+                   {path: "src/foo.ts", line: 12, side: "RIGHT",
+                    body: "**critical** the token compare is not constant time\n\ndetail"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "both findings went inline" "2" "$(payload_of "$W" | jq '.comments | length')"
+assert_not_contains "a stripped bullet's detail line does not survive it" \
+  "the helper is shared with the admin console" "$BODY"
+assert_not_contains "…nor the second one" \
+  "an attacker can recover the token byte by byte" "$BODY"
+assert_not_contains "and no header is left claiming zero findings over orphaned prose" \
+  "### Findings (0)" "$BODY"
+assert_not_contains "the emptied section is pruned outright" "### Findings" "$BODY"
+rm -rf "$W"
+
+# (z1b) THE OTHER DIRECTION: a SURVIVING bullet keeps its own detail lines, and
+# the skip ends at the next top-level bullet. Guards against "fixing" (z1) by
+# swallowing everything after the first duplicate.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nTwo findings.\n\n### Findings (2)\n- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens\n  - the helper is shared with the admin console\n- **minor** {{LINK:src/foo.ts:12}} — the log line is noisy\n  - it fires on every request",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**critical** the auth guard is bypassed for expired tokens\n\ndetail"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_not_contains "the duplicated bullet's detail goes with it" \
+  "the helper is shared with the admin console" "$BODY"
+assert_contains "the surviving bullet is still there" "the log line is noisy" "$BODY"
+assert_contains "…and so is ITS detail line" "it fires on every request" "$BODY"
+assert_contains "the header counts the one finding left" "### Findings (1)" "$BODY"
+rm -rf "$W"
+
+# ── (z2) fbdup() reintroduced #130's double-print ────────────────────────────
+# #132 replaced the over-broad isdup() with path AND severity AND title and threw
+# the LINE key away. Identity is now unanimous-or-nothing, so any drift on either
+# field prints the finding twice — once under `### Findings`, once under
+# `### Also flagged`, with two different severities on the same defect.
+echo ""
+echo "── (z2) a fallback bullet is dropped on drift, kept on a real second finding ──"
+
+# (z2a) SEVERITY DRIFT. Same path, same line, same title; the body says critical
+# and the comment says major. Models do this routinely.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: "## Claude review — REQUEST_CHANGES\n\nOne finding.\n\n### Findings (1)\n- **critical** {{LINK:src/foo.ts:99}} — the token compare is not constant time",
+        comments: [{path: "src/foo.ts", line: 99, side: "RIGHT",
+                    body: "**major** the token compare is not constant time\n\ndetail"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_not_contains "a severity drift does not print the finding twice" "### Also flagged" "$BODY"
+assert_eq "…it is printed exactly once" "1" \
+  "$(printf '%s\n' "$BODY" | grep -c 'the token compare is not constant time')"
+
+# (z2b) MECHANICAL, no model inconsistency needed. The jq `title` def clamps to
+# `.[:90]`, so the fallback bullet for a long-titled finding is a truncated
+# PREFIX of the body's bullet. Comparing them whole can never match, so every
+# finding with a title over 90 characters double-printed deterministically.
+W=$(mktemp -d)
+LONG_T='the token comparison in the session refresh path is not constant time and leaks the secret byte by byte'
+jq -n --arg t "$LONG_T" '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne finding.\n\n### Findings (1)\n- **major** {{LINK:src/foo.ts:99}} — " + $t),
+        comments: [{path: "src/foo.ts", line: 99, side: "RIGHT",
+                    body: ("**major** " + $t + "\n\ndetail")}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_not_contains "a >90-char title does not print the finding twice" "### Also flagged" "$BODY"
+assert_eq "…it is printed exactly once" "1" \
+  "$(printf '%s\n' "$BODY" | grep -c 'the token comparison in the session refresh path')"
+rm -rf "$W"
+
+# (z2c) the 90-character cut can land ON A SPACE, and jq's `title` trims what the
+# cut left dangling while awk's substr does not. Both sides must cut AND trim the
+# same way or the prefixes differ by one byte and the match is missed again.
+W=$(mktemp -d)
+SPACE_T='the token comparison in the session refresh path is not constant time and leaks the token byte by byte'
+jq -n --arg t "$SPACE_T" '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne finding.\n\n### Findings (1)\n- **major** {{LINK:src/foo.ts:99}} — " + $t),
+        comments: [{path: "src/foo.ts", line: 99, side: "RIGHT",
+                    body: ("**major** " + $t + "\n\ndetail")}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_not_contains "a title whose 90th character is a space does not double-print" \
+  "### Also flagged" "$BODY"
+rm -rf "$W"
+
+# ── (z3) a FOUR-backtick fence bypassed both the stripper and its warning ────
+# GitHub accepts three OR MORE backticks for a suggestion fence, and both
+# regexes hardcoded exactly three. So a `**check**` carrying ````suggestion kept
+# its range AND a committable fence, with nothing warned anywhere — the exact
+# code-deleting shape (y2) was written to eliminate.
+echo ""
+echo "── (z3) a 3-or-more backtick suggestion fence is stripped from a check ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
+        comments: [{path: "src/foo.ts", start_line: 10, line: 13, side: "RIGHT",
+                    body: "**check** Should an expired token still refresh the session?\n\n````suggestion\n  if (token.expired) return null;\n````\n\nThat is the shape I would expect."}],
+        meta: {findings: [], human_review: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+C=$(payload_of "$W" | jq -c '.comments[0]')
+CBODY=$(echo "$C" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the check still posts inline" "1" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "…and keeps its range" "10" "$(echo "$C" | jq -r '.start_line')"
+assert_not_contains "no four-backtick fence survives on a check" 'suggestion' "$CBODY"
+assert_not_contains "…nor the code it would have committed" \
+  "if (token.expired) return null;" "$CBODY"
+assert_contains "the question itself is untouched" \
+  "Should an expired token still refresh the session?" "$CBODY"
+assert_contains "…and so is the prose after the fence" "That is the shape I would expect." "$CBODY"
+assert_contains "the strip is announced, never silent" "fence" "$OUT"
+rm -rf "$W"
+
+# ── (z4) an UNTERMINATED fence must not eat the rest of the question ─────────
+# The in-fence flag never cleared without a closer, so every line the model wrote
+# after the opener was discarded — and the warning said a fence was stripped, not
+# that the question went with it. Against this file's own NOTHING IS SILENTLY
+# DROPPED banner. Only the opener line is dropped now.
+echo ""
+echo "── (z4) an unterminated fence loses the fence, never the question ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
+                    body: "**check** Should an expired token still refresh the session?\n\n```suggestion\n  if (token.expired) return null;\n\nThat matters because the admin console shares this helper."}],
+        meta: {findings: [], human_review: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+CBODY=$(payload_of "$W" | jq -r '.comments[0].body')
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the question survives" "Should an expired token still refresh the session?" "$CBODY"
+assert_contains "…and so does everything the model wrote after the opener" \
+  "That matters because the admin console shares this helper." "$CBODY"
+assert_not_contains "the committable opener is gone" '```suggestion' "$CBODY"
+rm -rf "$W"
+
+# ── (z5) the dev-env return code is FILE CONTENT, and it reached HTML raw ────
+# `why` was interpolated straight into the `<sub>` block while its sibling `tail`
+# two lines below went through html_escape.
+echo ""
+echo "── (z5) the dev-env rc is HTML-escaped like every other quoted log byte ──"
+
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+mkdir -p "$W/dev-env"; printf '%s' '<b>&amp; oops</b>' > "$W/dev-env/rc"
+FUNCTIONAL_REQ=true DEVENV_RC="$W/dev-env/rc" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the rc is still reported" "exited" "$BODY"
+assert_not_contains "no raw tag from the rc file reaches the HTML block" "<b>" "$BODY"
+assert_not_contains "…nor its closer" "</b>" "$BODY"
+assert_contains "it is escaped instead" "&lt;b&gt;" "$BODY"
+assert_contains "…ampersand first, so the entities are not double-escaped" "&amp;amp;" "$BODY"
+rm -rf "$W"
+
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 
 echo ""
