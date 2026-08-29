@@ -25,6 +25,13 @@ set -uo pipefail
 #     enforcing the cap after expansion truncated away whole findings from a body
 #     the model had rendered perfectly within budget. Truncate first, expand after.
 #     Cut on a line boundary; hard-cut mid-line when not even one line fits.
+#     AND CUT BY VALUE, NOT BY POSITION: `### Also flagged` and `### What a
+#     human should review` are appended LAST and hold the findings that could
+#     not be posted inline, so a positional cut deleted exactly the items with
+#     no other surface. Blocks are ranked (severity first, those two sections
+#     ahead of `### Findings`, all of them ahead of prose), admitted best-first,
+#     and printed in the order the model wrote them. Anything cut out of those
+#     two sections is named in a `::warning::`.
 #   inline comments <= 5, critical/major first, each <= 700 BYTES (jq `length` is
 #     codepoints, so a body of accented text measured ~half its real size).
 # It also owns every GitHub URL: the models emit placeholders, never links.
@@ -54,6 +61,12 @@ set -uo pipefail
 # Exit semantics: 0 = a review reached the PR (REQUEST_CHANGES included — the
 # blocking signal is the PR review, not the check color). 1 = pipeline failure
 # (no usable orchestrator output, or the POST to GitHub failed).
+#
+# AND A FAILED POST NEVER LEAVES THE PR UNBLOCKED. The dismissal of a standing
+# CHANGES_REQUESTED runs AFTER the POST has succeeded, never before it: the old
+# order meant a rejected payload (a 422 on a comment line, which is unvalidated
+# whenever `pulls/files` returns no patch data) cleared the only blocking review
+# on the PR and then failed to replace it.
 #
 # Required env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, REVIEW_BOT_USER
 # Optional env: HEAD_SHA, GITHUB_STEP_SUMMARY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
@@ -171,18 +184,29 @@ supersede_crash_banners() {
 
 # crash_exit <context-message> — posts the most accurate banner it can + exit 1.
 # Three kinds, in priority order:
+#   post-rejected — the review rendered fine and GitHub REFUSED it. Nothing
+#                 about the output was unreadable, and on a 4xx a re-run hits the
+#                 same rejection, so "re-run, it usually succeeds" is wrong
+#                 advice. Classified FIRST, off an explicit flag: by the time
+#                 this runs $REVIEW_JSON is always non-empty, so the `unreadable`
+#                 test below matches every POST failure and told the reader the
+#                 output could not be parsed when it parsed perfectly.
 #   quota       — agent returned rate_limit (re-run after reset / rotate token).
 #   unreadable  — orchestrator output exists but is not usable JSON: the review
 #                 likely RAN to completion and was lost in serialization, so a
 #                 plain re-run usually recovers it. NOT "a human must review".
 #   no-output   — no orchestrator artifact at all: a genuine crash.
+POST_REJECTED=0
+POST_ERROR=""
 crash_exit() {
   local context="$1" kind quota_hit=false reset_phrase="" crash_msg payload run_link=""
   if [ -f "$ORCH_LOG" ] && grep -qE 'hit your limit · resets|"error": *"rate_limit"' "$ORCH_LOG" 2>/dev/null; then
     quota_hit=true
     reset_phrase=$(grep -oE 'resets [^"\\]+' "$ORCH_LOG" 2>/dev/null | head -1 || true)
   fi
-  if [ "$quota_hit" = "true" ]; then
+  if [ "${POST_REJECTED:-0}" = "1" ]; then
+    kind=post-rejected
+  elif [ "$quota_hit" = "true" ]; then
     kind=quota
   elif [ -s "$REVIEW_JSON" ]; then
     kind=unreadable
@@ -199,6 +223,11 @@ crash_exit() {
         echo "::error::Claude OAuth quota exhausted (rate_limit returned, no reset window in the agent log) — review agent could not produce output."
       fi
       echo "::error::Re-run after the quota resets, or rotate CLAUDE_CODE_OAUTH_TOKEN to a token with available quota." ;;
+    post-rejected)
+      echo "::error::$context"
+      if [ -n "$POST_ERROR" ]; then
+        echo "::error::GitHub rejected the review payload — this is not a serialization slip and a plain re-run will hit it again. Any standing blocking review was left in place."
+      fi ;;
     unreadable)
       echo "::error::Orchestrator output is present but unusable ($context). The review likely completed but its result was malformed — re-running the workflow usually recovers it." ;;
     no-output)
@@ -219,6 +248,13 @@ crash_exit() {
         fi
         crash_msg+=">"$'\n'
         crash_msg+="> **Action required:** re-run the workflow after the quota resets, or rotate \`CLAUDE_CODE_OAUTH_TOKEN\` to a token with available quota. No code review was produced for this push." ;;
+      post-rejected)
+        crash_msg+="> **Claude Review — GitHub rejected the review** :warning:"$'\n'">"$'\n'
+        crash_msg+="> The review was produced and rendered; GitHub refused to create it, so nothing was posted. The most common cause is an inline comment anchored to a line GitHub will not accept — which is unvalidated whenever \`pulls/files\` returns no patch data."$'\n'">"$'\n'
+        if [ -n "$POST_ERROR" ]; then
+          crash_msg+="> \`$(html_escape "$POST_ERROR")\`"$'\n'">"$'\n'
+        fi
+        crash_msg+="> **Action required:** a re-run on the same commit will be rejected the same way. A human should review this PR; any previously standing Claude review was deliberately left in place." ;;
       unreadable)
         crash_msg+="> **Claude Review — result unreadable** :warning:"$'\n'">"$'\n'
         crash_msg+="> The review agent ran and produced output, but the result could not be parsed, so no review was posted. This is almost always a transient serialization slip, not a problem with your PR."$'\n'">"$'\n'
@@ -595,18 +631,35 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
          else .o += [$l] end)
      | (if .f > 0 then .o + (.b | map(select((fencelen) == 0))) else .o end)
      | join("\n") | gsub("\n{3,}"; "\n\n") | sub("\\s+$"; ""));
-  def title:
-    ((.body // "") | split("\n") | (.[0] // "")
-     | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "") | .[:90] | sub("\\s+$"; ""))
-    | if length == 0 then "flagged inline" else . end;
   # Longest codepoint prefix of $s that fits $max bytes. Starts at the byte
   # budget (bytes >= codepoints, always) and walks down; ASCII exits at once.
+  # Defined ABOVE `title` because `title` cuts with it.
   def bcut($s; $max):
     if ($s | utf8bytelength) <= $max then $s
     else ({i: ([$max, ($s | length)] | min)}
           | until((($s[:.i]) | utf8bytelength) <= $max; .i = (.i - 1))
           | $s[:.i])
     end;
+  # BOTH SURFACES MUST CUT THE SAME STRING, OR THE 90-CHARACTER IDENTITY SPLITS.
+  # This title becomes the `### Also flagged` bullet; the matching body bullet is
+  # cut by budget.awk t90(), which cuts the NORMALISED string at 90 BYTES. This
+  # used to cut the RAW string at 90 CODEPOINTS, so any title over 90 characters
+  # whose normalisation changes length inside that window produced two different
+  # keys — and #133 double-print came straight back. Verified both directions:
+  # a title of 40 A, TWO spaces and 60 B printed the finding TWICE (once in
+  # `### Findings`, once in `### Also flagged`) where the single-space control
+  # deduped correctly; and the mirror, where a genuinely different, shorter
+  # finding in the body collided with the raw cut and DELETED the dropped one.
+  # So normalise FIRST — CR out, whitespace runs collapsed, trimmed, exactly
+  # what norm() does — then cut, on a codepoint boundary at 90 bytes, which is
+  # where t90() cuts too. #133 (z2c) trailing-space trim is kept: after the
+  # collapse at most one space can be left dangling by the cut.
+  def title:
+    ((.body // "") | split("\n") | (.[0] // "")
+     | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "")
+     | gsub("\r"; "") | gsub("[ \t]+"; " ") | sub("^ "; "") | sub(" $"; "")
+     | bcut(.; 90) | sub("[ \t]+$"; ""))
+    | if length == 0 then "flagged inline" else . end;
   def clamp($max):
     (if utf8bytelength <= $max then . else (bcut(.; $max - 3)) + "…" end)
     # An odd number of ``` fences means the closer is gone: drop the opener and
@@ -726,6 +779,44 @@ echo "::group::Render body"
 # stripped as a duplicate, or cut by the budget — is dropped with them. A
 # dangling `### Findings (2)` above nothing reads as a rendering bug.
 cat > "$WORK/budget.awk" <<'BUDGET_AWK'
+# The invisible byte sequences isblank() erases before deciding, and the byte
+# values utrim() needs. Both are built with sprintf: awk cannot portably carry a
+# literal high byte in a regex or a string constant, and this file runs the
+# program under LC_ALL=C so `%c` yields exactly one byte per value.
+function initinvis(   i) {
+  ninvis = 0
+  invis[++ninvis] = sprintf("%c", 13)                 # CR
+  invis[++ninvis] = sprintf("%c", 11)                 # VT
+  invis[++ninvis] = sprintf("%c", 12)                 # FF
+  invis[++ninvis] = sprintf("%c%c", 194, 133)         # U+0085 NEL
+  invis[++ninvis] = sprintf("%c%c", 194, 160)         # U+00A0 NBSP
+  invis[++ninvis] = sprintf("%c%c%c", 225, 154, 128)  # U+1680 OGHAM SPACE MARK
+  # U+2000..U+200D: the en/em space family, ZWSP, ZWNJ, ZWJ.
+  for (i = 128; i <= 141; i++) invis[++ninvis] = sprintf("%c%c%c", 226, 128, i)
+  invis[++ninvis] = sprintf("%c%c%c", 226, 128, 168)  # U+2028 LINE SEPARATOR
+  invis[++ninvis] = sprintf("%c%c%c", 226, 128, 169)  # U+2029 PARAGRAPH SEPARATOR
+  invis[++ninvis] = sprintf("%c%c%c", 226, 128, 175)  # U+202F NARROW NBSP
+  invis[++ninvis] = sprintf("%c%c%c", 226, 129, 159)  # U+205F MEDIUM MATH SPACE
+  invis[++ninvis] = sprintf("%c%c%c", 226, 129, 160)  # U+2060 WORD JOINER
+  invis[++ninvis] = sprintf("%c%c%c", 227, 128, 128)  # U+3000 IDEOGRAPHIC SPACE
+  invis[++ninvis] = sprintf("%c%c%c", 239, 187, 191)  # U+FEFF ZWNBSP / BOM
+  for (i = 128; i <= 255; i++) ordv[sprintf("%c", i)] = i
+}
+# Drop a trailing PARTIAL UTF-8 sequence. t90() cuts 90 bytes; jq cuts to 90
+# bytes on a codepoint boundary (`bcut`). Without this the two disagree on the
+# last character of any title whose 90th byte lands mid-sequence — the same
+# double-print / silent-delete pair the normalisation desync produced.
+function utrim(s,   L, i, b, need) {
+  L = length(s)
+  i = L
+  while (i > 0) { b = ordv[substr(s, i, 1)] + 0; if (b >= 128 && b < 192) i--; else break }
+  if (i == 0) return s
+  b = ordv[substr(s, i, 1)] + 0
+  if (b < 192) return s
+  need = (b >= 240 ? 4 : (b >= 224 ? 3 : 2))
+  if (i + need - 1 > L) return substr(s, 1, i - 1)
+  return s
+}
 function nph(s,   n) { n = 0; while (match(s, /\{\{LINK:[^{}]*\}\}/)) { n++; s = substr(s, RSTART + RLENGTH) } return n }
 function mlen(s) { return length(s) - 9 * nph(s) }
 # The `path[:line]` inside a line's FIRST {{LINK:}}, or "" — the bullet's identity.
@@ -743,7 +834,7 @@ function norm(s) { gsub(/\r/, "", s); gsub(/[ \t]+/, " ", s); sub(/^ /, "", s); 
 # then trims what the cut left dangling; a body bullet's title is whole. Compared
 # whole they never match, so the body side is cut here — and trimmed the same
 # way, or a title whose 90th character is a space differs by that one byte.
-function t90(s) { s = substr(norm(s), 1, 90); sub(/[ \t]+$/, "", s); return s }
+function t90(s) { s = utrim(substr(norm(s), 1, 90)); sub(/[ \t]+$/, "", s); return s }
 # Title of an inline comment = its first line minus the leading `**severity**`.
 function ctitle(s) { sub(/^[ \t]*\*\*[A-Za-z]+\*\*[ \t]*/, "", s); return norm(s) }
 # Title of a `### Findings` bullet = everything after its first {{LINK:}} and the
@@ -763,6 +854,9 @@ function bsev(s,   r) {
   if (match(r, /^\*\*[A-Za-z]+\*\*/)) return tolower(substr(r, RSTART + 2, RLENGTH - 4))
   return ""
 }
+# Severity as an ordering key. Anything unrecognised — a check, an unmarked
+# bullet — sorts behind every graded finding.
+function srank(s) { return (s == "critical" ? 0 : (s == "major" ? 1 : (s == "minor" ? 2 : 3))) }
 # Claim the first not-yet-used comment in a key's id list, or 0. Claiming marks
 # the COMMENT used, so it is spent for both of its keys at once.
 function claim(list,   m, a, i) {
@@ -834,7 +928,22 @@ function hardcut(s, budget,   out, ml, ph, phm) {
 # The block boundaries mode=strip and mode=fit both key on. One definition, two
 # callers, so the two passes cannot drift on what a bullet or a section is.
 function ishdr(s)    { return (s ~ /^[ \t]*###/) }
-function isblank(s)  { return (s ~ /^[ \t]*$/) }
+# WHAT COUNTS AS BLANK IS NOT AN ASCII QUESTION, AND `/^[ \t]*$/` GOT IT WRONG.
+# This predicate is shared by mode=strip, mode=fit and prune(), and it called a
+# line holding one U+00A0, one U+200B or a lone CR "content". In strip that meant
+# `skipping` never cleared after a stripped bullet, so every line to the end of
+# the body went with it — measured: 7 lines gone, the body ending at the title,
+# and the only diagnostic was "Dropped 7 body line(s) duplicating an inline
+# comment", which they did not.
+# awk here runs under LC_ALL=C and is BYTE-oriented, so the UTF-8 sequences are
+# matched explicitly; they are built with sprintf in initinvis() because a
+# literal 0x80-0xFF byte cannot be written into a regex portably across awks.
+# None of those bytes is a regex metacharacter, so a dynamic regex over them is
+# safe.
+function isblank(s,   i) {
+  for (i = 1; i <= ninvis; i++) gsub(invis[i], "", s)
+  return (s ~ /^[ \t]*$/)
+}
 # A TOP-LEVEL bullet is ONE finding. An indented `  - ` beneath it is that
 # finding's detail — never a finding of its own, and never a block boundary. It
 # is the ONLY bullet predicate any pass may use: an `isbullet` that also matched
@@ -844,21 +953,34 @@ function isblank(s)  { return (s ~ /^[ \t]*$/) }
 # Counting an indented bullet as a finding is also how `### Findings (5)` ended
 # up over two findings.
 function istop(s)    { return (s ~ /^[-*][ \t]/) }
-# Drop every `###` section left with no item, plus trailing blank lines.
+# The three sections this pipeline defines as BULLET LISTS. #133 closed the
+# sub-bullet route into `### Findings (0)` above loose prose; blank-line-separated
+# prose was the other one — prune() saw a non-blank line and kept the section,
+# renumber() counted top-level bullets and wrote (0). A findings header over
+# stranded prose is not a section with content, it is a header the strip or the
+# budget emptied, so it goes with whatever is left inside it.
+function isbulletsec(s) {
+  return (s ~ /^[ \t]*###[ \t]*(Findings|Also flagged|What a human should review)/)
+}
+# Drop every `###` section left with no item, plus trailing blank lines. For a
+# bullet-list section an "item" is a TOP-LEVEL BULLET, not any non-blank line.
 # Operates on out[1..cnt] in place; returns the new count.
 function prune(cnt,   i, j, has, m) {
   for (i = 1; i <= cnt; i++) del[i] = 0
   for (i = 1; i <= cnt; i++) {
-    if (out[i] !~ /^[ \t]*###/) continue
+    if (!ishdr(out[i])) continue
     has = 0
-    for (j = i + 1; j <= cnt && out[j] !~ /^[ \t]*###/; j++)
-      if (out[j] !~ /^[ \t]*$/) { has = 1; break }
+    for (j = i + 1; j <= cnt && !ishdr(out[j]); j++) {
+      if (isblank(out[j])) continue
+      if (isbulletsec(out[i]) && !istop(out[j])) continue
+      has = 1; break
+    }
     if (has) continue
-    for (j = i; j == i || (j <= cnt && out[j] !~ /^[ \t]*###/); j++) del[j] = 1
+    for (j = i; j == i || (j <= cnt && !ishdr(out[j])); j++) del[j] = 1
   }
   m = 0
   for (i = 1; i <= cnt; i++) if (!del[i]) out[++m] = out[i]
-  while (m > 0 && out[m] ~ /^[ \t]*$/) m--
+  while (m > 0 && isblank(out[m])) m--
   return m
 }
 # Rewrite every `### Header (n)` to the number of bullets that actually follow
@@ -878,6 +1000,7 @@ function renumber(cnt,   i, j, n) {
 # Every kept comment gets one id, listed under its `path:line` key and under its
 # `path`+title key. A bullet claims an ID, never a key.
 BEGIN {
+  initinvis()
   nk = 0
   while (keysfile != "" && (getline kk < keysfile) > 0) {
     # mode=fbfilter reads a DIFFERENT index: `path[:line]<TAB>sev<TAB>title`,
@@ -919,7 +1042,11 @@ END {
       l = line[i]
       if (l ~ /^[ \t]*###/) { insec = (l ~ /^[ \t]*###[ \t]*Findings/); continue }
       if (!insec) continue
-      if (l !~ /^[ \t]*[-*][ \t]/) continue
+      # istop, not the loose `/^[ \t]*[-*][ \t]/` #133 deleted `isbullet` to
+      # prevent. An indented detail line is not a finding, and one carrying a
+      # {{LINK:}} of its own would be indexed as one — which is enough for
+      # fbdup() to delete the real fallback bullet sitting at that path.
+      if (!istop(l)) continue
       k = phkey(l)
       if (k != "") print k "\t" bsev(l) "\t" btitle(l)
     }
@@ -980,41 +1107,86 @@ END {
     for (i = 1; i <= kept; i++) print out[i]
     exit
   }
-  # SKIP an over-long line, never STOP at one. Models write one line per
-  # paragraph, so a single long summary paragraph sits above `### Findings` —
-  # and stopping there dropped itself AND every finding after it. Measured: a
-  # 2492-byte first paragraph plus 15 findings produced a 496-byte body with
-  # zero findings, 1300 of 1800 bytes unspent, while the log said "posted 15
-  # findings". Skipping keeps the cut on a line boundary (a partial line is
-  # never emitted) and lets the budget reach the content that fits.
+  # THE BUDGET CUTS BY VALUE, NOT BY POSITION — AND IT USED TO CUT BY POSITION.
+  # `### What a human should review` and `### Also flagged` are APPENDED to the
+  # END of the body by 4b, so a positional truncator eats them FIRST. Those two
+  # sections exist precisely because their items could NOT be posted inline: they
+  # have no other surface, and cutting them deletes the finding from the review
+  # outright. Reproduced at the default 1800 with a 14-byte overflow: an
+  # out-of-hunk **critical** ("auth middleware is skipped for admin routes")
+  # vanished from every surface while two **minor** nits in `### Findings`
+  # survived, and `### Also flagged (1)` renumbered honestly so nothing on the
+  # page hinted at the loss.
   #
-  # AND SKIP THE BLOCK THAT LINE OWNS. A bare `continue` had none of the
-  # continuation tracking mode=strip carries, so a dropped bullet left its
-  # indented sub-bullets standing, dangling under the NEXT bullet and reading as
-  # that finding's detail. A dropped `###` header was worse: its bullets
-  # reparented under the PRECEDING heading, so critical and major findings were
-  # filed under `### Also flagged`, which says they could not be posted inline.
-  # `skipping` means what it means in strip: 1 = inside a dropped bullet or
-  # paragraph, ended by a blank line, a new top-level bullet or a header;
-  # 2 = inside a dropped SECTION, ended only by the next header.
-  skipping = 0
+  # So the file is cut into BLOCKS, each block is ranked, blocks are admitted
+  # best-first until the budget is spent, and what survives is printed in the
+  # ORIGINAL order — the reader still reads the body the model wrote, minus the
+  # least valuable parts of it.
+  #
+  # A BLOCK IS WHAT A LINE OWNS, exactly as in mode=strip: a `###` header alone,
+  # or a top-level bullet plus its continuation and detail lines, or a paragraph
+  # plus its continuation lines. That ownership is what keeps a dropped bullet
+  # from orphaning its sub-bullets under the next finding, and a dropped header
+  # from reparenting its criticals under `### Also flagged` — both were live
+  # defects (see (y3)/(y3b)). Leading blank lines belong to the block that
+  # FOLLOWS them, so a separator never outlives the thing it separated.
+  #
+  # RANK, best first: the review title (~30 bytes, and a body that opens
+  # mid-sentence reads as a rendering bug), then every bullet by SEVERITY and, at
+  # equal severity, by section — `### Also flagged` and `### What a human should
+  # review` ahead of `### Findings`, and all of them ahead of ordinary prose. A
+  # bullet can never be admitted without its own header, so a section whose
+  # header does not fit is dropped whole rather than reparented.
+  nb = 0; curhdr = 0; pb = 0; cur = 0
   for (i = 1; i <= NR; i++) {
-    l = line[i]; ll = mlen(l) + 1
+    l = line[i]
+    if (isblank(l)) { if (pb == 0) pb = i; continue }
     if (ishdr(l)) {
-      if (n + ll > max) { skipping = 2; continue }
-      skipping = 0; out[++kept] = l; n += ll; continue
+      nb++; bstart[nb] = (pb ? pb : i); bend[nb] = i; bfirst[nb] = i
+      bishdr[nb] = 1; bhdr[nb] = 0
+      secw[nb] = (l ~ /^[ \t]*###[ \t]*(Also flagged|What a human should review)/) ? 0 \
+                 : ((l ~ /^[ \t]*###[ \t]*Findings/) ? 1 : 2)
+      curhdr = nb; cur = 0; pb = 0; continue
     }
-    if (skipping == 2) continue
-    if (isblank(l)) {
-      skipping = 0
-      if (n + ll > max) continue
-      out[++kept] = l; n += ll; continue
-    }
-    if (istop(l)) skipping = 0
-    else if (skipping) continue
-    if (n + ll > max) { skipping = 1; continue }
-    out[++kept] = l; n += ll
+    # A continuation line: not a bullet of its own, not separated by a blank,
+    # and something is open to continue.
+    if (!istop(l) && cur > 0 && pb == 0) { bend[cur] = i; continue }
+    nb++; bstart[nb] = (pb ? pb : i); bend[nb] = i; bfirst[nb] = i
+    bishdr[nb] = 0; bhdr[nb] = curhdr; cur = nb; pb = 0
   }
+  for (b = 1; b <= nb; b++) {
+    bcost[b] = 0
+    for (i = bstart[b]; i <= bend[b]; i++) { bcost[b] += mlen(line[i]) + 1; blk[i] = b }
+    if (bishdr[b]) { brank[b] = 900; continue }
+    fl = line[bfirst[b]]
+    w = (bhdr[b] ? secw[bhdr[b]] : 2)
+    if (istop(fl)) brank[b] = 1 + srank(bsev(fl)) * 4 + w
+    else if (fl ~ /^[ \t]*#/) brank[b] = 0
+    else brank[b] = 20
+  }
+  # awk has no sort; the ranks are a handful of small integers, so one pass per
+  # rank is both stable (original order within a rank) and cheap.
+  n = 0
+  for (r = 0; r <= 20; r++) {
+    for (b = 1; b <= nb; b++) {
+      if (bishdr[b] || brank[b] != r) continue
+      need = bcost[b]; hb = bhdr[b]
+      if (hb > 0 && !adm[hb]) need += bcost[hb]
+      if (n + need > max) { lostb[b] = 1; continue }
+      if (hb > 0 && !adm[hb]) { adm[hb] = 1; n += bcost[hb] }
+      adm[b] = 1; n += bcost[b]
+    }
+  }
+  kept = 0
+  for (i = 1; i <= NR; i++) if (blk[i] > 0 && adm[blk[i]]) out[++kept] = line[i]
+  # NOTHING IS SILENTLY DROPPED. A `### Findings` bullet the budget cut is still
+  # in the round-2 state block; an `### Also flagged` or human-review item is
+  # not, because it is the fallback for a comment that could not be posted at
+  # all. So those, and only those, are named to the run log.
+  if (lostfile != "")
+    for (b = 1; b <= nb; b++)
+      if (lostb[b] && bhdr[b] > 0 && secw[bhdr[b]] == 0 && istop(line[bfirst[b]]))
+        print line[bfirst[b]] > lostfile
   # Not one line fit: cut mid-line rather than return an empty body.
   if (kept == 0 && NR > 0) {
     h = hardcut(line[1], max)
@@ -1092,11 +1264,26 @@ TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
 AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$DEV_ENV_NOTICE") ))
 MEASURED=$(LC_ALL=C awk -v mode=measure -f "$WORK/budget.awk" "$WORK/body.raw")
 if [ "${MEASURED:-0}" -gt "$AVAIL" ]; then
-  echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating."
-  LC_ALL=C awk -v mode=fit -v max="$(( AVAIL - $(blen "$TRUNC_MARKER") ))" \
+  echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating by value (severity first, and the sections that have no other surface ahead of ordinary prose)."
+  : > "$WORK/fit-lost.txt"
+  LC_ALL=C awk -v mode=fit -v lostfile="$WORK/fit-lost.txt" \
+    -v max="$(( AVAIL - $(blen "$TRUNC_MARKER") ))" \
     -f "$WORK/budget.awk" "$WORK/body.raw" > "$WORK/body.trunc"
   mv "$WORK/body.trunc" "$WORK/body.raw"
   printf '%s' "$TRUNC_MARKER" >> "$WORK/body.raw"
+  # An `### Also flagged` / `### What a human should review` item the budget cut
+  # reaches the reader NOWHERE: it could not be posted inline, which is why it
+  # was there, and the fallback sections are not carried in the state block. The
+  # generic "over the budget — truncating" line said nothing about which. See
+  # this file's NOTHING IS SILENTLY DROPPED banner.
+  if [ -s "$WORK/fit-lost.txt" ]; then
+    while IFS= read -r lost_line; do
+      [ -z "$lost_line" ] && continue
+      lost_line=$(printf '%s' "$lost_line" \
+        | sed 's/^[-*][ \t]*//; s/^\[ \][ \t]*//; s/{{LINK:\([^{}]*\)}}/\1/g')
+      echo "::warning::Over the ${BODY_MAX}-byte body budget: dropped \"$lost_line\" — it could not be posted inline either, so it now reaches the reader nowhere."
+    done < "$WORK/fit-lost.txt"
+  fi
 fi
 
 path_sha() {
@@ -1179,6 +1366,9 @@ echo "::endgroup::"
 # would tell the next round "round N found nothing".
 echo "::group::Review state"
 echo '[]' > "$WORK/carried.json"
+# Seeded, not left missing: section 8 reads it, and a skip-marked review skips
+# the whole block below.
+: > "$WORK/this-round.json"
 if is_skip_marked; then
   echo "Skip-marked review (judged nothing) — no state block."
 else
@@ -1245,6 +1435,16 @@ else
             then $f + {id: $f.cf, r: ($old.r // $f.r)}
             else $f end)
     | map(del(.cf))
+    # THE ROUND A FINDING WAS FIRST SEEN IS NOT A `carried_from` PRIVILEGE.
+    # `r` was inherited only through the re-wording escape valve, so a finding
+    # the model simply RE-LISTED in the same words got a fresh id-match, no
+    # `cf`, and `r: $round`. Verified over three rounds: R1 files it (r:1), R2
+    # re-lists it verbatim (r:2), R3 reports `_(first seen round 2)_`. That
+    # number is what a reviewer uses to judge how long a finding has been
+    # ignored, so resetting it understates the age of exactly the findings that
+    # matter most. Any id the priors already carry keeps the round they carry.
+    | ($prior | map({key: .id, value: (.r // 1)}) | from_entries) as $pr
+    | map(if $pr[.id] != null then . + {r: ([$pr[.id], .r] | min)} else . end)
     | group_by(.id)
     | map(sort_by(._o)
           | (.[0]) as $b
@@ -1331,42 +1531,12 @@ else
 fi
 echo "::endgroup::"
 
-# ── 5. Dismiss own stale blocking reviews (keep COMMENTED for audit trail) ──
-# Only a review that JUDGED the diff may clear a standing one. A skip-marked
-# body (guard.sh's oversized split request) read no code, so dismissing on its
-# way in would (a) un-block a PR nobody re-reviewed and (b) leave the next
-# judged round reading `prior_verdict` off a DISMISSED review, which means "the
-# author opted out" (see prior-review-state.sh). Leave it standing.
-echo "::group::Dismiss stale reviews"
-if is_skip_marked; then
-  echo "Skip-marked review (judged nothing) — leaving standing reviews in place."
-  STALE_IDS=""
-else
-  STALE_IDS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
-    | jq -s --arg bot "$BOT" '
-        (add // [])
-        | [.[] | select(.user.login == $bot and (.state == "CHANGES_REQUESTED" or .state == "APPROVED")) | .id]
-        | .[]' 2>/dev/null || true)
-fi
-while IFS= read -r id; do
-  [ -z "$id" ] && continue
-  echo "Dismissing review $id"
-  if [ -n "$OUT_DIR" ]; then
-    log_suppressed "DISMISS $id"
-  else
-    gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
-      -f message="Superseded by new Claude review on updated commit." >/dev/null 2>&1 \
-      || echo "::warning::Could not dismiss review $id (non-fatal)"
-  fi
-done <<< "$STALE_IDS"
-echo "::endgroup::"
-
-# ── 6. Supersede prior crash banners ─────────────────────────────────────────
+# ── 5. Supersede prior crash banners ─────────────────────────────────────────
 echo "::group::Supersede prior crash banners"
 supersede_crash_banners
 echo "::endgroup::"
 
-# ── 7. Atomic POST ───────────────────────────────────────────────────────────
+# ── 6. Atomic POST ───────────────────────────────────────────────────────────
 echo "::group::Post review"
 jq -n \
   --arg event "$VERDICT" \
@@ -1385,6 +1555,12 @@ if [ -n "$OUT_DIR" ]; then
   echo "Dry run — wrote the review to $OUT_DIR instead of posting it"
 elif ! POST_RESPONSE=$(gh api --method POST "repos/$REPO/pulls/$PR/reviews" --input "$WORK/payload.json" 2>&1); then
   echo "::endgroup::"
+  # The banner is chosen off THIS flag, not off `[ -s "$REVIEW_JSON" ]` — which
+  # is always true here, so every POST failure used to render as "the result
+  # could not be parsed … almost always a transient serialization slip … re-run,
+  # it usually succeeds". The output parsed fine and a 422 recurs on retry.
+  POST_REJECTED=1
+  POST_ERROR=$(printf '%s' "$POST_RESPONSE" | tr '\n' ' ' | head -c 300)
   crash_exit "Review POST failed — verdict is $VERDICT but no PR review was created: $(echo "$POST_RESPONSE" | head -c 400)"
 else
   REVIEW_ID=$(echo "$POST_RESPONSE" | jq -r '.id // empty' 2>/dev/null || echo "")
@@ -1392,8 +1568,78 @@ else
 fi
 echo "::endgroup::"
 
+# ── 7. Dismiss own stale blocking reviews — ONLY NOW ────────────────────────
+# THIS RUNS AFTER THE POST, AND THAT ORDER IS THE WHOLE POINT. It used to run
+# before it, so a rejected POST (a 422 on an inline comment line — unvalidated
+# whenever `pulls/files` returns no patch data) went: dismiss succeeds, POST
+# fails, exit 1 — and the PR was left with NO blocking review at all. The
+# standing CHANGES_REQUESTED was the only thing holding the merge, and it was
+# cleared to make room for a review that never arrived. crash_exit() above never
+# returns, so reaching this line is itself the proof that a replacement is up.
+#
+# Only a review that JUDGED the diff may clear a standing one. A skip-marked
+# body (guard.sh's oversized split request) read no code, so dismissing on its
+# way in would (a) un-block a PR nobody re-reviewed and (b) leave the next
+# judged round reading `prior_verdict` off a DISMISSED review, which means "the
+# author opted out" (see prior-review-state.sh). Leave it standing.
+echo "::group::Dismiss stale reviews"
+if is_skip_marked; then
+  echo "Skip-marked review (judged nothing) — leaving standing reviews in place."
+  STALE_IDS=""
+elif [ -z "$OUT_DIR" ] && [ -z "$REVIEW_ID" ]; then
+  # The list is read AFTER the POST, so the review this run just created is in
+  # it — and a REQUEST_CHANGES review dismissing ITSELF unblocks the PR exactly
+  # the way the old ordering did. It is excluded by id; with no id to exclude,
+  # the safe direction is to leave every standing review alone. A stale block is
+  # a nuisance, an unblocked PR is the failure this section exists to prevent.
+  echo "::warning::The POST returned no review id — leaving standing reviews in place rather than risk dismissing the review just posted."
+  STALE_IDS=""
+else
+  STALE_IDS=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" 2>/dev/null \
+    | jq -s --arg bot "$BOT" --arg newid "${REVIEW_ID:-}" '
+        (add // [])
+        | [.[] | select(.user.login == $bot and (.state == "CHANGES_REQUESTED" or .state == "APPROVED")
+                        and ((.id | tostring) != $newid)) | .id]
+        | .[]' 2>/dev/null || true)
+fi
+while IFS= read -r id; do
+  [ -z "$id" ] && continue
+  echo "Dismissing review $id"
+  if [ -n "$OUT_DIR" ]; then
+    log_suppressed "DISMISS $id"
+  else
+    gh api --method PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+      -f message="Superseded by new Claude review on updated commit." >/dev/null 2>&1 \
+      || echo "::warning::Could not dismiss review $id (non-fatal)"
+  fi
+done <<< "$STALE_IDS"
+echo "::endgroup::"
+
 # ── 8. Step summary ──────────────────────────────────────────────────────────
-FINDING_COUNT=$(jq '(.meta.findings // []) | length' "$REVIEW_JSON")
+# THE SUMMARY COUNTS THE SAME FLOOR THE STATE BLOCK DOES, NOT meta ALONE.
+# 4c already documents why meta cannot be trusted for this: it is model-written
+# and can be empty or absent while three criticals post inline. The state block
+# was rebuilt on `kept` + `dropped` unioned with meta; the summary was left
+# reading meta, so a REQUEST_CHANGES carrying two criticals rendered
+# `### Findings (0)` and `::warning::Claude review: REQUEST_CHANGES — 0 blocking
+# finding(s)`. `this-round.json` IS that union (checks excluded, ids resolved),
+# so both surfaces now report one number. A skip-marked review judged nothing
+# and writes no state, which is why the file is seeded empty above.
+SUMMARY_FINDINGS="$WORK/summary-findings.json"
+if [ -s "$WORK/this-round.json" ] && jq -e 'type == "array"' "$WORK/this-round.json" >/dev/null 2>&1; then
+  jq 'map({sev: (.sev // ""), p: (.p // ""), l: (.l // 0), t: (.t // "")})
+      | sort_by(if .sev == "critical" then 0 elif .sev == "major" then 1
+                elif .sev == "minor" then 2 else 3 end)' \
+    "$WORK/this-round.json" > "$SUMMARY_FINDINGS" 2>/dev/null \
+    || jq -n '[]' > "$SUMMARY_FINDINGS"
+else
+  jq '(.meta.findings // [])
+      | map({sev: ((.severity // "") | ascii_downcase), p: (.path // ""),
+             l: (.line // 0), t: (.title // "")})' "$REVIEW_JSON" > "$SUMMARY_FINDINGS" 2>/dev/null \
+    || jq -n '[]' > "$SUMMARY_FINDINGS"
+fi
+FINDING_COUNT=$(jq 'length' "$SUMMARY_FINDINGS" 2>/dev/null || echo 0)
+FINDING_COUNT=${FINDING_COUNT:-0}
 HUMAN_COUNT=$(jq '(.meta.human_review // []) | length' "$REVIEW_JSON")
 RESOLVED_COUNT=$(jq '(.meta.resolved_prior // []) | length' "$REVIEW_JSON")
 CARRY_COUNT=$(jq 'length' "$WORK/carried.json" 2>/dev/null || echo 0)
@@ -1405,7 +1651,8 @@ CARRY_COUNT=$(jq 'length' "$WORK/carried.json" 2>/dev/null || echo 0)
     echo ""
   fi
   echo "### Findings ($FINDING_COUNT)"
-  jq -r '(.meta.findings // [])[] | "- **\((.severity // "?") | ascii_upcase)** `\(.path // "?"):\(.line // "?")` — \(.title // "Untitled")"' "$REVIEW_JSON"
+  jq -r '.[] | "- **\((if (.sev // "") == "" then "?" else .sev end) | ascii_upcase)** `\(if .p == "" then "?" else .p end):\(if (.l // 0) > 0 then .l else "?" end)` — \(if (.t // "") == "" then "Untitled" else .t end)"' \
+    "$SUMMARY_FINDINGS"
   if [ "$HUMAN_COUNT" -gt 0 ]; then
     echo ""
     echo "### For a human to review ($HUMAN_COUNT)"
