@@ -19,7 +19,7 @@ printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS DE
 gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesReferences,files > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
-awk '/^#{2,3} /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
+awk '/^(##|###) /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
 # The dev-env boots in the background from BEFORE this session started, so this
 # waits for its rc rather than reading a file still being written. A bare `cat`
 # raced it and always lost: the tester was ruled ineligible on every consumer

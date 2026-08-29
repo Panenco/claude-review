@@ -936,6 +936,56 @@ echo ""
 want "build-spec still excludes .claude/** from spec assembly" "$BUILDSPEC" \
   '\.claude/\*\|\*/\.claude/\*'
 
+# ── the auth recipe must survive an awk without interval support ────────────
+# The review job runs on a self-hosted image whose awk is mawk. Older mawk does
+# not implement POSIX interval expressions and treats `{` literally, so
+# `/^#{2,3} /` matched NOTHING and /tmp/auth-recipe.md came out 0 bytes — the
+# functional tester never received the auth recipe on that fleet, and reported
+# "AUTH_READY=false and /tmp/auth-recipe.md is empty" instead. Measured on
+# seaters run 33257534059 against a config that really did have `### Auth`:
+# 2901 bytes extracted with interval support, 0 without.
+echo ""
+echo "── the auth-recipe extractor is portable ──"
+EXTRACTOR=$(grep -F "auth-recipe.md" "$ROOT/skills/review-orchestrator.md" | head -1)
+case "$EXTRACTOR" in
+  *'{'[0-9]*','[0-9]*'}'*)
+    echo "FAIL: the extractor uses an interval expression — mawk on the review fleet ignores it"
+    fail=$((fail + 1)) ;;
+  *) echo "OK:   no interval expression in the extractor" ;;
+esac
+
+# Behavioural: it must still capture the section it is meant to capture.
+CFG=$(mktemp)
+cat > "$CFG" <<'CFGEOF'
+## Build prep
+irrelevant
+### Auth
+the recipe body
+```bash
+echo hi
+```
+### Known dev-env quirks
+a quirk
+## Something else
+not part of the recipe
+CFGEOF
+PROG=$(printf '%s' "$EXTRACTOR" | sed -e "s/^[^']*'//" -e "s/'.*$//")
+GOT=$(awk "$PROG" "$CFG")
+case "$GOT" in
+  *"the recipe body"*) echo "OK:   it captures the Auth section" ;;
+  *) echo "FAIL: the extractor did not capture the Auth section"; fail=$((fail + 1)) ;;
+esac
+case "$GOT" in
+  *"a quirk"*) echo "OK:   …and the dev-env quirks section" ;;
+  *) echo "FAIL: the extractor dropped the quirks section"; fail=$((fail + 1)) ;;
+esac
+case "$GOT" in
+  *"not part of the recipe"*)
+    echo "FAIL: the extractor leaked a section it should have ended at"; fail=$((fail + 1)) ;;
+  *) echo "OK:   …and stops at the next section" ;;
+esac
+rm -f "$CFG"
+
 echo ""
 if [ "$fail" -eq 0 ]; then
   echo "All pipeline contract tests passed."
