@@ -23,6 +23,8 @@ and exit. **Do not invent scenarios**, do not derive a plan from the diff, the P
 
 A spec document carries more criteria than you can drive in one budget. Verify the ones the diff touches first, and list every criterion you never reached in `untested` — a partial run that says what it skipped is honest; a partial run that reads as complete is not.
 
+**Each `untested` entry is ≤140 chars: the criterion, then the blocker.** They are rendered as a bullet list in the review, so a paragraph each is a wall of text nobody finishes — and the poster trims the overflow, which costs you the end of your own reason. `AC7 — fill dialog not reached before the budget ran out` carries everything a reader needs; the file paths and seed-fixture names behind it do not.
+
 ## Turn 1 — browser smoke check (unbatched, no retry)
 
 `agent-browser open about:blank` as the only call in the turn.
@@ -89,7 +91,7 @@ A screenshot is a capture of the live app you actually drove, or a rendered HTTP
     }
   ],
   "screenshots": [{"file": "/tmp/screenshots/01-list.png", "description": "AC1 — list page, seeded data (<=80 chars)"}],
-  "untested": ["Criteria you never reached, and why"]
+  "untested": ["Criterion you never reached, and why — <=140 chars each"]
 }
 ```
 
