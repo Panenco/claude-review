@@ -1388,6 +1388,68 @@ assert_contains "the finding under the check keeps its bullet" "off-by-one" "$BO
 assert_not_contains "the inline finding's own bullet is still stripped" "— other" "$BODY"
 rm -rf "$W"
 
+# ── (m) a functional finding carries a screenshot through the poster ─────────
+# upload-screenshots.sh is covered in isolation, and the tester is covered by
+# nothing that runs here — but the SEAM between them is this poster. A
+# functional-derived finding is an ordinary `**severity**` comment whose body
+# embeds the uploaded PNG, so it must classify as a finding (not a check), keep
+# its URL intact, and fall back to `### Also flagged` rather than the
+# human-review heading when it cannot be anchored.
+echo ""
+echo "── (m) screenshot-bearing functional finding ──"
+
+SHOT='https://github.com/o/r/raw/review-assets/pr-7/checkout-step-3.png'
+
+# (m1) in-hunk: posts inline with the embed intact, alongside a check
+W=$(mktemp -d)
+jq -n --arg shot "$SHOT" '
+  {verdict: "COMMENT",
+   body: "## Claude review — COMMENT\n\nOne reproduced failure.",
+   comments: [
+     {path: "src/foo.ts", line: 11, side: "RIGHT",
+      body: ("**major** checkout total renders 0,00 after applying a voucher\n\nReproduced against the running app.\n\n![step 3](" + $shot + ")")},
+     {path: "src/foo.ts", line: 12, side: "RIGHT",
+      body: "**check** confirm the voucher rounding rule with finance\n\nneeds a product decision"}
+   ],
+   meta: {findings: [], human_review: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "both the finding and the check post inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the screenshot URL survives verbatim" "$SHOT" \
+  "$(echo "$PAYLOAD" | jq -r '.comments[].body')"
+assert_not_contains "the embed is not clamped mid-URL" "review-assets/pr-7/checkout-step-3.pn…" \
+  "$(echo "$PAYLOAD" | jq -r '.comments[].body')"
+assert_not_contains "no body heading is written when both anchored" "What a human should review" "$BODY"
+rm -rf "$W"
+
+# (m2) out-of-hunk: the finding goes to `### Also flagged`, the check to its own
+# heading. A reproduced defect must never be filed as a question.
+W=$(mktemp -d)
+jq -n --arg shot "$SHOT" '
+  {verdict: "COMMENT",
+   body: "## Claude review — COMMENT\n\nOne reproduced failure.",
+   comments: [
+     {path: "src/foo.ts", line: 99, side: "RIGHT",
+      body: ("**major** checkout total renders 0,00 after applying a voucher\n\n![step 3](" + $shot + ")")},
+     {path: "src/foo.ts", line: 98, side: "RIGHT",
+      body: "**check** confirm the voucher rounding rule with finance\n\nneeds a product decision"}
+   ],
+   meta: {findings: [], human_review: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "neither can be anchored" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the functional finding lands under Also flagged" "### Also flagged" "$BODY"
+assert_contains "…carrying its severity" "**major**" "$BODY"
+assert_contains "the check lands under its own heading" "### What a human should review" "$BODY"
+assert_contains "…as a checkbox" "- [ ] " "$BODY"
+# The discriminator: a screenshot comment misclassified as a check would be
+# rendered as a question, losing the severity a reproduced defect carries.
+CHECKS_SECTION=$(printf '%s' "$BODY" | awk '/^### What a human should review/{p=1;next} /^###/{p=0} p')
+assert_not_contains "the finding is NOT filed as a question" "checkout total renders" "$CHECKS_SECTION"
+rm -rf "$W"
+
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 
 echo ""
