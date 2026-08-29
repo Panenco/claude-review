@@ -116,15 +116,28 @@ The poster caps the total and orders it for you: findings first by severity, che
 
 The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
 
-A **check** comment is the other shape — one per surviving `human_review` item:
+A **check** comment is the other shape — one per surviving `human_review` item. It exists so a reviewer can settle business logic without reconstructing the context first, so it is **short, scannable and block-anchored**:
 
-```
-**check** <what_to_check>
+````
+**check** <the question, one line, ends in a question mark>
 
-<why_unresolved>
-```
+- <what the code does now — a phrase, not a sentence>
+- <the specific thing that does not follow from it>
+- <the governing text or caller, when there is one>
 
-No ```suggestion``` fence: a check is a question, not a patch. The `**check**` prefix is load-bearing — the poster reads it to route a check it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a question would read as an accusation.
+<one line: why this needs a human and not you>
+````
+
+Hard rules, because a wall of text here is worse than no comment:
+
+- **The question is one line and ≤100 chars.** If it needs two, it is two checks or it is a finding.
+- **Two or three bullets. Never four.** Each ≤90 chars, a phrase — no leading "The", no trailing period. Name the symbol or file inline in backticks instead of describing where it is.
+- **The closing line names the blocker**, in the `why_unresolved` sense: needs a product decision, needs production data, the source is not in the checkout. Not "I did not check".
+- No ```suggestion``` fence: a check is a question, not a patch.
+
+**Anchor it to the block, not a line.** Set `start_line` to the first line of the construct the question is about — the handler, the branch, the config block — and `line` to its last. The reviewer then sees the code being questioned instead of one arbitrary line of it. Both ends must be inside a diff hunk and no more than 30 lines apart; the poster collapses anything else to a single-line comment at `line`, so a range that is wrong costs nothing but a range that is right saves the reviewer the lookup. Findings stay single-line — a ```suggestion``` fence must replace exact lines.
+
+The `**check**` prefix is load-bearing — the poster reads it to route a check it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a question would read as an accusation.
 
 **A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead. A finding with a prose fix is fine; a finding with a wrong patch is not.
 
@@ -135,7 +148,8 @@ No ```suggestion``` fence: a check is a question, not a patch. The `**check**` p
   "verdict": "APPROVE|COMMENT|REQUEST_CHANGES",
   "body": "<the rendered markdown above, with {{LINK:...}} placeholders>",
   "comments": [
-    {"path": "src/foo.ts", "line": 42, "side": "RIGHT", "body": "<=700 chars"}
+    {"path": "src/foo.ts", "line": 42, "side": "RIGHT", "body": "<=700 chars"},
+    {"path": "src/foo.ts", "start_line": 30, "line": 42, "side": "RIGHT", "body": "**check** ... (start_line = block-anchored, checks only)"}
   ],
   "meta": {
     "findings": [

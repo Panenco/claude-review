@@ -1333,7 +1333,9 @@ for sh in "$POSTER" "$(pwd)/scripts/prior-findings.sh"; do
     echo "OK:   ${sh##*/} does not use set -e"
   fi
 done
-for dead in '\.resolve_threads' '\.bot_replies' resolveReviewThread functional-meta.json start_line; do
+# `start_line` was on this list until check comments grew block anchoring. It is
+# live now, so removing it here is the point — not an oversight.
+for dead in '\.resolve_threads' '\.bot_replies' resolveReviewThread functional-meta.json; do
   if grep -qE "$dead" "$POSTER"; then
     echo "FAIL: post-review.sh still handles '$dead', which the v4 pipeline never produces"
     fail=$((fail + 1))
@@ -1534,6 +1536,82 @@ rm -rf "$W"
 # not be told about a browser it never asked for.
 run_devenv_case false 1 "ERROR: boom"
 assert_not_contains "an unrequested pass is not mentioned" "Functional pass requested" "$BODY"
+rm -rf "$W"
+
+# ── (r) check comments anchor to the whole block ────────────────────────────
+# A question about a handler pinned to one arbitrary line makes the reviewer
+# reconstruct the block themselves. `start_line` anchors it to the code being
+# questioned. GitHub 422s a malformed range and the POST is ATOMIC, so a bad
+# range must collapse to a single-line comment rather than kill every comment.
+echo ""
+echo "── (r) block-anchored check comments ──"
+
+# The shared fixture hunk covers RIGHT 10-13 in src/foo.ts.
+check_review() { # check_review <start_line> <line>
+  jq -n --argjson s "$1" --argjson l "$2" \
+    '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
+      comments: [{path: "src/foo.ts", start_line: $s, line: $l, side: "RIGHT",
+                  body: "**check** Should a refused code still navigate the fan?\n\n- Refusal shown, claim skipped — correct\n- Handler still falls through to navigate()"}],
+      meta: {findings: [], human_review: []}}'
+}
+
+# (r1) a range fully inside the hunk posts as a range
+W=$(mktemp -d); check_review 10 13 > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+C=$(payload_of "$W" | jq -c '.comments[0]')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the range survives to the POST" "10" "$(echo "$C" | jq -r '.start_line')"
+assert_eq "…with a start_side GitHub requires" "RIGHT" "$(echo "$C" | jq -r '.start_side')"
+assert_eq "…anchored at the end line" "13" "$(echo "$C" | jq -r '.line')"
+rm -rf "$W"
+
+# (r2) start_line outside the hunk → the WHOLE comment falls back, rather than
+# posting a range GitHub would 422 and taking every other comment down with it
+W=$(mktemp -d); check_review 4 13 > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "nothing posts inline" "0" "$(payload_of "$W" | jq '.comments | length')"
+assert_contains "the question is not lost" "### What a human should review" "$BODY"
+rm -rf "$W"
+
+# (r3) a malformed range (start at or past the anchor) collapses to single-line
+# instead of being dropped — the question is still worth asking.
+for pair in "13 13" "13 11"; do
+  set -- $pair
+  W=$(mktemp -d); check_review "$1" "$2" > "$W/review.json"
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  C=$(payload_of "$W" | jq -c '.comments[0]')
+  assert_eq "start=$1 line=$2 posts inline" "1" "$(payload_of "$W" | jq '.comments | length')"
+  assert_eq "…as a single-line comment" "null" "$(echo "$C" | jq -r '.start_line // "null"')"
+  rm -rf "$W"
+done
+
+# (r4) an absurd range is not a "block". Needs its own WIDE hunk: against the
+# shared 10-13 fixture an over-long range is rejected for being out of hunk, so
+# it would never reach the size rule at all.
+WIDE_FIXTURE=$(mktemp)
+python3 - "$WIDE_FIXTURE" <<'WIDE'
+import json, sys
+patch = "@@ -10,60 +10,60 @@\n" + "\n".join(" line%d" % i for i in range(10, 70))
+json.dump([{"filename": "src/foo.ts", "patch": patch}], open(sys.argv[1], "w"))
+WIDE
+W=$(mktemp -d); check_review 10 50 > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W"
+assert_eq "a 40-line range still posts" "1" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "…collapsed to one line, not wrapping half the file" "null" \
+  "$(payload_of "$W" | jq -r '.comments[0].start_line // "null"')"
+# The boundary itself: 30 lines is a block, 31 is not.
+W2=$(mktemp -d); check_review 20 50 > "$W2/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W2"
+assert_eq "exactly 30 lines is still a block" "20" \
+  "$(payload_of "$W2" | jq -r '.comments[0].start_line // "null"')"
+rm -rf "$W" "$W2" "$WIDE_FIXTURE"
+
+# (r5) findings are unaffected: no start_line in, none out
+W=$(mktemp -d); echo "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a finding posts without a range" "null" \
+  "$(payload_of "$W" | jq -r '.comments[0].start_line // "null"')"
 rm -rf "$W"
 
 # ── (q) a PASS publishes its screenshots ─────────────────────────────────────
