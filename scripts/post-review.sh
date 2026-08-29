@@ -91,6 +91,11 @@ COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-10}"
 ROUND="${ROUND:-1}"
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
 STATE_MAX="${REVIEW_STATE_MAX:-4000}"
+FUNCTIONAL_JSON="${FUNCTIONAL_JSON:-/tmp/functional.json}"
+# Sibling of this script, because both are installed together into
+# CLAUDE_REVIEW_SCRIPTS by action.yml. Overridable only so the tests can point
+# at a stub; CI never sets it.
+UPLOAD_SCREENSHOTS_SH="${UPLOAD_SCREENSHOTS_SH:-$(dirname "$0")/upload-screenshots.sh}"
 # Shared byte-for-byte with prior-findings.sh: the two must never disagree about
 # what "the same finding" is. Line is deliberately not part of the identity.
 JQ_NORM='def norm: gsub("[\r\n]+"; " ") | sub("^[ \t]*\\*\\*(critical|major|minor)\\*\\*[ \t]*"; ""; "i") | gsub("[`*]"; "") | gsub("[ \t]+"; " ") | sub("^ "; "") | sub(" $"; "") | ascii_downcase | sub("[.!?]+$"; "");'
@@ -318,6 +323,79 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ]; then
     [ -n "$tail" ] && DEV_ENV_NOTICE+=" Last error: <code>${tail//</&lt;}</code>"
     DEV_ENV_NOTICE+=$' (full log: the run\'s <code>dev-env/log</code> artifact).</sub>\n'
   fi
+fi
+
+# ── 2c. The functional screenshot gallery ───────────────────────────────────
+# WHY THE POSTER OWNS THIS, as it did before v4 (`build-review.sh`). v4 moved the
+# invocation into `skills/review-orchestrator.md`, which said to embed the URLs
+# "in the relevant comment body" — and review-verify only writes a comment when
+# the tester REPRODUCED a failure. So on a PASS there was no comment,
+# `upload-screenshots.sh` never ran, and every capture died in the run artifact.
+# Evidence that the app was actually driven is worth most exactly when nothing
+# broke: that is the run a human would otherwise have to repeat by hand.
+#
+# Deterministic here rather than in a prompt, for the same reason the two notices
+# above are — the model cannot forget it. It also removes the last reason any
+# agent needed `upload-screenshots.sh`, so no session agent touches the raw
+# GitHub API at all and `Bash(gh api:*)` stays denied without a carve-out.
+#
+# RENDER ONLY WHAT THE TESTER NAMED. Scanning the tree for recent PNGs cannot
+# work: `actions/checkout` rewrites checked-in mtimes to ~now, so a product asset
+# is indistinguishable from a capture (observed on PR #30, where a repo's own
+# logo was published as review evidence).
+#
+# It is appended AFTER truncation and is NOT counted in the body budget, exactly
+# like the state block below: closed, a `<details>` costs one visible line, and a
+# run's own evidence must never evict a finding.
+SHOT_GALLERY=""
+if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; then
+  FN_OVERALL=$(jq -r '.overall // ""' "$FUNCTIONAL_JSON" 2>/dev/null || echo "")
+  case "$FN_OVERALL" in
+    PASS|WARN|FAIL|CRASH)
+      echo "::group::Functional screenshots"
+      NAMED=$(jq '[(.screenshots // [])[] | select((.file // "") | test("\\.png$"; "i"))] | length' \
+                "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
+      if [ "${NAMED:-0}" -eq 0 ]; then
+        echo "Tester reported $FN_OVERALL but named no PNG — nothing to publish."
+      else
+        # stdout is one embeddable URL per uploaded file; diagnostics go to stderr
+        # and stay in the job log. Non-fatal by contract: no URLs means no gallery,
+        # never a failed review.
+        : > "$WORK/shot-urls.txt"
+        PR_NUMBER="$PR" GITHUB_REPOSITORY="$REPO" \
+          "$UPLOAD_SCREENSHOTS_SH" > "$WORK/shot-urls.txt" \
+          || echo "::warning::upload-screenshots.sh failed — posting the review without the gallery."
+        # `|| true`, not `|| echo 0`: grep already PRINTS 0 for an empty file and
+        # then exits 1, so a fallback echo makes this two lines and every integer
+        # test below a syntax error.
+        UPLOADED=$(grep -c . "$WORK/shot-urls.txt" 2>/dev/null || true)
+        UPLOADED=${UPLOADED:-0}
+        echo "Published $UPLOADED of $NAMED screenshot(s) named by the tester."
+        [ "$UPLOADED" -lt "$NAMED" ] && \
+          echo "::warning::$(( NAMED - UPLOADED )) screenshot(s) the tester named were not published — they remain in the run's claude-review artifact."
+        # Captions are model-written and land inside an HTML block and a markdown
+        # image label, so `[`, `]`, `<` and `>` are stripped rather than escaped —
+        # one stray bracket would otherwise swallow the URL or open a tag.
+        SHOT_GALLERY=$(jq -r --rawfile urls "$WORK/shot-urls.txt" --arg overall "$FN_OVERALL" '
+          def clean: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
+                     | sub("^ "; "") | sub(" $"; "") | .[0:120];
+          ($urls | split("\n") | map(select(length > 0))
+           | map({key: (split("/") | last), value: .}) | from_entries) as $u
+          | [ (.screenshots // [])[]
+              | select((.file // "") | test("\\.png$"; "i"))
+              | (.file | split("/") | last) as $base
+              | {cap: ((.description | clean) as $c | if $c == "" then $base else $c end),
+                 url: ($u[$base] // "")}
+              | select(.url != "") ]
+          | if length == 0 then ""
+            else "\n<details><summary>Functional pass: \($overall) — \(length) screenshot"
+                 + (if length == 1 then "" else "s" end) + "</summary>\n\n"
+                 + (map("**\(.cap)**\n\n![\(.cap)](\(.url))\n") | join("\n"))
+                 + "\n</details>\n"
+            end' "$FUNCTIONAL_JSON" 2>/dev/null) || SHOT_GALLERY=""
+      fi
+      echo "::endgroup::" ;;
+  esac
 fi
 
 # ── 3. Inline comments: in-hunk only, deduped, capped, 700 bytes each ───────
@@ -692,6 +770,9 @@ while IFS= read -r line || [ -n "$line" ]; do
   printf '%s%s\n' "$out" "$line" >> "$WORK/body.md"
 done < "$WORK/body.raw"
 
+# Before the footer because it is content, not metadata, and after truncation
+# because it is not measured — see 2c.
+printf '%s' "$SHOT_GALLERY" >> "$WORK/body.md"
 printf '%s' "$FOOTER" >> "$WORK/body.md"
 printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
 printf '%s' "$DEV_ENV_NOTICE" >> "$WORK/body.md"

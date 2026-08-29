@@ -67,6 +67,23 @@ capture() {
 case "$args" in
   *"--method PUT"*)
     echo '{}' ;;
+  # The review-assets writes upload-screenshots.sh makes, driven through the
+  # poster. Values come back already `--jq`-extracted, matching the mock in
+  # upload_screenshots_test.sh. GH_ASSETS_FAIL=1 fails the blob POST so the
+  # gallery's "published fewer than named" path is reachable.
+  *"git/refs/heads/review-assets"*"--method PATCH"*)
+    echo '{}' ;;
+  *"git/refs/heads/review-assets"*)
+    exit 1 ;;
+  *"git/blobs"*)
+    [ "${GH_ASSETS_FAIL:-0}" = "1" ] && exit 1
+    echo "blobsha333" ;;
+  *"git/trees"*)
+    echo "treesha444" ;;
+  *"git/commits"*"--method POST"*)
+    echo "commitsha555" ;;
+  *"git/refs"*"--method POST"*)
+    echo '{}' ;;
   *"--method POST"*"/pulls/"*"/reviews"*)
     capture
     if [ "${GH_POST_FAIL:-0}" = "1" ]; then echo "HTTP 422: boom" >&2; exit 1; fi
@@ -104,6 +121,9 @@ run_poster() {
     JOB_START="${JOB_START:-$work/no-job-start}" \
     SPEC_STATUS="$work/spec-status" \
     FUNCTIONAL_REQUESTED="${FUNCTIONAL_REQ:-}" \
+    FUNCTIONAL_JSON="${FUNCTIONAL_FILE:-$work/no-such-functional.json}" \
+    SCREENSHOT_DIR="${SHOT_DIR:-$work/no-such-shots}" \
+    GH_ASSETS_FAIL="${ASSETS_FAIL:-0}" \
     DEV_ENV_RC_FILE="${DEVENV_RC:-$work/no-such-rc}" \
     DEV_ENV_LOG_FILE="${DEVENV_LOG:-$work/no-such-log}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
@@ -1506,6 +1526,100 @@ rm -rf "$W"
 # not be told about a browser it never asked for.
 run_devenv_case false 1 "ERROR: boom"
 assert_not_contains "an unrequested pass is not mentioned" "Functional pass requested" "$BODY"
+rm -rf "$W"
+
+# ── (q) a PASS publishes its screenshots ─────────────────────────────────────
+# THE REGRESSION THIS PINS. v4 asked the orchestrator to run
+# upload-screenshots.sh and embed the URLs "in the relevant comment body", but
+# review-verify only writes a comment when the tester REPRODUCED a failure — so
+# a PASS produced no comment, the upload never ran, and the captures died in the
+# run artifact. The poster now owns both, so the gallery appears with no
+# finding, no comment and nothing the model had to remember.
+echo ""
+echo "── (q) the functional screenshot gallery ──"
+
+CLEAN_REVIEW='{"verdict":"APPROVE","body":"## Claude review — APPROVE\n\nNothing to flag.","comments":[],"meta":{"findings":[],"human_review":[]}}'
+
+# 1x1 PNG, so `file --mime-type` in upload-screenshots.sh sees a real image.
+PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+make_shots() { # make_shots <dir> <name>...
+  local d="$1"; shift
+  mkdir -p "$d"
+  for n in "$@"; do printf '%s' "$PNG_B64" | base64 -d > "$d/$n"; done
+}
+
+# (q1) PASS, zero findings → gallery in the body, outside the budget
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png 02-detail.png
+jq -n '{overall: "PASS", summary: "Drove the order flow.",
+        observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1 — list page with seeded data"},
+                      {file: "/tmp/screenshots/02-detail.png", description: "AC2 — detail view"}]}'   > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots"   FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "no comment was needed to publish them" "0" "$(payload_of "$W" | jq '.comments | length')"
+assert_contains "the gallery is there" "<details><summary>Functional pass: PASS — 2 screenshots</summary>" "$BODY"
+assert_contains "first shot embeds its uploaded URL"   "![AC1 — list page with seeded data](https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
+assert_contains "second shot too"   "![AC2 — detail view](https://github.com/o/r/raw/review-assets/pr-7/02-detail.png)" "$BODY"
+assert_contains "the branch was actually written" "git/refs --method POST" "$(cat "$W/gh.log")"
+# The gallery is appended after truncation and never measured, exactly like the
+# state block — a run's own evidence must not evict a finding.
+assert_contains "the verdict line survives alongside it" "## Claude review — APPROVE" "$BODY"
+assert_not_contains "…and nothing was truncated to make room" "truncated to fit the review budget" "$BODY"
+rm -rf "$W"
+
+# (q2) singular, and a caption that would break out of the markdown or the HTML
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png
+jq -n '{overall: "WARN", summary: "Partial run.", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1 [bracketed] <script>alert(1)</script>"}]}'   > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots"   FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "one shot reads as singular" "WARN — 1 screenshot</summary>" "$BODY"
+assert_not_contains "a bracket cannot swallow the URL" "[bracketed]" "$BODY"
+assert_not_contains "a caption cannot open a tag" "<script>" "$BODY"
+assert_contains "the URL is still intact" "(https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
+rm -rf "$W"
+
+# (q3) the tester named a shot the upload could not publish → no half-broken
+# embed, and the job log says how many were lost
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png
+jq -n '{overall: "PASS", summary: "ok", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1"}]}' > "$W/functional.json"
+ASSETS_FAIL=1 FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots"   FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "the review still posts" "0" "$RC"
+assert_not_contains "no gallery is claimed" "<details><summary>Functional pass" "$BODY"
+assert_contains "the loss is announced in the log" "were not published" "$OUT"
+rm -rf "$W"
+
+# (q4) the pass was never requested, or the tester never ran → silence, and NO
+# upload. A repo carrying its own PNGs must never have them published as review
+# evidence (checkout rewrites mtimes, so "recent" cannot discriminate — PR #30).
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" wl_logo.png
+jq -n '{overall: "SKIP", summary: "No acceptance criteria.", observations: [], screenshots: []}'   > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots"   FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_not_contains "a SKIP renders no gallery" "Functional pass:" "$BODY"
+assert_eq "…and uploads nothing" "0" "$(grep -c 'git/blobs' "$W/gh.log")"
+rm -rf "$W"
+
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" wl_logo.png
+jq -n '{overall: "PASS", summary: "ok", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1"}]}' > "$W/functional.json"
+FUNCTIONAL_REQ=false FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots"   FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_not_contains "an unrequested pass renders no gallery" "Functional pass:" "$BODY"
+assert_eq "…and uploads nothing either" "0" "$(grep -c 'git/blobs' "$W/gh.log")"
 rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
