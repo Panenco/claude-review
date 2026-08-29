@@ -790,16 +790,29 @@ function initinvis(   i) {
   invis[++ninvis] = sprintf("%c", 12)                 # FF
   invis[++ninvis] = sprintf("%c%c", 194, 133)         # U+0085 NEL
   invis[++ninvis] = sprintf("%c%c", 194, 160)         # U+00A0 NBSP
+  invis[++ninvis] = sprintf("%c%c", 216, 156)         # U+061C ARABIC LETTER MARK
   invis[++ninvis] = sprintf("%c%c%c", 225, 154, 128)  # U+1680 OGHAM SPACE MARK
-  # U+2000..U+200D: the en/em space family, ZWSP, ZWNJ, ZWJ.
-  for (i = 128; i <= 141; i++) invis[++ninvis] = sprintf("%c%c%c", 226, 128, i)
-  invis[++ninvis] = sprintf("%c%c%c", 226, 128, 168)  # U+2028 LINE SEPARATOR
-  invis[++ninvis] = sprintf("%c%c%c", 226, 128, 169)  # U+2029 PARAGRAPH SEPARATOR
-  invis[++ninvis] = sprintf("%c%c%c", 226, 128, 175)  # U+202F NARROW NBSP
-  invis[++ninvis] = sprintf("%c%c%c", 226, 129, 159)  # U+205F MEDIUM MATH SPACE
-  invis[++ninvis] = sprintf("%c%c%c", 226, 129, 160)  # U+2060 WORD JOINER
+  invis[++ninvis] = sprintf("%c%c%c", 225, 160, 142)  # U+180E MONGOLIAN VOWEL SEP
+  # U+2000..U+200F: the en/em space family, ZWSP, ZWNJ, ZWJ, and the two BIDI
+  # MARKS. The loop used to stop at 141 (U+200D), one codepoint short of U+200E
+  # LEFT-TO-RIGHT MARK — which is as invisible as the ZWSP beside it and put the
+  # whole catastrophic shape back: an lrm-only line read as content, `skipping`
+  # never cleared, and the rest of the body went with a stripped bullet.
+  for (i = 128; i <= 143; i++) invis[++ninvis] = sprintf("%c%c%c", 226, 128, i)
+  # U+2028..U+202F: the two separators, the five BIDI embedding/override
+  # controls (U+202A..U+202E) and the narrow NBSP. Listed as a run for the same
+  # reason: leaving any of them out is the U+200E hole again with a different
+  # byte.
+  for (i = 168; i <= 175; i++) invis[++ninvis] = sprintf("%c%c%c", 226, 128, i)
+  # U+205F MEDIUM MATH SPACE, U+2060 WORD JOINER, U+2061..U+2064 the invisible
+  # math operators.
+  for (i = 159; i <= 164; i++) invis[++ninvis] = sprintf("%c%c%c", 226, 129, i)
+  # U+2066..U+2069: the BIDI isolates (LRI, RLI, FSI, PDI).
+  for (i = 166; i <= 169; i++) invis[++ninvis] = sprintf("%c%c%c", 226, 129, i)
   invis[++ninvis] = sprintf("%c%c%c", 227, 128, 128)  # U+3000 IDEOGRAPHIC SPACE
   invis[++ninvis] = sprintf("%c%c%c", 239, 187, 191)  # U+FEFF ZWNBSP / BOM
+  # U+FFF9..U+FFFB: the interlinear annotation controls.
+  for (i = 185; i <= 187; i++) invis[++ninvis] = sprintf("%c%c%c", 239, 191, i)
   for (i = 128; i <= 255; i++) ordv[sprintf("%c", i)] = i
 }
 # Drop a trailing PARTIAL UTF-8 sequence. t90() cuts 90 bytes; jq cuts to 90
@@ -909,6 +922,12 @@ function fbdup(key, ln,   p, m, a, i, id) {
   }
   return 0
 }
+# The last resort: cut a single line mid-way rather than return an empty body.
+# Byte by byte, but never THROUGH a codepoint — the walk stops on whatever byte
+# the budget runs out on, and a trailing lead-or-continuation byte with no rest
+# of its sequence is an orphan jq renders as U+FFFD. So the result goes through
+# utrim(), exactly like t90(): the body may end early, it may not end in a
+# question mark in a black diamond.
 function hardcut(s, budget,   out, ml, ph, phm) {
   out = ""; ml = 0
   while (length(s) > 0) {
@@ -923,7 +942,7 @@ function hardcut(s, budget,   out, ml, ph, phm) {
       out = out substr(s, 1, 1); ml++; s = substr(s, 2)
     }
   }
-  return out
+  return utrim(out)
 }
 # The block boundaries mode=strip and mode=fit both key on. One definition, two
 # callers, so the two passes cannot drift on what a bullet or a section is.
@@ -962,25 +981,131 @@ function istop(s)    { return (s ~ /^[-*][ \t]/) }
 function isbulletsec(s) {
   return (s ~ /^[ \t]*###[ \t]*(Findings|Also flagged|What a human should review)/)
 }
+# ── MULTI-LINE MARKDOWN CONSTRUCTS ARE INDIVISIBLE ──────────────────────────
+# mode=fit had no model for any construct that spans lines, so it split them by
+# the ordinary rules — a blank line inside a fence started a new block, and a
+# `- name: build` at column 0 inside a YAML fence was an `istop` top-level
+# bullet. Opener, body and closer were then ranked and admitted INDEPENDENTLY,
+# and greedy fill makes partial admission the NORMAL outcome, not a corner case.
+# Both halves damage the page:
+#   - the opener dropped, body and closer kept — the fenced lines render as
+#     ordinary markdown, so YAML `- name:` config lines become `### Context`
+#     bullets and the review asserts changes the model never claimed;
+#   - the closer dropped — the fence never closes, and EVERYTHING after it is
+#     literal preformatted text on GitHub: `### Findings`, the truncation
+#     marker, the footer, and the `<!-- claude-review-state {...} -->` block.
+#     Findings stop being findings, links go dead, and the internal state JSON
+#     is shown to the reader.
+# A ```mermaid diagram is not hypothetical: skills/review-verify.md mandates one.
+# So a fenced region, a markdown table and a blockquote run are each ONE block:
+# never split, admitted or dropped whole.
+#
+# The fence marker a line opens or closes with — a run of three or more
+# backticks or tildes, leading whitespace ignored — or "" for any other line.
+# THREE OR MORE, and the closer must be at least as long as the opener: the same
+# rule GitHub applies and the same one `unfence` in section 3 already honours.
+function fmark(s,   r) {
+  r = s
+  sub(/^[ \t]+/, "", r)
+  if (match(r, /^`{3,}/)) return substr(r, 1, RLENGTH)
+  if (match(r, /^~{3,}/)) return substr(r, 1, RLENGTH)
+  return ""
+}
+# Does `s` close a fence opened with marker `open`? Same character, at least as
+# long, and nothing but whitespace after the run — an info string (```mermaid)
+# opens, it never closes.
+function fcloses(s, open,   r, m) {
+  m = fmark(s)
+  if (m == "" || substr(m, 1, 1) != substr(open, 1, 1) || length(m) < length(open)) return 0
+  r = s
+  sub(/^[ \t]+/, "", r)
+  return (substr(r, length(m) + 1) ~ /^[ \t]*$/)
+}
+# A table row is any non-blank line carrying a pipe; the separator is the
+# `---|---` line under the header, which is what tells a table from a sentence
+# that happens to contain a pipe.
+function istrow(s)   { return (index(s, "|") > 0 && !isblank(s)) }
+function istsep(s,   r) {
+  r = s
+  gsub(/[ \t]/, "", r)
+  if (index(r, "|") == 0) return 0
+  return (r ~ /^\|?:?-+:?(\|:?-+:?)*\|?$/)
+}
+function isquote(s)  { return (s ~ /^[ \t]*>/) }
+# mask[i] = 1 for every line of a[1..cnt] inside a fenced region, opener and
+# closer included. NOTHING INSIDE A FENCE IS MARKUP: a `- name: build` in a YAML
+# fence is not a finding, a `### steps` in one is not a section, and a blank line
+# in one is not a separator. Counting them is how `### Findings (3)` ended up
+# over a single bullet and two lines of workflow config. An unterminated fence
+# runs to the end, which is what GitHub renders too.
+function fencemask(a, cnt, mask,   i, m) {
+  for (i = 1; i <= cnt; i++) mask[i] = 0
+  i = 1
+  while (i <= cnt) {
+    m = fmark(a[i])
+    if (m == "") { i++; continue }
+    mask[i] = 1
+    i++
+    while (i <= cnt) { mask[i] = 1; if (fcloses(a[i], m)) { i++; break }; i++ }
+  }
+}
+# grpend[i] = the LAST line of the indivisible construct that starts at line i,
+# or 0 if none starts there. An unterminated fence runs to end of input, which
+# is what GitHub does with it too. Fences are matched first and their interior
+# skipped whole: a fenced block may legitimately contain `>` and `|` lines.
+function groups(   i, j, m) {
+  for (i = 1; i <= NR; i++) grpend[i] = 0
+  i = 1
+  while (i <= NR) {
+    m = fmark(line[i])
+    if (m != "") {
+      j = i + 1
+      while (j <= NR && !fcloses(line[j], m)) j++
+      if (j > NR) j = NR
+      grpend[i] = j
+      i = j + 1
+      continue
+    }
+    if (isquote(line[i])) {
+      j = i
+      while (j < NR && isquote(line[j + 1])) j++
+      grpend[i] = j
+      i = j + 1
+      continue
+    }
+    # A header or a bullet that happens to carry a pipe is still a header or a
+    # bullet: it keeps its own rank and never becomes the head of a table.
+    if (i < NR && !ishdr(line[i]) && !istop(line[i]) && istrow(line[i]) && istsep(line[i + 1])) {
+      j = i + 2
+      while (j <= NR && istrow(line[j])) j++
+      grpend[i] = j - 1
+      i = j
+      continue
+    }
+    i++
+  }
+}
 # Drop every `###` section left with no item, plus trailing blank lines. For a
 # bullet-list section an "item" is a TOP-LEVEL BULLET, not any non-blank line.
 # Operates on out[1..cnt] in place; returns the new count.
 function prune(cnt,   i, j, has, m) {
+  fencemask(out, cnt, ofence)
   for (i = 1; i <= cnt; i++) del[i] = 0
   for (i = 1; i <= cnt; i++) {
-    if (!ishdr(out[i])) continue
+    if (ofence[i] || !ishdr(out[i])) continue
     has = 0
-    for (j = i + 1; j <= cnt && !ishdr(out[j]); j++) {
-      if (isblank(out[j])) continue
-      if (isbulletsec(out[i]) && !istop(out[j])) continue
+    for (j = i + 1; j <= cnt && (ofence[j] || !ishdr(out[j])); j++) {
+      if (!ofence[j] && isblank(out[j])) continue
+      if (isbulletsec(out[i]) && !(!ofence[j] && istop(out[j]))) continue
       has = 1; break
     }
     if (has) continue
-    for (j = i; j == i || (j <= cnt && !ishdr(out[j])); j++) del[j] = 1
+    for (j = i; j == i || (j <= cnt && (ofence[j] || !ishdr(out[j]))); j++) del[j] = 1
   }
   m = 0
   for (i = 1; i <= cnt; i++) if (!del[i]) out[++m] = out[i]
-  while (m > 0 && isblank(out[m])) m--
+  fencemask(out, m, ofence)
+  while (m > 0 && !ofence[m] && isblank(out[m])) m--
   return m
 }
 # Rewrite every `### Header (n)` to the number of bullets that actually follow
@@ -988,12 +1113,13 @@ function prune(cnt,   i, j, has, m) {
 # anything was stripped or cut, so after either the number is a claim about
 # content that is no longer on the page.
 function renumber(cnt,   i, j, n) {
+  fencemask(out, cnt, ofence)
   for (i = 1; i <= cnt; i++) {
-    if (out[i] !~ /^[ \t]*###/) continue
+    if (ofence[i] || out[i] !~ /^[ \t]*###/) continue
     if (out[i] !~ /\([0-9]+\)/) continue
     n = 0
-    for (j = i + 1; j <= cnt && !ishdr(out[j]); j++)
-      if (istop(out[j])) n++
+    for (j = i + 1; j <= cnt && (ofence[j] || !ishdr(out[j])); j++)
+      if (!ofence[j] && istop(out[j])) n++
     sub(/\([0-9]+\)/, "(" n ")", out[i])
   }
 }
@@ -1073,23 +1199,28 @@ END {
     # `### What a human should review` item may legitimately point at the same
     # path:line as a finding, and `### Also flagged` (the bullets for comments
     # that could NOT be posted inline) is not appended until after this pass.
+    # NOTHING INSIDE A FENCE IS MARKUP. Without this a `### steps` in a YAML
+    # fence opened a section, a blank line in one cleared `skipping`, and a
+    # `- name: build` in one was a top-level bullet — which is also what the
+    # header count below was counting.
+    fencemask(line, NR, lfence)
     insec = 0; skipping = 0; nh = 0
     for (i = 1; i <= NR; i++) {
       l = line[i]
-      if (ishdr(l)) {
+      if (!lfence[i] && ishdr(l)) {
         skipping = 0; insec = (l ~ /^[ \t]*###[ \t]*Findings/)
         out[++kept] = l
         if (insec) hdr[++nh] = kept
         continue
       }
-      if (isblank(l)) { skipping = 0; out[++kept] = l; continue }
+      if (!lfence[i] && isblank(l)) { skipping = 0; out[++kept] = l; continue }
       # TOP-LEVEL bullets only. An indented `  - ` detail line belongs to the
       # bullet above it, so it must fall through to the `skipping` test below and
       # go wherever its parent went. Matching it here gave it an empty key (it
       # carries no {{LINK:}}), skipped the duplicate test, kept it AND cleared
       # `skipping` — so a stripped critical left its own detail prose standing,
       # reparented under `### Findings`, which renumber() then counted as (0).
-      if (insec && istop(l)) {
+      if (!lfence[i] && insec && istop(l)) {
         k = phkey(l)
         if (k != "" && isdup(k, l)) { skipping = 1; continue }
         skipping = 0; out[++kept] = l; continue
@@ -1097,10 +1228,11 @@ END {
       if (skipping) continue          # a continuation or detail line of a stripped bullet
       out[++kept] = l
     }
+    fencemask(out, kept, ofence)
     for (h = 1; h <= nh; h++) {
       n = 0
-      for (j = hdr[h] + 1; j <= kept && !ishdr(out[j]); j++)
-        if (istop(out[j])) n++
+      for (j = hdr[h] + 1; j <= kept && (ofence[j] || !ishdr(out[j])); j++)
+        if (!ofence[j] && istop(out[j])) n++
       sub(/\([0-9]+\)/, "(" n ")", out[hdr[h]])
     }
     kept = prune(kept)
@@ -1137,6 +1269,10 @@ END {
   # review` ahead of `### Findings`, and all of them ahead of ordinary prose. A
   # bullet can never be admitted without its own header, so a section whose
   # header does not fit is dropped whole rather than reparented.
+  #
+  # AND A FENCE, A TABLE OR A BLOCKQUOTE IS ONE BLOCK — see groups() above for
+  # what splitting one costs the page.
+  groups()
   nb = 0; curhdr = 0; pb = 0; cur = 0
   for (i = 1; i <= NR; i++) {
     l = line[i]
@@ -1147,6 +1283,25 @@ END {
       secw[nb] = (l ~ /^[ \t]*###[ \t]*(Also flagged|What a human should review)/) ? 0 \
                  : ((l ~ /^[ \t]*###[ \t]*Findings/) ? 1 : 2)
       curhdr = nb; cur = 0; pb = 0; continue
+    }
+    # AN ATX HEADING OWNS ITS LINE AND NOTHING ELSE. `## Claude review — X` used
+    # to open an ordinary block, so a paragraph the model wrote directly beneath
+    # it with no blank line between was folded in by the continuation rule below
+    # — and when that block went over budget the TITLE went with it. Measured at
+    # the default 1800: the posted body opened with a blank line and then
+    # `### Findings (2)`, with no `## Claude review` line anywhere. hardcut()
+    # does not rescue that; it only fires when NOTHING was admitted.
+    if (l ~ /^[ \t]*#/) {
+      nb++; bstart[nb] = (pb ? pb : i); bend[nb] = i; bfirst[nb] = i
+      bishdr[nb] = 0; bhdr[nb] = curhdr; cur = 0; pb = 0; continue
+    }
+    # A multi-line construct: absorbed WHOLE by whatever is open (so an indented
+    # `  > note` under a bullet still belongs to that bullet), otherwise a block
+    # of its own running to its last line. Either way it is never split.
+    if (grpend[i] > 0) {
+      if (!istop(l) && cur > 0 && pb == 0) { bend[cur] = grpend[i]; i = grpend[i]; continue }
+      nb++; bstart[nb] = (pb ? pb : i); bend[nb] = grpend[i]; bfirst[nb] = i
+      bishdr[nb] = 0; bhdr[nb] = curhdr; cur = nb; pb = 0; i = grpend[i]; continue
     }
     # A continuation line: not a bullet of its own, not separated by a blank,
     # and something is open to continue.
@@ -1164,13 +1319,31 @@ END {
     else if (fl ~ /^[ \t]*#/) brank[b] = 0
     else brank[b] = 20
   }
+  # THE TITLE LINE IS NOT NEGOTIABLE. It is what identifies the comment as the
+  # review; a body that opens mid-sentence, or with no `## Claude review` line at
+  # all, is indistinguishable from a rendering failure. Rank 0 was not enough on
+  # its own (see the ATX arm above), so it is admitted BEFORE the ranked passes
+  # and outside the budget test. If even the title alone overruns `max` it is
+  # hard-cut on a codepoint boundary and it is all that is printed.
+  n = 0; tb = 0; tcut = 0; titlecut = ""
+  for (b = 1; b <= nb; b++) if (!bishdr[b] && brank[b] == 0) { tb = b; break }
+  if (tb > 0) {
+    adm[tb] = 1; n = bcost[tb]
+    if (n > max) { tcut = 1; titlecut = hardcut(line[bfirst[tb]], max); n = max }
+  }
   # awk has no sort; the ranks are a handful of small integers, so one pass per
   # rank is both stable (original order within a rank) and cheap.
-  n = 0
   for (r = 0; r <= 20; r++) {
     for (b = 1; b <= nb; b++) {
-      if (bishdr[b] || brank[b] != r) continue
+      if (bishdr[b] || adm[b] || brank[b] != r) continue
       need = bcost[b]; hb = bhdr[b]
+      # A block that is not a top-level bullet must not PULL IN a bullet-list
+      # header: prune() deletes a `### Findings` / `### Also flagged` /
+      # `### What a human should review` section holding no bullet, so admitting
+      # the pair spent budget on two lines that never reach the page — and cut
+      # content that would otherwise have fit. Bullets are ranked ahead of prose,
+      # so by the time this fires the header is already in if anything earned it.
+      if (hb > 0 && !adm[hb] && isbulletsec(line[bfirst[hb]]) && !istop(line[bfirst[b]])) continue
       if (hb > 0 && !adm[hb]) need += bcost[hb]
       if (n + need > max) { lostb[b] = 1; continue }
       if (hb > 0 && !adm[hb]) { adm[hb] = 1; n += bcost[hb] }
@@ -1178,7 +1351,11 @@ END {
     }
   }
   kept = 0
-  for (i = 1; i <= NR; i++) if (blk[i] > 0 && adm[blk[i]]) out[++kept] = line[i]
+  for (i = 1; i <= NR; i++) {
+    if (blk[i] == 0 || !adm[blk[i]]) continue
+    if (tcut && blk[i] == tb) { if (i == bfirst[tb] && length(titlecut) > 0) out[++kept] = titlecut; continue }
+    out[++kept] = line[i]
+  }
   # NOTHING IS SILENTLY DROPPED. A `### Findings` bullet the budget cut is still
   # in the round-2 state block; an `### Also flagged` or human-review item is
   # not, because it is the fallback for a comment that could not be posted at
@@ -1532,8 +1709,20 @@ fi
 echo "::endgroup::"
 
 # ── 5. Supersede prior crash banners ─────────────────────────────────────────
+# ONLY A RUN THAT JUDGED THE DIFF MAY CLEAR A CRASH BANNER — the same rule
+# section 7 applies to standing blocking reviews, and for the same reason. A
+# crash banner says "**Action required:** a human should review this PR" about an
+# earlier failure nobody has resolved. guard.sh's oversized split request read no
+# code, so PATCHing that banner into "_Superseded by a newer Claude review run on
+# this PR._" retires a human-action signal on the strength of a run that judged
+# nothing. Section 7 already refused to dismiss for this body; section 5 ran
+# unconditionally.
 echo "::group::Supersede prior crash banners"
-supersede_crash_banners
+if is_skip_marked; then
+  echo "Skip-marked review (judged nothing) — leaving prior crash banners standing."
+else
+  supersede_crash_banners
+fi
 echo "::endgroup::"
 
 # ── 6. Atomic POST ───────────────────────────────────────────────────────────
