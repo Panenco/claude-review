@@ -11,8 +11,11 @@ set -uo pipefail
 #     "body":     markdown carrying {{LINK:<path>[:<line>]}} placeholders and NO footer,
 #     "comments": [ { "path", "line", "side", "body" } ],
 #     "meta":     { "findings": [...], "human_review": [...], ... } }
-# Thread resolution, replies to other bots and multi-line comment ranges are gone:
-# the 2-call pipeline produces none of them, and their absence is normal.
+# Thread resolution and replies to other bots are gone: the 2-call pipeline
+# produces neither, and their absence is normal. Multi-line ranges came BACK for
+# check comments — `start_line` anchors a question to the whole block it is
+# about, so the reviewer sees the code being questioned rather than one line of
+# it. Findings stay single-line: a suggestion fence has to replace exact lines.
 #
 # THIS SCRIPT OWNS THE BUDGETS. The models are told to hold them; historically they
 # did not, so they are enforced here as a safety net:
@@ -474,20 +477,35 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
       else . end;
   ($valid | split("\n") | map(select(length > 0))) as $lines
   | ($lines | length > 0) as $validated
+  # A SET, not a list: a range is checked line by line, so `any` over the list
+  # would be O(range x hunks) on every comment of every review.
+  | ($lines | map({key: ., value: true}) | from_entries) as $lset
   | map(select((.path // "") != "" and .line != null))
   | map(.line = ((.line | tostring | tonumber?) // 0))
   | map(select(.line > 0))
+  # `start_line` turns a comment into a block-anchored one, so a check can point
+  # at the whole handler it is asking about rather than one arbitrary line.
+  # GitHub 422s a range whose start is not strictly above the anchor, and a
+  # 422 fails the ATOMIC post — every other comment dies with it. So anything
+  # that is not a well-formed, plausibly-sized block collapses to single-line.
+  | map(.start_line = ((.start_line | tostring | tonumber?) // 0))
+  | map(if (.start_line > 0) and (.start_line < .line) and ((.line - .start_line) <= 30)
+        then . else .start_line = 0 end)
   | to_entries
   | map(.value + {_i: .key, _r: (.value | sev | rank)})
   | unique_by([.path, .line, .body])
   | sort_by(._r, ._i)
-  | map(. as $c | $c + {_inhunk:
+  | map(. as $c | ($c.side // "RIGHT") as $side | $c + {_inhunk:
       (if $validated
-       then ($lines | any(. == ($c.path + ":" + ($c.line | tostring) + ":" + ($c.side // "RIGHT"))))
+       then ([range((if $c.start_line > 0 then $c.start_line else $c.line end); $c.line + 1)]
+             | all($lset[($c.path + ":" + (. | tostring) + ":" + $side)] // false))
        else true end)})
   | ([.[] | select(._inhunk)]) as $in
   | ([.[] | select(._inhunk | not)]) as $out
-  | { kept: ($in[:$limit] | map({path, line, side: (.side // "RIGHT"), body: ((.body // "") | clamp($cmax))})),
+  | { kept: ($in[:$limit] | map(
+        {path, line, side: (.side // "RIGHT"), body: ((.body // "") | clamp($cmax))}
+        + (if .start_line > 0
+           then {start_line, start_side: (.side // "RIGHT")} else {} end))),
       dropped: ((($in[$limit:]) + $out)
                 | sort_by(._r, ._i)
                 | map({path, line, severity: sev, title: title, kind: kind,
