@@ -85,7 +85,9 @@ Then run `jq empty /tmp/review.json`. Non-zero means an unescaped `"`, raw newli
 
 ### Screenshots (only when the tester ran and produced images)
 
-Run `"$CLAUDE_REVIEW_SCRIPTS"/upload-screenshots.sh` once before the final write; embed `https://github.com/${GITHUB_REPOSITORY}/raw/review-assets/pr-${PR_NUMBER}/<basename>` in the relevant comment body. Failure here is non-fatal — write the review without embeds. Never `Read` a file under `/tmp/screenshots/`.
+**You do not publish them.** `post-review.sh` uploads every screenshot the tester named in `/tmp/functional.json` and renders the gallery itself, on a PASS as much as on a failure — do not run `upload-screenshots.sh`, and do not write a functional section.
+
+To put a shot inside a finding's comment, embed `https://github.com/${GITHUB_REPOSITORY}/raw/review-assets/pr-${PR_NUMBER}/<basename>` — the poster's upload runs before the review is posted, so the URL resolves. Never `Read` a file under `/tmp/screenshots/`.
 
 ### Degraded write (scan or verify failed)
 

@@ -257,7 +257,7 @@ jobs:
             echo "::error::CLAUDE_REVIEW_SCRIPTS is unset or missing — the install step did not run, or action.yml and pr-review.yml are from different versions."
             exit 1
           fi
-          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh; do
+          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh upload-screenshots.sh; do
             if [ ! -x "$CLAUDE_REVIEW_SCRIPTS/$s" ]; then
               echo "::error::$CLAUDE_REVIEW_SCRIPTS/$s is missing or not executable."
               exit 1
@@ -1007,13 +1007,12 @@ jobs:
           #
           # WHY IT CAN DENY THE RAW API SUBCOMMAND. `--disallowedTools` is
           # SESSION-WIDE: it cannot be scoped to one subagent, so it could not deny
-          # the raw `gh` API verb while our own agents still used it. The only
-          # remaining call sites are the screenshot-upload writes, extracted verbatim
-          # into `scripts/upload-screenshots.sh` and invoked as
-          # `"$CLAUDE_REVIEW_SCRIPTS"/upload-screenshots.sh` — reviewed, in-repo, and
-          # running as a plain shell command that no deny pattern for a `gh`
-          # subcommand matches. No agent in this pipeline needs the raw API verb any
-          # more, so nothing legitimate is caught.
+          # the raw `gh` API verb while our own agents still used it. They no longer
+          # do at all: the last call site was the screenshot upload, and
+          # `scripts/upload-screenshots.sh` is now invoked by the poster (§ 2c of
+          # post-review.sh) in its own step, after this session has exited. Nothing
+          # inside the review session needs the raw API verb, so nothing legitimate
+          # is caught and the deny needs no carve-out.
           #
           # WHAT STAYS REACHABLE, on purpose: `gh pr view/diff/list`,
           # `gh issue view`, `gh search`, `git log/blame/diff/show`. review-scan

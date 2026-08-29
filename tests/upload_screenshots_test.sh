@@ -199,8 +199,13 @@ assert_eq "script does not use set -e (bugbot.md)" "yes" \
   "$(grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$SCRIPT" && echo no || echo yes)"
 assert_eq "action.yml verifies the script is installed" "yes" \
   "$(grep -q 'upload-screenshots.sh' action.yml && echo yes || echo no)"
-assert_eq "the orchestrator skill invokes it instead of inlining the API calls" "yes" \
-  "$(grep -q 'upload-screenshots.sh' skills/review-orchestrator.md && echo yes || echo no)"
+# The poster invokes it, not the review session. That is the whole point: the
+# session then needs no raw GitHub API at all, and the upload happens whether or
+# not the review produced a finding to hang a screenshot on.
+assert_eq "the poster invokes it" "yes" \
+  "$(grep -q 'UPLOAD_SCREENSHOTS_SH' scripts/post-review.sh && echo yes || echo no)"
+assert_eq "the orchestrator skill does NOT invoke it" "yes" \
+  "$(grep -q 'Run .*upload-screenshots.sh' skills/review-orchestrator.md && echo no || echo yes)"
 
 # `.review-scripts/` lived in the worktree as untracked files; a judge's
 # `git stash -u` swallowed it mid-run and the poster died with exit 127.
