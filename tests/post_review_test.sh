@@ -1569,8 +1569,13 @@ BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
 assert_eq "exit 0" "0" "$RC"
 assert_eq "no comment was needed to publish them" "0" "$(payload_of "$W" | jq '.comments | length')"
 assert_contains "the gallery is there" "<details><summary>Functional pass: PASS — 2 screenshots</summary>" "$BODY"
-assert_contains "first shot embeds its uploaded URL"   "![AC1 — list page with seeded data](https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
-assert_contains "second shot too"   "![AC2 — detail view](https://github.com/o/r/raw/review-assets/pr-7/02-detail.png)" "$BODY"
+assert_contains "first shot is labelled once, above the image" "**AC1 — list page with seeded data**" "$BODY"
+assert_contains "…and embeds its uploaded URL" "![](https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
+# The alt text is invisible on GitHub, so repeating the caption there only
+# doubles the source the reader scrolls past to reach the next shot.
+assert_not_contains "the caption is not duplicated into the alt text" "![AC1 —" "$BODY"
+assert_contains "second shot too" "![](https://github.com/o/r/raw/review-assets/pr-7/02-detail.png)" "$BODY"
+assert_contains "…with its own label" "**AC2 — detail view**" "$BODY"
 assert_contains "the branch was actually written" "git/refs --method POST" "$(cat "$W/gh.log")"
 # The gallery is appended after truncation and never measured, exactly like the
 # state block — a run's own evidence must not evict a finding.
@@ -1606,9 +1611,9 @@ FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
   FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
 assert_contains "a long caption is elided" "…" "$BODY"
-assert_not_contains "…not cut mid-word" "already la]" "$BODY"
-assert_not_contains "…nor mid-word in the alt text" "already la(" "$BODY"
-assert_contains "it ends on a whole word" "but the app has already…" "$BODY"
+assert_not_contains "…not cut mid-word" "notificatio…" "$BODY"
+assert_not_contains "…and the tail is dropped" "already landed" "$BODY"
+assert_contains "it ends on a whole word" "refusal notification…" "$BODY"
 rm -rf "$W"
 
 # (q3) the tester named a shot the upload could not publish → no half-broken
