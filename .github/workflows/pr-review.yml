@@ -468,9 +468,35 @@ jobs:
       # comment-triggered review and reported as a warning nobody read. The `id:`
       # is kept although nothing reads its outputs: the install step below is
       # written to be correct on a hit and a miss alike.
+      # Image G bakes the pinned agent-browser AND runs `agent-browser install`,
+      # so the binary and its Chrome for Testing are already on disk at
+      # ~/.agent-browser — deliberately outside the scale set's scratch .cache
+      # mount. Restoring the cache on top of that downloads ~340 MiB to land
+      # bytes that are already there, and costs a cache entry against the repo's
+      # 10 GB budget that evicts things nothing bakes. Probe first.
+      #
+      # Cheap on purpose: a version check plus the browsers dir. `doctor` would
+      # launch Chrome, which the preflight already does once, properly.
+      - name: Probe for a prebaked browser stack
+        id: ab_baked
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.functional == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          baked=false
+          if command -v agent-browser >/dev/null 2>&1 \
+            && [ "$(agent-browser --version 2>/dev/null | awk '{print $2}')" = "${AGENT_BROWSER_VERSION}" ] \
+            && [ -d "$HOME/.agent-browser/browsers" ] \
+            && [ -n "$(ls -A "$HOME/.agent-browser/browsers" 2>/dev/null)" ]; then
+            baked=true
+          fi
+          echo "baked=${baked}" >> "$GITHUB_OUTPUT"
+          echo "prebaked browser stack: ${baked}"
+
       - name: Restore browser assets
         id: ab_cache
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.functional == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.functional == 'true' && steps.ab_baked.outputs.baked != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # agent-browser keeps browsers, daemon sockets and state under

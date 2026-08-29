@@ -124,6 +124,39 @@ assert "both workflows compute the dev cache key the same way" \
   "$(grep -Fq "$KEYLINE" "$WARM" && grep -Fq "$KEYLINE" "$REVIEW" && echo yes || echo no)"
 
 echo
+echo "── the warm must not redo work it already has ──"
+
+# The store key was re-evaluated at the probe, the restore AND the save, with
+# `Widen checkout` and `pnpm fetch` in between. pnpm fetch leaves lockfiles under
+# node_modules/ that `**/package-lock.json` matches, so the save wrote a key
+# nobody read — the review job hashes a clean tree and missed every time.
+assert "the store key is computed exactly once" \
+  "$([ "$(grep -c "hashFiles('\*\*/pnpm-lock.yaml', '\*\*/package-lock.json')" "$WARM")" = "1" ] && echo yes || echo no)"
+assert "every store cache step reads that one key" \
+  "$([ "$(grep -c 'key: ${{ steps.store_key.outputs.key }}' "$WARM")" = "3" ] && echo yes || echo no)"
+# It must be computed BEFORE anything mutates the tree, or it drifts again.
+KEY_LINE=$(grep -n 'id: store_key' "$WARM" | cut -d: -f1)
+WIDEN_LINE=$(grep -n 'Widen checkout for the store warm' "$WARM" | head -1 | cut -d: -f1)
+assert "the key is computed before the checkout is widened" \
+  "$([ -n "$KEY_LINE" ] && [ -n "$WIDEN_LINE" ] && [ "$KEY_LINE" -lt "$WIDEN_LINE" ] && echo yes || echo no)"
+# The review job hashes a clean full tree; the warm must land on the same value.
+assert "the review job still derives the same store key inline" \
+  "$(grep -q "pkg-store-\${{ hashFiles('\*\*/pnpm-lock.yaml', '\*\*/package-lock.json') }}" "$REVIEW" && echo yes || echo no)"
+
+# Image G bakes agent-browser + its Chrome; caching them stores ~340 MiB of
+# bytes already on disk and evicts entries nothing bakes.
+for f in "$WARM" "$REVIEW"; do
+  n=$(basename "$f")
+  assert "$n probes for a prebaked browser stack" \
+    "$(grep -q 'id: ab_baked' "$f" && echo yes || echo no)"
+  assert "$n skips the browser cache when it is baked" \
+    "$(grep -q "steps.ab_baked.outputs.baked != 'true'" "$f" && echo yes || echo no)"
+done
+# The probe must stay cheap — `doctor` launches Chrome, the preflight does that.
+assert "the bake probe does not launch a browser" \
+  "$(sed -n '/id: ab_baked/,/GITHUB_OUTPUT/p' "$WARM" | grep -q 'doctor' && echo no || echo yes)"
+
+echo
 if [ "$fail" -eq 0 ]; then
   echo "All warm-cache wiring tests passed."
 else
