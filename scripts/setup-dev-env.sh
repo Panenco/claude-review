@@ -116,7 +116,7 @@ if [ -f "$DEV_SCRIPT" ]; then
   # MikroORM circular import): the exit code lands in /tmp/dev-env/rc and
   # this log is what the orchestrator quotes in the review body.
   if ! ( bash "$DEV_SCRIPT" ); then
-    echo "ERROR: $DEV_SCRIPT exited non-zero — dev environment did not come up. The review continues statically; this failure is surfaced in the review body's setup-health section (full log: dev-env/log run artifact)."
+    echo "ERROR: $DEV_SCRIPT exited non-zero — dev environment did not come up. The review continues statically; this failure is reported in the review body when a functional pass was requested (full log: dev-env/log run artifact)."
     exit 1
   fi
 elif [ "$HAS_CONFIG" = "true" ]; then

@@ -1480,6 +1480,17 @@ assert_contains "…and says the review is static only" "static only" "$BODY"
 assert_contains "the findings still post" "off-by-one" "$BODY"
 rm -rf "$W"
 
+# (n1b) THE REAL SHAPE: setup-dev-env.sh appends its own generic line AFTER the
+# consumer script's `::error::`. Taking the last error-ish line quoted that
+# tautology back at the reader; the cause must win.
+run_devenv_case true 1 "info: building
+::error::API never became ready at http://localhost:20001/api within 300s
+ERROR: .github/claude-review/dev-start.sh exited non-zero — dev environment did not come up."
+assert_contains "the notice quotes the CAUSE" "API never became ready" "$BODY"
+assert_not_contains "…not the wrapper's tautology" "exited non-zero" "$BODY"
+assert_not_contains "…and not the ::error:: marker itself" "::error::" "$BODY"
+rm -rf "$W"
+
 # (n2) requested + no rc at all → it timed out, not "exited"
 run_devenv_case true "" "info: still installing"
 assert_contains "a missing rc reads as a timeout" "did not finish starting in time" "$BODY"
