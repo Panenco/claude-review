@@ -377,8 +377,13 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; t
         # image label, so `[`, `]`, `<` and `>` are stripped rather than escaped —
         # one stray bracket would otherwise swallow the URL or open a tag.
         SHOT_GALLERY=$(jq -r --rawfile urls "$WORK/shot-urls.txt" --arg overall "$FN_OVERALL" '
+          # Cut on a WORD boundary, not a codepoint: the tester writes long
+          # descriptions and a hard slice ended captions like "the app has
+          # already la" and "access code has e" on a live run.
           def clean: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
-                     | sub("^ "; "") | sub(" $"; "") | .[0:120];
+                     | sub("^ "; "") | sub(" $"; "")
+                     | if length <= 120 then .
+                       else (.[0:119] | sub("\\s+\\S*$"; "")) + "…" end;
           ($urls | split("\n") | map(select(length > 0))
            | map({key: (split("/") | last), value: .}) | from_entries) as $u
           | [ (.screenshots // [])[]

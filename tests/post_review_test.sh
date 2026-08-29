@@ -1592,6 +1592,25 @@ assert_not_contains "a caption cannot open a tag" "<script>" "$BODY"
 assert_contains "the URL is still intact" "(https://github.com/o/r/raw/review-assets/pr-7/01-list.png)" "$BODY"
 rm -rf "$W"
 
+# (q2b) a long caption is cut on a word boundary, not mid-word. Observed on
+# seaters #2134: the tester's own descriptions ran past 120 chars and the body
+# rendered "…the app has already la" and "…access code has e".
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png
+jq -n '{overall: "FAIL", summary: "long", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png",
+                       description: "AC1 — after submitting sign-up with the exhausted code: refusal notification shown correctly, but the app has already landed the fan on the audience"}]}' \
+  > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a long caption is elided" "…" "$BODY"
+assert_not_contains "…not cut mid-word" "already la]" "$BODY"
+assert_not_contains "…nor mid-word in the alt text" "already la(" "$BODY"
+assert_contains "it ends on a whole word" "but the app has already…" "$BODY"
+rm -rf "$W"
+
 # (q3) the tester named a shot the upload could not publish → no half-broken
 # embed, and the job log says how many were lost
 W=$(mktemp -d)
