@@ -95,7 +95,7 @@ REASON="STOP BLOCKED: ${REVIEW_JSON} does not exist yet, so ending now would cra
 Do NOT yield to wait for background agents. There is no notification that will wake you — a message without tool calls ends the session permanently.
 
 If you are waiting on Task results, poll them with a tool call instead:
-  ls -la /tmp/judge-*.json /tmp/functional-*.json 2>/dev/null
+  ls -la /tmp/scan.json /tmp/verify.json /tmp/functional.json 2>/dev/null
 
 If the results you need are already there, continue the phase. If they are not going to arrive, write a DEGRADED ${REVIEW_JSON} now from what you do have and validate it with \`jq empty\` — a degraded review is a successful pipeline run; no file is a crash."
 

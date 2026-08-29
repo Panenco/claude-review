@@ -4,14 +4,14 @@ You are setting up the Panenco Claude PR review pipeline in this repository. Fol
 
 ## Principles (read once, apply throughout)
 
-Your output must pass the pipeline's own review on the first commit — **no findings, verdict `APPROVE`**. To achieve that:
+Your output must pass the pipeline's own review on the first commit — **no findings**. Aim for that, not for a green `APPROVE`: v4 approves only when the scan can argue a human pass over the diff changes nothing, on a diff that touches no sensitive path — and `.github/` is a sensitive path, so a setup PR essentially can't get there. A `COMMENT` with zero findings is the good outcome. To achieve it:
 
 1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. A broken path fails the bring-up hard or feeds the reviewer wrong context; don't ship one.
 2. **Prefer fail-fast patterns over silent timeouts.** Every readiness wait loop must explicitly log and warn (or exit) when it times out, not just `break` out. "Silently succeeds on timeout" is the #1 bug the reviewer catches in review-configs.
-3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the pipeline greps for them literally (the context builder's config-gap check looks for `^### Auth`, and the dev-env probe reads the ports table), and getting the level wrong surfaces a "⚙️ Review setup health" bullet in every review body. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
+3. **Heading level is rigid: use `### Auth` and `### Known service ports` (level 3, with three `#`).** These sections must use the `###` heading level exactly — the dev-env pre-start (`scripts/setup-dev-env.sh`) greps for them literally: it evals any bash block under `### Auth` and pulls the API/Web URLs out of the ports table. Get the level or the placement wrong and the dev env comes up unprobed, so `/review functional` drives nothing. Place them *after* `## Functional validation` closes — i.e., after its last `### Step N` subsection — but keep the level at `###`. They are "sibling to `## Functional validation` in document flow" but "one level deeper in heading numbering"; when the prompt below says "peer to `## Functional validation`", read it as placement, not heading level.
 4. **Track the `@v3` tag for the reusable workflow** so pipeline fixes auto-propagate, and declare the supply-chain trade-off as accepted in `bugbot.md` so the reviewer doesn't re-flag it on every PR (see Step 3 template). `@v1` is frozen and no longer receives fixes — new repos use `@v3`.
-5. **Match the exact phrasing the auto-extractor expects** for sign-in lines and auth methods (listed in Step 4 → `### Auth`).
-6. **A runtime repo must ship a working `dev-start.sh` — there is no clean judges-only mode.** If this repo runs an app, the bring-up is mandatory: a runtime PR with no smoke evidence can never be `APPROVE`d (capped at `COMMENT`), and every affected review carries a prominent "⚙️ Review setup health" section naming the gap until it's fixed. Don't treat "skip the script" as an escape hatch. Build the bring-up, make it cache-efficient, and prove it via the local loop + council review in Step 4.5 before committing. (Only genuinely non-runtime repos — pure-docs, lib-only — omit the file.)
+5. **Write `### Auth` in the canonical shape** — a `Sign in:` line with `<METHOD> <endpoint>` + JSON body, and `Method:` one of `cookie`/`bearer`/`header`/`none` (Step 4 → `### Auth`). Nothing greps that phrasing any more; the section is handed to the functional tester as prose, and the canonical shape is what it is built to read.
+6. **A runtime repo should ship a working `dev-start.sh` — it is the only thing that makes `/review functional` real.** No verdict depends on it: a missing or broken bring-up never blocks a PR, never withholds `APPROVE`, and produces no nag. What it decides is whether the browser tester has a running app to drive — without it, `/review functional` quietly degrades to a plain code review. If this repo runs an app, build the bring-up, make it cache-efficient, and prove it via the local loop + council review in Step 4.5 before committing. (Only genuinely non-runtime repos — pure-docs, lib-only — omit the file.)
 
 ## Step 1: Understand the repo
 
@@ -31,10 +31,9 @@ Before writing any config, gather context about this project:
 ## Step 2: Create the caller workflow
 
 **Reviews are on demand.** Nothing runs on push: a reviewer comments `/review …`
-on the PR and the comment names the passes to run — `code` (the judges),
-`functional` (the browser tester), `native` (Anthropic's `code-review` plugin),
-`all`, plus `deep` to force the dual-judge path. Depth is still chosen
-automatically from the PR's size and paths; the command chooses which passes run.
+on the PR and the comment names the passes to run — `code` (the code review),
+`functional` (the browser tester) or `all`. Depth is not a command option:
+`review-scan` scales itself from the diff. The command chooses which passes run.
 
 Create `.github/workflows/claude-review.yml`:
 
@@ -50,7 +49,7 @@ on:
         required: true
         type: string
       command:
-        description: 'Passes to run, e.g. "/review code functional". Empty = judges only.'
+        description: 'Passes to run, e.g. "/review code functional". Empty = code review only.'
         required: false
         type: string
 
@@ -189,10 +188,10 @@ Pass the **same `runner` to `pr-review.yml` and `warm-cache.yml`**: the Actions 
 
 If the user does opt in, tell them their fleet needs **network egress to the GitHub Actions cache service** (without it, caching silently degrades to always-cold — reviews still work, just slower), and that the runner image should carry **Chrome's shared libraries** (`libnss3`, `libatk1.0-0t64`, `libgbm1`, `libasound2t64`, …): the browser binary unpacks into `$HOME` and needs no root, but those libs do, and a non-root container cannot apt-install them at review time. The warm-cache workflow is PR-code-free by construction (it runs off the default branch, `pnpm fetch` reads only the lockfile, `dev_cache_warm_command` is trusted caller config) and needs no secrets, so it is safe on their own fleet.
 
-Note: the `concurrency:` block and the `if:` draft guard are required — omitting
-either causes recurring reviewer noise (cursor-style bots flag missing concurrency
-alongside all other repo workflows, and the pipeline re-runs on every `synchronize`
-against draft PRs, wasting budget). The `permissions:` block is also required;
+Note: the `concurrency:` block and the job-level `if:` filter are required —
+omitting either causes recurring noise (cursor-style bots flag missing concurrency
+alongside all other repo workflows, and without the filter every comment on every
+issue opens a run that exists only to skip itself). The `permissions:` block is also required;
 its omission is the #1 startup failure for repos in orgs with the GitHub-default
 read-only `GITHUB_TOKEN` scope (see inline comment above). `actions: read` is
 **not** needed: round-2 state comes from the PR's own review history, not from
@@ -222,27 +221,11 @@ OIDC token is only a signed statement of which workflow ran and who asked.
 
 This has been observed on same-repo PRs in at least one external org and is likely caused by an org-level policy interacting with `inherit`. The explicit form unblocks the run; root cause can be investigated later.
 
-### The second-opinion pass: `/review native` and the `native_review_scope` input
+### The `native` pass is removed — do not wire it
 
-A review can run **two** reviewers: its own panel (orchestrator, two debating judges, functional tester) and the official Claude `code-review` plugin. The second one is **not a separate job** — it is the `review-native` subagent, dispatched inside the same review session alongside the judges and the functional tester, so it costs no extra runner, no second checkout and no extra wall-clock. There is nothing to enable in the caller: a reviewer asks for it per PR with `/review native`. It introduces no new permission requirement beyond the `permissions:` block you already wrote above.
+`/review native` used to run Anthropic's official `code-review` plugin in-session as a second opinion. It is **deleted** (see `docs/adr/0004-two-call-review.md`), along with the `plugin_marketplaces` / `plugins` action inputs. The review is now one self-scaling reviewer plus a refutation pass.
 
-**There is only one review comment.** The plugin's own prompt ends by telling the model to post its findings with `gh pr comment`; the pipeline overrides that — the subagent writes its findings to a file, the orchestrator dedupes them against the judges' findings (the judges win on a shared line) and folds the survivors into the single consolidated review, attributed inline. The override is structural: `Bash(gh pr comment:*)` is denied session-wide, so a second bot comment cannot appear. If the user reports "two review comments", the second one is a different tool, not this.
-
-It runs at whatever tier the plan picked — a `light` plan on a small diff is exactly when a second opinion is worth having. Only `skip` runs nothing at all. If the plugin fails to install on the runner, the pass degrades to a silent no-op and the review posts normally. It is a second full review pass drawing on the same 5-hour Claude subscription window, so per-PR token consumption is meaningfully higher on the PRs where it is used; budget for another token in the `CLAUDE_CODE_OAUTH_TOKENS` pool if the team reaches for it often.
-
-One optional input, which you should leave unset unless the user asks:
-
-```yaml
-    with:
-      pr_number: ${{ inputs.pr_number || '' }}
-      command: ${{ inputs.command || '' }}
-      native_review_scope: |  # default ""; empty reviews the whole diff
-        only review changes under `apps/api/` and `apps/web/`; ignore everything else
-```
-
-- `native_review_scope` — free text injected verbatim into the native reviewer's prompt as a *narrowing* constraint, applied whenever someone runs `/review native`. Wire it on a monorepo where much of a typical diff is generated or vendored: the plugin knows nothing about this pipeline's gate rules and will otherwise spend its budget on paths nobody wants reviewed. Derive the paths from the runtime surface you determined in Step 1.
-
-**`native_review` and `native_review_runner` no longer exist.** Passing either fails the run with `startup_failure`. If the repo you are setting up already has them, delete them.
+Do **not** add `native_review_scope` to a caller workflow you are setting up: it is accepted and ignored. It is kept only so an existing caller that passes it does not break — a reusable workflow errors on an undefined input. If the repo you are setting up already passes `native_review_scope` or `model_standard`, you may delete both. `native_review` and `native_review_runner` never existed in v3 and still do not; passing either fails the run with `startup_failure`.
 
 
 ## Step 3: Create bugbot.md
@@ -258,8 +241,8 @@ Include a "Verify before flagging" section AND an "Accepted supply-chain trade-o
 ## Verify before flagging
 
 Before reporting a finding that cites a library or component, confirm it exists:
-- Check `context.md` (generated at review runtime by the Context Builder agent; written to the workspace root during the run, not committed) → "Repo capabilities" for available exports and dependencies.
-- If the artifact is not listed, drop the finding or move to `uncertain_observations`.
+- Check the repo itself: `git ls-files`, the manifest (`package.json` / `pyproject.toml` / …), and the module's real exports.
+- If it doesn't exist, drop the finding. There is no lower bucket to park it in.
 
 ## Accepted supply-chain trade-offs
 
@@ -270,28 +253,28 @@ The "Accepted supply-chain trade-offs" line is what keeps the reviewer quiet abo
 
 ### Optional: opt back into test-coverage / a11y emphasis
 
-By default, the shipped skills do **not** emit `missing-test`, `weak-test`, or `a11y-violation` findings — they're project-opt-in. This keeps reviews quiet on routine PRs (a sibling-spec convention from one project shouldn't fire false positives on another, and axe-core on every page surfaces violations on shared components the PR didn't touch). If your project genuinely wants these enforced, add a section to `bugbot.md` describing your project's convention:
+By default the reviewer stays quiet about both. `review-scan` lists "missing tests you cannot tie to a broken behavior" as permanently out of scope, and the functional tester takes its whole test plan from the linked issue's acceptance criteria — it never derives one from the diff. If your project genuinely wants these looked at, add a section to `bugbot.md` describing your project's convention:
 
 ```markdown
 ## Test-coverage convention
 
 Every non-trivial changed handler/hook/util/service in `src/api/**` or `src/services/**`
 must have a sibling spec at `<filename>.spec.ts` or `<filename>.test.ts`. PRs that
-add such files without a sibling spec should get a `missing-test` finding pointing
-at the topmost added line of the new module. Out of scope: tests, generated code,
-config files.
+add such files without a sibling spec should be flagged as a `minor` finding on the
+topmost added line of the new module. Out of scope: tests, generated code, config
+files.
 
 ## Accessibility focus
 
 Frontend changes that touch form labels, ARIA attributes, semantic markup, or
-keyboard handlers should run an axe-core WCAG 2.1 AA audit on the changed page.
-The functional tester picks this up via the test-plan's `a11y: true` flag — the
-context builder already sets it when the diff matches those triggers; no action
-needed here unless you want it ALWAYS on (in which case add: "Always treat the
-test plan as `a11y: true` regardless of diff").
+keyboard handlers should be checked against WCAG 2.1 AA on the changed page.
 ```
 
-Without these sections, the bot stays quiet about test/a11y — the perimeter is the diff, and the conventions are yours to declare.
+There is no `a11y` flag and no diff-derived test plan any more, so this only shapes
+what the code review is willing to say. To get accessibility actually *exercised* in
+a browser, write it into the linked issue's acceptance criteria — that is the
+functional tester's only source. Without these sections the bot stays quiet about
+test/a11y: the perimeter is the diff, and the conventions are yours to declare.
 
 ## Step 4: Create .github/review-config.md
 
@@ -318,13 +301,23 @@ Map changed file paths to convention/rule files the reviewers should read:
 
 If no convention files exist, omit this section.
 
+### Spec documents (one line, optional)
+
+Where this repo keeps its planning/spec documents, so the reviewer judges the code against the real specification instead of the short summary in the GitHub issue:
+
+```markdown
+Spec documents: docs/specs/, docs/prds/
+```
+
+A path, a directory or a glob; comma-separate several. Look for an existing convention first (`docs/specs/`, `docs/prds/`, `docs/rfcs/`, `planning/`, a `*-prd.md` naming habit) and declare that. Skip the line if the repo has no such directory — the reviewer still finds spec docs added by the PR itself, referenced by path from the issue or PR body, or named `<x>-prd` / `-spec` / `-rfc`.
+
 ### Stack-specific review focus
 
 Write 3-5 bullet points per area about what reviewers should watch for. Be specific — reference actual patterns used in this codebase.
 
 ### Functional validation
 
-**Prose only — no executable bash.** This section is read by the reviewer agents from `context.md` to understand what the functional tester should exercise. The *executable* side of dev-env bring-up lives in `.github/claude-review/dev-start.sh` (see Step 4.5). Describe, in prose, what the project needs at runtime:
+**Prose only — no executable bash.** No agent reads this section any more — `context.md` and the context builder are deleted, and `review-scan` reads the PR and the repo directly. It survives for two reasons: humans need the runtime description, and it is still the *legacy* bring-up path — with no `dev-start.sh` present, `scripts/setup-dev-env.sh` evals bash blocks found here and warns that it did. Keeping it prose is what stops that from firing. The *executable* side of dev-env bring-up lives in `.github/claude-review/dev-start.sh` (see Step 4.5). Describe, in prose, what the project needs at runtime:
 
 - Database: which flavour (Postgres / MySQL / SQLite / none), whether it's dockerised, the default DB name, credentials for tests.
 - Environment: where `.env` (or equivalent) actually lives (monorepo apps often have per-app `.env.example` files — `ls` to confirm), what vars matter.
@@ -332,11 +325,11 @@ Write 3-5 bullet points per area about what reviewers should watch for. Be speci
 - Dev server: which processes start, which ports they bind. Reference the numbers, not the commands — commands live in `dev-start.sh`.
 - Test data: what fixtures or seeders exist, which test users the seeders create, whether the functional tester should call a signup endpoint instead.
 
-The reviewer needs the prose; the pipeline needs the script. Do not duplicate the commands in both places — the script is the source of truth.
+The humans need the prose; the pipeline needs the script. Do not duplicate the commands in both places — the script is the source of truth.
 
 ## Step 4.5: Determine the runtime surface, then build dev-start.sh
 
-Every repo with a runnable app **must** ship `.github/claude-review/dev-start.sh` — the first-class contract the pipeline uses to bring up the dev environment (install deps, start services, block until they respond). There is **no opt-out for app-bearing repos**: a runtime PR with no smoke evidence can never be `APPROVE`d, and every affected review nags with a "⚙️ Review setup health" section until the bring-up works. Build one that is **efficient (cache-enabled), locally verified, and council-reviewed** for THIS project.
+Every repo with a runnable app should ship `.github/claude-review/dev-start.sh` — the first-class contract the pipeline uses to bring up the dev environment (install deps, start services, block until they respond). **No verdict depends on it** — a missing or failed bring-up never blocks and never withholds `APPROVE` — but it is the difference between `/review functional` driving the real app and driving nothing at all. Build one that is **efficient (cache-enabled), locally verified, and council-reviewed** for THIS project.
 
 ### 4.5.0 — Determine the runtime surface (evidence-based, not a guess)
 
@@ -426,9 +419,9 @@ Each reviewer returns **blocking flaws** (file:line) + optional notes. A **block
 
 Only after 4.5.0 PROVES no runnable app:
 - **Executable `tests/*.sh`** (case 2) → the pipeline runs them as a self-test; point `## Functional validation` prose at those tests; do not fabricate a server.
-- **Truly nothing runnable** (case 3, pure-docs/pure-library) → do NOT create `dev-start.sh`, and document explicitly in your handoff: "This repo has no runnable surface; its non-runtime PRs review cleanly, but any PR the planner judges to have runtime behaviour is capped at `COMMENT` with a setup-health nag — the intended forcing function. If a runnable surface is added later, a `dev-start.sh` becomes mandatory."
+- **Truly nothing runnable** (case 3, pure-docs/pure-library) → do NOT create `dev-start.sh`, and document explicitly in your handoff: "This repo has no runnable surface, so `/review functional` has nothing to drive. `/review code` reviews it normally and no verdict is affected. If a runnable surface is added later, add a `dev-start.sh` then."
 
-An empty-but-present `dev-start.sh` always fails the step — commit a real one (cases 1/2) or none (case 3).
+An empty-but-present `dev-start.sh` is the worst option: it exits 0, starts nothing, and the port probes then time out with no app to test. Commit a real one (cases 1/2) or none (case 3).
 
 ### Secrets for dev-start.sh
 
@@ -445,34 +438,9 @@ If bring-up needs creds that aren't checked-in defaults (private registry token,
 
 Detect this passively: grep the `dev-start.sh` you drafted for `$VAR` references that aren't shell built-ins or values you set inside the script. If any look external (anything ending `_TOKEN`/`_KEY`/`_SECRET`, registry/cloud creds), surface the to-do. If self-contained (compose-defined creds, no external API), skip it.
 
-## Step 4.6: External issue tracker (optional)
+## Step 4.6: The `review-config.md` runtime sections
 
-The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can opt into an extra hook that fetches the external spec and includes it in the reviewer's context. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
-
-Walk through this decision even if the project looks GitHub-only; confirm it explicitly so you don't leave a Linear-using repo silently missing spec context.
-
-1. **Detect passively.** Look for tracker evidence without asking first:
-   - `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE*`, `.github/ISSUE_TEMPLATE/*` — grep for `linear.app`, `*.atlassian.net`, `jira.`, `monday.com`, `notion.so`, `app.clickup.com`, `app.shortcut.com`, `app.asana.com`.
-   - Recent PR bodies and branch names: `gh pr list --json body,headRefName --limit 20` — look for the same hosts plus any recurring `[A-Z]+-\d+` token convention in branch names.
-   - Note what you found (or didn't) for the user.
-
-2. **Confirm with the user.** Use `AskUserQuestion` to ask:
-   > "Does this repo track specs in an external system (Linear / Jira / Monday / Notion / other)? If yes, which? If no, choose **GitHub only**."
-   Ask this whether detection succeeded or not — a grep hit might be a one-off link, and a miss might just mean the history is sparse. The user's answer wins.
-
-3. **If GitHub only** — print "No tracker integration needed. Skipping." and go to Step 5. Do not create `fetch-issue.sh` and do not list any extra secrets.
-
-4. **If a tracker was chosen** — do NOT generate the hook script or any tracker code yourself. Output three concrete to-dos for the user to complete:
-
-   - "**Add a repo secret named `TRACKER_SECRETS`** with your credentials in newline-separated `KEY=VALUE` form. For `<chosen tracker>`, a typical minimum is something like:
-     ```
-     <PROVIDER>_API_KEY=<your key>
-     ```
-     Get your key at `<the provider's API-key page URL>`."
-   - "**Create `.github/claude-review/fetch-issue.sh`**. It reads the pre-extracted ticket references at `/tmp/external-issue-candidates.json`, calls your tracker, and prints markdown to stdout. See the README section **External issue trackers** (`.github/claude-review/fetch-issue.sh`) for the full contract, the candidates-file schema, and a provider-neutral skeleton to adapt."
-   - "**Optional but recommended:** add a `Ticket: <url>` line to your PR template so authors paste the tracker URL into every PR — this gives the highest-confidence lookup (Tier-1 explicit marker)."
-
-   Emphasize: `fetch-issue.sh` must be committed and `chmod +x`'d. Without `TRACKER_SECRETS` the hook runs but every env var the script references is empty, and the script will soft-fail on the first `curl` — the Actions log will show a `::warning::`.
+These sit in `.github/review-config.md` (Step 4). `scripts/setup-dev-env.sh` probes them during bring-up, and the orchestrator lifts `### Auth` + `### Known dev-env quirks` verbatim into the functional tester's prompt.
 
 ### Auth
 
@@ -490,7 +458,7 @@ Use the exact endpoints, credentials, and auth method you discovered in Step 1. 
 - Method: cookie | bearer | header | none
 ```
 
-**Be explicit and literal.** The context builder turns this section (plus the dev-env outputs) into a ready-made auth recipe so the functional tester spends zero budget rediscovering auth — exact endpoints, exact seeded credentials, exact method. A `Sign in:` line with a `POST <endpoint>` + `{JSON body}` is the canonical shape.
+**Be explicit and literal.** `scripts/setup-dev-env.sh` reads this section during bring-up — it evals any bash block here and reports `auth_ready` — and the orchestrator hands it, plus the dev-env outputs, to the functional tester as a ready-made auth recipe, so the tester spends zero budget rediscovering auth: exact endpoints, exact seeded credentials, exact method. A `Sign in:` line with a `POST <endpoint>` + `{JSON body}` is the canonical shape.
 
 For `header` or non-cookie auth (e.g., token in `x-auth` response header), document exactly how to capture and resend the token. Example:
 
@@ -517,9 +485,9 @@ List the actual ports you found in Step 1 (from `package.json` scripts, framewor
 
 ### Known dev-env quirks (optional)
 
-If the dev environment has known failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths — list them under a `### Known dev-env quirks` section (same level-3, file-root placement as `### Auth`). The pipeline copies it verbatim into the functional tester's test plan, so matching failures are treated as expected instead of reported as findings.
+If the dev environment has known failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths — list them under a `### Known dev-env quirks` section (same level-3, file-root placement as `### Auth`). It is passed verbatim to the functional tester, so a matching failure is treated as expected instead of reported as an observation.
 
-**Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. The pipeline greps for these headings literally (the context builder's config-gap check and the dev-env probe).
+**Section placement matters, and heading level is rigid.** `### Auth` and `### Known service ports` use **heading level 3 (three `#` — literally `###`)** and sit at **the root of the file, after `## Functional validation` has closed** (i.e., after its last `### Step N` subsection). They are placement-peers of `## Functional validation` — same depth in document flow — but **not** heading-peers: keep them at `###`, not `##`. `scripts/setup-dev-env.sh` greps for these headings literally when it brings the dev env up and probes it.
 
 Correct file outline — note heading levels:
 
@@ -537,13 +505,42 @@ Correct file outline — note heading levels:
 ### Known service ports      ← level 3, placed at file root after ## Functional validation
 ```
 
-Do **not** promote to `## Auth` / `## Known service ports` — the pipeline's `^### ` greps miss them and a "⚙️ Review setup health" bullet lands in every review body. Do **not** nest them under `## Functional validation` either — when they live inside, the Functional-validation extractor picks up Auth code it shouldn't. Keep them exactly as **level-3 headings at the file's top level, immediately after the last `### Step N`**.
+Do **not** promote to `## Auth` / `## Known service ports` — the dev-env probe's section matcher is heading-level aware, so at `##` the Auth section swallows every `###` subsection below it and evals whatever it finds there. Do **not** nest them under `## Functional validation` either — when they live inside, the Functional-validation extractor picks up Auth code it shouldn't. Keep them exactly as **level-3 headings at the file's top level, immediately after the last `### Step N`**.
+
+## Step 4.7: External issue tracker (optional)
+
+The reviewer assembles one spec file per run, in precedence order: the repo's own spec documents first (they are authoritative), then the linked GitHub issue. The PR body is not a spec source — it describes the diff, so judging the diff against it is circular — though a spec document it *links to* still resolves. A tracker ticket, like a GitHub issue, counts as a *summary* of the document — it supplements it and never overrides it. Repos that track specs in Linear / Jira / Monday / Notion / etc. can add that source with a hook that fetches the external spec. The pipeline ships **no provider-specific code** — the consumer owns the script and the API call.
+
+Walk through this decision even if the project looks GitHub-only; confirm it explicitly so you don't leave a Linear-using repo silently missing spec context.
+
+1. **Detect passively.** Look for tracker evidence without asking first:
+   - `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE*`, `.github/ISSUE_TEMPLATE/*` — grep for `linear.app`, `*.atlassian.net`, `jira.`, `monday.com`, `notion.so`, `app.clickup.com`, `app.shortcut.com`, `app.asana.com`.
+   - Recent PR bodies and branch names: `gh pr list --json body,headRefName --limit 20` — look for the same hosts plus any recurring `[A-Z]+-\d+` token convention in branch names.
+   - Note what you found (or didn't) for the user.
+
+2. **Confirm with the user.** Use `AskUserQuestion` to ask:
+   > "Does this repo track specs in an external system (Linear / Jira / Monday / Notion / other)? If yes, which? If no, choose **GitHub only**."
+   Ask this whether detection succeeded or not — a grep hit might be a one-off link, and a miss might just mean the history is sparse. The user's answer wins.
+
+3. **If GitHub only** — print "No tracker integration needed. Skipping." and go to Step 5. Do not create `fetch-issue.sh` and do not list any extra secrets. Also tell the user the cheaper alternative that needs no wiring: keep the spec document in the repo. One committed in the PR itself is picked up automatically; so is one under the `Spec documents:` location declared in Step 4, or one referenced by its repo path from the issue or PR body.
+
+4. **If a tracker was chosen** — do NOT generate the hook script or any tracker code yourself. Output three concrete to-dos for the user to complete:
+
+   - "**Add a repo secret named `TRACKER_SECRETS`** with your credentials in newline-separated `KEY=VALUE` form. For `<chosen tracker>`, a typical minimum is something like:
+     ```
+     <PROVIDER>_API_KEY=<your key>
+     ```
+     Get your key at `<the provider's API-key page URL>`."
+   - "**Create `.github/claude-review/fetch-issue.sh`**. It reads the pre-extracted ticket references at `/tmp/external-issue-candidates.json`, calls your tracker, and prints markdown to stdout. See the README section **`.github/claude-review/fetch-issue.sh` (optional — external issue trackers)** for the full contract, the candidates-file schema, and a provider-neutral skeleton to adapt."
+   - "**Optional but recommended:** add a `Ticket: <url>` line to your PR template so authors paste the tracker URL into every PR — the highest-confidence lookup."
+
+   Emphasize: `fetch-issue.sh` must be committed and `chmod +x`'d — the pipeline treats the executable bit as the opt-in and skips a non-executable file silently. Without `TRACKER_SECRETS` the hook runs but every env var it references is empty, so it soft-fails on the first `curl`; the run is not blocked, but the Actions log shows a `::warning::` and the review proceeds without the external spec.
 
 ## Step 5: Verify self-check
 
 Before committing, re-read your own `.github/review-config.md` and `.github/claude-review/dev-start.sh` and confirm:
 
-- [ ] `dev-start.sh` exists, is executable (`chmod +x`), boots from a clean checkout (exit 0, services answer on every `### Known service ports` URL), AND has passed a council-consensus round per Step 4.5 (no reviewer raised a blocking flaw, or the 3-round cap was hit with remaining flaws documented in the PR). If it doesn't boot locally it won't boot in CI, and a runtime PR with no working bring-up can never be `APPROVE`d — every review will carry a setup-health section quoting the bring-up error until it's fixed. (Exception: an app that boots only with creds you lack locally — verified by inspection + council, with a `DEV_ENV_SECRETS` to-do emitted, per Step 4.5.2.)
+- [ ] `dev-start.sh` exists, is executable (`chmod +x`), boots from a clean checkout (exit 0, services answer on every `### Known service ports` URL), AND has passed a council-consensus round per Step 4.5 (no reviewer raised a blocking flaw, or the 3-round cap was hit with remaining flaws documented in the PR). If it doesn't boot locally it won't boot in CI, and a broken bring-up costs you the functional pass entirely. It never costs you a verdict — nothing blocks or withholds `APPROVE` over a dev env. (Exception: an app that boots only with creds you lack locally — verified by inspection + council, with a `DEV_ENV_SECRETS` to-do emitted, per Step 4.5.2.)
 - [ ] If bring-up rebuilds heavy non-PR artefacts cold (Gradle/Maven, Go modules, Rust `target`, an SDK generator), the `dev_cache_*` inputs are wired in the caller workflow and a warm re-run is measurably faster — cache key is your lockfile globs, cached paths are dependency dirs (not whole build trees).
 - [ ] If your repo generates code from an openapi spec / Prisma / Drizzle / GraphQL schema / etc. at dev-time, `dev-start.sh` runs that generator **before** the dev server. Missing codegen = TS errors = compile noise (and sometimes blocks boot outright — see valcori's historical `src/sdk` case).
 - [ ] `review-config.md`'s `## Functional validation` section is **prose only** — no fenced `bash` blocks. Commands live in `dev-start.sh`.
@@ -559,7 +556,7 @@ Before committing, re-read your own `.github/review-config.md` and `.github/clau
 - [ ] The caller's job has the `startsWith(github.event.comment.body, '/review')` filter, so an ordinary comment does not open a workflow run that exists only to skip itself.
 - [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event_name }}-${{ github.event.issue.number || github.run_id }}`, `cancel-in-progress: false`) — cancelling would throw away a review someone asked for. `github.event_name` keeps the comment run and the dispatch run in separate groups.
 
-If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
+If any check fails, fix before committing. A misconfiguration that produces a concrete wrong behaviour is exactly what the reviewer flags on the first PR.
 
 ## Step 6: Verify secrets and App install
 
@@ -638,51 +635,53 @@ It is common to fix one and miss the other on a first setup; the installation pa
 | Caller workflow missing `id-token: write` | Nothing today — the reviewer does not request it yet. Once it does, this is `startup_failure`, zero jobs, no logs, because GitHub refuses the run before any pipeline code executes. Fix: add `id-token: write` to the caller's `permissions:` block. |
 | All correct | "Create GitHub App token" = `success`, "Resolve review identity" logs `Review identity: <your-app-slug>[bot]`. |
 
-### `TRACKER_SECRETS` (optional, for Step 4.6 opt-in)
+### `TRACKER_SECRETS` (optional, for the Step 4.7 opt-in)
 
-Single multiline secret with newline-separated `KEY=VALUE` pairs that your `fetch-issue.sh` reads as env vars. Without it, the hook runs but every referenced env var is empty — the Actions log will show a `::warning::` from `fetch-issue.sh`, and the review completes without external-spec context.
+Single multiline secret with newline-separated `KEY=VALUE` pairs that your `fetch-issue.sh` reads as env vars. Without it the hook still runs, but every referenced env var is empty — the Actions log shows a `::warning::` from the hook and the review completes without external-spec context. No verdict effect either way.
 
 ### `DEV_ENV_SECRETS` (optional, for Step 4.5 when dev-start.sh needs creds)
 
 Single multiline secret with newline-separated `KEY=VALUE` pairs exposed as env vars to `.github/claude-review/dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot. Without it, references in `dev-start.sh` to these env vars are empty — the script will fail hard at the first command that depends on them, and the whole review stops (same fail-hard semantics as any other `dev-start.sh` error). Skip if your bring-up is self-contained.
 
-## What blocks a PR (v3 forcing-functions)
+## What blocks a PR
 
-Beyond a judge finding a `critical`/`major`, two structural gates can post a blocking `REQUEST_CHANGES` on their own, and two more withhold `APPROVE` — knowing them up front avoids surprise on a repo's first PRs:
-- **Oversized** (blocks) — > 3000 non-generated lines or > 60 files: no judges run, the bot returns a canned "split this PR" `REQUEST_CHANGES`. Override per-PR with the `deep-review` label; bypass a known-bundled PR with `skip-review`. While the PR stays oversized, re-pushes skip the review run entirely (the standing block holds); split it below the ceiling and the next push gets a real review.
-- **Failed smoke** (blocks) — the functional smoke ran against the live app and `FAIL`ed: blocking `REQUEST_CHANGES` with the failing scenario and evidence. Reproduced runtime failure is the one non-finding cause that blocks.
-- **No runtime evidence** (withholds APPROVE) — a PR the planner judged has runtime behaviour to exercise, where the smoke never ran (no `dev-start.sh`, bring-up failed/timed out, tester crashed): capped at `COMMENT`, never `APPROVE`, and the review body's "⚙️ Review setup health" section names the exact problem (missing vs present-but-failed, with the actual error) and the fix. This is why a repo shipping a running app MUST commit a working `dev-start.sh` (Step 4.5). Docs-only / non-runtime PRs are exempt; bots are NOT.
-- **No spec** (withholds APPROVE) — no linked issue, PRD, external-tracker spec, or substantive PR-body prose: APPROVE is withheld → `COMMENT` (not a hard block). Bot-authored PRs waive this. Link an issue or paste acceptance criteria to clear it.
+`REQUEST_CHANGES` comes from exactly two places: a surviving `critical`/`major` finding, or the oversized gate. It **never** comes from a missing spec, a missing dev env, a failed or skipped smoke run, or an unanswered question — those gates are deleted (see `docs/adr/0004-two-call-review.md`), and they were 76% of the old pipeline's blocks.
 
-All of these resolve fresh each round — fix the cause and the next push re-evaluates.
+`scripts/guard.sh` is the whole structural layer: pure bash, four exits, decided before any model reads the diff.
+- **`label`** (skips, posts nothing) — the `skip-review` label is present. It is checked first, so it wins over both size-ceiling overrides (`/review deep` and the `deep-review` label) and over the size ceiling itself. `skip-review` is deliberately label-only: "never review this PR" is persistent state, so there is no `/review skip`.
+- **`unchanged`** (skips, posts nothing) — round 2+ and nothing non-generated changed since the last judged review. It suppresses *automatic* re-runs only: an explicit `/review …` is never answered with silence.
+- **`oversized`** (blocks) — > 3000 non-generated lines or > 60 files: no model reads anything, the bot posts a canned "split this PR" `REQUEST_CHANGES`. Two equivalent overrides force a real review: commenting `/review deep` (composes with any pass — `/review code deep`, `/review all deep`) covers the run it starts, and the `deep-review` label covers every push, so a PR that genuinely cannot be split needs no re-typing. Either alone is enough. `skip-review` bypasses it entirely.
+- **`empty`** (skips, posts nothing) — nothing reviewable left once generated files (lockfiles, snapshots, `dist/`, `*.min.*`, `*.generated.*`) are excluded.
+
+Anything else runs. And `APPROVE` is the rare verdict, not the target: it needs zero surviving findings **plus** an argued case that a human pass over this diff changes nothing, with no sensitive path touched (auth, payments, migrations, `.github/`, `.claude/`, `infra/`) and low review effort. Everything short of that is `COMMENT` — and a `COMMENT` listing what a human should look at is a good review, not a failure.
+
+All of this resolves fresh each round — fix the cause and the next run re-evaluates.
 
 ## Step 7: Test
 
 Push the changes on a branch, open a PR, and verify the workflow triggers. Expected outcome:
 
 - "Install review pipeline" step succeeds (composite action)
-- The review body carries **no "⚙️ Review setup health" section** — the pipeline emits one when it detects config/dev-env problems (missing `dev-start.sh`, a failed bring-up with the error quoted, missing `review-config.md` or `### Auth`, a failing `fetch-issue.sh`); a correct config stays silent
-- Context builder produces `context.md` and `test-plan.md`
+- The review body is short — ~600 bytes, hard-capped at 1200 — with no banners, no "Spec sources" and no setup-health section; v4 deleted all of them
 - Dev env setup starts your services (look for `API ready at ...` in logs — not just `API=false`)
-- "Install review subagents" copies the pipeline's static `agents/review-functional-tester.md` and `agents/review-native.md` to `~/.claude/agents/` on the runner, templated with `inputs.model_functional` / `inputs.model_standard` (each pins its model and points at its skill — don't commit such files to your repo)
-- Orchestrator runs the judges in parallel and (when applicable) the functional tester. A **full** review runs two judges (Opus + Haiku) that debate to a single deduped findings list. A **light** review runs ONE judge: **Opus** on a small/tiny runtime PR, Sonnet on a docs/release/promotion PR — light is not a weaker review.
-- Functional testing runs on **every runtime diff** above the tiny ceiling (a `small` runtime PR gets the single-judge `light` tier — one **Opus** judge plus a quick functional smoke; the test planner picks `skip`/`quick` per surface). A **tiny** fix (≤ 10 non-generated lines, no sensitive paths) and a docs/tests-only (`nonruntime`) PR get a single Opus/Sonnet judge with **no functional run** — a trivial or non-runtime change rarely needs a smoke pass (a `.github/` CI, `.claude/`, or `bugbot.md` touch stays at the full dual-judge review). Oversized PRs (> 3000 non-generated lines or > 60 files) are different — they aren't lightly reviewed any more: the orchestrator returns a canned `REQUEST_CHANGES` asking to split the PR and runs no judges, and re-pushes skip the run while the PR stays oversized (add the `deep-review` label to force a full review instead). This is why `dev-start.sh` matters even for repos that mostly ship small PRs — without it, a runtime PR carries no smoke evidence, can never be `APPROVE`d, and every review nags with the setup-health section (docs-only / non-runtime PRs are exempt). The tester is bounded by a wall-clock budget (`functional_budget_seconds`, default 8 min) so it always writes findings before the job's time ceiling rather than getting cancelled mid-run.
+- "Install review subagents" copies the pipeline's static `agents/review-scan.md`, `agents/review-verify.md` and `agents/review-functional-tester.md` to `~/.claude/agents/` on the runner, templated with `inputs.model_high` / `inputs.model_functional` (each pins its model and its reasoning effort and points at its skill — don't commit such files to your repo)
+- Orchestrator dispatches `review-scan` (opus-5, effort `medium`) — and, in the same response, the functional tester when it is eligible — then `review-verify` (opus-5, effort `low`), whose only mandate is to refute scan's candidates against the source at HEAD. Uncertain counts as refuted. There are no judges, no debate and no tiers: `review-scan` picks light vs full from the diff itself and records which it chose and why.
+- Functional testing is **advisory and opt-in**. It runs only when all three hold: the comment asked for it (`/review functional` or `/review all`), the dev env came up, and the PR's linked issue carries explicit acceptance criteria. Those criteria are its entire test plan — it never derives one from the diff, the title or the PR body. It can neither raise nor lower the verdict: a reproduced failure reaches the review only if `review-verify` can tie it to a changed line and restate the failure itself, otherwise it becomes a human-review item or nothing. It is bounded by a wall-clock budget (`functional_budget_seconds`, default 8 min) so it always writes its file rather than being cancelled mid-run.
 - A heavy `dev-start.sh` (Docker images + JDK/Gradle + a large monorepo's `node_modules`) can exhaust the hosted runner's ~14 GB free disk and fail the job with `No space left on device` after the review already ran. The workflow reclaims disk before the bring-up via the `free_disk_space` input: `safe` (default) clears tooling no Linux app needs (CodeQL/Haskell/Swift, ~12 GB) and is safe for every repo; set it to `aggressive` (also drops Android SDK + .NET, ~25 GB) **only if your `dev-start.sh` doesn't build Android or .NET**; `off` disables it.
-- PRs opened by bots (renovate, dependabot) need no configuration: nothing reviews them until a human comments `/review`, and there is no `allowed_bots` input any more. A bot's own *comment* never triggers a review — it cannot clear the `author_association` gate. Bot-authored PRs still waive the manual-spec gate.
-- For PRs with UI surface, the functional tester's Turn 1 is a browser smoke check (`agent-browser open about:blank`). If Chrome can't launch, the run hard-fails with `overall: CRASH` and the review is flagged `requires_human_review`. Silent fallback to curl/psql is forbidden — a curl-only PASS on a UI fix is the bug we're guarding against.
-- **Verdict: APPROVE** — because you followed Step 5's self-check. If you see findings here, read them and tighten the config; they're almost always real and point at something fixable.
+- PRs opened by bots (renovate, dependabot) need no configuration: nothing reviews them until a human comments `/review`, and there is no `allowed_bots` input any more. A bot's own *comment* never triggers a review — it cannot clear the `author_association` gate.
+- For PRs with UI surface, the functional tester's Turn 1 is a browser smoke check (`agent-browser open about:blank`). If Chrome can't launch, the tester writes `overall: CRASH` and stops. That never lowers the verdict on its own — `review-verify` discards everything in a crashed run. Silent fallback to curl/psql is forbidden: a curl-only PASS on a UI fix is the bug we're guarding against.
+- **Verdict: `COMMENT`, with no findings** — that is the expected good outcome. A setup PR touches `.github/`, which is a sensitive path, so `APPROVE` is off the table by construction; don't chase it. Findings are worth chasing: read them and tighten the config, they're almost always real and point at something fixable.
 - The workflow check is **green whenever a review posted**, even on `REQUEST_CHANGES` — the verdict lives in the PR review (use branch protection's required reviews to make it block merges). A red check means the pipeline itself failed.
 
-## Verdict ladder (round 2)
+## Round 2 — no ladder
 
-When you push follow-up commits to the same PR, the bot runs a round-2 review that looks at the diff since its previous review. The previous round's verdict and reviewed commit come straight from the PR's own review history (no artifacts, no extra permissions), and the round-2 pass is scoped to what changed since — that scoping is what makes follow-up rounds cheap. The review plan itself resolves fresh each round from the PR's overall shape, and the `deep-review` label still forces a full review. Verdict rules:
+When you push follow-up commits and ask for another review, the bot runs a round-2 pass scoped to the diff since its previous review. The previously-reviewed commit comes straight from the PR's own review history (no artifacts, no extra permissions), and that scoping is what makes follow-up rounds cheap. Two things happen, and deliberately only two:
 
-- New `critical` or `major` finding → `REQUEST_CHANGES`.
-- Prior `REQUEST_CHANGES` blocker still present → `REQUEST_CHANGES` (keeps until you actually fix it).
-- A prior block that carried **no findings** — an oversized "split this PR" or a failed-smoke block — is re-evaluated from scratch each round, not pinned. Split the PR (or fix the smoke failure and get a passing run) and the next push reaches its real verdict.
-- Prior `REQUEST_CHANGES` resolved + no new blockers → per-PR verdict (APPROVE if clean, COMMENT if minor findings remain).
-- Prior `COMMENT` + per-PR verdict APPROVE → `APPROVE`. The bot does NOT pin a follow-up to COMMENT just because the prior round was COMMENT — fixing the one issue the bot flagged should land you on green.
-- You dismissed the prior review → the bot drops its **minor/note** findings (your call on low-severity) but does NOT wave off a **critical/major**: those re-block if they still hold at HEAD unless the bot agrees they were wrong.
-- You disputed a finding with a reason (a thread reply, a general PR comment, or a review body) and didn't change the code → the bot **evaluates your explanation against the code at HEAD** rather than just accepting or ignoring it. A **minor/note** is dropped on any reasonable explanation; a **critical/major** is dropped only if the bot agrees it's actually wrong (a plausible-but-unverified claim, or "fixed in another PR" without the code, keeps it blocking). Either way the bot replies in-thread with its reasoning, and the next review lists the outcome under "Dropped after author rebuttal" or "Still present after your reply" — never silently disappearing or nagging forever.
+- **Scope.** `review-scan` reads only `git diff <prior_head_sha>..HEAD`. It reads the wider file for context, but it does not hunt for new findings outside that delta — the previous round already read the rest.
+- **Carry.** It re-checks each finding the previous review raised against the code at HEAD and decides *fixed* or *unresolved* **from the code**, never from a reply. Unresolved ones are carried and then refuted by `review-verify` like any other candidate. Fixed ones are never mentioned again, and nothing already raised is re-raised under a new title.
 
-Severities matter: `critical` and `major` block and are the only judge findings posted as inline comments (max 12, plus functional failures); `minor` and `note` appear as bullets in the review body and never gate APPROVE. A doc-only nit (typo, wrong package name in a paragraph) is `note` — it shows up in the review but won't hold the PR at COMMENT. If the bot grades a doc nit as `minor` or higher, that's a calibration bug worth flagging in feedback.
+**The verdict is recomputed from scratch every round, from surviving findings alone.** A prior `REQUEST_CHANGES` does not force another one, and a prior `APPROVE` does not protect this round. There is no ladder, no ratchet and no pinning — pinning each round to its predecessor is what once produced twelve rounds of flip-flopping on a single PR.
+
+Thread adjudication is gone with it: no `DISPUTED` state, no in-thread replies from the bot, no "Dropped after author rebuttal" / "Still present after your reply" bookkeeping. Dismissing the review or arguing in a thread changes nothing by itself — a finding survives because the code at HEAD still shows it, or it doesn't. Fix the code and the next round stops raising it. `/review deep` and the `deep-review` label both still override the size ceiling (comment = this run, label = every push); a `skip-review` label still skips everything.
+
+Severities: three levels. `critical` (security, data loss, broken build) and `major` (a user-reachable logic bug) block; `minor` is real but non-blocking and never gates the verdict. There is no `note` level any more — a finding that can't name a concrete failure scenario is deleted by the model that found it, not parked at the bottom of the scale. At most **5** findings post as inline comments, filled strictly critical → major → minor, each ≤700 bytes and each carrying a committable `suggestion` block; the rest become bullets in the review body, which is itself capped at 1200 bytes (aim ~600). Every finding appears exactly once — inline **or** in the body, never both.

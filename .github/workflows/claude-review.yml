@@ -1,7 +1,7 @@
 name: Claude PR Review
 
-# ON DEMAND — nothing reviews on push. Comment `/review code | functional | native
-# | all | deep` on a PR; combine passes in one comment for a single review.
+# ON DEMAND — nothing reviews on push. Comment `/review code | functional | all`
+# on a PR; combine passes in one comment for a single review.
 #
 # No `pull_request_target`. It used to be here to run the warm-cache job, but that
 # trigger has READ-ONLY access to the default branch's cache scope, so the warm
@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       command:
-        description: 'Passes to run, e.g. "/review code functional". Empty = judges only.'
+        description: 'Passes to run, e.g. "/review code functional". Empty = code review only.'
         required: false
         type: string
 

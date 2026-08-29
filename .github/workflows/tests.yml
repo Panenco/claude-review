@@ -9,8 +9,8 @@ on:
       - 'tests/**'
       - '.github/workflows/tests.yml'
       # The suite asserts on the pipeline's WIRING too — that the workflow
-      # registers both stop hooks, that its deny list denies the raw `gh` API
-      # subcommand without catching the reads the plugin needs, and that
+      # registers the Stop hook, that its deny list denies the raw `gh` API
+      # subcommand without catching the reads the review needs, and that
       # action.yml verifies every script is installed. A wiring test that does
       # not run when the wiring changes is not a test.
       - 'action.yml'
@@ -26,6 +26,10 @@ on:
       - '.github/workflows/claude-review.yml'
       - 'broker/**'
       - 'infra/**'
+      # pipeline_contract_test.sh asserts the ONBOARDING prompt still names
+      # assets that exist — the seam that shipped a reference to a deleted
+      # agents/review-native.md.
+      - 'prompts/**'
 
 jobs:
   shell:
@@ -44,8 +48,8 @@ jobs:
       - name: Run pick_oauth_token_test.sh
         run: bash tests/pick_oauth_token_test.sh
 
-      - name: Run review_plan_test.sh
-        run: bash tests/review_plan_test.sh
+      - name: Run guard_test.sh
+        run: bash tests/guard_test.sh
 
       - name: Run warm_cache_wiring_test.sh
         run: bash tests/warm_cache_wiring_test.sh
@@ -56,20 +60,26 @@ jobs:
       - name: Run prior_review_state_test.sh
         run: bash tests/prior_review_state_test.sh
 
+      - name: Run prior_findings_test.sh
+        run: bash tests/prior_findings_test.sh
+
       - name: Run post_review_test.sh
         run: bash tests/post_review_test.sh
 
       - name: Run require_review_json_test.sh
         run: bash tests/require_review_json_test.sh
 
-      - name: Run require_native_findings_test.sh
-        run: bash tests/require_native_findings_test.sh
-
-      - name: Run fetch_pr_threads_test.sh
-        run: bash tests/fetch_pr_threads_test.sh
-
       - name: Run upload_screenshots_test.sh
         run: bash tests/upload_screenshots_test.sh
+
+      - name: Run build_spec_test.sh
+        run: bash tests/build_spec_test.sh
+
+      - name: Run pipeline_contract_test.sh
+        run: bash tests/pipeline_contract_test.sh
+
+      - name: Run review_local_test.sh
+        run: bash tests/review_local_test.sh
 
       - name: Shellcheck scripts (error-level only)
         run: shellcheck --severity=error scripts/*.sh tests/*.sh infra/*.sh

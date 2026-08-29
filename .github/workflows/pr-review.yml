@@ -7,7 +7,7 @@ on:
         description: "PR number. Auto-detected from the triggering comment; pass it explicitly for `workflow_dispatch`."
         type: string
       command:
-        description: "Review command, e.g. `/review code functional`. Leave empty on an `issue_comment` trigger — the workflow reads the comment body straight off the caller's event, which is why a caller needs no extra `with:` wiring for the common case. Set it only for `workflow_dispatch`, where there is no comment to read; an empty command there means a plain judge review, because clicking Run workflow IS the opt-in."
+        description: "Review command, e.g. `/review code functional`. Leave empty on an `issue_comment` trigger — the workflow reads the comment body straight off the caller's event, which is why a caller needs no extra `with:` wiring for the common case. Set it only for `workflow_dispatch`, where there is no comment to read; an empty command there means a plain code review, because clicking Run workflow IS the opt-in."
         type: string
         default: ""
       command_trigger:
@@ -19,15 +19,15 @@ on:
         type: string
         default: "panenco-claude-review"
       model_high:
-        description: "Deep-reasoning model (Opus judge)."
+        description: "The reviewing model. Runs the top-level session (at `--effort low` — it only orchestrates and writes files) and both review subagents: review-scan at `effort: medium`, review-verify at `effort: low`."
         type: string
         default: "claude-opus-5"
       model_standard:
-        description: "Standard-tier model (orchestrator, context builder)."
+        description: "DEPRECATED and ignored — the `/review native` pass it drove has been removed. Kept so callers passing it do not break."
         type: string
         default: "claude-sonnet-5"
       model_fast:
-        description: "Cheap-tier model (Haiku judge)."
+        description: "DEPRECATED and ignored — the Haiku judge it named no longer exists. Kept so callers passing it do not break."
         type: string
         default: "claude-haiku-4-5"
       model_functional:
@@ -51,7 +51,7 @@ on:
         type: string
         default: "safe"
       native_review_scope:
-        description: "Optional free-text path-scoping instruction injected verbatim into the `review-native` subagent's prompt, e.g. \"only review changes under `apps/api/` and `apps/web/`; ignore everything else\". Empty (default) reviews the whole diff. Ignored entirely unless the triggering comment asked for the native pass (`/review native`). Wire it on monorepos where much of a typical diff is generated, vendored or out of scope: Anthropic's plugin prompt knows nothing about this pipeline's gate rules and will otherwise spend its budget on paths nobody wants reviewed."
+        description: "DEPRECATED and ignored — the `/review native` pass (Anthropic's `code-review` plugin, run in-session) has been removed, so there is no second reviewer left to scope. Kept so callers passing it do not break: a reusable workflow errors on an undefined input, which would break every consumer's caller workflow."
         type: string
         default: ""
       gate_skip_label:
@@ -59,35 +59,35 @@ on:
         type: string
         default: "skip-review"
       gate_deep_label:
-        description: "Label that forces review_level=full (skip wins if both present). `/review deep` does the same thing for one run, without leaving a label behind."
+        description: "Label that overrides the oversized size ceiling, so a PR that genuinely cannot be split is reviewed anyway. Persistent: it applies to every push, where a `/review deep` comment applies only to the run it starts."
         type: string
         default: "deep-review"
       gate_small_ceiling:
-        description: "Non-generated changed lines at/under which a runtime PR is `small`."
+        description: "DEPRECATED and ignored — no size tiers remain. Kept so callers passing it do not break."
         type: number
         default: 300
       gate_tiny_ceiling:
-        description: "Non-generated changed lines at/under which a runtime PR is `tiny` (single judge, functional skipped)."
+        description: "DEPRECATED and ignored — no size tiers remain. Kept so callers passing it do not break."
         type: number
         default: 10
       gate_size_ceiling:
-        description: "Non-generated changed lines over which a PR is `oversized`."
+        description: "Non-generated changed lines over which the PR is blocked with a split request instead of reviewed."
         type: number
         default: 3000
       gate_file_ceiling:
-        description: "Changed (non-generated) files over which a PR is `oversized`."
+        description: "Changed (non-generated) files over which the PR is blocked with a split request instead of reviewed."
         type: number
         default: 60
       gate_sensitive_globs:
-        description: "Space-separated path globs that force a `full` review even when the diff is small. Setting this REPLACES the default list."
+        description: "DEPRECATED and ignored by the guard — review-verify applies the sensitive-path rule to the APPROVE bar instead. Kept so callers passing it do not break."
         type: string
         default: "*auth.* */oauth/* oauth.* */authentication/* authentication/* */authorization/* authorization/* */security/* security/* */payments/* payments/* */payment/* payment/* */migrations/* migrations/* */migration/* migration/*"
       gate_promotion_bases:
-        description: "Space-separated base branches treated as release targets for promotion detection."
+        description: "DEPRECATED and ignored — promotion PRs take the same path as any other. Kept so callers passing it do not break."
         type: string
         default: "main master production prod"
       gate_promotion_heads:
-        description: "Space-separated head branches treated as promotion sources."
+        description: "DEPRECATED and ignored — promotion PRs take the same path as any other. Kept so callers passing it do not break."
         type: string
         default: "staging develop dev release hotfix"
       dev_cache_paths:
@@ -115,7 +115,14 @@ on:
       CLAUDE_REVIEW_APP_PRIVATE_KEY:
       CLAUDE_REVIEW_APP_SLUG:
       TRACKER_SECRETS:
-        description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/fetch-issue.sh."
+        # LIVE. Forwarded to the orchestrate step, where scripts/build-spec.sh
+        # exports each KEY=VALUE line as a named env var for the consumer's
+        # .github/claude-review/fetch-issue.sh hook (same parser as
+        # DEV_ENV_SECRETS — scripts/kv-secrets.sh). It briefly went unforwarded
+        # in v4; a repo tracking work in Linear/Jira got a reviewer with no
+        # requirements at all, which is why the seam is now pinned by
+        # tests/pipeline_contract_test.sh.
+        description: "Optional newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/fetch-issue.sh."
       DEV_ENV_SECRETS:
         description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/dev-start.sh."
 
@@ -250,7 +257,7 @@ jobs:
             echo "::error::CLAUDE_REVIEW_SCRIPTS is unset or missing — the install step did not run, or action.yml and pr-review.yml are from different versions."
             exit 1
           fi
-          for s in post-review.sh review-plan.sh review-command.sh prior-review-state.sh pick-oauth-token.sh setup-dev-env.sh; do
+          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh; do
             if [ ! -x "$CLAUDE_REVIEW_SCRIPTS/$s" ]; then
               echo "::error::$CLAUDE_REVIEW_SCRIPTS/$s is missing or not executable."
               exit 1
@@ -310,8 +317,8 @@ jobs:
           echo "bot_user=$BOT_USER" >> "$GITHUB_OUTPUT"
           echo "Review identity: $BOT_USER"
 
-      # Which passes did the comment ask for? Depth is not opt-in — review-plan.sh
-      # still sizes the PR below. A reusable workflow sees the CALLER's event, so
+      # Which passes did the comment ask for? Depth is not opt-in — review-scan
+      # scales itself, and guard.sh below only decides whether a model runs at all. A reusable workflow sees the CALLER's event, so
       # the body needs no `with:` wiring; `inputs.command` covers workflow_dispatch.
       - name: Parse review command
         id: cmd
@@ -331,7 +338,7 @@ jobs:
             exit 1
           fi
           {
-            grep -E '^(action|run_functional|native_review|force_deep|passes)=' <<< "$DECISION"
+            grep -E '^(action|run_functional|force_deep|passes)=' <<< "$DECISION"
             echo "message<<__CMD_EOF__"
             grep '^message=' <<< "$DECISION" | cut -d= -f2-
             echo "__CMD_EOF__"
@@ -356,6 +363,22 @@ jobs:
           set -uo pipefail
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
             -f content=eyes --silent || echo "::warning::Could not react to the triggering comment."
+
+      # A run that PROCEEDS can still carry a message — today only the `native`
+      # removal notice. The menu step below is gated on `proceed != 'true'`, so
+      # without this the notice was rendered and never posted: `/review native`
+      # looked like it ran a pass that no longer exists.
+      - name: Note a removed pass
+        if: steps.cmd.outputs.proceed == 'true' && steps.cmd.outputs.message != '' && github.event_name == 'issue_comment'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.review_identity.outputs.token }}
+          MESSAGE: ${{ steps.cmd.outputs.message }}
+        run: |
+          set -uo pipefail
+          printf '%s\n' "$MESSAGE" | gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file - \
+            || echo "::warning::Could not post the removed-pass notice."
 
       # A bare or mistyped command must answer — otherwise the reviewer waits for
       # something that never arrives. `ignore` stays silent: it wasn't for us.
@@ -389,68 +412,150 @@ jobs:
             echo "Pure docs PR — skipping build setup."
           fi
 
-      # Deterministic resolver: review_level (full|light) before any agent runs.
-      # The comment picks the passes; this picks the depth. `/review deep` overrides
-      # it via GATE_FORCE_FULL — the same branch the deep-review label takes.
-      # Unit-tested in tests/review_plan_test.sh.
-      - name: Resolve review plan
-        id: review_plan
+      # GitHub is the state store: prior verdict + reviewed SHA come straight
+      # from the PR's review list. No cross-run artifacts.
+      #
+      # BEFORE the guard, not after: the guard's `unchanged` short-circuit needs
+      # `prior_head_sha` to compute the since-last delta, and skipping a run that
+      # would re-review identical code is the single largest token saving in the
+      # pipeline (PR 94: ~$35-40 across 7 full re-reviews). It also writes
+      # /tmp/prior-reviews.json, which review-scan reads for the prior review body.
+      #
+      # `prior_head_sha` still matters on every run even when the gate itself
+      # cannot fire: it is what scopes review-scan to the since-last delta. The
+      # gate is suppressed for human-typed runs (GATE_HUMAN_REQUESTED below), so
+      # under the on-demand trigger it protects only callers that wire an
+      # automatic event; the ROUND-2 scoping is what saves the tokens there.
+      - name: Derive prior review state
+        id: prior_state
         if: steps.cmd.outputs.proceed == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GATE_FORCE_FULL: ${{ steps.cmd.outputs.force_deep }}
-          CMD_FUNCTIONAL: ${{ steps.cmd.outputs.run_functional }}
-          GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
-          GATE_DEEP_LABEL: ${{ inputs.gate_deep_label }}
-          GATE_SMALL_CEILING: ${{ inputs.gate_small_ceiling }}
-          GATE_TINY_CEILING: ${{ inputs.gate_tiny_ceiling }}
-          GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
-          GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
-          GATE_SENSITIVE_GLOBS: ${{ inputs.gate_sensitive_globs }}
-          GATE_PROMOTION_BASES: ${{ inputs.gate_promotion_bases }}
-          GATE_PROMOTION_HEADS: ${{ inputs.gate_promotion_heads }}
+          REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
         run: |
           set -uo pipefail
-          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --json files,baseRefName,headRefName,labels)
-          GATE_FILES_TSV=$(jq -r '.files[] | "\(.path)\t\(.additions)\t\(.deletions)"' <<< "$PR_JSON")
-          GATE_BASE_REF=$(jq -r '.baseRefName // ""' <<< "$PR_JSON")
-          GATE_HEAD_REF=$(jq -r '.headRefName // ""' <<< "$PR_JSON")
-          GATE_LABELS=$(jq -r '.labels[].name' <<< "$PR_JSON")
-          export GATE_FILES_TSV GATE_BASE_REF GATE_HEAD_REF GATE_LABELS
-          PLAN=$("$CLAUDE_REVIEW_SCRIPTS"/review-plan.sh)
-          echo "Review plan:"; echo "$PLAN" | sed 's/^/  /'
-          {
-            grep -E '^(review_level|run_functional|gate)=' <<< "$PLAN"
-            echo "reason<<__GATE_EOF__"
-            grep '^reason=' <<< "$PLAN" | cut -d= -f2-
-            echo "__GATE_EOF__"
-          } >> "$GITHUB_OUTPUT"
+          STATE=$("$CLAUDE_REVIEW_SCRIPTS"/prior-review-state.sh)
+          echo "Prior review state:"; echo "$STATE" | sed 's/^/  /'
+          # No `-e` here (repo rule), and the step's last statement is an `if` —
+          # so a failed derivation would set NO outputs and still go green,
+          # handing the orchestrator an empty ROUND (that env has no `|| '1'`
+          # fallback) and pinning the pipeline to round 1 with no error signal.
+          # Fail loudly instead: an unknown round must never review as round 1.
+          if ! grep -qE '^round=[0-9]+$' <<< "$STATE"; then
+            echo "::error::prior-review-state.sh produced no usable state — refusing to run with an unknown round (would silently review as round 1)."
+            exit 1
+          fi
+          grep -E '^(round|prior_head_sha|prior_verdict)=' <<< "$STATE" >> "$GITHUB_OUTPUT"
 
-          # Every step below gates on `functional`, which is the COMMAND's answer, not
-          # the plan's — the browser stack and dev-env bring-up are the expensive
-          # half of a review and now cost nothing unless somebody typed it. The plan
-          # keeps emitting `run_functional` as advice for the test planner.
-          # `skip` guard: a skipped review dispatches no agents to hand a browser to.
-          LEVEL=$(grep '^review_level=' <<< "$PLAN" | cut -d= -f2)
-          if [ "${CMD_FUNCTIONAL:-false}" = "true" ] && [ "$LEVEL" != "skip" ]; then
+          # The findings themselves, not just the round number. prior-review-state.sh
+          # gives review-scan the last review BODY — and the inline-XOR rule deleted
+          # every critical and major from that body, so the body alone made the
+          # highest-severity findings invisible to the next round. Never fatal: a
+          # carrier that cannot be read contributes nothing.
+          FSTATE=$(ROUND=$(sed -n 's/^round=//p' <<< "$STATE") "$CLAUDE_REVIEW_SCRIPTS"/prior-findings.sh)
+          echo "Prior findings:"; echo "$FSTATE" | sed 's/^/  /'
+          grep -E '^prior_finding_count=[0-9]+$' <<< "$FSTATE" >> "$GITHUB_OUTPUT" || true
+
+      # The ONLY deterministic short-circuit left. No depth tiers — review-scan
+      # self-scales — so this answers one question: does a model run at all?
+      # Unit-tested in tests/guard_test.sh.
+      - name: Guard
+        id: guard
+        if: steps.cmd.outputs.proceed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMD_FUNCTIONAL: ${{ steps.cmd.outputs.run_functional }}
+          # `/review deep` lifts the size ceiling for THIS run; the `deep-review`
+          # label (GATE_FORCE_LABEL, read off the PR below) does it persistently.
+          # Either one is enough — guard.sh gate 3.
+          GATE_FORCE_DEEP: ${{ steps.cmd.outputs.force_deep }}
+          GATE_TRIGGER: ${{ inputs.command_trigger }}
+          GATE_FORCE_LABEL: ${{ inputs.gate_deep_label }}
+          GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
+          GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
+          GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
+          GATE_PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
+          # A person typed this. The `unchanged` gate suppresses automatic
+          # re-runs of identical code; it must never answer an explicit request
+          # with silence (guard.sh, gate 2).
+          GATE_HUMAN_REQUESTED: ${{ github.event_name == 'issue_comment' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -uo pipefail
+          PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files,labels)
+          GATE_FILES_TSV=$(jq -r '.files[] | "\(.path)\t\(.additions)\t\(.deletions)"' <<< "$PR_JSON")
+          GATE_LABELS=$(jq -r '.labels[].name' <<< "$PR_JSON")
+          # The since-last delta is computed HERE so guard.sh stays a pure function
+          # of its env (no git, no network — tests/guard_test.sh asserts both). The
+          # checkout is a full clone precisely so this always resolves.
+          #
+          # A FAILED diff clears the prior SHA rather than yielding an empty delta:
+          # those two look identical to guard.sh and mean opposite things ("nothing
+          # changed, skip" vs "I could not tell, so review everything"). Clearing it
+          # is what makes the failure mode a full review instead of silence, and it
+          # is re-exported as this step's `prior_head_sha` so review-scan scopes
+          # itself off the SAME value the guard actually resolved.
+          GATE_DELTA_FILES=""
+          if [ -n "${GATE_PRIOR_HEAD_SHA:-}" ]; then
+            if ! GATE_DELTA_FILES=$(git diff --name-only "${GATE_PRIOR_HEAD_SHA}..HEAD" 2>/dev/null); then
+              echo "::warning::Could not diff ${GATE_PRIOR_HEAD_SHA}..HEAD — reviewing the whole PR instead of the delta."
+              GATE_PRIOR_HEAD_SHA=""
+            fi
+          fi
+          echo "prior_head_sha=$GATE_PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          export GATE_FILES_TSV GATE_LABELS GATE_DELTA_FILES GATE_PRIOR_HEAD_SHA
+          DECISION=$("$CLAUDE_REVIEW_SCRIPTS"/guard.sh)
+          echo "Guard:"; echo "$DECISION" | sed 's/^/  /'
+          # No `-e` (repo rule): a failed guard would leave `proceed` empty, skip
+          # everything below and go green having reviewed nothing.
+          if ! grep -qE '^proceed=(true|false)$' <<< "$DECISION"; then
+            echo "::error::guard.sh produced no usable decision — refusing to guess whether this PR should be reviewed."
+            exit 1
+          fi
+          printf '%s\n' "$DECISION" >> "$GITHUB_OUTPUT"
+          PROCEED=$(grep '^proceed=' <<< "$DECISION" | cut -d= -f2)
+          VERDICT=$(grep '^verdict=' <<< "$DECISION" | cut -d= -f2)
+
+          # The oversized gate posts its own REQUEST_CHANGES with NO model call:
+          # guard.sh already rendered the split request, so write the poster's
+          # artifact here and let the review step skip entirely.
+          if [ "$PROCEED" != "true" ] && [ -n "$VERDICT" ]; then
+            awk '/^body<<GUARD_BODY$/{f=1;next} /^GUARD_BODY$/{f=0} f' <<< "$DECISION" > /tmp/guard-body.md
+            jq -n --arg v "$VERDICT" --rawfile b /tmp/guard-body.md \
+              '{verdict: $v, body: $b, comments: [], meta: {findings: [], human_review: [], gate: "oversized"}}' \
+              > /tmp/review.json
+            echo "post=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::No model call — posting the guard's split request."
+          elif [ "$PROCEED" != "true" ]; then
+            echo "post=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Nothing to review; nothing posted."
+          else
+            echo "post=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # The browser stack and the dev-env bring-up are the expensive half of a
+          # review, so they cost nothing unless somebody typed `/review functional`
+          # AND there is something to review.
+          if [ "${CMD_FUNCTIONAL:-false}" = "true" ] && [ "$PROCEED" = "true" ]; then
             echo "functional=true" >> "$GITHUB_OUTPUT"
           else
             echo "functional=false" >> "$GITHUB_OUTPUT"
             if [ "${CMD_FUNCTIONAL:-false}" = "true" ]; then
-              echo "::notice::Functional testing was requested but the review plan is 'skip' — no agents run, so there is nothing to exercise."
+              echo "::notice::Functional testing was requested but the guard short-circuited this PR — no agents run, so there is nothing to exercise."
             fi
           fi
 
+      # Node and pnpm exist only for the dev-env bring-up, so they follow the same
+      # gate as the rest of it: nothing installs unless a functional run is on.
       - name: Set up Node
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.guard.outputs.functional == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "lts/*"
 
       - name: Ensure pnpm on PATH
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.guard.outputs.functional == 'true'
         shell: bash
         run: |
           if command -v pnpm >/dev/null 2>&1; then
@@ -479,7 +584,7 @@ jobs:
       # launch Chrome, which the preflight already does once, properly.
       - name: Probe for a prebaked browser stack
         id: ab_baked
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.functional == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.guard.outputs.functional == 'true'
         shell: bash
         run: |
           set -uo pipefail
@@ -496,7 +601,7 @@ jobs:
 
       - name: Restore browser assets
         id: ab_cache
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.functional == 'true' && steps.ab_baked.outputs.baked != 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.guard.outputs.functional == 'true' && steps.ab_baked.outputs.baked != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # agent-browser keeps browsers, daemon sockets and state under
@@ -512,7 +617,7 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-ab-
 
       - name: Install agent-browser
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.functional == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.guard.outputs.functional == 'true'
         shell: bash
         run: |
           set -uo pipefail
@@ -566,7 +671,7 @@ jobs:
       # Non-fatal on purpose — matches the old chrome-channel step's posture: the
       # tester CRASH-degrades and the review still posts.
       - name: Preflight browser
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.review_plan.outputs.functional == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && steps.guard.outputs.functional == 'true'
         shell: bash
         run: |
           set -uo pipefail
@@ -595,35 +700,11 @@ jobs:
             echo "Browser ready: $(printf '%s' "$DOC" | jq -r '.checks[] | select(.id == "chrome.installed") | .message')"
           fi
 
-      # GitHub is the state store: prior verdict + reviewed SHA come straight
-      # from the PR's review list. No cross-run artifacts.
-      - name: Derive prior review state
-        id: prior_state
-        if: steps.cmd.outputs.proceed == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
-        run: |
-          set -uo pipefail
-          STATE=$("$CLAUDE_REVIEW_SCRIPTS"/prior-review-state.sh)
-          echo "Prior review state:"; echo "$STATE" | sed 's/^/  /'
-          # No `-e` here (repo rule), and the step's last statement is an `if` —
-          # so a failed derivation would set NO outputs and still go green,
-          # handing the orchestrator an empty ROUND (that env has no `|| '1'`
-          # fallback) and pinning the pipeline to round 1 with no error signal.
-          # Fail loudly instead: an unknown round must never review as round 1.
-          if ! grep -qE '^round=[0-9]+$' <<< "$STATE"; then
-            echo "::error::prior-review-state.sh produced no usable state — refusing to run with an unknown round (would silently review as round 1)."
-            exit 1
-          fi
-          grep -E '^(round|prior_head_sha|prior_verdict)=' <<< "$STATE" >> "$GITHUB_OUTPUT"
-
-      # After prior_state on purpose: the token picker needs the CLI before
-      # claude-code-action installs it, and nothing earlier uses either.
+      # Late on purpose: the token picker needs the CLI before claude-code-action
+      # installs it, and nothing earlier uses either.
       - name: Install Claude CLI (for OAuth token picker)
         id: claude_cli
-        if: steps.cmd.outputs.proceed == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true'
         shell: bash
         run: |
           # Self-heal a root-owned ~/.local (a root-run step that inherited $HOME, or a
@@ -676,7 +757,7 @@ jobs:
 
       - name: Pick Claude OAuth token
         id: token_picker
-        if: steps.cmd.outputs.proceed == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true'
         shell: bash
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -688,7 +769,7 @@ jobs:
       # hashFiles after dev-start.sh mutates the tree, errors, and reds the
       # check. warm-cache.yml is the saver.
       - name: Restore package-manager store
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.functional == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.guard.outputs.functional == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -701,7 +782,7 @@ jobs:
       # A heavy dev-start.sh can ENOSPC the post steps and lose a complete
       # review; reclaim tooling no app bring-up needs.
       - name: Free up runner disk
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.functional == 'true' && inputs.free_disk_space != 'off'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.guard.outputs.functional == 'true' && inputs.free_disk_space != 'off'
         shell: bash
         env:
           FREE_MODE: ${{ inputs.free_disk_space }}
@@ -728,7 +809,7 @@ jobs:
       # tree can't trigger an all-in-one post(save) re-hash that reds the run.
       - name: Compute dev cache key
         id: dev_cache_meta
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.guard.outputs.functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
         shell: bash
         env:
           KEY_FILES: ${{ inputs.dev_cache_key_files }}
@@ -750,7 +831,7 @@ jobs:
           echo "restore=${RUNNER_OS}-${RUNNER_ARCH}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
       - name: Restore dev build cache
         id: dev_build_cache
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.guard.outputs.functional == 'true' && inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.dev_cache_paths }}
@@ -760,7 +841,7 @@ jobs:
       # Detached (setsid/nohup/disown) so the bring-up survives the step
       # boundary; the orchestrator polls /tmp/dev-env/rc + outputs.
       - name: Pre-start dev environment (background)
-        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.review_plan.outputs.functional == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.code_check.outputs.needs_build == 'true' && hashFiles('.github/claude-review/dev-start.sh') != '' && steps.guard.outputs.functional == 'true'
         id: dev_env_bg
         shell: bash
         env:
@@ -786,30 +867,26 @@ jobs:
       # pins its subagent's model and points at its skill. The tester needs no MCP
       # server — the browser is a CLI the subagent drives through Bash.
       - name: Install review subagents
-        if: steps.cmd.outputs.proceed == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true'
         shell: bash
         env:
+          MODEL_HIGH: ${{ inputs.model_high }}
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
-          MODEL_STANDARD: ${{ inputs.model_standard }}
         run: |
           mkdir -p "$HOME/.claude/agents"
+          # The two stages of the review itself. Their depth is frontmatter, not a
+          # workflow input: review-scan runs `effort: medium`, review-verify
+          # `effort: low` (its mandate is to refute, not to explore).
+          for a in review-scan review-verify; do
+            envsubst '$MODEL_HIGH $CLAUDE_REVIEW_PIPELINE_DIR' \
+              < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/${a}.md" \
+              > "$HOME/.claude/agents/${a}.md"
+            echo "Installed $a subagent (model=$MODEL_HIGH)"
+          done
           envsubst '$MODEL_FUNCTIONAL $CLAUDE_REVIEW_PIPELINE_DIR' \
             < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-functional-tester.md" \
             > "$HOME/.claude/agents/review-functional-tester.md"
           echo "Installed review-functional-tester subagent (model=$MODEL_FUNCTIONAL)"
-          # Same USER-scope reasoning as above. This one carries the OFFICIAL
-          # `code-review` plugin pass: it locates the plugin's own command file at
-          # runtime and follows Anthropic's prompt verbatim, writing findings to
-          # /tmp/native-findings.json instead of posting them. Its `tools:` line
-          # MUST keep `Task` — the plugin prompt fans out to ~10 subagents and does
-          # nothing without it. That is not an escape hatch: tool calls are
-          # authorised session-wide, so those subagents are held to the same
-          # allowlist as this session, and an agent definition's `tools:` frontmatter
-          # can only NARROW what the session permits, never widen it.
-          envsubst '$MODEL_STANDARD $CLAUDE_REVIEW_PIPELINE_DIR' \
-            < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-native.md" \
-            > "$HOME/.claude/agents/review-native.md"
-          echo "Installed review-native subagent (model=$MODEL_STANDARD)"
 
       # Single top-level agent; all subagents dispatch via Task inside this
       # one invocation. continue-on-error: a max-turns exit may still have
@@ -828,179 +905,127 @@ jobs:
       #
       # MERGED, never overwritten: the image may ship its own user settings, and
       # clobbering them would be an invisible regression in something unrelated.
+      # MUST stay gated on the guard: this step deletes /tmp/review.json, and on the
+      # oversized path the guard has already written the split request there.
       - name: Enforce review.json on session end
         id: stop_hook
-        if: steps.cmd.outputs.proceed == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true'
         shell: bash
         env:
           HOOK: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/scripts/require-review-json.sh
-          # Same enforcement, one level down. The `review-native` subagent follows a
-          # plugin prompt that fans out to ~10 Task subagents, and on the first
-          # dogfood run of the in-session design it yielded waiting on subagents that
-          # had already returned — the #86 failure, inside a subagent. This hook
-          # refuses that stop while /tmp/native-findings.json is missing, unparseable
-          # or stamped with another PR's number. `SubagentStop` takes no matcher, so
-          # the script identifies the native pass from the event payload and FAILS
-          # OPEN when it cannot: it must never nudge a judge or the tester.
-          SUBAGENT_HOOK: ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/scripts/require-native-findings.sh
         run: |
           set -uo pipefail
-          for h in "$HOOK" "$SUBAGENT_HOOK"; do
-            if [ ! -f "$h" ]; then
-              echo "::error::stop hook missing at $h — pipeline install is incomplete"
-              exit 1
-            fi
-            chmod +x "$h" 2>/dev/null || true
-          done
+          if [ ! -f "$HOOK" ]; then
+            echo "::error::stop hook missing at $HOOK — pipeline install is incomplete"
+            exit 1
+          fi
+          chmod +x "$HOOK" 2>/dev/null || true
           # A stale counter from a previous run on a reused runner would spend
-          # this review's nudge budget before it starts.
-          #
-          # /tmp/native-findings.json is deleted here for a DIFFERENT reason and it
-          # is not cosmetic: this fleet reuses runners and /tmp survives between
-          # jobs, so a leftover file from a previous PR would be read by the
-          # orchestrator's Phase D as this PR's second opinion — another PR's
-          # findings posted as inline comments on this one. The file also carries a
-          # `pr_number` that Phase D and the hook above both check, so this delete is
-          # the first of two independent guards, not the only one.
+          # this review's nudge budget before it starts. The stage artifacts go with
+          # it, and that is not cosmetic: this fleet reuses runners and /tmp survives
+          # between jobs, so a leftover scan/verify from a previous PR would be read
+          # as this one's.
           rm -f /tmp/review-stop-blocks /tmp/review.json \
-                /tmp/native-stop-blocks /tmp/native-findings.json 2>/dev/null || true
+                /tmp/scan.json /tmp/verify.json /tmp/functional.json 2>/dev/null || true
           mkdir -p "$HOME/.claude"
           S="$HOME/.claude/settings.json"
           [ -s "$S" ] || echo '{}' > "$S"
-          if ! jq empty "$S" >/dev/null 2>&1; then
-            echo "::warning::$S was not valid JSON; replacing it with the hook config only"
+          if ! jq -e 'type == "object"' "$S" >/dev/null 2>&1; then
+            echo "::warning::$S was not a JSON object; replacing it with the hook config only"
             echo '{}' > "$S"
           fi
-          jq --arg cmd "$HOOK" --arg sub "$SUBAGENT_HOOK" \
-            '.hooks.Stop = [{"hooks": [{"type": "command", "command": $cmd}]}]
-             | .hooks.SubagentStop = [{"hooks": [{"type": "command", "command": $sub}]}]' \
+          # APPEND to whatever Stop hooks are already there — a plain assignment
+          # would silently drop the image's own, which is what the comment above
+          # promises never happens. A stale copy of OUR command is dropped first,
+          # so re-registering on a reused runner cannot stack duplicates.
+          # Extracted verbatim by tests/require_review_json_test.sh; keep the
+          # STOP_HOOK_JQ='...' delimiters on their own lines.
+          STOP_HOOK_JQ='
+            def stop_entries: if (.hooks.Stop? | type) == "array" then .hooks.Stop else [] end;
+            .hooks = (if (.hooks? | type) == "object" then .hooks else {} end)
+            | .hooks.Stop = (stop_entries
+                | map(select([.hooks[]?.command] | index($cmd) | not))
+                + [{"hooks": [{"type": "command", "command": $cmd}]}])
+          '
+          jq --arg cmd "$HOOK" "$STOP_HOOK_JQ" \
             "$S" > "$S.tmp" && mv "$S.tmp" "$S" || {
-              echo "::error::failed to register the Stop hooks in $S"; exit 1; }
+              echo "::error::failed to register the Stop hook in $S"; exit 1; }
           echo "Stop hook registered: $HOOK"
-          echo "SubagentStop hook registered: $SUBAGENT_HOOK"
           jq -c '.hooks' "$S"
 
       - name: "Review: orchestrate"
         id: claude_run
-        if: steps.cmd.outputs.proceed == 'true'
+        if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@ac7e24bf2938964b8ab203e417a2773802392ddd # v1.0.146
         env:
           REVIEW_BOT_USER: ${{ steps.review_identity.outputs.bot_user }}
-          PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
+          # From the GUARD, not prior_state: the guard clears it when the
+          # since-last diff could not be computed, and review-scan must scope
+          # itself off the value that was actually resolvable.
+          PRIOR_HEAD_SHA: ${{ steps.guard.outputs.prior_head_sha }}
           PRIOR_VERDICT: ${{ steps.prior_state.outputs.prior_verdict }}
           ROUND: ${{ steps.prior_state.outputs.round }}
           PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
+          # Read by scripts/build-spec.sh in the orchestrator's turn 1, which
+          # exports each KEY=VALUE line for the consumer's fetch-issue.sh hook.
           TRACKER_SECRETS: ${{ secrets.TRACKER_SECRETS }}
           # Separate token for the review-assets branch (a custom App token
           # may lack contents: write).
           GITHUB_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MODEL_HIGH: ${{ inputs.model_high }}
-          MODEL_STANDARD: ${{ inputs.model_standard }}
-          MODEL_FAST: ${{ inputs.model_fast }}
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
           FUNCTIONAL_BUDGET_SECONDS: ${{ inputs.functional_budget_seconds }}
           # Forces every capture into the one directory the orchestrator
           # publishes from, so a bare `agent-browser screenshot` cannot drop
           # a PNG in the CWD and vanish from the gallery.
           AGENT_BROWSER_SCREENSHOT_DIR: /tmp/screenshots
-          REVIEW_LEVEL: ${{ steps.review_plan.outputs.review_level }}
-          # The same value the dev-env and browser steps gated on — never the plan's
-          # advisory `run_functional`, or the tester lands in an unbuilt environment.
-          RUN_FUNCTIONAL: ${{ steps.review_plan.outputs.functional }}
-          GATE: ${{ steps.review_plan.outputs.gate }}
-          GATE_REASON: ${{ steps.review_plan.outputs.reason }}
-          # The orchestrator's Phase B gate. `on` only when the comment asked for it.
-          NATIVE_REVIEW: ${{ steps.cmd.outputs.native_review }}
-          NATIVE_REVIEW_SCOPE: ${{ inputs.native_review_scope }}
+          # The same value the dev-env and browser steps gated on, so the tester can
+          # never land in an unbuilt environment.
+          RUN_FUNCTIONAL: ${{ steps.guard.outputs.functional }}
+          DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
-          # Installs the OFFICIAL `code-review` plugin into this session so the
-          # `review-native` subagent can read Anthropic's own command prompt at
-          # runtime (~/.claude/plugins/**/code-review/commands/code-review.md) and
-          # follow it verbatim. We deliberately do NOT vendor a copy of that prompt:
-          # reading the installed file keeps Anthropic's rubric canonical and lets it
-          # update itself. Both inputs verified present on the pinned action SHA
-          # ac7e24bf (action.yml: `plugins`, `plugin_marketplaces`). A failure to
-          # install is not fatal to the review — the skill writes an `unavailable`
-          # findings file and the orchestrator proceeds without it.
-          #
-          # UNPINNED ON PURPOSE — an ACCEPTED trade-off, declared in `bugbot.md`
-          # ("Accepted supply-chain trade-offs"). Do not re-flag it every round, and
-          # do not "fix" it by inventing a ref suffix: the action REJECTS one.
-          #
-          # Every other third-party reference in this file is SHA-pinned, and
-          # `.github/review-config.md` requires that of new Actions YAML. This input
-          # is the one place it cannot be honoured today, verified against the pinned
-          # action at ac7e24bf (base-action/src/install-plugins.ts):
-          #   * `MARKETPLACE_URL_REGEX` is anchored `/^https:\/\/[...]+\.git$/`, so
-          #     `...public.git@<sha>`, `...public.git#<ref>` and `...public.git?ref=`
-          #     all fail validation with "Invalid marketplace URL format".
-          #   * `addMarketplace()` shells out to exactly `claude plugin marketplace
-          #     add <url>` — no ref argument is passed and the action exposes no input
-          #     for one. `claude plugin marketplace add --help` (CLI 2.1.234) offers
-          #     only `--scope` and `--sparse`; there is no `--ref`/`--sha`.
-          #   * Claude Code's docs state git-based MARKETPLACE sources support `ref`
-          #     (branch/tag) but not `sha`, and `ref` only exists in the
-          #     `extraKnownMarketplaces` object form in settings.json, which this
-          #     input cannot express.
-          #   * `anthropics/claude-plugins-public` publishes no tags and no releases,
-          #     so even `ref` would only buy another moving pointer.
-          # Revisit when the action grows a ref/sha input (or the marketplace starts
-          # tagging releases) — then pin here in the usual `# v1.2.3` house style.
-          plugin_marketplaces: |
-            https://github.com/anthropics/claude-plugins-public.git
-          plugins: |
-            code-review@claude-plugins-official
           # Reuse the CLI the step above already guaranteed instead of letting the
           # action download its own pinned copy — see that step for the measurement.
           # Empty when that step was skipped, which restores the action's stock
           # behaviour rather than breaking it.
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ env.PR_NUMBER }}. You are the single top-level agent for this review. Honor the review plan (REVIEW_LEVEL / RUN_FUNCTIONAL / GATE / GATE_REASON) and the round state (ROUND / PRIOR_HEAD_SHA / PRIOR_VERDICT) passed via env. The functional tester is pre-installed as the custom subagent type `review-functional-tester` — dispatch it via the Task tool; it drives the browser itself with the `agent-browser` CLI over Bash. The official Claude `code-review` plugin pass is pre-installed as the custom subagent type `review-native` — dispatch it via the Task tool in the SAME response as the judges and the functional tester (the Phase B fan, per NATIVE_REVIEW) so it overlaps them and adds no wall-clock; it writes /tmp/native-findings.json and NEVER posts to the PR. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ env.PR_NUMBER }}. You are the single top-level agent for this review and you do NOT review the diff yourself. Dispatch `review-scan` (Task tool, pre-installed subagent type) and then `review-verify`; both are pre-installed and carry their own model and effort. The functional tester is pre-installed as `review-functional-tester` and is ADVISORY ONLY — dispatch it in the same response as review-scan, and only when RUN_FUNCTIONAL=true, the dev-env is up, and a linked issue supplies real acceptance criteria. Copy review-verify's verdict, body and comments into /tmp/review.json VERBATIM — its `{{LINK:path:line}}` placeholders and its wording are deliberate and post-review.sh finishes them; do not rewrite, re-summarise or add sections. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
           # ── THE SANDBOX. `--disallowedTools` is the ONLY thing standing between
           # this job's write scopes and an untrusted prompt. ──
           #
           # This job holds `contents: write` + `pull-requests: write` +
-          # `issues: write`, and it runs the OFFICIAL `code-review` plugin prompt
-          # (the `review-native` subagent) — fetched at run time from an UNPINNABLE
-          # marketplace ref, fanned out over ~10 subagents, reading
-          # attacker-controlled PR titles, bodies, diffs and comments. Until this
-          # list was tightened, the deleted separate `Native Review` job's
-          # `contents: read` + narrow allowlist was the thing that made that safe;
-          # moving the plugin in-session lost that posture, and this list restores
-          # it. `gh pr review/edit/close`, `gh issue comment` and raw API writes
-          # were all reachable before.
+          # `issues: write`, and every agent in it reads attacker-controlled PR
+          # titles, bodies, diffs and comments. `gh pr review/edit/close`,
+          # `gh issue comment` and raw API writes were all reachable before this
+          # list was tightened.
           #
-          # WHY IT CAN NOW DENY THE RAW API SUBCOMMAND. `--disallowedTools` is
+          # WHY IT CAN DENY THE RAW API SUBCOMMAND. `--disallowedTools` is
           # SESSION-WIDE: it cannot be scoped to one subagent, so it could not deny
-          # the raw `gh` API verb while OUR OWN agents still used it (12 call sites:
-          # 5 reads in `skills/review-context-builder.md`, 7 screenshot-upload writes
-          # in `skills/review-orchestrator.md`). Those are now extracted verbatim
-          # into `scripts/fetch-pr-threads.sh` and `scripts/upload-screenshots.sh`,
-          # invoked as `"$CLAUDE_REVIEW_SCRIPTS"/<name>.sh` — reviewed, in-repo, and running
-          # as a plain shell command that no deny pattern for a `gh` subcommand
-          # matches. No agent in this pipeline needs the raw API verb any more, so
-          # nothing legitimate is caught.
+          # the raw `gh` API verb while our own agents still used it. The only
+          # remaining call sites are the screenshot-upload writes, extracted verbatim
+          # into `scripts/upload-screenshots.sh` and invoked as
+          # `"$CLAUDE_REVIEW_SCRIPTS"/upload-screenshots.sh` — reviewed, in-repo, and
+          # running as a plain shell command that no deny pattern for a `gh`
+          # subcommand matches. No agent in this pipeline needs the raw API verb any
+          # more, so nothing legitimate is caught.
           #
           # WHAT STAYS REACHABLE, on purpose: `gh pr view/diff/list`,
-          # `gh issue view`, `gh search`, `git log/blame/diff/show`. The plugin
-          # prompt's own notes tell it to use `gh` rather than web fetch, and the
-          # judges and context builder read the PR the same way. Denying those would
-          # break the review; denying the write verbs does not.
+          # `gh issue view`, `gh search`, `git log/blame/diff/show`. review-scan
+          # reads the PR and its prior reviews that way, and review-verify re-reads
+          # the source at HEAD. Denying those would break the review; denying the
+          # write verbs does not.
           #
-          # WHY THE `gh pr comment` ENTRY IS LOAD-BEARING SPECIFICALLY: step 8 of the
-          # plugin prompt instructs the model to `gh pr comment` its findings onto
-          # the PR. `skills/review-native.md` overrides that (write a file instead),
-          # but an instruction is only an instruction — the deny rule makes the
-          # override STRUCTURAL, so a stray post cannot bypass the
-          # single-consolidated-comment contract even if the plugin's wording wins a
-          # turn. This pipeline posts exactly ONE review, and
-          # `scripts/post-review.sh` is the only thing allowed to post it.
+          # WHY THE `gh pr comment` ENTRY IS LOAD-BEARING SPECIFICALLY: this pipeline
+          # posts exactly ONE review, and `scripts/post-review.sh` is the only thing
+          # allowed to post it. The deny rule makes that STRUCTURAL rather than a
+          # wording preference, so a stray post cannot bypass the
+          # single-consolidated-comment contract even if some turn decides to try.
           #
           # MECHANICS, so nobody "simplifies" this: deny rules are evaluated BEFORE
           # allow rules and cannot be widened by anything downstream — not by a
@@ -1009,8 +1034,12 @@ jobs:
           # merely auto-approve (in Manual mode `--allowedTools` only AUTO-APPROVES
           # what it lists, and unlisted calls fall through to a `canUseTool` callback
           # claude-code-action never supplies).
+          # `--effort low` because this session writes no review prose: it fans out
+          # two subagents (which carry their own `effort:` frontmatter) and copies
+          # one file. Verified present on the CLI as `--effort <low|medium|high>`.
           claude_args: |
-            --model ${{ inputs.model_standard }}
+            --model ${{ inputs.model_high }}
+            --effort low
             --permission-mode dontAsk
             --setting-sources user
             --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch
@@ -1033,9 +1062,11 @@ jobs:
       # This step's exit code IS the check: green = a review reached the PR
       # (REQUEST_CHANGES included — the blocking signal is the PR review, not
       # the check color), red = pipeline failure.
+      # Runs for the guard's no-model split request too — `post` is true whenever
+      # something must reach the PR, whether or not a model produced it.
       - name: Post review + gate
         id: post_review
-        if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
+        if: always() && steps.guard.outputs.post == 'true' && steps.claude_run.outcome != 'cancelled'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.review_identity.outputs.token }}
@@ -1044,6 +1075,7 @@ jobs:
           ANALYZER_OUTCOME: ${{ steps.claude_run.outcome }}
           HEAD_SHA: ${{ steps.pr_sha.outputs.sha }}
           ORCHESTRATOR_EXEC: ${{ steps.claude_run.outputs.execution_file }}
+          ROUND: ${{ steps.prior_state.outputs.round || '1' }}
         run: |
           set -uo pipefail
           if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then
@@ -1052,7 +1084,7 @@ jobs:
           "$CLAUDE_REVIEW_SCRIPTS"/post-review.sh
 
       - name: Report usage
-        if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
+        if: always() && steps.guard.outputs.post == 'true' && steps.claude_run.outcome != 'cancelled'
         continue-on-error: true
         shell: bash
         env:
@@ -1088,11 +1120,11 @@ jobs:
               verdict: ($r.verdict // null),
               findings_count: (($r.meta.findings // []) | length),
               posting_error: (if $poster == "success" then null else "poster outcome: \($poster)" end),
-              requires_human_review: ($r.meta.requires_human_review // false),
-              technical_change: ($r.meta.technical_change // false),
-              functional_strategy: ($r.meta.functional_validation.strategy // null),
-              functional_overall: ($r.meta.functional_validation.overall // null),
-              screenshot_count: ($r.meta.functional_validation.screenshot_count // 0),
+              human_review_count: (($r.meta.human_review // []) | length),
+              depth_used: ($r.meta.depth_used // null),
+              review_effort: ($r.meta.review_effort // null),
+              functional_overall: ($r.meta.functional // null),
+              gate: ($r.meta.gate // null),
               analyzer_outcome: $analyzer, poster_outcome: $poster,
               claude_cost_usd: $cost, models: $models,
               phases: (if $wall == null then {} else {total: $wall} end)
@@ -1101,7 +1133,7 @@ jobs:
           exit 0
 
       - name: Upload usage record
-        if: always() && steps.claude_run.outcome != 'cancelled' && steps.claude_run.outcome != 'skipped'
+        if: always() && steps.guard.outputs.post == 'true' && steps.claude_run.outcome != 'cancelled'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1111,20 +1143,21 @@ jobs:
           retention-days: 90
           overwrite: true
 
+      # Gated on the same `post` as everything else: on a reused runner /tmp
+      # still holds the previous job's review.json, and an ungated always()
+      # uploaded that stale artifact for a run the guard short-circuited.
       - name: Upload review artifacts
-        if: always()
+        if: always() && steps.guard.outputs.post == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: claude-review-${{ env.PR_NUMBER }}
           path: |
             /tmp/review.json
-            context.md
-            test-plan.md
-            screenshots/
+            /tmp/scan.json
+            /tmp/verify.json
+            /tmp/functional.json
             /tmp/screenshots/
             /tmp/orchestrator-output.txt
-            /tmp/judge-*.json
-            /tmp/functional-*.json
             /tmp/dev-env/log
           if-no-files-found: ignore
           retention-days: 7

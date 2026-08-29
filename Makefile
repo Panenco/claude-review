@@ -14,6 +14,7 @@
 
 SINCE ?= 7d
 -include .metrics.env
+-include .eval.env
 
 .PHONY: release
 release:
@@ -29,3 +30,18 @@ metrics:
 	  $(if $(FULL_COST),--full-cost) \
 	  --write docs/metrics/$$(date +%F).md
 	@echo "→ wrote docs/metrics/$$(date +%F).md (git-ignored — internal data)"
+
+# Local headless review sweep (scripts/review-local.sh). Posts NOTHING: every
+# GitHub write becomes an artifact under $(EVAL_ROOT)/results/<pr>/posted.
+#
+#   make eval-spec              # spec assembly only — no model, no cost
+#   make eval                   # full reviews (~$1.94 and ~250s per PR)
+#   make eval PRS="101 102"     # ad-hoc PR list (overrides .eval.env)
+.PHONY: eval eval-spec
+eval:
+	@test -n "$(PRS)$(EVAL_PRS)" || { echo "usage: make eval PRS=\"101 102\" (or set EVAL_PRS in .eval.env)"; exit 1; }
+	@for pr in $(if $(PRS),$(PRS),$(EVAL_PRS)); do bash scripts/review-local.sh $$pr || exit 1; done
+
+eval-spec:
+	@test -n "$(PRS)$(EVAL_PRS)" || { echo "usage: make eval-spec PRS=\"101 102\" (or set EVAL_PRS in .eval.env)"; exit 1; }
+	@for pr in $(if $(PRS),$(PRS),$(EVAL_PRS)); do bash scripts/review-local.sh $$pr --spec-only || exit 1; done
