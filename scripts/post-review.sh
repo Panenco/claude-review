@@ -124,6 +124,14 @@ trap 'rm -rf "$WORK"' EXIT
 # CHARACTERS, so a body with one em dash would otherwise be measured short.
 blen() { printf '%s' "$1" | wc -c | tr -d ' '; }
 
+# Text from a consumer script's log, safe to drop inside an HTML <sub>/<code>
+# block. NOT `${s//</&lt;}`: bash 5.2 enables `patsub_replacement`, where `&` in
+# the replacement expands to whatever matched — so that expansion yields `<lt;`
+# and the raw `<` survives into the review. GitHub's ubuntu-24.04 runners ship
+# bash 5.2.x, so this was live in CI. sed has one fixed meaning for `\&` on both
+# versions. `&` goes first, or the entities it writes get escaped again.
+html_escape() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
 # A body guard.sh rendered without a model call. Matched on the FIRST LINE only:
 # an unanchored grep also matches a JUDGED review that quotes a marker in a
 # finding. One helper, two callers (4c and section 5), so they cannot drift.
@@ -307,6 +315,28 @@ case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
     SPEC_NOTICE=$'\n<sub>No spec resolved — reviewed on the diff alone. Link an issue, or commit the intent doc, to have the next review check against what was asked.</sub>\n' ;;
 esac
 
+# ── 2a2. DID THE TESTER ACTUALLY RUN? ───────────────────────────────────────
+# THE rc FILE IS NOT THE ANSWER, AND TREATING IT AS ONE THREW REAL EVIDENCE AWAY.
+# `/tmp/dev-env/rc` is written only when `setup-dev-env.sh` RETURNS, while the
+# orchestrator releases the tester on `web_ready`, written much earlier. A slow or
+# hung later phase (a seed, a second service, the teardown) therefore means the
+# tester genuinely drove the app and captured screenshots while rc never appeared
+# — and the previous round dropped every one of them while asserting "No browser
+# test ran; this review is static only."
+#
+# A `functional.json` carrying a valid `overall` is written by the tester itself
+# at the END of its run. It is direct, first-hand evidence that a browser session
+# happened, and it outranks the absence of a file some LATER phase writes. It is
+# computed HERE, above both notices, so each can be phrased against the same fact.
+FN_OVERALL=""
+if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; then
+  case "$(jq -r '.overall // ""' "$FUNCTIONAL_JSON" 2>/dev/null || echo "")" in
+    PASS|WARN|FAIL|CRASH) FN_OVERALL=$(jq -r '.overall' "$FUNCTIONAL_JSON") ;;
+  esac
+fi
+TESTER_RAN=false
+[ -n "$FN_OVERALL" ] && TESTER_RAN=true
+
 # A dev-env that never came up is invisible otherwise: the reviewer asked for a
 # functional pass, got a code review, and nothing said why. Deterministic here
 # rather than in a prompt, for the same reason the spec notice is — the model
@@ -331,8 +361,17 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ]; then
       tail=$(grep -aiE '^(error|fatal)|error:' "$log" 2>/dev/null \
              | grep -av 'dev-start.sh exited non-zero' | tail -1 | cut -c1-300)
     fi
-    DEV_ENV_NOTICE=$'\n<sub>⚠ Functional pass requested but skipped — the dev environment '"$why"'. No browser test ran; this review is static only.'
-    [ -n "$tail" ] && DEV_ENV_NOTICE+=" Last error: <code>${tail//</&lt;}</code>"
+    # TWO WORDINGS, ONE FACT. "No browser test ran" is only true when nothing
+    # says otherwise; said over a gallery of the tester's own screenshots it is
+    # simply false. When the tester finished, the bring-up record is still worth
+    # reporting — it is why the run looks odd — but as a caveat on a pass that
+    # DID happen, never as a claim that none did.
+    if [ "$TESTER_RAN" = "true" ]; then
+      DEV_ENV_NOTICE=$'\n<sub>⚠ The dev environment '"$why"' — but the functional tester completed and reported '"$FN_OVERALL"$', so the pass below ran against an environment whose bring-up never reported success. Read it with that in mind.'
+    else
+      DEV_ENV_NOTICE=$'\n<sub>⚠ Functional pass requested but skipped — the dev environment '"$why"'. No browser test ran; this review is static only.'
+    fi
+    [ -n "$tail" ] && DEV_ENV_NOTICE+=" Last error: <code>$(html_escape "$tail")</code>"
     DEV_ENV_NOTICE+=$' (full log: the run\'s <code>dev-env/log</code> artifact).</sub>\n'
   fi
 fi
@@ -360,100 +399,98 @@ fi
 # like the state block below: closed, a `<details>` costs one visible line, and a
 # run's own evidence must never evict a finding.
 #
-# AND IT IS SUPPRESSED WHEN THE DEV-ENV NOTICE WILL RENDER. The two were
-# computed independently, so one run printed `Functional pass: PASS — 3
-# screenshots` two lines above `⚠ Functional pass requested but skipped — the
-# dev environment exited 5. No browser test ran`. Both cannot be true: if the
-# dev environment never came up, the tester had nothing to drive, and whatever
-# `functional.json` claims is stale or invented. The notice is the fact, so the
-# gallery goes. 2b runs before this block precisely so this test can be made.
+# AND THE BODY CAN NEVER CONTRADICT ITSELF ABOUT IT. The gallery and the dev-env
+# notice were once computed independently, so one run printed `Functional pass:
+# PASS — 3 screenshots` two lines above `No browser test ran`. Both cannot be
+# true. The fix that followed suppressed the gallery whenever rc was not 0 — and
+# that deleted real screenshots from runs where the tester HAD driven the app
+# (see 2a2). So the two are now decided by ONE fact, `TESTER_RAN`:
+#   tester ran  → gallery renders, and 2b words its notice as a caveat.
+#   no evidence → no gallery, and 2b says no browser test ran.
+# Neither string can appear beside the other, in either direction.
 SHOT_GALLERY=""
-if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -n "$DEV_ENV_NOTICE" ]; then
-  echo "Dev environment never came up — suppressing the screenshot gallery so the body cannot both claim a functional pass and report that none ran."
+if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ "$TESTER_RAN" != "true" ] && [ -n "$DEV_ENV_NOTICE" ]; then
+  echo "Dev environment never came up and no functional.json records a completed run — no gallery, so the body cannot both claim a functional pass and report that none ran."
 fi
-if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -z "$DEV_ENV_NOTICE" ] && [ -s "$FUNCTIONAL_JSON" ]; then
-  FN_OVERALL=$(jq -r '.overall // ""' "$FUNCTIONAL_JSON" 2>/dev/null || echo "")
-  case "$FN_OVERALL" in
-    PASS|WARN|FAIL|CRASH)
-      echo "::group::Functional screenshots"
-      NAMED=$(jq '[(.screenshots // [])[] | select((.file // "") | test("\\.png$"; "i"))] | length' \
-                "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
-      # WHY `untested` IS PART OF THIS BLOCK AND NOT AN AFTERTHOUGHT. On a live
-      # qiv run the tester verified 3 of 7 acceptance criteria, listed the other
-      # 4 in `untested` with real reasons, and reported PASS — which is correct
-      # per its own contract, PASS means "everything you exercised held". The
-      # review body then said `Functional pass: PASS — 2 screenshots` and nothing
-      # else, so a reader saw a green functional pass over a third of the spec.
-      # The tester was honest and the poster threw the honesty away.
-      UNTESTED=$(jq '(.untested // []) | length' "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
-      UNTESTED=${UNTESTED:-0}
-      if [ "${NAMED:-0}" -eq 0 ] && [ "$UNTESTED" -eq 0 ]; then
-        echo "Tester reported $FN_OVERALL with no PNG and nothing untested — nothing to publish."
-      else
-        # stdout is one embeddable URL per uploaded file; diagnostics go to stderr
-        # and stay in the job log. Non-fatal by contract: no URLs means no gallery,
-        # never a failed review.
-        : > "$WORK/shot-urls.txt"
-        if [ "${NAMED:-0}" -gt 0 ]; then
-          PR_NUMBER="$PR" GITHUB_REPOSITORY="$REPO" \
-            "$UPLOAD_SCREENSHOTS_SH" > "$WORK/shot-urls.txt" \
-            || echo "::warning::upload-screenshots.sh failed — posting the review without the gallery."
-        fi
-        # `|| true`, not `|| echo 0`: grep already PRINTS 0 for an empty file and
-        # then exits 1, so a fallback echo makes this two lines and every integer
-        # test below a syntax error.
-        UPLOADED=$(grep -c . "$WORK/shot-urls.txt" 2>/dev/null || true)
-        UPLOADED=${UPLOADED:-0}
-        echo "Published $UPLOADED of $NAMED screenshot(s) named by the tester."
-        [ "$UPLOADED" -lt "$NAMED" ] && \
-          echo "::warning::$(( NAMED - UPLOADED )) screenshot(s) the tester named were not published — they remain in the run's claude-review artifact."
-        [ "$UNTESTED" -gt 0 ] && \
-          echo "::notice::$UNTESTED criterion(s) the tester could not reach — surfaced in the review body."
-        # Captions are model-written and land inside an HTML block and a markdown
-        # image label, so `[`, `]`, `<` and `>` are stripped rather than escaped —
-        # one stray bracket would otherwise swallow the URL or open a tag.
-        SHOT_GALLERY=$(jq -r --rawfile urls "$WORK/shot-urls.txt" --arg overall "$FN_OVERALL" '
-          # 80 to match the cap the tester skill states, and cut on a WORD
-          # boundary: a hard slice ended live captions "the app has already la"
-          # and "access code has e". This is the safety net, not the rule —
-          # review-functional-tester.md is where the length is actually set.
-          def clean: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
-                     | sub("^ "; "") | sub(" $"; "")
-                     | if length <= 80 then .
-                       else (.[0:79] | sub("\\s+\\S*$"; "")) + "…" end;
-          def clean140: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
-                     | sub("^ "; "") | sub(" $"; "")
-                     | if length <= 140 then .
-                       else (.[0:139] | sub("\\s+\\S*$"; "")) + "…" end;
-          ($urls | split("\n") | map(select(length > 0))
-           | map({key: (split("/") | last), value: .}) | from_entries) as $u
-          | [ (.screenshots // [])[]
-              | select((.file // "") | test("\\.png$"; "i"))
-              | (.file | split("/") | last) as $base
-              | {cap: ((.description | clean) as $c | if $c == "" then $base else $c end),
-                 url: ($u[$base] // "")}
-              | select(.url != "") ] as $shots
-          # 140, longer than a caption: these carry a reason, and a truncated
-          # reason ("time budget ran" / "the seed only has") is worse than none.
-          | [ (.untested // [])[] | select(type == "string")
-              | clean140 | select(length > 0) ] as $gaps
-          | (($shots | length) as $n
-             | "Functional pass: \($overall) — \($n) screenshot"
-               + (if $n == 1 then "" else "s" end)) as $shotpart
-          | (if ($gaps | length) > 0
-             then " · \($gaps | length) criteria not verified" else "" end) as $gappart
-          | if ($shots | length) == 0 and ($gaps | length) == 0 then ""
-            else "\n<details><summary>" + $shotpart + $gappart + "</summary>\n\n"
-                 + ($shots | map("**\(.cap)**\n\n![](\(.url))\n") | join("\n"))
-                 + (if ($gaps | length) > 0
-                    then "\n**Not verified by this run**\n\n"
-                         + ($gaps | map("- \(.)") | join("\n")) + "\n"
-                    else "" end)
-                 + "\n</details>\n"
-            end' "$FUNCTIONAL_JSON" 2>/dev/null) || SHOT_GALLERY=""
-      fi
-      echo "::endgroup::" ;;
-  esac
+if [ "$TESTER_RAN" = "true" ]; then
+  echo "::group::Functional screenshots"
+  NAMED=$(jq '[(.screenshots // [])[] | select((.file // "") | test("\\.png$"; "i"))] | length' \
+            "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
+  # WHY `untested` IS PART OF THIS BLOCK AND NOT AN AFTERTHOUGHT. On a live
+  # qiv run the tester verified 3 of 7 acceptance criteria, listed the other
+  # 4 in `untested` with real reasons, and reported PASS — which is correct
+  # per its own contract, PASS means "everything you exercised held". The
+  # review body then said `Functional pass: PASS — 2 screenshots` and nothing
+  # else, so a reader saw a green functional pass over a third of the spec.
+  # The tester was honest and the poster threw the honesty away.
+  UNTESTED=$(jq '(.untested // []) | length' "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
+  UNTESTED=${UNTESTED:-0}
+  if [ "${NAMED:-0}" -eq 0 ] && [ "$UNTESTED" -eq 0 ]; then
+    echo "Tester reported $FN_OVERALL with no PNG and nothing untested — nothing to publish."
+  else
+    # stdout is one embeddable URL per uploaded file; diagnostics go to stderr
+    # and stay in the job log. Non-fatal by contract: no URLs means no gallery,
+    # never a failed review.
+    : > "$WORK/shot-urls.txt"
+    if [ "${NAMED:-0}" -gt 0 ]; then
+      PR_NUMBER="$PR" GITHUB_REPOSITORY="$REPO" \
+        "$UPLOAD_SCREENSHOTS_SH" > "$WORK/shot-urls.txt" \
+        || echo "::warning::upload-screenshots.sh failed — posting the review without the gallery."
+    fi
+    # `|| true`, not `|| echo 0`: grep already PRINTS 0 for an empty file and
+    # then exits 1, so a fallback echo makes this two lines and every integer
+    # test below a syntax error.
+    UPLOADED=$(grep -c . "$WORK/shot-urls.txt" 2>/dev/null || true)
+    UPLOADED=${UPLOADED:-0}
+    echo "Published $UPLOADED of $NAMED screenshot(s) named by the tester."
+    [ "$UPLOADED" -lt "$NAMED" ] && \
+      echo "::warning::$(( NAMED - UPLOADED )) screenshot(s) the tester named were not published — they remain in the run's claude-review artifact."
+    [ "$UNTESTED" -gt 0 ] && \
+      echo "::notice::$UNTESTED criterion(s) the tester could not reach — surfaced in the review body."
+    # Captions are model-written and land inside an HTML block and a markdown
+    # image label, so `[`, `]`, `<` and `>` are stripped rather than escaped —
+    # one stray bracket would otherwise swallow the URL or open a tag.
+    SHOT_GALLERY=$(jq -r --rawfile urls "$WORK/shot-urls.txt" --arg overall "$FN_OVERALL" '
+      # 80 to match the cap the tester skill states, and cut on a WORD
+      # boundary: a hard slice ended live captions "the app has already la"
+      # and "access code has e". This is the safety net, not the rule —
+      # review-functional-tester.md is where the length is actually set.
+      def clean: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
+                 | sub("^ "; "") | sub(" $"; "")
+                 | if length <= 80 then .
+                   else (.[0:79] | sub("\\s+\\S*$"; "")) + "…" end;
+      def clean140: (. // "") | gsub("[\\[\\]<>\n\r]"; " ") | gsub("\\s+"; " ")
+                 | sub("^ "; "") | sub(" $"; "")
+                 | if length <= 140 then .
+                   else (.[0:139] | sub("\\s+\\S*$"; "")) + "…" end;
+      ($urls | split("\n") | map(select(length > 0))
+       | map({key: (split("/") | last), value: .}) | from_entries) as $u
+      | [ (.screenshots // [])[]
+          | select((.file // "") | test("\\.png$"; "i"))
+          | (.file | split("/") | last) as $base
+          | {cap: ((.description | clean) as $c | if $c == "" then $base else $c end),
+             url: ($u[$base] // "")}
+          | select(.url != "") ] as $shots
+      # 140, longer than a caption: these carry a reason, and a truncated
+      # reason ("time budget ran" / "the seed only has") is worse than none.
+      | [ (.untested // [])[] | select(type == "string")
+          | clean140 | select(length > 0) ] as $gaps
+      | (($shots | length) as $n
+         | "Functional pass: \($overall) — \($n) screenshot"
+           + (if $n == 1 then "" else "s" end)) as $shotpart
+      | (if ($gaps | length) > 0
+         then " · \($gaps | length) criteria not verified" else "" end) as $gappart
+      | if ($shots | length) == 0 and ($gaps | length) == 0 then ""
+        else "\n<details><summary>" + $shotpart + $gappart + "</summary>\n\n"
+             + ($shots | map("**\(.cap)**\n\n![](\(.url))\n") | join("\n"))
+             + (if ($gaps | length) > 0
+                then "\n**Not verified by this run**\n\n"
+                     + ($gaps | map("- \(.)") | join("\n")) + "\n"
+                else "" end)
+             + "\n</details>\n"
+        end' "$FUNCTIONAL_JSON" 2>/dev/null) || SHOT_GALLERY=""
+  fi
+  echo "::endgroup::"
 fi
 
 # ── 3. Inline comments: in-hunk only, deduped, capped, 700 bytes each ───────
@@ -490,6 +527,15 @@ awk '
 # count and 1800 bytes on the wire). A ```suggestion fence the clamp cut through
 # is DROPPED, not re-closed: re-closing yields a committable suggestion that
 # silently deletes the tail of the replacement code.
+# NOTHING IS SILENTLY DROPPED (see this header): the fence a check loses below is
+# model-written content, so its removal is announced even though keeping it could
+# damage the PR.
+FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+                                  and ((.body // "") | test("(^|\n)[ \t]*```[ \t]*suggestion"; "i")))] | length' \
+                  "$WORK/comments.json" 2>/dev/null || echo 0)
+if [ "${FENCED_CHECKS:-0}" -gt 0 ]; then
+  echo "::warning::Stripped a committable suggestion fence from $FENCED_CHECKS check comment(s) — a check spans a whole block, so an applied fence would replace every line of it."
+fi
 jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
    --rawfile valid "$WORK/valid-lines.txt" '
   def sev:
@@ -505,6 +551,21 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # go to defects and the questions fall back, which is the right way round. A
   # dropped one returns under the human-review heading, never under "Also flagged".
   def kind: if ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) then "check" else "finding" end;
+  # A CHECK NEVER CARRIES A COMMITTABLE FENCE — STRUCTURALLY, not by prompt rule.
+  # The range below is granted to checks alone on the strength of a line in
+  # review-verify.md; nothing enforced it, so a `**check**` with start_line:10
+  # line:13 AND a ```suggestion``` fence was the code-deleting shape all over
+  # again: Apply-suggestion replaces all four lines with the single line in the
+  # fence. The RANGE is the feature (a check points at the block it asks about),
+  # so the FENCE is what goes. Everything else — the question, the prose either
+  # side of it — is left exactly as written.
+  def unfence:
+    ((. // "") | split("\n")
+     | reduce .[] as $l ({o: [], f: false};
+         if .f then (if ($l | test("^\\s*```")) then .f = false else . end)
+         elif ($l | test("^\\s*```\\s*suggestion"; "i")) then .f = true
+         else .o += [$l] end)
+     | .o | join("\n") | gsub("\n{3,}"; "\n\n") | sub("\\s+$"; ""));
   def title:
     ((.body // "") | split("\n") | (.[0] // "")
      | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "") | .[:90] | sub("\\s+$"; ""))
@@ -546,6 +607,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # real code the moment a human clicks it. A check never carries a fence, so
   # only a check may span a block.
   | map(if kind == "check" then . else .start_line = 0 end)
+  | map(if kind == "check" then .body = ((.body // "") | unfence) else . end)
   | map(if (.start_line > 0) and (.start_line < .line) and ((.line - .start_line) <= 30)
         then . else .start_line = 0 end)
   | to_entries
@@ -656,6 +718,14 @@ function btitle(s,   r) {
   sub(/^[ \t]*(—|–)[ \t]*/, "", r)
   return norm(r)
 }
+# Severity of a bullet: the `**word**` before its first {{LINK:}}, lowercased, or
+# "" for a bullet that carries none — `- **minor** {{LINK:p:l}} - title`.
+function bsev(s,   r) {
+  r = s
+  sub(/^[ \t]*[-*][ \t]+/, "", r)
+  if (match(r, /^\*\*[A-Za-z]+\*\*/)) return tolower(substr(r, RSTART + 2, RLENGTH - 4))
+  return ""
+}
 # Claim the first not-yet-used comment in a key's id list, or 0. Claiming marks
 # the COMMENT used, so it is spent for both of its keys at once.
 function claim(list,   m, a, i) {
@@ -675,6 +745,22 @@ function isdup(key, ln,   p, t) {
   if (p == "" || t == "") return 0
   return claim(tidx[p SUBSEP t])
 }
+# The FALLBACK filter needs a STRICTER test than isdup(). isdup() matches
+# path+line OR path+title and never looks at severity, which is right where it is
+# used: the strip matches a bullet against a comment ACTUALLY BEING POSTED, and
+# one comment supplies both keys, so a severity mismatch cannot arise. Reused
+# against arbitrary `### Findings` bullets it DELETED REAL FINDINGS — a dropped
+# `**critical** SQL injection` at src/foo.ts:99 was discarded because an
+# unrelated `**minor** variable name is unclear` bullet sat at that same line,
+# and the log announced the deletion as a de-duplication.
+# Same finding = same path AND same severity AND same title. The LINE may differ:
+# verify re-anchors, and the title is the identity. A bullet the body does not
+# carry under that signature is a second finding, and it stays.
+function fbdup(key, ln,   p) {
+  p = bpath(key)
+  if (p == "") return 0
+  return claim(fidx[p SUBSEP bsev(ln) SUBSEP btitle(ln)])
+}
 function hardcut(s, budget,   out, ml, ph, phm) {
   out = ""; ml = 0
   while (length(s) > 0) {
@@ -691,6 +777,15 @@ function hardcut(s, budget,   out, ml, ph, phm) {
   }
   return out
 }
+# The block boundaries mode=strip and mode=fit both key on. One definition, two
+# callers, so the two passes cannot drift on what a bullet or a section is.
+function ishdr(s)    { return (s ~ /^[ \t]*###/) }
+function isblank(s)  { return (s ~ /^[ \t]*$/) }
+function isbullet(s) { return (s ~ /^[ \t]*[-*][ \t]/) }
+# A TOP-LEVEL bullet is ONE finding. An indented `  - ` beneath it is that
+# finding's detail, and counting it as a finding is how `### Findings (5)` ended
+# up over two findings.
+function istop(s)    { return (s ~ /^[-*][ \t]/) }
 # Drop every `###` section left with no item, plus trailing blank lines.
 # Operates on out[1..cnt] in place; returns the new count.
 function prune(cnt,   i, j, has, m) {
@@ -717,8 +812,8 @@ function renumber(cnt,   i, j, n) {
     if (out[i] !~ /^[ \t]*###/) continue
     if (out[i] !~ /\([0-9]+\)/) continue
     n = 0
-    for (j = i + 1; j <= cnt && out[j] !~ /^[ \t]*###/; j++)
-      if (out[j] ~ /^[ \t]*[-*][ \t]/) n++
+    for (j = i + 1; j <= cnt && !ishdr(out[j]); j++)
+      if (istop(out[j])) n++
     sub(/\([0-9]+\)/, "(" n ")", out[i])
   }
 }
@@ -727,6 +822,17 @@ function renumber(cnt,   i, j, n) {
 BEGIN {
   nk = 0
   while (keysfile != "" && (getline kk < keysfile) > 0) {
+    # mode=fbfilter reads a DIFFERENT index: `path[:line]<TAB>sev<TAB>title`,
+    # written by mode=fbindex, keyed on the full path+severity+title signature.
+    if (mode == "fbfilter") {
+      nf = split(kk, kfld, "\t")
+      ka = kfld[1]
+      if (ka == "" || nf < 3) continue
+      nk++
+      fk = bpath(ka) SUBSEP tolower(kfld[2]) SUBSEP norm(kfld[3])
+      fidx[fk] = fidx[fk] " " nk
+      continue
+    }
     ki = index(kk, "\t")
     if (ki == 0) { ka = kk; kf = "" } else { ka = substr(kk, 1, ki - 1); kf = substr(kk, ki + 1) }
     if (ka == "") continue
@@ -740,9 +846,10 @@ BEGIN {
 END {
   if (mode == "measure") { print total + 0; exit }
   # The identity of every `### Findings` bullet still standing in the body:
-  # `path[:line]<TAB>title`, the same two keys the strip matches on. Written
-  # AFTER the strip has run, so what it lists is what the reader will actually
-  # see — the input to the `### Also flagged` de-duplication below.
+  # `path[:line]<TAB>severity<TAB>title`. Written AFTER the strip has run, so what
+  # it lists is what the reader will actually see — the input to the
+  # `### Also flagged` de-duplication below. The SEVERITY is part of the record
+  # because path+line alone cannot tell one finding from another sitting on it.
   if (mode == "fbindex") {
     insec = 0
     for (i = 1; i <= NR; i++) {
@@ -751,19 +858,20 @@ END {
       if (!insec) continue
       if (l !~ /^[ \t]*[-*][ \t]/) continue
       k = phkey(l)
-      if (k != "") print k "\t" btitle(l)
+      if (k != "") print k "\t" bsev(l) "\t" btitle(l)
     }
     exit
   }
-  # Drop each fallback bullet whose finding the body already lists. Reuses
-  # isdup(), so the match and the one-to-one claim are byte-identical to the
-  # strip's: a dropped comment consumes at most one body bullet, and two
-  # same-titled bullets are never both spent on it.
+  # Drop each fallback bullet whose finding the body already lists — and ONLY
+  # those. fbdup() requires the whole signature (path, severity, title), not
+  # isdup()'s path+line OR path+title; see fbdup() for the finding that
+  # disappeared under the looser test. The one-to-one claim is unchanged: a body
+  # bullet is spent by at most one fallback bullet.
   if (mode == "fbfilter") {
     for (i = 1; i <= NR; i++) {
       l = line[i]
       k = phkey(l)
-      if (k != "" && isdup(k, l)) continue
+      if (k != "" && fbdup(k, l)) continue
       print l
     }
     exit
@@ -778,14 +886,14 @@ END {
     insec = 0; skipping = 0; nh = 0
     for (i = 1; i <= NR; i++) {
       l = line[i]
-      if (l ~ /^[ \t]*###/) {
+      if (ishdr(l)) {
         skipping = 0; insec = (l ~ /^[ \t]*###[ \t]*Findings/)
         out[++kept] = l
         if (insec) hdr[++nh] = kept
         continue
       }
-      if (l ~ /^[ \t]*$/) { skipping = 0; out[++kept] = l; continue }
-      if (insec && l ~ /^[ \t]*[-*][ \t]/) {
+      if (isblank(l)) { skipping = 0; out[++kept] = l; continue }
+      if (insec && isbullet(l)) {
         k = phkey(l)
         if (k != "" && isdup(k, l)) { skipping = 1; continue }
         skipping = 0; out[++kept] = l; continue
@@ -795,8 +903,8 @@ END {
     }
     for (h = 1; h <= nh; h++) {
       n = 0
-      for (j = hdr[h] + 1; j <= kept && out[j] !~ /^[ \t]*###/; j++)
-        if (out[j] ~ /^[ \t]*[-*][ \t]/) n++
+      for (j = hdr[h] + 1; j <= kept && !ishdr(out[j]); j++)
+        if (istop(out[j])) n++
       sub(/\([0-9]+\)/, "(" n ")", out[hdr[h]])
     }
     kept = prune(kept)
@@ -810,10 +918,33 @@ END {
   # zero findings, 1300 of 1800 bytes unspent, while the log said "posted 15
   # findings". Skipping keeps the cut on a line boundary (a partial line is
   # never emitted) and lets the budget reach the content that fits.
+  #
+  # AND SKIP THE BLOCK THAT LINE OWNS. A bare `continue` had none of the
+  # continuation tracking mode=strip carries, so a dropped bullet left its
+  # indented sub-bullets standing, dangling under the NEXT bullet and reading as
+  # that finding's detail. A dropped `###` header was worse: its bullets
+  # reparented under the PRECEDING heading, so critical and major findings were
+  # filed under `### Also flagged`, which says they could not be posted inline.
+  # `skipping` means what it means in strip: 1 = inside a dropped bullet or
+  # paragraph, ended by a blank line, a new top-level bullet or a header;
+  # 2 = inside a dropped SECTION, ended only by the next header.
+  skipping = 0
   for (i = 1; i <= NR; i++) {
-    l = mlen(line[i]) + 1
-    if (n + l > max) continue
-    out[++kept] = line[i]; n += l
+    l = line[i]; ll = mlen(l) + 1
+    if (ishdr(l)) {
+      if (n + ll > max) { skipping = 2; continue }
+      skipping = 0; out[++kept] = l; n += ll; continue
+    }
+    if (skipping == 2) continue
+    if (isblank(l)) {
+      skipping = 0
+      if (n + ll > max) continue
+      out[++kept] = l; n += ll; continue
+    }
+    if (istop(l)) skipping = 0
+    else if (skipping) continue
+    if (n + ll > max) { skipping = 1; continue }
+    out[++kept] = l; n += ll
   }
   # Not one line fit: cut mid-line rather than return an empty body.
   if (kept == 0 && NR > 0) {
@@ -864,8 +995,9 @@ fi
 # one, and the reader saw the same finding back to back. At 25 comments the
 # duplicate list overflowed the budget and the truncator cut it, which is how a
 # reader got `### Findings (15)` over 9 bullets with 6 findings reaching nobody.
-# So: filter the fallback against the body that survived the strip, on the same
-# path+line / path+title keys, before the header counts it.
+# So: filter the fallback against the body that survived the strip, before the
+# header counts it — matching on the FULL signature (path, severity, title), not
+# on path+line, which deletes a different finding that happens to share a line.
 if [ -s "$WORK/fallback.md" ]; then
   if LC_ALL=C awk -v mode=fbindex -f "$WORK/budget.awk" "$WORK/body.raw" > "$WORK/body-keys.txt" \
      && LC_ALL=C awk -v mode=fbfilter -v keysfile="$WORK/body-keys.txt" \
@@ -997,6 +1129,13 @@ else
             t: (.title // ""), fs: (.failure_scenario // ""),
             cf: (.carried_from // ""), inline: false, _o: 0}))
     + (($kp[0] // [])
+       # Checks are EXCLUDED HERE TOO, and inline is where a check NORMALLY lives — the
+       # `dropped` arm below only ever saw the ones that overflowed the cap. The
+       # tell is right there in `csev`: this arm derives the severity from the
+       # body text, and a `**check**` has none, so a question was persisted as a
+       # finding with `sev: ""`, warned about as `(, src/foo.ts)`, and — since
+       # round 2 can never "resolve" a question — carried forever.
+       | map(select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not))
        | map({p: (.path // ""), l: (.line | num), sev: csev,
               t: ((.body // "") | split("\n") | (.[0] // "")
                   | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "")),
