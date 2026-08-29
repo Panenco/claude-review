@@ -290,6 +290,25 @@ case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
     SPEC_NOTICE=$'\n<sub>No spec resolved — reviewed on the diff alone. Link an issue, or commit the intent doc, to have the next review check against what was asked.</sub>\n' ;;
 esac
 
+# A dev-env that never came up is invisible otherwise: the reviewer asked for a
+# functional pass, got a code review, and nothing said why. Deterministic here
+# rather than in a prompt, for the same reason the spec notice is — the model
+# cannot forget to mention it. `setup-dev-env.sh` used to promise this in a
+# "setup-health section" that the v4 body no longer has.
+DEV_ENV_NOTICE=""
+if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ]; then
+  DEV_ENV_RC=$(cat "${DEV_ENV_RC_FILE:-/tmp/dev-env/rc}" 2>/dev/null || echo "")
+  if [ "$DEV_ENV_RC" != "0" ]; then
+    why=$([ -z "$DEV_ENV_RC" ] && echo "did not finish starting in time" || echo "exited $DEV_ENV_RC")
+    # One line, and the LAST error the bring-up printed — a whole log in a review
+    # body is unreadable and would evict findings under the byte budget.
+    tail=$(grep -aiE '^(error|fatal)|error:' "${DEV_ENV_LOG_FILE:-/tmp/dev-env/log}" 2>/dev/null | tail -1 | cut -c1-300)
+    DEV_ENV_NOTICE=$'\n<sub>⚠ Functional pass requested but skipped — the dev environment '"$why"'. No browser test ran; this review is static only.'
+    [ -n "$tail" ] && DEV_ENV_NOTICE+=" Last error: <code>${tail//</&lt;}</code>"
+    DEV_ENV_NOTICE+=$' (full log: the run\'s <code>dev-env/log</code> artifact).</sub>\n'
+  fi
+fi
+
 # ── 3. Inline comments: in-hunk only, deduped, capped, 700 bytes each ───────
 # GitHub 422s the whole atomic POST if any comment line is outside a diff hunk,
 # and GitHub omits `.patch` entirely for large files — so a critical finding in a
@@ -609,7 +628,7 @@ if [ -s "$WORK/fallback.md" ]; then
 fi
 
 TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
-AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") ))
+AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$DEV_ENV_NOTICE") ))
 MEASURED=$(LC_ALL=C awk -v mode=measure -f "$WORK/budget.awk" "$WORK/body.raw")
 if [ "${MEASURED:-0}" -gt "$AVAIL" ]; then
   echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating."
@@ -664,6 +683,7 @@ done < "$WORK/body.raw"
 
 printf '%s' "$FOOTER" >> "$WORK/body.md"
 printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
+printf '%s' "$DEV_ENV_NOTICE" >> "$WORK/body.md"
 echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"
 echo "::endgroup::"
 

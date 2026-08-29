@@ -1076,6 +1076,9 @@ jobs:
           HEAD_SHA: ${{ steps.pr_sha.outputs.sha }}
           ORCHESTRATOR_EXEC: ${{ steps.claude_run.outputs.execution_file }}
           ROUND: ${{ steps.prior_state.outputs.round || '1' }}
+          # So the poster can say, in the review itself, that a requested
+          # functional pass never ran because the dev-env did not come up.
+          FUNCTIONAL_REQUESTED: ${{ steps.guard.outputs.functional }}
         run: |
           set -uo pipefail
           if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then

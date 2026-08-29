@@ -103,6 +103,9 @@ run_poster() {
     GITHUB_SERVER_URL="${SERVER_URL:-https://github.com}" GITHUB_RUN_ID="${RUN_ID:-}" \
     JOB_START="${JOB_START:-$work/no-job-start}" \
     SPEC_STATUS="$work/spec-status" \
+    FUNCTIONAL_REQUESTED="${FUNCTIONAL_REQ:-}" \
+    DEV_ENV_RC_FILE="${DEVENV_RC:-$work/no-such-rc}" \
+    DEV_ENV_LOG_FILE="${DEVENV_LOG:-$work/no-such-log}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
     REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
     ROUND="${ROUND_N:-}" \
@@ -1448,6 +1451,50 @@ assert_contains "…as a checkbox" "- [ ] " "$BODY"
 # rendered as a question, losing the severity a reproduced defect carries.
 CHECKS_SECTION=$(printf '%s' "$BODY" | awk '/^### What a human should review/{p=1;next} /^###/{p=0} p')
 assert_not_contains "the finding is NOT filed as a question" "checkout total renders" "$CHECKS_SECTION"
+rm -rf "$W"
+
+# ── (n) a requested functional pass that never ran says so ──────────────────
+# The reviewer asked for a browser test, got a static review, and nothing said
+# why: the dev-env failure was silent. setup-dev-env.sh even promises it is
+# "surfaced in the review body's setup-health section" — a section v4 deleted.
+echo ""
+echo "── (n) skipped functional pass is disclosed ──"
+
+run_devenv_case() {  # $1=label $2=rc-file-content("" = none) $3=log lines
+  W=$(mktemp -d); mkdir -p "$W/dev-env"
+  printf '%s' "$VALID_REVIEW" > "$W/review.json"
+  [ -n "$2" ] && printf '%s' "$2" > "$W/dev-env/rc"
+  printf '%s\n' "$3" > "$W/dev-env/log"
+  FUNCTIONAL_REQ="$1" DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" \
+    FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  BODY=$(payload_of "$W" | jq -r '.body')
+}
+
+# (n1) requested + dev-env exited non-zero → notice carries the reason and the error
+run_devenv_case true 1 "info: building
+ERROR: docker compose up failed: port 5432 already allocated"
+assert_contains "the skip is disclosed" "Functional pass requested but skipped" "$BODY"
+assert_contains "…with the exit status" "exited 1" "$BODY"
+assert_contains "…and the last error from the bring-up" "port 5432 already allocated" "$BODY"
+assert_contains "…and says the review is static only" "static only" "$BODY"
+assert_contains "the findings still post" "off-by-one" "$BODY"
+rm -rf "$W"
+
+# (n2) requested + no rc at all → it timed out, not "exited"
+run_devenv_case true "" "info: still installing"
+assert_contains "a missing rc reads as a timeout" "did not finish starting in time" "$BODY"
+assert_not_contains "…never as an exit status" "exited " "$BODY"
+rm -rf "$W"
+
+# (n3) requested + dev-env fine → no notice. A healthy run must stay quiet.
+run_devenv_case true 0 "all good"
+assert_not_contains "a healthy dev-env says nothing" "Functional pass requested but skipped" "$BODY"
+rm -rf "$W"
+
+# (n4) NOT requested + dev-env failed → still nothing. A code-only review must
+# not be told about a browser it never asked for.
+run_devenv_case false 1 "ERROR: boom"
+assert_not_contains "an unrequested pass is not mentioned" "Functional pass requested" "$BODY"
 rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
