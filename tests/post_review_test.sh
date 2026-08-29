@@ -3123,6 +3123,358 @@ assert_contains "the dropped critical still gets its fallback bullet" \
 assert_contains "…carrying its severity" "**critical**" "$BODY"
 rm -rf "$W"
 
+# ── (ab1) mode=fit NEVER SPLITS A FENCED REGION ──────────────────────────────
+# `fit` had no fence awareness: a blank line inside a fence split it, and a
+# `- name: build` at column 0 inside a YAML fence was an `istop` top-level
+# bullet. Opener, body and closer were then admitted independently. Both halves
+# damage the page — a dropped opener renders YAML config lines as `### Context`
+# bullets (the review asserting changes the model never claimed), and a dropped
+# closer leaves the fence open, so `### Findings`, the truncation marker, the
+# footer and the `<!-- claude-review-state {...} -->` block all render as
+# literal preformatted text with dead links and the internal JSON on show.
+# skills/review-verify.md mandates a ```mermaid diagram, so this is not theory.
+echo ""
+echo "── (ab1) a fenced region is one indivisible block ──"
+
+for MAXB in 300 320 340 360 380 400 420 440 460 480 500 540 600; do
+  W=$(mktemp -d)
+  python3 - "$W/review.json" <<'FENCEBODY'
+import json, sys
+lines = ["## Claude review — COMMENT", "",
+         "The control flow after this change:", "",
+         "```mermaid", "graph TD", "  A[request] --> B[authguard]", "",
+         "  B --> C[handler]", "  C --> D[response]", "```", "",
+         "### Context", "",
+         "```yaml", "- name: build", "  run: make", "- name: test",
+         "  run: make test", "```", "",
+         "### Findings (2)",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens on the admin console",
+         "- **minor** {{LINK:src/foo.ts:12}} — the log line repeats the request id twice on every single call"]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+FENCEBODY
+  BODY_MAX=$MAXB FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  # The RAW posted body, not visible_body(): an unbalanced fence swallows the
+  # state block, and that is the half of this defect that leaks internal JSON.
+  RAW=$(payload_of "$W" | jq -r '.body')
+  MARKERS=$(printf '%s\n' "$RAW" | grep -c '^```' || true)
+  assert_eq "[$MAXB] every fence the body kept is closed" "0" "$(( MARKERS % 2 ))"
+  # Content without its opener is the other half: the fence body renders as
+  # ordinary markdown, and the YAML lines become bullets of the section above.
+  case "$RAW" in
+    *"graph TD"*) assert_contains "[$MAXB] mermaid content implies its opener" '```mermaid' "$RAW" ;;
+    *) assert_not_contains "[$MAXB] a dropped mermaid fence leaves no opener" '```mermaid' "$RAW" ;;
+  esac
+  case "$RAW" in
+    *"name: build"*) assert_contains "[$MAXB] yaml content implies its opener" '```yaml' "$RAW" ;;
+    *) assert_not_contains "[$MAXB] a dropped yaml fence leaves no opener" '```yaml' "$RAW" ;;
+  esac
+  rm -rf "$W"
+done
+
+# (ab1b) AN UNTERMINATED FENCE IN THE SOURCE RUNS TO END OF INPUT. The model
+# opened a fence and never closed it; the splitter must still treat everything
+# after it as one block rather than admitting the opener alone.
+for MAXB in 200 250 350 650; do
+  W=$(mktemp -d)
+  python3 - "$W/review.json" <<'UNTERM'
+import json, sys
+pad = "diagram text that exists purely to outweigh the byte budget here"
+lines = ["## Claude review — COMMENT", "",
+         "### Findings (1)",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens",
+         "", "```yaml", "- name: build", "  run: make", "",
+         "- name: test"] + ["  run: " + pad for _ in range(12)]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+UNTERM
+  BODY_MAX=$MAXB FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  RAW=$(payload_of "$W" | jq -r '.body')
+  assert_not_contains "[$MAXB] an unterminated fence is dropped whole, opener included" '```yaml' "$RAW"
+  assert_not_contains "[$MAXB] …and its config lines do not survive as bullets" "name: build" "$RAW"
+  assert_contains "[$MAXB] the finding it was cut for survives" "the auth guard is bypassed" "$RAW"
+  assert_contains "[$MAXB] …and the header counts findings, not YAML keys" "### Findings (1)" "$RAW"
+  rm -rf "$W"
+done
+
+# (ab1d) NOTHING INSIDE A FENCE IS MARKUP. The same istop() that split the fence
+# also COUNTED its lines: a `- name: build` in a YAML fence was a top-level
+# bullet to renumber() and to prune(), so a section holding one finding and two
+# lines of workflow config was published as `### Findings (3)` — the header
+# claiming two findings that do not exist.
+for MAXB in 1800 500; do
+  W=$(mktemp -d)
+  python3 - "$W/review.json" <<'FENCECOUNT'
+import json, sys
+lines = ["## Claude review — COMMENT", "",
+         "### Findings (1)",
+         "- **critical** {{LINK:src/foo.ts:11}} — the workflow step list is wrong",
+         "", "```yaml", "- name: build", "- name: test", "```"]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines),
+           "comments": [{"path": "src/foo.ts", "line": 12, "side": "RIGHT",
+                         "body": "**minor** unrelated, forces the strip pass to run"}],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+FENCECOUNT
+  BODY_MAX=$MAXB FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+  assert_contains "[$MAXB] YAML keys in a fence are not counted as findings" \
+    "### Findings (1)" "$BODY"
+  rm -rf "$W"
+done
+
+# (ab1c) A TABLE AND A BLOCKQUOTE GET THE SAME TREATMENT. Both are already
+# indivisible in practice — neither can carry a blank line and neither starts a
+# line with `- `, so the continuation rule happened to hold them together — so
+# this is a characterization test, not a reproduction. It pins the invariant
+# against the next change to the splitter.
+for MAXB in 500 600 700 800 900 1000; do
+  W=$(mktemp -d)
+  python3 - "$W/review.json" <<'TBLQUOTE'
+import json, sys
+lines = ["## Claude review — COMMENT", "",
+         "### Context", "",
+         "| field | before | after |", "|-------|--------|-------|",
+         "| ttl   | 60     | 3600  |", "| scope | user   | tenant |", "",
+         "> The migration note claims the cache is flushed on deploy.",
+         "> That does not hold for the tenant shard.", "",
+         "### Findings (1)",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens"]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+TBLQUOTE
+  BODY_MAX=$MAXB FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  RAW=$(payload_of "$W" | jq -r '.body')
+  ROWS=$(printf '%s\n' "$RAW" | grep -c '^|' || true)
+  case "$ROWS" in
+    0|4) echo "OK:   [$MAXB] the table is whole or gone, never part of one" ;;
+    *) echo "FAIL: [$MAXB] the table was split — $ROWS of 4 rows kept"; fail=$((fail + 1)) ;;
+  esac
+  QUOTES=$(printf '%s\n' "$RAW" | grep -c '^>' || true)
+  case "$QUOTES" in
+    0|2) echo "OK:   [$MAXB] the blockquote run is whole or gone" ;;
+    *) echo "FAIL: [$MAXB] the blockquote run was split — $QUOTES of 2 lines kept"; fail=$((fail + 1)) ;;
+  esac
+  rm -rf "$W"
+done
+
+# ── (ab2) THE INVISIBLE-BLANK SET STOPPED ONE CODEPOINT SHORT ────────────────
+# initinvis() looped `for (i = 128; i <= 141; i++)` — U+2000..U+200D — and
+# stopped exactly before U+200E LEFT-TO-RIGHT MARK and U+200F RIGHT-TO-LEFT
+# MARK. U+061C, U+180E, U+2061..U+2064 and U+FFF9..U+FFFB were missing too, as
+# were the bidi embedding/override controls and isolates that sit between them.
+# Any one of them puts (aa2) back verbatim: the line reads as content, the
+# strip's `skipping` never clears, and the rest of the body goes with a
+# duplicate bullet under the misleading "Dropped N body line(s) duplicating an
+# inline comment."
+echo ""
+echo "── (ab2) the completed invisible-character set ──"
+
+for pair in "lrm:8206" "rlm:8207" "alm:1564" "mvs:6158" "fa:8289" "invtimes:8290" \
+            "invsep:8291" "invplus:8292" "lre:8234" "rlo:8238" "lri:8296" "pdi:8297" \
+            "iaanchor:65529" "iaterm:65531"; do
+  name="${pair%%:*}"; esc="${pair#*:}"
+  W=$(mktemp -d)
+  python3 - "$W/review.json" "$esc" <<'INVIS2'
+import json, sys
+blank = chr(int(sys.argv[2]))
+lines = ["## Claude review — REQUEST_CHANGES", "",
+         "### Findings (2)",
+         "- **minor** {{LINK:src/foo.ts:12}} — the log line is noisy",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens",
+         blank,
+         "The same helper backs the admin console, so the blast radius is the whole tenant.",
+         "A reviewer should read the migration notes before merging this."]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines),
+           "comments": [{"path": "src/foo.ts", "line": 11, "side": "RIGHT",
+                         "body": "**critical** the auth guard is bypassed for expired tokens"}],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+INVIS2
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+  assert_contains "[$name] the stripped bullet does not swallow the prose below it" \
+    "the blast radius is the whole tenant" "$BODY"
+  assert_contains "[$name] …nor the line after that" \
+    "read the migration notes" "$BODY"
+  assert_contains "[$name] the header counts what is left" "### Findings (1)" "$BODY"
+  rm -rf "$W"
+done
+
+# (ab2b) FALSE POSITIVES. A byte-oriented gsub over multi-byte sequences is only
+# safe if none of them can appear INSIDE a character that carries meaning. Each
+# probe shares a lead byte, a two-byte prefix or a plane with something in the
+# set, and each is the ONLY content of a `### Notes` section: prune() deletes a
+# section holding nothing but blank lines, and mode=fit never assigns a blank
+# line to a block at all, so a line wrongly read as blank disappears twice over.
+# Codepoints are passed as NUMBERS — a shell round-trip through a heredoc is
+# exactly where an exotic character gets normalised into something else.
+for probe in "zwj-emoji:128105,8205,128187" "hangul-filler:12644" "hangul-syllable:44032" \
+             "ufefe:65278" "cjk-e3:19990,30028" "arabic-d8:1572" "arabic-d89d:1565" \
+             "mongolian-e1a0:6176" "fullwidth-efbf:65377" "astral:120792" \
+             "math-e281:8263" "reserved-e28x:8261" "ogham-e19a:5761" "hyphen-e280:8208"; do
+  name="${probe%%:*}"; cps="${probe#*:}"
+  W=$(mktemp -d)
+  python3 - "$W/review.json" "$cps" <<'FPPROBE'
+import json, sys
+probe = "".join(chr(int(c)) for c in sys.argv[2].split(","))
+lines = ["## Claude review — REQUEST_CHANGES", "",
+         "### Findings (1)",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens",
+         "", "### Notes", "", probe]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines),
+           "comments": [{"path": "src/foo.ts", "line": 11, "side": "RIGHT",
+                         "body": "**critical** the auth guard is bypassed for expired tokens"}],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+FPPROBE
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+  assert_contains "[fp:$name] a line of real content is not a blank line" "### Notes" "$BODY"
+  rm -rf "$W"
+done
+
+# ── (ab3) THE TITLE LINE CANNOT BE CUT ───────────────────────────────────────
+# A paragraph on the line immediately after `## Claude review — X`, with no blank
+# between, was folded into the title block by the continuation rule. Over budget,
+# the title went with it: the posted body opened with a blank line and then
+# `### Findings (2)`, with no `## Claude review` line at all. hardcut() only
+# fires when NOTHING was admitted, so it did not rescue this. The existing
+# "header survives truncation" case always put a blank line after the title, so
+# it never reached this shape.
+echo ""
+echo "── (ab3) the review title is unconditionally present ──"
+
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'NOBLANK'
+import json, sys
+para = ("This PR reworks the authentication middleware, and the reasoning needs "
+        "more room than one line. " * 30)
+lines = ["## Claude review — REQUEST_CHANGES", para, "",
+         "### Findings (2)",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed for expired tokens",
+         "- **minor** {{LINK:src/foo.ts:12}} — the log line is noisy"]
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+NOBLANK
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the title survives an over-budget paragraph glued to it" \
+  "## Claude review — REQUEST_CHANGES" "$BODY"
+assert_eq "…and it is the first line of the body" \
+  "## Claude review — REQUEST_CHANGES" "$(printf '%s\n' "$BODY" | head -n1)"
+assert_not_contains "the paragraph that busted the budget is what went" \
+  "the reasoning needs more room" "$BODY"
+assert_contains "the findings still made it" "the auth guard is bypassed" "$BODY"
+rm -rf "$W"
+
+# (ab3b) THE SAME AT SEVERAL BUDGETS, AND WITH THE BLANK LINE PRESENT: whatever
+# else the cut takes, the body never opens mid-sentence.
+for MAXB in 200 300 500 900 1800; do
+  for GAP in "" "x"; do
+    W=$(mktemp -d)
+    python3 - "$W/review.json" "$GAP" <<'TITLEALWAYS'
+import json, sys
+gap = [] if sys.argv[2] else [""]
+para = "prose that exists only to be far too large for the budget. " * 40
+lines = ["## Claude review — COMMENT"] + gap + [para, "",
+         "### Findings (1)",
+         "- **critical** {{LINK:src/foo.ts:11}} — the auth guard is bypassed"]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+TITLEALWAYS
+    BODY_MAX=$MAXB FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+    BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+    assert_contains "[$MAXB/gap=${GAP:-none}] the body opens with the review title" \
+      "## Claude review" "$(printf '%s\n' "$BODY" | head -n1)"
+    rm -rf "$W"
+  done
+done
+
+# (ab3c) hardcut() CUTS ON A UTF-8 BOUNDARY. It walked byte by byte with no
+# boundary check, unlike t90()/utrim(), so a budget landing inside the em dash of
+# `## Claude review — X` left an orphan byte that jq renders as U+FFFD.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT",
+        body: "## Claude review — COMMENT\n\nmore prose than will ever fit here",
+        comments: [], meta: {findings: [], human_review: []}}' > "$W/review.json"
+BODY_MAX=61 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_not_contains "a hard cut never leaves a replacement character" "�" "$BODY"
+rm -rf "$W"
+
+# ── (ab4) A SKIP-MARKED RUN MUST NOT SUPERSEDE A CRASH BANNER ────────────────
+# Section 7 already refuses to dismiss standing reviews for a body that read no
+# code. Section 5 ran unconditionally, so guard.sh's oversized split request
+# PATCHed a standing `<!-- claude-review-crash -->` banner — whose text is
+# "**Action required:** a human should review this PR" — into "_Superseded by a
+# newer Claude review run on this PR._" A run that judged nothing cleared a
+# human-action signal about an earlier, still-unresolved failure.
+echo ""
+echo "── (ab4) a skip-marked run leaves crash banners standing ──"
+for marker in "<!-- claude-review-skipped -->" "<!-- claude-review-oversized -->"; do
+  W=$(mktemp -d)
+  jq -n --arg body "$marker"$'\n\n## Claude review — REQUEST_CHANGES\n\nToo large to review well.' \
+    '{verdict: "REQUEST_CHANGES", body: $body, comments: [], meta: {findings: []}}' > "$W/review.json"
+  REVIEWS_FIXTURE=$(mktemp)
+  cat > "$REVIEWS_FIXTURE" <<'EOF'
+[
+  {"id": 777, "user": {"login": "claude-bot[bot]"}, "state": "COMMENTED",
+   "body": "<!-- claude-review-crash -->\n\n> **Action required:** a human should review this PR",
+   "commit_id": "old1", "submitted_at": "2026-06-01T00:00:00Z"}
+]
+EOF
+  FIXTURE_REVIEWS="$REVIEWS_FIXTURE" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  assert_eq "exit 0 ($marker)" "0" "$RC"
+  assert_not_contains "crash banner NOT superseded ($marker)" \
+    "claude-review-superseded" "$(cat "$W/gh.log")"
+  assert_contains "…and the log says why ($marker)" \
+    "leaving prior crash banners standing" "$OUT"
+  rm -rf "$W" "$REVIEWS_FIXTURE"
+done
+
+# (ab4b) THE CONTROL: a JUDGED review still supersedes the banner.
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+REVIEWS_FIXTURE=$(mktemp)
+cat > "$REVIEWS_FIXTURE" <<'EOF'
+[
+  {"id": 777, "user": {"login": "claude-bot[bot]"}, "state": "COMMENTED",
+   "body": "<!-- claude-review-crash -->\n\n> **Action required:** a human should review this PR",
+   "commit_id": "old1", "submitted_at": "2026-06-01T00:00:00Z"}
+]
+EOF
+FIXTURE_REVIEWS="$REVIEWS_FIXTURE" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_contains "a judged review still supersedes the crash banner" \
+  "claude-review-superseded" "$(cat "$W/gh.log")"
+rm -rf "$W" "$REVIEWS_FIXTURE"
+
+# ── (ab5) THE BUDGET IS NOT SPENT ON WHAT prune() DELETES ────────────────────
+# A prose block inside `### Findings` could PULL IN that header, and prune() then
+# deleted the pair — a bullet-list section holding no bullet is not a section.
+# The bytes were charged all the same, so content that would have fit was cut for
+# a header and a paragraph nobody ever saw.
+echo ""
+echo "── (ab5) budget is not charged for blocks prune() deletes ──"
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'PRUNEWASTE'
+import json, sys
+huge = "a finding whose bullet is far larger than the byte budget allows. " * 12
+lines = ["## Claude review — COMMENT", "",
+         "### Findings (1)",
+         "- **minor** {{LINK:src/foo.ts:12}} — " + huge, "",
+         "Prose inside the findings section that no bullet keeps alive.", "",
+         "### Notes", "",
+         "The tenant cache key omits the region, so a lookup can cross tenants."]
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+PRUNEWASTE
+BODY_MAX=200 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the section prune() would have kept gets the bytes" \
+  "a lookup can cross tenants" "$BODY"
+assert_not_contains "…and the section it would have deleted is not charged for" \
+  "no bullet keeps alive" "$BODY"
+rm -rf "$W"
+
+
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 
 echo ""
