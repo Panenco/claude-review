@@ -302,7 +302,18 @@ if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ]; then
     why=$([ -z "$DEV_ENV_RC" ] && echo "did not finish starting in time" || echo "exited $DEV_ENV_RC")
     # One line, and the LAST error the bring-up printed — a whole log in a review
     # body is unreadable and would evict findings under the byte budget.
-    tail=$(grep -aiE '^(error|fatal)|error:' "${DEV_ENV_LOG_FILE:-/tmp/dev-env/log}" 2>/dev/null | tail -1 | cut -c1-300)
+    # Prefer the consumer script's OWN `::error::` annotation. setup-dev-env.sh
+    # appends its generic "dev-start.sh exited non-zero" line afterwards, so
+    # taking the last error-ish line quoted that tautology back at the reader
+    # instead of the cause — measured on a real run, which reported
+    # "dev-start.sh exited non-zero" where the log said
+    # "API never became ready at http://localhost:20001/api within 300s".
+    log="${DEV_ENV_LOG_FILE:-/tmp/dev-env/log}"
+    tail=$(grep -a '::error::' "$log" 2>/dev/null | tail -1 | sed 's/^.*::error:://' | cut -c1-300)
+    if [ -z "$tail" ]; then
+      tail=$(grep -aiE '^(error|fatal)|error:' "$log" 2>/dev/null \
+             | grep -av 'dev-start.sh exited non-zero' | tail -1 | cut -c1-300)
+    fi
     DEV_ENV_NOTICE=$'\n<sub>⚠ Functional pass requested but skipped — the dev environment '"$why"'. No browser test ran; this review is static only.'
     [ -n "$tail" ] && DEV_ENV_NOTICE+=" Last error: <code>${tail//</&lt;}</code>"
     DEV_ENV_NOTICE+=$' (full log: the run\'s <code>dev-env/log</code> artifact).</sub>\n'
