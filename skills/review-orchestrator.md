@@ -15,12 +15,19 @@ Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `FUNCTIONAL_BUDGET_SECO
 ## Turn 1 — env, spec, functional eligibility (one Bash call)
 
 ```bash
-printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
+printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
 gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesReferences,files > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
 awk '/^#{2,3} /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
+# The dev-env boots in the background from BEFORE this session started, so this
+# waits for its rc rather than reading a file still being written. A bare `cat`
+# raced it and always lost: the tester was ruled ineligible on every consumer
+# whose bring-up was not instant, which is all of them.
+end=$(( $(date +%s) + ${DEV_ENV_TIMEOUT_SECONDS:-600} ))
+while [ ! -f /tmp/dev-env/rc ] && [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
 cat /tmp/dev-env/outputs 2>/dev/null || echo "WEB_READY=false"
+echo "DEV_ENV_RC=$(cat /tmp/dev-env/rc 2>/dev/null || echo timeout)"
 echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 ```
 
