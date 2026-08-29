@@ -97,6 +97,15 @@ want "post-review.sh renders a body bullet for dropped comments" "$POSTER" \
   'Also flagged'
 never "no code comment still claims the body already names every finding" "$POSTER" \
   'body already names every finding|remain listed in the review body'
+# review-verify describes the poster's inline cap to the model. It said "5-cap"
+# long after the default moved to 10, which understates how many findings can
+# post inline and invites pre-emptive dropping. Pin the number to the source.
+CAP=$(sed -n 's/^COMMENT_LIMIT="\${REVIEW_COMMENT_LIMIT:-\([0-9]*\)}".*/\1/p' "$POSTER" | head -1)
+if [ -n "$CAP" ] && grep -qF "within the ${CAP}-cap" "$VERIFY"; then
+  ok "review-verify names the poster's real inline cap ($CAP)"
+else
+  bad "review-verify must say 'within the ${CAP:-?}-cap' — post-review.sh defaults COMMENT_LIMIT to ${CAP:-?}"
+fi
 
 echo ""
 echo "── an explicit /review is never answered with silence ──"
@@ -146,9 +155,19 @@ for f in "$SCAN" "$VERIFY"; do
   n=${f##*/}
   want "$n reads the team's own rules directory" "$f" '\.claude/rules/'
   want "$n bounds how many rule files it reads" "$f" '(at most|most) \*{0,2}4\*{0,2}'
-  want "$n always reads the always-applicable ones" "$f" 'comments\.md.*general\.md'
+  want "$n names the always-applicable rule files" "$f" 'comments\.md.*general\.md'
   want "$n honours a rule file's paths glob" "$f" 'paths:'
 done
+# Asymmetric on purpose. Scan reads the directory upfront because it is the
+# stage that hunts for convention violations; verify only ever needs the ONE
+# file a finding's evidence cites, and scan is already required to name it. Four
+# more Reads per run bought nothing.
+want "review-scan reads the rules directory upfront" "$SCAN" \
+  'one `ls` of it, and `Read` \*\*at most 4\*\*'
+want "review-verify reads a rule file only when a finding cites it" "$VERIFY" \
+  'only the single .{0,3}\.md.{0,3} file a finding.{0,40}cites'
+want "…and says it does not read them upfront" "$VERIFY" \
+  'Do NOT read `\.claude/rules/` upfront'
 
 # Reviewers on three products spend review time deleting machine-written
 # comments ("remove this shitty comments (check everywhere please)"). The class
@@ -161,6 +180,46 @@ want "review-verify judges the class on what it can see" "$VERIFY" 'comment-nois
 want "…and refutes a finding aimed at a single comment" "$VERIFY" \
   'naming a single comment is refuted'
 
+# The class used to ride on `"prose": true`, which made it unemittable: the
+# schema reserves `prose` for a DOCS_ONLY prose defect, that channel is open
+# only on a DOCS_ONLY run, and verify's prose rule refutes anything whose two
+# quoted passages are not both present — which comment noise never has. It now
+# carries its own flag, exempt from failure_scenario the way `convention` is.
+CN_SCAN=$(mktemp)
+awk '/^## Comment noise in code/{f=1;next} f&&/^## /{f=0} f' "$SCAN" > "$CN_SCAN"
+if [ -s "$CN_SCAN" ]; then
+  want "…on its own flag, not the docs-only prose flag" "$CN_SCAN" '"comment_noise": true'
+  never "…and never emitted under the prose flag" "$CN_SCAN" 'per review\*\*, `?"prose": true'
+  want "…which it disowns by name" "$CN_SCAN" 'never set `"prose": true`'
+  want "…exempt from failure_scenario like a convention finding" "$CN_SCAN" \
+    'exempt from `failure_scenario`'
+  want "…capped at 2 per review" "$CN_SCAN" '(max|most) \*{0,2}2\*{0,2} per review'
+  want "…always minor" "$CN_SCAN" 'severity.{0,4}minor'
+  want "…and never able to reach REQUEST_CHANGES" "$CN_SCAN" 'NEVER produce REQUEST_CHANGES'
+  # Deleting comments through a committable patch is unguarded downstream.
+  want "…and never ships a committable comment deletion" "$CN_SCAN" \
+    'Never a ```suggestion``` fence on this class'
+  # The old criterion 4 ("runs longer than the code it explains") described the
+  # single most valuable comment shape there is, and the guard below it said the
+  # opposite with neither marked dominant. The criterion is gone; the guard is
+  # now an override that outranks the whole list, pointers to reasoning included.
+  never "…no criterion turns comment length into a finding" "$CN_SCAN" \
+    '(runs|run) longer than|longer than the code'
+  want "…the real-why guard is an override, not a footnote" "$CN_SCAN" \
+    'outranks every criterion'
+  want "…and a pointer to where the reasoning lives is a real why" "$CN_SCAN" \
+    'pointer to where the reasoning lives'
+else
+  bad "review-scan has no '## Comment noise in code' section"
+fi
+rm -f "$CN_SCAN"
+want "review-scan exposes the comment_noise flag in its findings table" "$SCAN" \
+  '^\| `comment_noise` \|'
+want "…and in its output schema" "$SCAN" '"comment_noise": false'
+want "review-verify keys the class on comment_noise, not prose" "$VERIFY" \
+  '\*\*A comment-noise finding\*\* \(`"comment_noise": true`'
+want "…and exposes the flag in meta.findings" "$VERIFY" '"comment_noise": false'
+
 # The verdict rule is the one that must name the exclusion, not just imply it.
 RC_LINE=$(grep -n 'REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
 if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE 'not a convention finding|convention.*NEVER produce'; then
@@ -169,6 +228,13 @@ else
   bad "review-verify's REQUEST_CHANGES rule must exclude convention findings on line $RC_LINE"
 fi
 want "…and says so unambiguously" "$VERIFY" 'can NEVER produce REQUEST_CHANGES'
+# Comment noise is advisory for the same reason convention and prose are, so the
+# exclusion has to be structural — on the rule line, not implied elsewhere.
+if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE '(nor|not) a comment-noise finding|"comment_noise": true'; then
+  ok "review-verify's REQUEST_CHANGES rule excludes comment-noise findings on the rule line itself"
+else
+  bad "review-verify's REQUEST_CHANGES rule must exclude comment-noise findings on line ${RC_LINE:-?}"
+fi
 # Cost guard: the whole point is TWO Reads, not a config subsystem. Each file
 # may name each config path exactly once — a second mention is a second read
 # site, which is how "read the config" grows back into one.
@@ -207,6 +273,24 @@ want "…and forbids padding to the ceiling" "$SCAN" \
   'Do not pad'
 want "…and demands a specific construct, not a category" "$SCAN" \
   'names a specific construct and the specific judgement'
+# Nine of the thirteen categories already demanded a named artifact ("Grep for
+# the near-duplicate … name what you found", "Name the sibling", "Name the file
+# that did not change"). Four demanded nothing and were true of almost any
+# non-trivial diff, so they could be filled with the category name alone. Each
+# now carries its own concrete obligation, in the same style as the other nine.
+for pair in \
+  'Intended behaviour:rule or field whose meaning is in question' \
+  'Dense logic:exact construct and what about it resists a single reading' \
+  'Scope or unit mismatch:Name both grains and the line where they meet' \
+  'Domain and regulatory:specific data or obligation and the line that touches it'
+do
+  cat=${pair%%:*}; obl=${pair#*:}
+  if grep -E "^- \*\*$cat" "$SCAN" | grep -qiE "$obl"; then
+    ok "the '$cat' item names a checkable artifact"
+  else
+    bad "the '$cat' human_review category must demand a named artifact (/$obl/)"
+  fi
+done
 # The two are the same judgement from opposite ends: every item is a reason a
 # human pass changes something, so both cannot be true at once.
 want "…and ties the list to the approval position" "$SCAN" \
@@ -262,8 +346,12 @@ fi
 
 # Three of seven noise counts were items whose concern was stated AND handled in
 # a comment at the very line cited.
+# Wording changed: the bullet used to read "already documents the risk and
+# mitigates it" inside "A risk the code ..." — a literal duplication of "risk".
+# The intent (an item the cited line already documents AND mitigates) is
+# unchanged, so the regex now tolerates the de-duplicated phrasing.
 want "review-scan drops an item the cited code already mitigates" "$SCAN" \
-  'already documents the risk and mitigates it'
+  'already documents (the risk )?and mitigates'
 
 # ...but a drop with no trace is the same failure shape as the bugs above: the
 # context builder went out and nothing recorded it; suppression was findings-only
@@ -869,7 +957,11 @@ want "…and the workflow hands it to the review agent" "$WORKFLOW" \
 # Assert on the SECTION, not the file: "max 2" and "minor" already appear in the
 # convention rules, so a file-wide grep would pass with no prose channel at all.
 PROSE_SCAN=$(mktemp)
-awk '/^### Prose defects/{f=1} f&&/^Out of scope, always/{f=0} f' "$SCAN" > "$PROSE_SCAN"
+# Terminator changed: the file-wide "Out of scope, always" line used to sit at
+# the end of this run of sections and was reused as the section boundary. It has
+# moved up into "## The finding bar" where it is unambiguously file-wide, so the
+# boundary is now the next top-level heading. Same intent: assert on the SECTION.
+awk '/^### Prose defects/{f=1;next} f&&/^## /{f=0} f' "$SCAN" > "$PROSE_SCAN"
 if [ -s "$PROSE_SCAN" ]; then
   ok "review-scan carries a prose-defect section"
   want "…gated on DOCS_ONLY" "$PROSE_SCAN" 'DOCS_ONLY'
@@ -910,7 +1002,10 @@ never "no rule turns a length measurement into a finding" "$SCAN" \
 # Verify side: the verdict RULE excludes the class, so the exclusion is
 # structural rather than a convention the model is asked to honour.
 RC_PROSE=$(grep -n 'REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
-if [ -n "$RC_PROSE" ] && sed -n "${RC_PROSE}p" "$VERIFY" | grep -qiE 'nor a prose finding|"prose": true.{0,60}NEVER'; then
+# Wording changed: the rule now excludes THREE classes (convention, prose,
+# comment-noise), so the list reads "not a prose finding" rather than "nor a
+# prose finding". Same intent — the exclusion must be on the rule line itself.
+if [ -n "$RC_PROSE" ] && sed -n "${RC_PROSE}p" "$VERIFY" | grep -qiE '(nor|not) a prose finding|"prose": true.{0,80}(NEVER|advisory)'; then
   ok "review-verify's REQUEST_CHANGES rule excludes prose findings on the rule line itself"
 else
   bad "review-verify's REQUEST_CHANGES rule must exclude prose findings on line ${RC_PROSE:-?}"
