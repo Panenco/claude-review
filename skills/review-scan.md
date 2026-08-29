@@ -124,21 +124,57 @@ The reader is a role that exists in this repo's world — a dev picking up the t
 
 Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences.
 
-## human_review — you choose these
+## human_review — why a human should still look
 
-0–3 items. Each is something a human should look at that **you could not settle yourself**. Do not pick from a category list; there is no category list. Do not pad to three — zero is fine, and a made-up item is worse than none.
+A finding says the code is **wrong**. A `human_review` item says **your answer is not the last word**: the code may be entirely correct and a competent reviewer would still add something you cannot.
 
-**Try to answer it before you emit it.** An item is only legitimate when the question *cannot* be answered from what is in the checkout: the repo at HEAD, the PR diff, and whatever is already on disk (vendored code, lockfiles, installed packages). Callers, sibling code in the same file and tests are all in reach — go read them. Once answered, it becomes a finding or it becomes nothing; it never becomes a checkbox.
+These are `approve_argument` inverted. If you cannot honestly write *"a human pass over this diff changes nothing"*, then **the reasons you cannot are exactly this list**. A PR with no findings and no items is one you are asserting nobody needs to read.
 
-**Nothing outside the checkout is reachable, and you must not go fetch it.** A dependency whose source is not on disk genuinely cannot be read, so "cannot verify from the checkout" IS a legitimate blocker — say that plainly rather than dropping the item.
+**0–5 items.**
 
-**Already-mitigated is not an item.** If the code at the cited line already documents the risk and mitigates it — a comment right there naming the concern and how it is handled — there is nothing left for a human to check. You are already reading the surrounding lines; read those too.
+### The test
 
-Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` names the real blocker — needs production data, needs a human policy decision, needs runtime access, the source is not in the checkout, the intent is genuinely ambiguous. "I did not check", "unverifiable here" and "for safety" are not blockers; if that is your reason, go check it.
+Not *"can I answer this?"* — you can answer nearly anything from the checkout, and answering everything is how this list came back empty on review after review. The test is:
+
+> **Would a reviewer who knows this product still want their eyes on this line?**
+
+Emit an item when your answer, however confident, is **not authoritative**:
+
+- **Intended behaviour.** You can read the rule; you cannot know what the business meant by it — who may see what, what counts as valid, what should happen in the case nobody wrote down.
+- **Prior art.** The diff adds a model, enum, component, hook, endpoint or rule that resembles something already in the repo. `Grep` for the near-duplicate before you write the item, and name it. You can find the collision; only a human decides which one survives.
+- **Placement.** Something NEW arrives — a folder, a module, a layer, a shared helper — and where it landed sets a precedent. Check the import graph: a feature-local helper whose importers are mostly *other* features is the classic case. Precedent is not yours to set.
+- **Deviation from the stated design.** The diff and the spec, PRD or architecture doc take different routes and both are defensible. Name the two things that disagree; do not adjudicate. This includes **two documents in this same PR** contradicting each other — one plan calling something out of scope while another schedules it is a real, checkable collision, and only the author knows which is current.
+- **Operational behaviour you cannot measure.** New work that fans out per item, polls, retries, or dispatches a message inside a loop. You can see the shape from the diff; you cannot see the volume it meets in production, and that is where this kind of change actually fails.
+- **Dense logic.** A construct where a second pair of eyes genuinely finds more than a trace does: a state machine, concurrent or ordered work, money or time arithmetic, an effect chain, deep conditionals over domain rules. Being able to follow it is not being sure of it.
+- **Unwritten house idiom.** The neighbours do it one way and this diff does it another, and the rule is in neither config file so it cannot be a convention finding. Name the sibling that shows the idiom.
+- **Conspicuous absence.** No caller, no subscriber, no test, no migration for a field that needs one. Ask whether it is a later slice — do not assert a defect.
+- **Domain and regulatory surface.** Personal, clinical, financial or auth-bearing data; an external integration; a role or capability change. The obligation is not visible from the code.
+
+**Nothing outside the checkout is reachable, and you must not go fetch it.** A dependency whose source is not on disk genuinely cannot be read, so "cannot verify from the checkout" IS a legitimate blocker — say it plainly rather than dropping the item, and never write an item that sends you looking outside.
+
+### Never an item
+
+- Something you can settle from the checkout **where your answer is the whole answer**. That is a finding, or it is nothing.
+- "Consider adding tests", "verify this works", "double-check X". A task list is not a judgement call.
+- Anything either config file calls intentional. Suppression comes first and kills an item exactly as it kills a finding.
+- A risk the code **already documents the risk and mitigates it** at the cited line. You are reading those lines anyway; read the comment on them too.
+- Coordination you cannot reconstruct — "as discussed", another PR's thread, a meeting. You do not have it and must not invent it.
+- A restatement of what the code does. If the reader learns nothing, it is noise.
+- Style, formatting, or a preference with no consequence.
+
+### Discipline
+
+**Every item names a specific construct and the specific judgement wanted.** "Review the business logic" is not an item. "`applyDiscount` compounds the loyalty rate before tax rather than after — is that the intended order?" is.
+
+**Do not pad.** Five is a ceiling, not a target. A made-up item costs more than a missing one, because it teaches the reader to skim the list. Zero is right for a mechanical diff — and if you write zero, `human_review_adds_nothing` should probably be true.
+
+Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` names the real blocker — **what makes your answer non-authoritative**: needs product intent, needs a decision on precedent, needs domain or regulatory knowledge, two sources disagree, dense logic wants a second reader, needs production data, needs runtime access, the source is not in the checkout. "I did not check" is not a blocker — go check, then decide whether the answer is yours to give.
 
 ## The approval position
 
 Set `human_review_adds_nothing: true` only if you can WRITE the argument for it: `approve_argument` (≤240 chars) says why a human pass over this diff changes nothing — what you verified and why the remaining risk is nil. An empty or hand-wavy argument means `false`. Stage 2 rejects an unargued approval anyway.
+
+**A non-empty `human_review` and `human_review_adds_nothing: true` cannot both be right.** They are the same judgement from two directions: every item is a reason a human pass changes something. If you wrote items, this is `false`. If you are about to write `true`, re-read the test above once more — you are claiming nobody needs to read this diff.
 
 `review_effort` 1–5: how much judgement this diff needed (1 = mechanical, 5 = subtle/high-blast-radius).
 

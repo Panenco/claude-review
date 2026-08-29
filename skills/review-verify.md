@@ -62,11 +62,15 @@ Everything else in that file is discarded silently. A failed, crashed or skipped
 
 **Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote. The verdict is still computed from surviving findings alone, every round, from scratch.
 
-Carry through up to 3 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own categories. Each survivor becomes a **check comment** (see Inline comments) so a human can walk the review comment by comment instead of clicking a checklist; they stay in `meta.human_review` either way.
+Carry through up to 5 `human_review` items from scan unchanged (drop any whose `path`/`line` you could not confirm). Never add your own. Each survivor becomes a **check comment** (see Inline comments) so a human can walk the review comment by comment instead of clicking a checklist; they stay in `meta.human_review` either way.
 
-**Refute the checkboxes too.** If an item can be answered from the checkout — HEAD, the diff, anything already on disk — answer it and drop the item; promote what you found to a finding if it is one. Nothing outside the checkout is reachable, so "the source is not in the checkout" stands as a reason; "not checked" or "unverifiable here" does not.
+**Refute the checkboxes on the same test scan used — is your answer the WHOLE answer?** Drop an item only when you can settle it outright and nothing is left for a person: the diff already answers it, the config files call it intentional, or the code names and mitigates it at that line. Promote it to a finding if what you found is one.
 
-**Every dropped item leaves a trace.** Whatever kills a `human_review` item — suppressed by a config file, already mitigated at the cited line, answered from the checkout, or a `path`/`line` you could not confirm — record it in `meta.refuted` with `"kind": "human_review"` and that reason. A silent drop is unauditable; `refuted` is the only place anyone can see what the review decided not to ask.
+**Do not drop an item merely because you can form an opinion about it.** "I read the handler and it looks right" does not refute *"is this the ordering the business wants?"*, and "the helper works where it is" does not refute *"does this belong in `shared`?"* Those are asking for authority you do not have, and answering them from the code is how this list emptied out. If the item names product intent, precedent, a disagreement between two documents, domain or regulatory obligation, or dense logic wanting a second reader — carry it.
+
+**Nothing outside the checkout is reachable**, so "the source is not in the checkout" stands as a reason; "not checked" and "unverifiable here" do not — an item whose `why_unresolved` is your own laziness is dropped, not carried.
+
+**Every dropped item leaves a trace.** Whatever kills a `human_review` item — suppressed by a config file, already mitigated at the cited line, settled outright from the checkout, or a `path`/`line` you could not confirm — record it in `meta.refuted` with `"kind": "human_review"` and that reason. A silent drop is unauditable; `refuted` is the only place anyone can see what the review decided not to ask.
 
 ## The body — hard budgets
 

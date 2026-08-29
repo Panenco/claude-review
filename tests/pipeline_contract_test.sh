@@ -166,16 +166,33 @@ echo "── human_review is a last resort, not a place to park answerable quest
 # could have answered into checkboxes — a caller in the same file, a SHA-pinned
 # action — while v3 checked them and reported the answer. A checkbox the model
 # could have resolved is worse than no checkbox: it looks like diligence.
-want "review-scan requires an attempt before emitting a human_review item" "$SCAN" \
-  'try to answer it (first|before)'
-want "…and scopes what counts as answerable" "$SCAN" \
-  'repo at HEAD.*diff.*(on disk|checkout)'
+# The gate was once "can you answer it?", which emptied the list: a capable model
+# answers nearly anything from the checkout, so four consecutive live runs across
+# two repos emitted 0-1 items. Human reviewers on the same repos write ~2 to 5
+# judgement comments for every defect. The gate is now "is your answer the WHOLE
+# answer?" — these pin that inversion so it cannot silently revert.
+want "review-scan gates on authority, not on whether an answer exists" "$SCAN" \
+  'not the last word|not authoritative|whole answer'
+want "…and asks whether a reviewer would still want to look" "$SCAN" \
+  'would a reviewer who knows this product still want'
 want "…and rejects \"I did not check\" as a blocker" "$SCAN" \
   '"?I did not check"?|unverifiable here'
-want "…and names the blockers that ARE legitimate" "$SCAN" \
-  'production data.*policy decision.*runtime access'
+want "…and still names production data among the real blockers" "$SCAN" \
+  'needs production data'
+want "…and forbids padding to the ceiling" "$SCAN" \
+  'Do not pad'
+want "…and demands a specific construct, not a category" "$SCAN" \
+  'names a specific construct and the specific judgement'
+# The two are the same judgement from opposite ends: every item is a reason a
+# human pass changes something, so both cannot be true at once.
+want "…and ties the list to the approval position" "$SCAN" \
+  'cannot both be right'
 want "review-verify re-attacks carried human_review items" "$VERIFY" \
   'refute the checkboxes'
+want "…but only drops one it can settle outright" "$VERIFY" \
+  'settle it outright and nothing is left for a person'
+want "…and refuses to drop one merely because it has an opinion" "$VERIFY" \
+  'not drop an item merely because you can form an opinion'
 # The answerable-scope claim has to name a route the sandbox can actually take.
 # c778eba told the model to go read "a pinned dependency the repo already
 # references" while --disallowedTools denies WebFetch, WebSearch and `gh api`
