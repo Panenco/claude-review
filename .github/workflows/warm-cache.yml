@@ -1,0 +1,256 @@
+name: Claude Review Cache Warm
+
+# WHY THIS IS ITS OWN WORKFLOW, AND NOT A JOB IN pr-review.yml
+#
+# GitHub gives only these triggers write access to the default branch's cache
+# scope: `push`, `workflow_dispatch`, `repository_dispatch`, `delete`,
+# `registry_package`, `page_build`, `schedule`. Everything else that resolves to
+# the default branch gets READ-ONLY access — explicitly including
+# `pull_request_target`, `issue_comment` and `workflow_run`, because their payload
+# or initiating actor can be influenced from outside the repo. It is
+# cache-poisoning protection, and it is not overridable: `actions: write` is a
+# measured no-op (A/B run 33105704317 — `ac` claim byte-identical with and
+# without it, event held constant).
+#
+# A reusable workflow sees the CALLER's event, so the warm job cannot pick its own
+# trigger. Living inside `pr-review.yml` it inherited whatever fired the review —
+# `pull_request_target` or `issue_comment`, both read-only — and every save was
+# refused. The refusal is a warning, not a failure, so the job ran green for a
+# month while storing nothing.
+#
+# Splitting it out lets the caller wire it to a write-capable trigger. The review
+# side is unaffected: restoring from the default branch scope is read access,
+# which a PR run already has.
+#
+# See panenco/claude-review#101 and Panenco/github-action-runners#141.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label. MUST match the `runner` you pass to pr-review.yml — cache keys are scoped by OS+arch, so a warm on hosted x64 writes entries an arm64 fleet can never restore."
+        type: string
+        default: "panenco-claude-review"
+      dev_cache_paths:
+        description: "Newline-separated paths to warm and save. Same value as pr-review.yml's `dev_cache_paths`. Empty disables the dev-cache half; the package-manager store and browser stack are warmed regardless."
+        type: string
+        default: ""
+      dev_cache_key_files:
+        description: "Newline-separated globs whose contents key the dev cache. Same value as pr-review.yml's `dev_cache_key_files`. Globs support `**`."
+        type: string
+        default: ""
+      dev_cache_key_prefix:
+        description: "Cache-key prefix. Same value as pr-review.yml's `dev_cache_key_prefix`."
+        type: string
+        default: "devcache"
+      dev_cache_warm_command:
+        description: "Shell command that populates `dev_cache_paths`, run against the default branch. Keep it cheap — a dependency resolve/prefetch, not a full build. It runs only on a cache miss."
+        type: string
+        default: ""
+
+# LOCKSTEP with pr-review.yml's `AGENT_BROWSER_VERSION` and with
+# Panenco/github-action-runners images/versions.env (image G). A mismatch is
+# SILENT: reviews still pass, they just re-download the binary.
+env:
+  AGENT_BROWSER_VERSION: "0.34.0"
+
+jobs:
+  warm-cache:
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      # The one thing that must never be silent again. A caller that wires this to
+      # a read-only trigger gets exactly the bug this workflow was split out to
+      # fix: every save refused, every job green, nothing stored. Fail loudly
+      # instead — this runs on the default branch, never on a PR check, so a red
+      # here blocks nobody and names its own remedy.
+      - name: Assert the trigger can write the cache
+        shell: bash
+        env:
+          CALLER_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          case "$CALLER_EVENT" in
+            push|workflow_dispatch|repository_dispatch|schedule|delete|registry_package|page_build)
+              echo "Caller event '$CALLER_EVENT' has write access to the default branch cache scope." ;;
+            *)
+              echo "::error::Caller event '$CALLER_EVENT' has READ-ONLY access to the default branch cache scope, so every save from this job would be refused. Trigger the caller on push, schedule, workflow_dispatch or repository_dispatch instead. See the header of warm-cache.yml."
+              exit 1 ;;
+          esac
+
+      # Checks out ONLY what the two cache KEYS are computed from, blobless, so the
+      # steady-state run — both caches warm, nothing to do — stops paying for a full
+      # working tree it never opens. On a large consumer repo that is 2.2 MB here
+      # against ~122 MB before. The `Widen checkout` steps below restore the full
+      # tree on either cache miss, BEFORE anything that reads it.
+      #
+      # The sparse set is exactly the hashFiles() patterns of the two keys, so both
+      # keys hash identically to a full checkout — the lockfile globs below, plus
+      # `dev_cache_key_files` which is what `Compute dev cache key` globs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            **/pnpm-lock.yaml
+            **/package-lock.json
+            ${{ inputs.dev_cache_key_files }}
+          sparse-checkout-cone-mode: false
+      # lookup-only probe: when the store is already warm for this lockfile,
+      # skip the whole fetch+save path and land in seconds.
+      - name: Check store cache
+        id: store_probe
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.npm
+          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          lookup-only: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.store_probe.outputs.cache-hit != 'true'
+        with:
+          node-version: "lts/*"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.store_probe.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.agent-browser/browsers
+            ~/.local/bin/agent-browser
+          key: ${{ runner.os }}-${{ runner.arch }}-ab-${{ env.AGENT_BROWSER_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ab-
+      - if: steps.store_probe.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # Best-effort warming: this job must never fail on the browser stack.
+          # No --with-deps (needs root; image B already carries Chrome's libs) and
+          # no preflight — the review job owns the launch check.
+          set -uo pipefail
+          mkdir -p "$HOME/.local/bin"
+          export PATH="$HOME/.local/bin:$PATH"
+          if ! command -v agent-browser >/dev/null 2>&1; then
+            ABTMP="$(mktemp -d)"
+            curl -fsSL "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz" \
+              | tar xz -C "$ABTMP" package/bin/agent-browser-linux-x64 \
+              && install -m755 "$ABTMP/package/bin/agent-browser-linux-x64" "$HOME/.local/bin/agent-browser" \
+              || echo "::warning::Could not warm agent-browser ${AGENT_BROWSER_VERSION}."
+            rm -rf "$ABTMP"
+          fi
+          agent-browser install 2>&1 | tail -2 || echo "::warning::Chrome warm failed; the review job installs it at runtime."
+      # Restore/save split so a FAILED fetch never saves a poisoned store
+      # under the exact lockfile key.
+      - name: Restore package-manager store
+        id: store_restore
+        if: steps.store_probe.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.npm
+          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-pkg-store-
+      # `pnpm fetch` reads the lockfile, but the store warm is best-effort across
+      # arbitrary consumer layouts (workspace manifests, .npmrc, packageManager
+      # pins). Widen to the full tree rather than guess which of them it needs —
+      # this only runs on a store miss, which is the rare path.
+      - name: Widen checkout for the store warm
+        if: steps.store_probe.outputs.cache-hit != 'true'
+        run: git sparse-checkout disable
+
+      - name: Fetch default-branch lockfile packages into the store
+        id: store_fetch
+        if: steps.store_probe.outputs.cache-hit != 'true'
+        run: |
+          echo "fetched=false" >> "$GITHUB_OUTPUT"
+          if [ ! -f pnpm-lock.yaml ]; then
+            echo "No root pnpm-lock.yaml — store warm skipped."
+            exit 0
+          fi
+          corepack enable 2>/dev/null || true
+          command -v pnpm >/dev/null 2>&1 || npm install -g pnpm
+          if pnpm fetch; then
+            echo "fetched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::pnpm fetch failed — store warm is best-effort, reviews are unaffected."
+          fi
+      - name: Save package-manager store
+        if: steps.store_probe.outputs.cache-hit != 'true' && steps.store_fetch.outputs.fetched == 'true' && steps.store_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            ~/.npm
+          key: ${{ runner.os }}-${{ runner.arch }}-pkg-store-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json') }}
+
+      # Generic dev build/dependency cache — warmed here in the DEFAULT BRANCH
+      # scope (same as the package store above) so EVERY PR's functional job,
+      # which only restores it, starts warm. restore → run the consumer's warm
+      # command against the default branch → save. Opt-in: the whole block is inert
+      # unless dev_cache_paths + dev_cache_key_files + dev_cache_warm_command are
+      # set. The warm command runs only on a cache miss (key rotated since the
+      # last warm), so steady-state this is a no-op — keeping the aggressive
+      # caching short-lived: entries churn only as fast as the key files change,
+      # and GitHub idle-evicts unused entries (7 days / 10 GB LRU). The key is
+      # computed here (default-branch checkout) the same way the functional job does.
+      - name: Compute dev cache key
+        id: dev_cache_meta
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != ''
+        shell: bash
+        env:
+          KEY_FILES: ${{ inputs.dev_cache_key_files }}
+          KEY_PREFIX: ${{ inputs.dev_cache_key_prefix }}
+        run: |
+          shopt -s globstar nullglob
+          files=()
+          while IFS= read -r pat; do
+            [ -z "$pat" ] && continue
+            # shellcheck disable=SC2206  # intentional glob + word-split of the pattern
+            for f in $pat; do [ -f "$f" ] && files+=( "$f" ); done
+          done <<< "$KEY_FILES"
+          if [ ${#files[@]} -eq 0 ]; then
+            hash="nofiles"
+          else
+            hash=$(printf '%s\0' "${files[@]}" | sort -zu | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          fi
+          echo "key=${RUNNER_OS}-${RUNNER_ARCH}-${KEY_PREFIX}-${hash}" >> "$GITHUB_OUTPUT"
+          echo "restore=${RUNNER_OS}-${RUNNER_ARCH}-${KEY_PREFIX}-" >> "$GITHUB_OUTPUT"
+      - name: Restore dev build cache
+        id: dev_cache_restore
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.dev_cache_paths }}
+          key: ${{ steps.dev_cache_meta.outputs.key }}
+          restore-keys: ${{ steps.dev_cache_meta.outputs.restore }}
+      # dev_cache_warm_command is consumer-supplied and arbitrary (a Gradle compile,
+      # a go mod download, ...), so it needs the whole tree. Idempotent: the store
+      # warm above may already have widened.
+      - name: Widen checkout for the dev warm
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'
+        run: git sparse-checkout disable
+
+      - name: Warm dev build cache (default branch)
+        id: dev_cache_warm
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && inputs.dev_cache_warm_command != '' && steps.dev_cache_restore.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          # Caller-supplied (trusted consumer config), passed via env and quoted
+          # — never interpolated into the script body.
+          DEV_CACHE_WARM_COMMAND: ${{ inputs.dev_cache_warm_command }}
+        run: |
+          echo "warmed=false" >> "$GITHUB_OUTPUT"
+          if bash -lc "$DEV_CACHE_WARM_COMMAND"; then
+            echo "warmed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::dev_cache_warm_command failed — cache warm is best-effort, reviews are unaffected."
+          fi
+      - name: Save dev build cache
+        if: inputs.dev_cache_paths != '' && inputs.dev_cache_key_files != '' && steps.dev_cache_warm.outputs.warmed == 'true' && steps.dev_cache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.dev_cache_paths }}
+          key: ${{ steps.dev_cache_meta.outputs.key }}

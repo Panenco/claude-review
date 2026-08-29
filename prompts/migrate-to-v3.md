@@ -54,8 +54,12 @@ In `.github/workflows/claude-review.yml`:
 - Add a `command` input to `workflow_dispatch` and pass it through as
   `command: ${{ inputs.command || '' }}`. Do **not** try to forward the comment
   body: the reusable workflow reads it off your event context itself.
-- Keep `pull_request_target` only if the team will use `/review functional`
-  regularly — it warms the browser/dependency cache and never reviews.
+- **Delete `pull_request_target`.** It warmed nothing: that trigger has read-only
+  access to the default branch's cache scope, so every save was refused (as a
+  warning, hence a green job). If the team uses `/review functional`, add
+  `.github/workflows/claude-review-warm.yml` instead — it calls
+  `warm-cache.yml@v3` on `push`/`schedule`/`workflow_dispatch`, the triggers that
+  can actually write. Details in `prompts/setup-review.md`.
 - **Delete `allowed_bots`, `native_review`, `native_review_runner` and
   `core_max_turns` if present.** All four are gone; passing any of them now fails
   the run with `startup_failure`. `native_review_scope` stays.

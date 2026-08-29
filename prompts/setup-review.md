@@ -43,7 +43,6 @@ name: Claude PR Review
 on:
   issue_comment:
     types: [created]
-  pull_request_target: # warms the browser cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -91,9 +90,58 @@ Two things people get wrong here:
   number, so the run dies at "Resolve PR head SHA" with a red check on every
   push. There is no draft guard any more either: a draft PR is reviewed if
   someone asks.
-- **`pull_request_target` is not a review trigger.** It runs the warm-cache job
-  only. Keep it if the team uses `/review functional` regularly; drop it
-  otherwise.
+- **`pull_request_target` must be gone too.** It used to run a cache-warm job,
+  but that trigger has read-only access to the cache scope so the warm stored
+  nothing. Warming is now its own workflow — see *The cache-warm workflow* below.
+  A leftover `pull_request_target:` here claims a runner on every PR for a job
+  the review gate refuses.
+
+### The cache-warm workflow (wire it whenever `/review functional` is in use)
+
+The review job **restores** caches; it never writes them. The producer is a
+second, separate workflow. Create `.github/workflows/claude-review-warm.yml`:
+
+```yaml
+name: Claude Review Cache Warm
+on:
+  push:
+    branches: [main]          # the repo's default branch
+    paths:
+      - '**/pnpm-lock.yaml'
+      - '**/package-lock.json'
+      # plus every dev_cache_key_files glob, if you wired those
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: claude-review-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    uses: panenco/claude-review/.github/workflows/warm-cache.yml@v3
+    permissions:
+      contents: read
+    with:
+      runner: <same value as the review caller>
+      # + the same dev_cache_* values, if wired
+```
+
+**Do not fold this back into the review caller, and do not change the trigger
+list.** GitHub grants write access to the default branch's cache scope to
+`push`, `workflow_dispatch`, `repository_dispatch`, `schedule`, `delete`,
+`registry_package` and `page_build` only. Every other event resolving to the
+default branch — `pull_request_target`, `issue_comment`, `workflow_run` included
+— is **read-only**, because its payload or initiating actor can be influenced
+from outside the repo. `actions: write` does not change it.
+
+A reusable workflow inherits the caller's event, so a warm job sharing the review
+caller's triggers inherits a read-only one and every save is refused — reported
+as a *warning*, so the job stays green while storing nothing. That was the live
+bug for a month (#101). `warm-cache.yml` fails fast if its caller's event cannot
+write, so a wrong trigger shows up on the first run rather than in a billing
+review.
 
 ### Speeding up bring-up: the `dev_cache_*` inputs (wire these for repos with a runnable app)
 
@@ -137,9 +185,9 @@ The functional tester runs `dev-start.sh` on a fresh runner every review, so any
       runner: arc-gar-review   # the user's self-hosted scale-set label
 ```
 
-One input sets `runs-on` for **both** the review job and the warm-cache job, and that is deliberate: the Actions cache is a repo-scoped remote service, so a self-hosted job can restore what a hosted job saved, but the keys are scoped by `runner.os` **and** `runner.arch` — a hosted x64 warm-cache with an arm64 review fleet would never match keys and every review would run cold. Never try to split the two.
+Pass the **same `runner` to `pr-review.yml` and `warm-cache.yml`**: the Actions cache is a repo-scoped remote service, so a self-hosted job can restore what a hosted job saved, but the keys are scoped by `runner.os` **and** `runner.arch` — a hosted x64 warm with an arm64 review fleet would never match keys and every review would run cold. Never let the two drift.
 
-If the user does opt in, tell them their fleet needs **network egress to the GitHub Actions cache service** (without it, caching silently degrades to always-cold — reviews still work, just slower), and that the runner image should carry **Chrome's shared libraries** (`libnss3`, `libatk1.0-0t64`, `libgbm1`, `libasound2t64`, …): the browser binary unpacks into `$HOME` and needs no root, but those libs do, and a non-root container cannot apt-install them at review time. The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction (checkout on the base ref, `pnpm fetch` reads only the lockfile, `dev_cache_warm_command` is trusted caller config), so it is safe on their own fleet.
+If the user does opt in, tell them their fleet needs **network egress to the GitHub Actions cache service** (without it, caching silently degrades to always-cold — reviews still work, just slower), and that the runner image should carry **Chrome's shared libraries** (`libnss3`, `libatk1.0-0t64`, `libgbm1`, `libasound2t64`, …): the browser binary unpacks into `$HOME` and needs no root, but those libs do, and a non-root container cannot apt-install them at review time. The warm-cache workflow is PR-code-free by construction (it runs off the default branch, `pnpm fetch` reads only the lockfile, `dev_cache_warm_command` is trusted caller config) and needs no secrets, so it is safe on their own fleet.
 
 Note: the `concurrency:` block and the `if:` draft guard are required — omitting
 either causes recurring reviewer noise (cursor-style bots flag missing concurrency
@@ -506,8 +554,10 @@ Before committing, re-read your own `.github/review-config.md` and `.github/clau
 - [ ] Auth `Method:` is one of `cookie`, `bearer`, `header`, `none`.
 - [ ] The caller workflow tracks `@v3` AND `bugbot.md` contains an "Accepted supply-chain trade-offs" section that names `panenco/claude-review@v3 + secrets: inherit` as accepted. Both are needed — the @v3 for auto-propagation, the bugbot note so the reviewer doesn't re-flag it.
 - [ ] The caller workflow triggers on `issue_comment`, NOT `pull_request`. A leftover `pull_request:` trigger reds the check on every push (no PR number on that event).
+- [ ] The review caller has **no** `pull_request_target:` trigger — it warmed nothing (read-only cache scope) and now only claims a runner per PR.
+- [ ] If `/review functional` is in use: `.github/workflows/claude-review-warm.yml` exists, calls `warm-cache.yml@v3`, triggers ONLY on write-capable events (`push` / `schedule` / `workflow_dispatch` / `repository_dispatch`), and passes the SAME `runner` as the review caller.
 - [ ] The caller's job has the `startsWith(github.event.comment.body, '/review')` filter, so an ordinary comment does not open a workflow run that exists only to skip itself.
-- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event_name }}-${{ github.event.issue.number || github.run_id }}`, `cancel-in-progress: false`) — cancelling would throw away a review someone asked for. `github.event_name` keeps the comment run and the warm-cache run in separate groups.
+- [ ] The caller workflow has a `concurrency:` block (`group: claude-review-${{ github.event_name }}-${{ github.event.issue.number || github.run_id }}`, `cancel-in-progress: false`) — cancelling would throw away a review someone asked for. `github.event_name` keeps the comment run and the dispatch run in separate groups.
 
 If any check fails, fix before committing. The pipeline's reviewer will catch these on the first PR and block merge with `REQUEST_CHANGES`.
 
