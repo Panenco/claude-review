@@ -135,7 +135,13 @@ Hard rules, because a wall of text here is worse than no comment:
 - **The closing line names the blocker**, in the `why_unresolved` sense: needs a product decision, needs production data, the source is not in the checkout. Not "I did not check".
 - No ```suggestion``` fence: a check is a question, not a patch.
 
-**Anchor it to the block, not a line.** Set `start_line` to the first line of the construct the question is about — the handler, the branch, the config block — and `line` to its last. The reviewer then sees the code being questioned instead of one arbitrary line of it. Pick the block honestly and do not trim it to fit the diff: the poster drops a range it cannot use — one crossing a gap in the hunks, or over 30 lines — and anchors the comment at `line` instead. **The comment always posts inline either way.** So a range that is wrong costs nothing, and a range that is right saves the reviewer the lookup. `line` itself must be in the diff; that has always been true of every inline comment. Findings stay single-line — a ```suggestion``` fence must replace exact lines.
+**Anchor it to the block — inside the diff.** `start_line` is the first line of the construct the question is about (the handler, the branch, the config block) and `line` is its last, but both are taken from **lines this PR changed**, not from the construct's true extent in the file. A handler running to 253 whose diff stops at 202 is anchored at 202.
+
+`line` is the hard one: GitHub only accepts a comment on a changed line, so an anchor past the diff does not degrade to a range — the whole comment falls back to `### What a human should review`, and a check in the body is a check nobody reads. Observed on seaters#2134, where an anchor at 253 lost a question that had posted inline the round before at 196.
+
+`start_line` is forgiving. Ask for the range even when the block's changed lines are not contiguous: the poster drops a range it cannot use — one crossing a gap in the hunks, or over 30 lines — and keeps the comment at `line`. So a range that is wrong costs nothing, and a range that is right saves the reviewer the lookup.
+
+Findings stay single-line — a ```suggestion``` fence must replace exact lines.
 
 The `**check**` prefix is load-bearing — the poster reads it to route a check it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a question would read as an accusation.
 
