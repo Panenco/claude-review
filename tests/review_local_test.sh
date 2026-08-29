@@ -98,7 +98,12 @@ run_poster() {
   local seam=() ci=()
   [ -n "${DRY:-}" ] && seam=(REVIEW_OUT_DIR="$WORK/posted")
   [ -n "${CI_MODE:-}" ] && ci=(GITHUB_ACTIONS=true)
-  OUT=$(cd "$WORK" && env \
+  # `-u GITHUB_ACTIONS`: this suite RUNS in CI, where that variable is already
+  # true in the ambient environment `env` inherits. Without the unset, every
+  # case sees CI_MODE's value whether it asked for it or not — and the seam is
+  # refused under GITHUB_ACTIONS, so the whole dry-run half failed in CI while
+  # passing on a developer machine. CI_MODE stays the only thing that sets it.
+  OUT=$(cd "$WORK" && env -u GITHUB_ACTIONS \
     PATH="$MOCK_BIN:$PATH" \
     GH_WRITE_LOG="$WORK/gh-writes.log" \
     GH_FIXTURE_FILES="$FILES_FIXTURE" GH_FIXTURE_REVIEWS="$REVIEWS_FIXTURE" \
