@@ -117,6 +117,13 @@ run_poster() {
   # case, so only the cases that set SPEC_STATE see the "no spec" notice.
   printf '%s\n' "${SPEC_STATE:-document}" > "$work/spec-status"
   [ "${SPEC_STATE:-document}" = absent ] && rm -f "$work/spec-status"
+  # A HEALTHY DEV ENVIRONMENT IS THE DEFAULT. The poster suppresses the
+  # screenshot gallery whenever the dev-env notice will render, because a body
+  # cannot both claim `Functional pass: PASS — 3 screenshots` and report that no
+  # browser test ran. A missing rc file means "never came up", so leaving it
+  # missing would make every functional fixture below describe a broken run. The
+  # cases that WANT a broken dev-env set DEVENV_RC themselves.
+  printf '0' > "$work/healthy-dev-env-rc"
   OUT=$(cd "$work" && \
     PATH="$MOCK_BIN:$PATH" \
     GH_LOG="$work/gh.log" GH_CAPTURE_DIR="$work/capture" \
@@ -132,7 +139,7 @@ run_poster() {
     FUNCTIONAL_JSON="${FUNCTIONAL_FILE:-$work/no-such-functional.json}" \
     SCREENSHOT_DIR="${SHOT_DIR:-$work/no-such-shots}" \
     GH_ASSETS_FAIL="${ASSETS_FAIL:-0}" \
-    DEV_ENV_RC_FILE="${DEVENV_RC:-$work/no-such-rc}" \
+    DEV_ENV_RC_FILE="${DEVENV_RC:-$work/healthy-dev-env-rc}" \
     DEV_ENV_LOG_FILE="${DEVENV_LOG:-$work/no-such-log}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
     REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
@@ -736,7 +743,13 @@ assert_eq "exit 0" "0" "$RC"
 assert_eq "nothing posted inline" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_contains "the out-of-hunk finding keeps its Findings bullet" "gamma drops the lock" "$BODY"
 assert_contains "and the section header stays at 1" "### Findings (1)" "$BODY"
-assert_contains "the fallback section is still rendered" "### Also flagged (1)" "$BODY"
+# …and it is listed ONCE. The body already carries this finding, so a second
+# bullet under `### Also flagged` would print it twice, back to back. The
+# fallback exists for a dropped comment the body does NOT name; this is not one.
+assert_not_contains "no duplicate fallback bullet for a finding the body lists" \
+  "### Also flagged" "$BODY"
+assert_eq "the finding is printed exactly once" "1" \
+  "$(printf '%s\n' "$(visible_body "$BODY")" | grep -c 'gamma drops the lock')"
 rm -rf "$W"
 
 # k5d: only `### Findings` is de-duplicated. A human-review item may legitimately
@@ -919,7 +932,11 @@ assert_eq "only the in-hunk comment posts inline" "1" "$(echo "$PAYLOAD" | jq '.
 assert_not_contains "the inlined finding's bullet is stripped" "theta double-frees" "$(visible_body "$BODY")"
 assert_contains "the dropped comment's bullet survives" "zeta leaks the handle" "$BODY"
 assert_contains "the header renumbers to the one survivor" "### Findings (1)" "$BODY"
-assert_contains "and it is also listed as a fallback" "### Also flagged (1)" "$BODY"
+# …and is NOT also repeated under `### Also flagged`. The surviving bullet is
+# already the fallback for this dropped comment; a second one prints it twice.
+assert_not_contains "it is not repeated under a fallback header" "### Also flagged" "$BODY"
+assert_eq "the dropped finding is printed exactly once" "1" \
+  "$(printf '%s\n' "$(visible_body "$BODY")" | grep -c 'zeta leaks the handle')"
 rm -rf "$W"
 
 # k5l: ONE-TO-ONE. Two bullets in the same file share a title and only one
@@ -1096,11 +1113,15 @@ rm -rf "$W"
 
 # p2: THE HEADLINE REGRESSION. The truncator eats the whole `### Findings`
 # section; the finding it deleted is still readable by the next round.
+# The bullet is deliberately LONGER THAN THE WHOLE BUDGET: the truncator now
+# skips an over-long line and keeps trying the rest (a single long paragraph used
+# to drop every finding after it), so a finding is only really cut when it cannot
+# fit at any position. That is the case this test needs.
 W=$(mktemp -d)
 jq -n '{verdict: "REQUEST_CHANGES",
         body: ("## Claude review — REQUEST_CHANGES\n\nThe broker rewrite drops a lock on the retry path and the tenant cache key is incomplete, so two user-reachable defects survive verification here.\n\n"
                + "### Findings (1)\n"
-               + "- **critical** {{LINK:src/foo.ts:5}} — delta drops the lock"),
+               + "- **critical** {{LINK:src/foo.ts:5}} — delta drops the lock on the retry path, and every writer that enters the critical section while it is released commits its own partial state over the previous one, so the damage is durable and invisible until a reconciliation run notices the divergence weeks later"),
         comments: [],
         meta: {findings: [{path: "src/foo.ts", line: 5, title: "delta drops the lock",
                            severity: "critical", failure_scenario: "two writers enter the section"}]}}' > "$W/review.json"
@@ -1782,6 +1803,372 @@ FUNCTIONAL_REQ=false FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots"   
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
 assert_not_contains "an unrequested pass renders no gallery" "Functional pass:" "$BODY"
 assert_eq "…and uploads nothing either" "0" "$(grep -c 'git/blobs' "$W/gh.log")"
+rm -rf "$W"
+
+# ── (s) a RANGE IS CHECKS-ONLY — a finding must never carry start_line ───────
+# THE ONE BUG IN HERE THAT CAN DAMAGE A PR. skills/review-verify.md says ranges
+# are "checks only" and that findings stay single-line because "a suggestion
+# fence must replace exact lines". The range logic was applied to every comment
+# instead, so a finding carrying a ```suggestion``` fence posted with
+# start_line:10 line:13 made GitHub's Apply-suggestion button replace ALL FOUR
+# lines with the one-line fix — silently deleting three lines of real code from
+# the contributor's branch.
+echo ""
+echo "── (s) ranges are checks-only; findings stay single-line ──"
+
+ranged_comment() { # ranged_comment <first-line-marker> <extra-body>
+  jq -n --arg m "$1" --arg x "$2" \
+    '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne item.",
+      comments: [{path: "src/foo.ts", start_line: 10, line: 13, side: "RIGHT",
+                  body: ($m + "\n\n" + $x)}],
+      meta: {findings: [], human_review: []}}'
+}
+
+# (s1) THE DAMAGING CASE: a finding whose body carries a suggestion fence.
+W=$(mktemp -d)
+ranged_comment "**major** off-by-one in the loop bound" \
+  '```suggestion
+  for (let i = 0; i < xs.length; i++) {
+```' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+C=$(payload_of "$W" | jq -c '.comments[0]')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the finding still posts inline" "1" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "a finding with a fence carries NO start_line" "null" "$(echo "$C" | jq -r '.start_line // "null"')"
+assert_eq "…and no start_side either" "null" "$(echo "$C" | jq -r '.start_side // "null"')"
+assert_eq "…and still anchors on its own line" "13" "$(echo "$C" | jq -r '.line')"
+assert_contains "…with the suggestion intact" "suggestion" "$(echo "$C" | jq -r '.body')"
+rm -rf "$W"
+
+# (s2) every severity, fence or not — the rule is about KIND, not about whether
+# this particular finding happened to include a fence.
+for sev in critical major minor; do
+  W=$(mktemp -d)
+  ranged_comment "**$sev** the handler swallows the error" "detail" > "$W/review.json"
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+  assert_eq "a $sev finding gets no range" "null" \
+    "$(payload_of "$W" | jq -r '.comments[0].start_line // "null"')"
+  rm -rf "$W"
+done
+
+# (s3) a CHECK still gets its block — the whole point of ranges. This is the
+# other half of the rule: fixing (s1) by deleting ranges outright would undo
+# fix/check-anchor-stays-in-diff.
+W=$(mktemp -d)
+ranged_comment "**check** Should a refused code still navigate the fan?" "detail" > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+C=$(payload_of "$W" | jq -c '.comments[0]')
+assert_eq "a check keeps its range" "10" "$(echo "$C" | jq -r '.start_line')"
+assert_eq "…with the start_side GitHub requires" "RIGHT" "$(echo "$C" | jq -r '.start_side')"
+assert_eq "…anchored at the end line" "13" "$(echo "$C" | jq -r '.line')"
+rm -rf "$W"
+
+# ── (t) the truncator SKIPS an over-long line, it does not stop at one ───────
+# mode=fit used to `break` on the first line over the remaining budget and emit
+# nothing further. Models write one line per paragraph, so a single long summary
+# paragraph above `### Findings` dropped ITSELF AND EVERY FINDING AFTER IT.
+# Measured on a real run: a 2492-byte first paragraph plus 15 findings produced a
+# 496-byte body containing zero findings — while the job log said "posted 15
+# findings" and 1300 of the 1800 bytes went unspent.
+echo ""
+echo "── (t) a long leading paragraph must not evict the findings ──"
+
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'LONGPARA'
+import json, sys
+para = "This PR reworks the seat-allocation pipeline end to end. " * 45
+lines = ["## Claude review — COMMENT", "", para, "", "### Findings (15)"]
+for i in range(1, 16):
+    lines.append("- **major** {{LINK:src/foo.ts:%d}} — finding number %d about the allocator" % (10 + i, i))
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+LONGPARA
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+SURVIVORS=$(printf '%s\n' "$BODY" | grep -c 'finding number')
+assert_eq "all 15 findings survive the over-long paragraph" "15" "$SURVIVORS"
+assert_contains "the heading survives too" "### Findings" "$BODY"
+assert_contains "the reader is told something was cut" "truncated to fit" "$BODY"
+# The paragraph itself is what did not fit; the budget went to the findings.
+assert_not_contains "the over-long paragraph is the thing dropped" \
+  "This PR reworks the seat-allocation pipeline" "$BODY"
+# And the budget is actually SPENT, not abandoned at the first long line.
+assert_eq "the body uses most of its budget" "1" \
+  "$([ "$(printf '%s' "$BODY" | wc -c | tr -d ' ')" -gt 1000 ] && echo 1 || echo 0)"
+rm -rf "$W"
+
+# (t2) hardcut is preserved: when not even one line fits, cut mid-line rather
+# than post an empty body.
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'NOFIT'
+import json, sys
+one = "A single unbroken paragraph with no line break anywhere in it. " * 40
+json.dump({"verdict": "COMMENT", "body": one, "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+NOFIT
+BODY_MAX=300 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a body with no line break is still hard-cut, not lost" \
+  "A single unbroken paragraph" "$BODY"
+rm -rf "$W"
+
+# ── (u) a finding is printed ONCE, and no header count lies ──────────────────
+# The XOR strip matches only against `kept` (comments actually posted inline), by
+# design — a bullet for a DROPPED comment is the fallback and must survive. But
+# models emit findings on BOTH surfaces, so a comment that overflowed the cap
+# kept its `### Findings` bullet AND collected a new `### Also flagged` one, and
+# the reader saw the same finding twice, back to back. At 25 the duplicate list
+# overflowed the budget and the truncator cut it, leaving `### Findings (15)` as
+# a header over 9 bullets with 6 findings reaching nobody.
+echo ""
+echo "── (u) no finding twice, no header count that lies ──"
+
+# Every `### Header (n)` must equal the bullets that actually follow it.
+assert_honest_counts() { # assert_honest_counts <label> <body>
+  local label="$1" bad
+  bad=$(printf '%s\n' "$2" | awk '
+    function flush() {
+      if (hdr != "" && claimed >= 0 && claimed != n)
+        print hdr " claims " claimed " over " n " bullet(s)"
+    }
+    /^[ \t]*###/ { flush(); hdr = $0; claimed = -1; n = 0
+                   if (match($0, /\([0-9]+\)/)) claimed = substr($0, RSTART + 1, RLENGTH - 2) + 0
+                   next }
+    /^[ \t]*[-*][ \t]/ { n++ }
+    END { flush() }')
+  if [ -z "$bad" ]; then echo "OK:   $label"
+  else echo "FAIL: $label — $bad"; fail=$((fail + 1)); fi
+}
+
+U_WIDE=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -1,40 +1,40 @@\n" + ([range(40) | " ctx"] | join("\n")))}]' > "$U_WIDE"
+
+# dup_review <n> — n findings listed in the body AND emitted as n comments, the
+# double-surface shape models actually produce.
+dup_review() {
+  python3 - "$1" <<'DUP'
+import json, sys
+n = int(sys.argv[1])
+lines = ["## Claude review — REQUEST_CHANGES", "", "Several issues.", "", "### Findings (%d)" % n]
+comments = []
+for i in range(1, n + 1):
+    ln = 1 + (i % 30)
+    lines.append("- **major** {{LINK:src/foo.ts:%d}} — finding %02d title" % (ln, i))
+    comments.append({"path": "src/foo.ts", "line": ln, "side": "RIGHT",
+                     "body": "**major** finding %02d title\n\ndetail" % i})
+json.dump({"verdict": "REQUEST_CHANGES", "body": "\n".join(lines), "comments": comments,
+           "meta": {"findings": [], "human_review": []}}, open("/dev/stdout", "w"))
+DUP
+}
+
+# (u1) 15 comments: 10 go inline, 5 overflow the cap. The 5 already have body
+# bullets, so they must NOT also appear under `### Also flagged`.
+W=$(mktemp -d)
+dup_review 15 > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$U_WIDE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "10 posted inline" "10" "$(payload_of "$W" | jq '.comments | length')"
+DUPES=""
+for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15; do
+  c=$(printf '%s\n' "$BODY" | grep -c "finding $i title")
+  [ "$c" -gt 1 ] && DUPES="$DUPES finding-$i(x$c)"
+done
+assert_eq "no finding is printed twice at 15" "" "$DUPES"
+assert_honest_counts "no header count lies at 15" "$BODY"
+# The overflowed findings still reach the reader — via the bullet they already had.
+for i in 11 12 13 14 15; do
+  assert_contains "finding $i still reaches the reader" "finding $i title" "$BODY"
+done
+rm -rf "$W"
+
+# (u2) 25 comments: 10 inline, 15 overflow. This is the shape that used to
+# overflow the budget on its own duplicates and cut real findings away.
+W=$(mktemp -d)
+dup_review 25 > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$U_WIDE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "still 10 inline" "10" "$(payload_of "$W" | jq '.comments | length')"
+DUPES=""
+MISSING=""
+for i in 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+  c=$(printf '%s\n' "$BODY" | grep -c "finding $i title")
+  [ "$c" -gt 1 ] && DUPES="$DUPES finding-$i(x$c)"
+  [ "$c" -eq 0 ] && MISSING="$MISSING finding-$i"
+done
+assert_eq "no finding is printed twice at 25" "" "$DUPES"
+assert_eq "every over-cap finding still reaches the reader at 25" "" "$MISSING"
+assert_honest_counts "no header count lies at 25" "$BODY"
+rm -rf "$W"
+
+# (u3) the count must also be honest after the TRUNCATOR cuts bullets, not just
+# after the strip. mode=fit renumbers; it used to leave the model's number.
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'STALE'
+import json, sys
+lines = ["## Claude review — COMMENT", "", "Intro.", "", "### Findings (15)"]
+for i in range(1, 16):
+    lines.append("- **major** {{LINK:src/foo.ts:%d}} — finding %02d with a long descriptive title that eats budget quickly"
+                 % (1 + (i % 30), i))
+json.dump({"verdict": "COMMENT", "body": "\n".join(lines), "comments": [],
+           "meta": {"findings": [], "human_review": []}}, open(sys.argv[1], "w"))
+STALE
+BODY_MAX=700 FIXTURE_REVIEWS="" FIXTURE_FILES="$U_WIDE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "the body really was truncated" "truncated to fit" "$BODY"
+assert_not_contains "the model's stale count is gone" "### Findings (15)" "$BODY"
+assert_honest_counts "the header renumbers to what survived truncation" "$BODY"
+rm -rf "$W"
+
+# (u4) the fallback is NOT suppressed when the body genuinely does not list the
+# finding — that is the whole reason `### Also flagged` exists. Guards against
+# "fixing" the duplicate by deleting the fallback outright.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nsee comments.",
+        comments: [range(1;14) | {path: "src/foo.ts", line: (1 + .), side: "RIGHT",
+                                  body: "**major** finding \(.)"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$U_WIDE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a body that lists nothing still gets its fallback" "### Also flagged (3)" "$BODY"
+assert_honest_counts "and that fallback count is honest too" "$BODY"
+rm -rf "$W" "$U_WIDE"
+
+# ── (v) a malformed comment entry is DISCARDED LOUDLY ───────────────────────
+# This script's header promises NOTHING IS SILENTLY DROPPED. A `null` or
+# non-object entry in `comments` was removed by `map(select(type == "object"))`
+# without a word — and under the inline-XOR-body rule the body carries no bullet
+# for it, so whatever it flagged reached the human nowhere at all.
+echo ""
+echo "── (v) malformed comment entries are announced ──"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nIntro.",
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT", body: "**major** a real one"},
+                   null, "a bare string", 42],
+        meta: {findings: [], human_review: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the discard is a ::warning::" "::warning::" "$OUT"
+assert_contains "…naming how many were discarded" "3 malformed comment entries discarded" "$OUT"
+assert_eq "the well-formed comment still posts" "1" "$(payload_of "$W" | jq '.comments | length')"
+rm -rf "$W"
+
+# (v2) a clean list says nothing — the warning must not fire on every review.
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_not_contains "a well-formed list is not warned about" "malformed comment entries" "$OUT"
+rm -rf "$W"
+
+# ── (w) a CHECK never becomes an immortal round-2 finding ────────────────────
+# The state block was built from split.json's `dropped` array with no `kind`
+# filter, so a **check** that overflowed the cap was persisted as a finding with
+# `sev: ""`. Round 2 can never "resolve" a question, so it was carried forever
+# and rendered as `(, src/foo.ts)`. kept-keys.txt and fallback.md both already
+# excluded checks; this arm was the one that missed it.
+echo ""
+echo "── (w) an over-cap check stays out of the state block ──"
+
+W=$(mktemp -d)
+python3 - "$W/review.json" <<'CHECKCAP'
+import json, sys
+comments = []
+for i in range(1, 11):
+    comments.append({"path": "src/foo.ts", "line": 1 + (i % 20), "side": "RIGHT",
+                     "body": "**major** finding %02d title\n\ndetail" % i})
+comments.append({"path": "src/foo.ts", "line": 7, "side": "RIGHT",
+                 "body": "**check** Is the fan refund path intentional?\n\ndetail"})
+json.dump({"verdict": "REQUEST_CHANGES", "body": "## Claude review — REQUEST_CHANGES\n\nIntro.",
+           "comments": comments, "meta": {"findings": [], "human_review": []}},
+          open(sys.argv[1], "w"))
+CHECKCAP
+W_WIDE=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -1,20 +1,20 @@\n" + ([range(20) | " ctx"] | join("\n")))}]' > "$W_WIDE"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$W_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the cap still holds" "10" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "the over-cap check is NOT carried as a finding" "0" \
+  "$(echo "$STATE" | jq '[.findings[] | select(.t | test("fan refund"))] | length')"
+# The real tell: a check has no severity, so it could only ever be persisted with
+# an empty one. No state finding may have an empty severity.
+assert_eq "no state finding carries an empty severity" "0" \
+  "$(echo "$STATE" | jq '[.findings[] | select(.sev == "")] | length')"
+assert_eq "the 10 real findings are still carried" "10" "$(echo "$STATE" | jq '.findings | length')"
+# …and the question still reaches a human, under its own heading, not as a finding.
+assert_contains "the check reaches the reader as a question" \
+  "### What a human should review" "$(visible_body "$BODY")"
+rm -rf "$W" "$W_WIDE"
+
+# ── (x) the body cannot contradict itself about the functional pass ─────────
+# SHOT_GALLERY (2c) and DEV_ENV_NOTICE (2b) were computed independently, so a run
+# printed `Functional pass: PASS — 3 screenshots` two lines above `⚠ Functional
+# pass requested but skipped — the dev environment exited 5. No browser test
+# ran`. Both cannot be true. And the notice was appended AFTER the footer, so a
+# warning trailed the cost/logs line that is supposed to close the review.
+echo ""
+echo "── (x) gallery and dev-env notice cannot contradict ──"
+
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png 02-detail.png 03-cart.png
+jq -n '{overall: "PASS", summary: "Drove the order flow.", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1"},
+                      {file: "/tmp/screenshots/02-detail.png", description: "AC2"},
+                      {file: "/tmp/screenshots/03-cart.png", description: "AC3"}]}' > "$W/functional.json"
+mkdir -p "$W/dev-env"; printf '5' > "$W/dev-env/rc"
+printf '::error::API never became ready at http://localhost:20001/api within 300s\n' > "$W/dev-env/log"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
+  DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" RUN_ID=99 \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the dev-env failure is disclosed" "Functional pass requested but skipped" "$BODY"
+assert_not_contains "…and no gallery claims a pass alongside it" "Functional pass: PASS" "$BODY"
+assert_not_contains "…no screenshot count either" "screenshots</summary>" "$BODY"
+assert_contains "the suppression is explained in the log" \
+  "suppressing the screenshot gallery" "$OUT"
+rm -rf "$W"
+
+# (x2) THE FOOTER CLOSES THE REVIEW. The notice is content and belongs above it.
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+mkdir -p "$W/dev-env"; printf '1' > "$W/dev-env/rc"
+printf 'ERROR: docker compose up failed\n' > "$W/dev-env/log"
+FUNCTIONAL_REQ=true DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" RUN_ID=99 \
+  SPEC_STATE=none FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+NOTICE_LINE=$(printf '%s\n' "$BODY" | grep -n 'requested but skipped' | head -1 | cut -d: -f1)
+SPEC_LINE=$(printf '%s\n' "$BODY" | grep -n 'No spec resolved' | head -1 | cut -d: -f1)
+FOOTER_LINE=$(printf '%s\n' "$BODY" | grep -n 'logs\](' | head -1 | cut -d: -f1)
+assert_eq "the dev-env notice comes BEFORE the footer" "1" \
+  "$([ -n "$NOTICE_LINE" ] && [ -n "$FOOTER_LINE" ] && [ "$NOTICE_LINE" -lt "$FOOTER_LINE" ] && echo 1 || echo 0)"
+assert_eq "the spec notice does too" "1" \
+  "$([ -n "$SPEC_LINE" ] && [ -n "$FOOTER_LINE" ] && [ "$SPEC_LINE" -lt "$FOOTER_LINE" ] && echo 1 || echo 0)"
+assert_eq "nothing follows the footer" "" \
+  "$(printf '%s\n' "$BODY" | awk -v f="$FOOTER_LINE" 'NR > f && $0 !~ /^[ \t]*$/')"
+rm -rf "$W"
+
+# (x3) a healthy dev-env still gets its gallery — the suppression must be keyed
+# on the failure, not on the gallery being inconvenient.
+W=$(mktemp -d)
+echo "$CLEAN_REVIEW" > "$W/review.json"
+make_shots "$W/shots" 01-list.png
+jq -n '{overall: "PASS", summary: "ok", observations: [],
+        screenshots: [{file: "/tmp/screenshots/01-list.png", description: "AC1"}]}' > "$W/functional.json"
+mkdir -p "$W/dev-env"; printf '0' > "$W/dev-env/rc"; printf 'all good\n' > "$W/dev-env/log"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" SHOT_DIR="$W/shots" \
+  DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body')")
+assert_contains "a healthy dev-env still publishes the gallery" "Functional pass: PASS" "$BODY"
+assert_not_contains "…and says nothing about a skip" "requested but skipped" "$BODY"
 rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"

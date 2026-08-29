@@ -252,7 +252,16 @@ case "$VERDICT" in
   *) crash_exit "$REVIEW_JSON has unknown verdict '${VERDICT:-<missing>}'." ;;
 esac
 jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.raw" || crash_exit "could not extract review body from $REVIEW_JSON."
+RAW_COMMENT_COUNT=$(jq '(.comments // []) | length' "$REVIEW_JSON" 2>/dev/null || echo 0)
 jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json" || crash_exit "could not extract comments from $REVIEW_JSON."
+OBJ_COMMENT_COUNT=$(jq 'length' "$WORK/comments.json" 2>/dev/null || echo 0)
+# NOTHING IS SILENTLY DROPPED (see this script's header). A `null` or otherwise
+# non-object entry cannot be rendered — but under the inline-XOR-body rule the
+# body carries no bullet for it either, so discarding it quietly means the
+# finding reaches the human NOWHERE. It is still discarded; it is no longer silent.
+if [ "${RAW_COMMENT_COUNT:-0}" -gt "${OBJ_COMMENT_COUNT:-0}" ]; then
+  echo "::warning::$(( RAW_COMMENT_COUNT - OBJ_COMMENT_COUNT )) malformed comment entries discarded from $REVIEW_JSON (not JSON objects) — anything they flagged reaches the reader nowhere."
+fi
 
 # A record, never a gate: ADR 0003 forbids one, and 76% of v3's REQUEST_CHANGES
 # was gate-driven. It reaches the footer and the summary; the verdict never sees it.
@@ -350,8 +359,19 @@ fi
 # It is appended AFTER truncation and is NOT counted in the body budget, exactly
 # like the state block below: closed, a `<details>` costs one visible line, and a
 # run's own evidence must never evict a finding.
+#
+# AND IT IS SUPPRESSED WHEN THE DEV-ENV NOTICE WILL RENDER. The two were
+# computed independently, so one run printed `Functional pass: PASS — 3
+# screenshots` two lines above `⚠ Functional pass requested but skipped — the
+# dev environment exited 5. No browser test ran`. Both cannot be true: if the
+# dev environment never came up, the tester had nothing to drive, and whatever
+# `functional.json` claims is stale or invented. The notice is the fact, so the
+# gallery goes. 2b runs before this block precisely so this test can be made.
 SHOT_GALLERY=""
-if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -s "$FUNCTIONAL_JSON" ]; then
+if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -n "$DEV_ENV_NOTICE" ]; then
+  echo "Dev environment never came up — suppressing the screenshot gallery so the body cannot both claim a functional pass and report that none ran."
+fi
+if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ -z "$DEV_ENV_NOTICE" ] && [ -s "$FUNCTIONAL_JSON" ]; then
   FN_OVERALL=$(jq -r '.overall // ""' "$FUNCTIONAL_JSON" 2>/dev/null || echo "")
   case "$FN_OVERALL" in
     PASS|WARN|FAIL|CRASH)
@@ -518,6 +538,14 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # 422 fails the ATOMIC post — every other comment dies with it. So anything
   # that is not a well-formed, plausibly-sized block collapses to single-line.
   | map(.start_line = ((.start_line | tostring | tonumber?) // 0))
+  # RANGES ARE CHECKS-ONLY. review-verify.md: ranges are "checks only", and
+  # "Findings stay single-line — a suggestion fence must replace exact lines".
+  # A finding posted with a range is not cosmetic, it DAMAGES THE PR: the
+  # "Apply suggestion" button replaces every line from start_line to line, so a
+  # one-line fix carrying start_line:10 line:13 silently deletes three lines of
+  # real code the moment a human clicks it. A check never carries a fence, so
+  # only a check may span a block.
+  | map(if kind == "check" then . else .start_line = 0 end)
   | map(if (.start_line > 0) and (.start_line < .line) and ((.line - .start_line) <= 30)
         then . else .start_line = 0 end)
   | to_entries
@@ -680,6 +708,20 @@ function prune(cnt,   i, j, has, m) {
   while (m > 0 && out[m] ~ /^[ \t]*$/) m--
   return m
 }
+# Rewrite every `### Header (n)` to the number of bullets that actually follow
+# it, in place over out[1..cnt]. Headers carry a count the model wrote before
+# anything was stripped or cut, so after either the number is a claim about
+# content that is no longer on the page.
+function renumber(cnt,   i, j, n) {
+  for (i = 1; i <= cnt; i++) {
+    if (out[i] !~ /^[ \t]*###/) continue
+    if (out[i] !~ /\([0-9]+\)/) continue
+    n = 0
+    for (j = i + 1; j <= cnt && out[j] !~ /^[ \t]*###/; j++)
+      if (out[j] ~ /^[ \t]*[-*][ \t]/) n++
+    sub(/\([0-9]+\)/, "(" n ")", out[i])
+  }
+}
 # Every kept comment gets one id, listed under its `path:line` key and under its
 # `path`+title key. A bullet claims an ID, never a key.
 BEGIN {
@@ -697,6 +739,35 @@ BEGIN {
 { line[NR] = $0; total += mlen($0) + 1 }
 END {
   if (mode == "measure") { print total + 0; exit }
+  # The identity of every `### Findings` bullet still standing in the body:
+  # `path[:line]<TAB>title`, the same two keys the strip matches on. Written
+  # AFTER the strip has run, so what it lists is what the reader will actually
+  # see — the input to the `### Also flagged` de-duplication below.
+  if (mode == "fbindex") {
+    insec = 0
+    for (i = 1; i <= NR; i++) {
+      l = line[i]
+      if (l ~ /^[ \t]*###/) { insec = (l ~ /^[ \t]*###[ \t]*Findings/); continue }
+      if (!insec) continue
+      if (l !~ /^[ \t]*[-*][ \t]/) continue
+      k = phkey(l)
+      if (k != "") print k "\t" btitle(l)
+    }
+    exit
+  }
+  # Drop each fallback bullet whose finding the body already lists. Reuses
+  # isdup(), so the match and the one-to-one claim are byte-identical to the
+  # strip's: a dropped comment consumes at most one body bullet, and two
+  # same-titled bullets are never both spent on it.
+  if (mode == "fbfilter") {
+    for (i = 1; i <= NR; i++) {
+      l = line[i]
+      k = phkey(l)
+      if (k != "" && isdup(k, l)) continue
+      print l
+    }
+    exit
+  }
   n = 0; kept = 0
   if (mode == "strip") {
     # A `### Findings` bullet matching a comment being posted inline — same path
@@ -732,9 +803,16 @@ END {
     for (i = 1; i <= kept; i++) print out[i]
     exit
   }
+  # SKIP an over-long line, never STOP at one. Models write one line per
+  # paragraph, so a single long summary paragraph sits above `### Findings` —
+  # and stopping there dropped itself AND every finding after it. Measured: a
+  # 2492-byte first paragraph plus 15 findings produced a 496-byte body with
+  # zero findings, 1300 of 1800 bytes unspent, while the log said "posted 15
+  # findings". Skipping keeps the cut on a line boundary (a partial line is
+  # never emitted) and lets the budget reach the content that fits.
   for (i = 1; i <= NR; i++) {
     l = mlen(line[i]) + 1
-    if (n + l > max) break
+    if (n + l > max) continue
     out[++kept] = line[i]; n += l
   }
   # Not one line fit: cut mid-line rather than return an empty body.
@@ -743,6 +821,10 @@ END {
     if (length(h) > 0) out[++kept] = h
   }
   kept = prune(kept)
+  # A header's count was written before the budget was known. Whatever the cut
+  # removed, the number must describe what is left — `### Findings (15)` over 9
+  # bullets is the review lying about how much it found.
+  renumber(kept)
   for (i = 1; i <= kept; i++) print out[i]
 }
 BUDGET_AWK
@@ -773,6 +855,30 @@ if [ -s "$WORK/fallback-checks.md" ]; then
     echo "### What a human should review"
     cat "$WORK/fallback-checks.md"
   } >> "$WORK/body.raw"
+fi
+# A DROPPED COMMENT WHOSE FINDING THE BODY ALREADY LISTS MUST NOT BE PRINTED
+# TWICE. 4a strips only bullets that duplicate a comment going INLINE — that is
+# deliberate, because a bullet for a dropped comment IS the fallback. But models
+# routinely emit a finding on BOTH surfaces, so a comment that overflowed the cap
+# kept its original `### Findings` bullet AND collected a new `### Also flagged`
+# one, and the reader saw the same finding back to back. At 25 comments the
+# duplicate list overflowed the budget and the truncator cut it, which is how a
+# reader got `### Findings (15)` over 9 bullets with 6 findings reaching nobody.
+# So: filter the fallback against the body that survived the strip, on the same
+# path+line / path+title keys, before the header counts it.
+if [ -s "$WORK/fallback.md" ]; then
+  if LC_ALL=C awk -v mode=fbindex -f "$WORK/budget.awk" "$WORK/body.raw" > "$WORK/body-keys.txt" \
+     && LC_ALL=C awk -v mode=fbfilter -v keysfile="$WORK/body-keys.txt" \
+          -f "$WORK/budget.awk" "$WORK/fallback.md" > "$WORK/fallback.dedup"; then
+    FB_BEFORE=$(grep -c '' "$WORK/fallback.md")
+    mv "$WORK/fallback.dedup" "$WORK/fallback.md"
+    FB_AFTER=$(grep -c '' "$WORK/fallback.md" || true)
+    if [ "${FB_AFTER:-0}" -lt "${FB_BEFORE:-0}" ]; then
+      echo "Dropped $(( FB_BEFORE - FB_AFTER )) 'Also flagged' bullet(s) the body already lists."
+    fi
+  else
+    echo "::warning::Could not de-duplicate the fallback bullets against the body — a finding may appear twice."
+  fi
 fi
 if [ -s "$WORK/fallback.md" ]; then
   { echo ""
@@ -837,10 +943,14 @@ done < "$WORK/body.raw"
 
 # Before the footer because it is content, not metadata, and after truncation
 # because it is not measured — see 2c.
+# THE FOOTER GOES LAST. It is the cost/logs line that closes the review, so
+# every notice above is content and belongs above it. Both notices used to be
+# appended AFTER it, which left a warning trailing the line that should end the
+# body.
 printf '%s' "$SHOT_GALLERY" >> "$WORK/body.md"
-printf '%s' "$FOOTER" >> "$WORK/body.md"
 printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
 printf '%s' "$DEV_ENV_NOTICE" >> "$WORK/body.md"
+printf '%s' "$FOOTER" >> "$WORK/body.md"
 echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"
 echo "::endgroup::"
 
@@ -893,6 +1003,12 @@ else
               fs: (((.body // "") | split("\n\n")) | (.[1] // "")),
               cf: "", inline: true, _o: 1}))
     + ((($sp[0].dropped) // [])
+       # Checks are EXCLUDED, exactly as they already are from kept-keys.txt and
+       # fallback.md — this arm was the one that missed it. A check is a
+       # question, not a defect: round 2 has no way to "resolve" one, so a check
+       # that overflowed the cap was persisted as a finding with `sev: ""`,
+       # carried forever, and rendered as `(, src/foo.ts)`.
+       | map(select(.kind != "check"))
        | map({p: (.path // ""), l: (.line | num), sev: (.severity // ""),
               t: (.title // ""), fs: "", cf: "", inline: false, _o: 2}))
     | map(select(.p != "" and .t != "")) | map(. + {r: $round})' > "$WORK/round.json" \
