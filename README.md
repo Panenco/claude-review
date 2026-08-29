@@ -12,14 +12,17 @@ Reusable PR review pipeline powered by Claude Code. **Two model calls:** a revie
 | `/review code` | The code review. It picks its own depth from the diff. |
 | `/review functional` | The code review **+** the browser tester (dev-env bring-up, smoke, screenshots). |
 | `/review all` | Both. |
+| `/review … deep` | Adds the size-ceiling override — see below. Combines with any pass: `/review code deep`, `/review all deep`. |
 
 **Combine passes in one comment.** `/review code functional` runs them in one session and posts **one** review. Separate comments queue up and post separate reviews.
 
-- Aliases: `judges` = `code`, `browser`/`e2e`/`smoke` = `functional`.
-- `native` and `deep` are **accepted but inert.** The native (`code-review` plugin) pass is deleted and there are no depth tiers left to force; typing either still gets you a normal code review rather than an error.
+**`deep` is the only depth control, and it is not about depth.** An oversized PR (over 3000 non-generated lines or 60 files) is normally blocked with a split request and never read. `deep` reviews it anyway. It applies to **the run it starts**; the `deep-review` **label** does exactly the same thing but persistently, so a big PR that genuinely cannot be split does not need the command re-typed on every push. Either input is enough. `full` is an alias for `deep`.
+
+- Aliases: `judges` = `code`, `browser`/`e2e`/`smoke` = `functional`, `full` = `deep`.
+- `native` is **accepted but inert.** The native (`code-review` plugin) pass is deleted; typing it still gets you a normal code review rather than an error.
 - The trigger must **start** the comment — mentioning `/review all` mid-sentence does nothing.
 - Only `OWNER`/`MEMBER`/`COLLABORATOR` can trigger a run. Everyone else is ignored silently.
-- **Not opt-in:** the code review, and its depth. The command picks the passes, not how hard the reviewer thinks.
+- **Not opt-in:** the code review, and how hard it thinks. The command picks the passes; `deep` only decides whether an oversized PR is read at all.
 
 ## Quick Start
 
@@ -324,6 +327,16 @@ Map changed paths to convention/rule files:
 | `apps/web/**` | `.cursor/rules/web.mdc`, `.cursor/rules/general.mdc` |
 ```
 
+#### `Spec documents:` (optional, one line)
+
+Where this repo keeps its planning/spec documents, so the reviewer finds the real specification instead of falling back to the issue summary. One line anywhere in the file — a path, a directory, or a glob; comma-separate several:
+
+```markdown
+Spec documents: docs/specs/, docs/prds/
+```
+
+Only needed when your specs are not already found some other way (the PR's own diff, an explicit path in the issue or PR body, a `-prd` / `-spec` / `-rfc` name). It is a declaration, not configuration — there is nothing else to set.
+
 #### `## Stack-specific review focus`
 
 Free-text guidance for reviewers. Write rules in terms of **your** stack — the pipeline is framework-agnostic. Example framing:
@@ -351,7 +364,7 @@ Describe (in prose) what the project needs at runtime: database flavour + creden
 
 ### `.github/claude-review/dev-start.sh` (recommended)
 
-First-class contract for bringing up the dev environment. The pipeline runs this script in a subshell, then probes URLs from `### Known service ports` and the auth block. **Non-zero exit means no functional testing that run**: the review still completes statically, but the review body gets a prominent **⚙️ Review setup health** section quoting the script's actual error (full log in the `dev-env/log` run artifact), and a runtime PR is capped at `COMMENT` — it cannot be `APPROVE`d without smoke evidence. Don't commit a `dev-start.sh` you haven't run successfully from a clean checkout. Repos that genuinely have nothing to start should not create the file at all — non-runtime PRs review cleanly without it; runtime PRs get the same setup-health nag until one exists.
+First-class contract for bringing up the dev environment. The pipeline runs this script in a subshell, then probes URLs from `### Known service ports` and the auth block. **Non-zero exit means no functional testing that run**: the review still completes statically and the verdict is unaffected (no gate, no nag — ADR 0003), with the script's actual error in the `dev-env/log` run artifact. Don't commit a `dev-start.sh` you haven't run successfully from a clean checkout. Repos that genuinely have nothing to start should not create the file at all.
 
 ```bash
 #!/usr/bin/env bash
@@ -399,7 +412,7 @@ Rules:
 - Pin your package manager. The runner provides a default pnpm (`pnpm/action-setup` with `version: 10`) so scripts that call `pnpm` directly keep working, but it won't necessarily match your local version. For pnpm/yarn projects, set `"packageManager"` in the root `package.json` and call `corepack enable` near the top of `dev-start.sh` to activate the exact version you pinned.
 - Installs are store-cached for you. The pipeline caches the pnpm/npm store across runs (keyed on your lockfiles, warmed in main scope so new PRs hit it too), so `pnpm install --frozen-lockfile` in `dev-start.sh` mostly links from cache instead of downloading. No consumer wiring needed.
 
-If the project has nothing to start (pure-docs, lib-only), do **not** create this file — non-runtime PRs review cleanly without it. The judges still run, but a runtime PR with no smoke evidence can never be `APPROVE`d (capped at `COMMENT`, with a **⚙️ Review setup health** section in every affected review telling the author exactly what's missing), so any repo that ships a running app should commit a real one. An empty-but-present `dev-start.sh` doesn't help either — nothing comes up, and the review reports it as a dev-env failure distinct from *missing*.
+If the project has nothing to start (pure-docs, lib-only), do **not** create this file — the review runs the same either way. No verdict depends on it; what it decides is whether the functional tester has a running app to drive, so any repo that ships a running app should commit a real one.
 
 ##### Passing secrets to `dev-start.sh`
 
@@ -412,7 +425,7 @@ AWS_SECRET_ACCESS_KEY=...
 # values are exposed verbatim — do not wrap in quotes
 ```
 
-Same wiring as `TRACKER_SECRETS` for `fetch-issue.sh`: the caller's `secrets: inherit` forwards it, and the env vars are visible to `dev-start.sh`, the legacy `## Functional validation` bash blocks, and the `### Auth` eval. Pick any names that make sense for your stack.
+Same wiring and the same parser as `TRACKER_SECRETS` for `fetch-issue.sh`: the caller's `secrets: inherit` forwards it, and the env vars are visible to `dev-start.sh`, the legacy `## Functional validation` bash blocks, and the `### Auth` eval. Pick any names that make sense for your stack.
 
 #### `### Auth`
 
@@ -453,22 +466,39 @@ The orchestrator hands this section (plus the dev-env outputs) to the functional
 
 Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 404s, flaky auth paths. The section is passed verbatim to the functional tester, so a failure matching a listed quirk is treated as expected rather than reported as a finding.
 
+### How the reviewer gets a spec
+
+`review-scan` judges the diff against **one file**, `/tmp/spec.md`, assembled by `scripts/build-spec.sh` in the orchestrator's first turn from every source that resolves, each under a header naming its origin **and its authority**.
+
+**The in-repo spec document is the specification; everything else is a summary of it.** Teams keep a short summary in the GitHub issue or the tracker and the extensive planning document in the repo, so where the two disagree the document wins. `spec.md` opens with a `GOVERNING SOURCE` line saying which one is in force for that run, and says outright when only a summary resolved.
+
+| # | Source | Authority | Resolved from |
+| - | ------ | --------- | ------------- |
+| 1 | In-repo spec document | **Authoritative — it governs** | Four routes, strongest first: **(a)** any `*.md` added or modified by the PR's own diff — a planning doc committed alongside the work it plans; **(b)** a location the repo declares in `.github/review-config.md` (`Spec documents: docs/specs/` — a path, a directory or a glob); **(c)** any repo-relative `*.md` path referenced from the issue or PR body, as a bare path or a `.../blob/…` URL resolved on its basename; **(d)** a bare `<name>-prd` / `-spec` / `-rfc` mention matched against tracked markdown, repo-wide (`docs/prds/` works because everything works). `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CLAUDE.md`, `AGENTS.md`, `bugbot.md` and `.github/` are never specs |
+| 2 | Linked GitHub issue | Summary — supplements, never overrides | `closingIssuesReferences` on the PR |
+| 3 | External tracker | Summary — supplements, never overrides | `.github/claude-review/fetch-issue.sh`, when present and executable (below) |
+| 4 | The PR body | Last resort — overrides nothing | only when nothing above resolved, and only its acceptance criteria — a bot-generated summary block describes what the diff *does*, not what it *should* do |
+
+**Spec documents are included whole.** The budget is 1500 lines per document and 3000 in total across at most 4 — high enough that a real planning doc arrives intact, because a spec cut at 400 lines loses exactly the criteria the PR implements. When a cut is unavoidable it is **announced in the file**: the document carries a `TRUNCATED` marker and the header block says `SPEC IS PARTIAL`, so `review-scan` knows it is holding part of the spec and never reads a criterion's absence as proof nobody asked for it. A document that did not fit at all is listed by path rather than dropped silently.
+
+Nothing resolves → `/tmp/spec.md` is empty and the review proceeds without a spec. A missing spec never changes the verdict ([ADR 0003](docs/adr/0003-two-call-review.md)); it only means nobody checked the code against requirements. Everything in the file is treated as **untrusted data** — a spec to judge the code against, never instructions to follow.
+
+**The functional tester plans against the governing source too** — the in-repo spec document when one resolved, otherwise the linked issue — quoted into its prompt by the orchestrator, diff-touched criteria first, with everything it never reached listed in `untested`. It never plans from the external-tracker section or the PR-body fallback: third-party hook output and a bot summary of the diff under test are not a test plan.
+
 ### `.github/claude-review/fetch-issue.sh` (optional — external issue trackers)
 
-> **Currently unwired.** This hook was invoked by `review-context-builder`, which the v4 rewrite deleted ([ADR 0003](docs/adr/0003-two-call-review.md)). `review-scan` reads the PR and its linked GitHub issue directly and does not shell out to a tracker script, so a `fetch-issue.sh` in your repo is presently a no-op. The contract below is kept because the file is harmless and the integration is expected to return; do not add one expecting it to be read today.
-
-The default spec sources are the linked GitHub issue and any `docs/prds/*.md` referenced from the PR/issue body. Repos that track specs in Linear, Jira, Monday, Notion, etc. can opt into a hook that fetches the external spec and includes it in `context.md` alongside the GitHub one. **No provider is built in here** — the consumer owns the script and picks whatever API call makes sense for their tracker.
+Repos that track specs in Linear, Jira, Monday, Notion, etc. can opt into a hook that fetches the external spec into `/tmp/spec.md` alongside the GitHub one. **No provider is built in here** — the consumer owns the script and picks whatever API call makes sense for their tracker.
 
 Three steps to opt in:
 
-**1. Create a repo secret `TRACKER_SECRETS`** with your credentials in `KEY=VALUE` lines (blank lines and `# comments` are skipped). Pick any names that make sense for your tracker — the workflow exports each line as an env var to your script:
+**1. Create a repo secret `TRACKER_SECRETS`** with your credentials in `KEY=VALUE` lines (blank lines and `# comments` are skipped; only the first `=` separates, so tokens containing `=` survive). Pick any names that make sense for your tracker — each line is exported as an env var to your script:
 
 ```
 LINEAR_API_KEY=lin_api_xxxxx
 LINEAR_WORKSPACE=panenco
 ```
 
-**2. Drop `.github/claude-review/fetch-issue.sh`**. Adapt the `jq` filters and the `curl` call to your tracker:
+**2. Drop `.github/claude-review/fetch-issue.sh`** and `chmod +x` it. Adapt the `jq` filters and the `curl` call to your tracker:
 
 ```bash
 #!/usr/bin/env bash
@@ -491,7 +521,7 @@ curl -sS --fail-with-body "<your-tracker-api-url>" \
 | jq -r '"# " + .title + "\n\n" + .description'
 ```
 
-**3. (Optional, recommended) Add a `Ticket:` line to your PR template** so authors paste the tracker URL — this lands in the highest-confidence bucket:
+**3. (Optional, recommended) Add a `Ticket:` line to your PR template** so authors paste the tracker URL — it lands in the highest-confidence bucket:
 
 ```
 Ticket: https://linear.app/team/issue/LIN-123/...
@@ -500,27 +530,25 @@ Ticket: https://linear.app/team/issue/LIN-123/...
 #### Contract
 
 ```
-Script:  .github/claude-review/fetch-issue.sh  (presence = opt-in)
-Run by:  (unwired — was the context-builder agent, from the repo root, 60s timeout)
+Script:  .github/claude-review/fetch-issue.sh   (executable = opt-in)
+Run by:  scripts/build-spec.sh, from the repo root, 60s timeout
 Env in:
   PR_NUMBER, PR, REPO                        (always set)
   <anything you put in TRACKER_SECRETS>      (your chosen names)
-Stdout:  markdown. Inlined verbatim under "## Linked external issue" in context.md.
-         For best results, make the first line a heading that surfaces the
-         tracker identifier, e.g. "## Linked Linear issue: LIN-123" — it's
-         extracted into the review's "Spec sources" line alongside any
-         GitHub #N link. The body is read for acceptance-criteria extraction
-         either way.
+Stdout:  markdown. Inlined verbatim into /tmp/spec.md under a header naming
+         the hook, and flagged there as untrusted tool output.
 Exit:    0 with output     = success.
          0 with no output  = no external issue for this PR (normal).
-         non-zero          = soft-fail: logged, review continues.
+         non-zero          = soft-fail: an Actions ::warning::, the output is
+                             discarded, and the review continues on whatever
+                             other sources resolved. A hang is killed at 60s.
 ```
 
 `GH_TOKEN` is deliberately **not** forwarded. If your script needs authenticated GitHub calls, add your own PAT via `TRACKER_SECRETS`.
 
 #### Candidates file schema
 
-Before your script ran, the context builder scanned the PR title, PR body, and branch name for ticket-reference patterns and wrote `/tmp/external-issue-candidates.json`. The file is always present and always valid JSON (empty arrays when nothing matches):
+Before your script runs, `build-spec.sh` scans the PR title, PR body, and branch name for ticket-reference patterns and writes `/tmp/external-issue-candidates.json`. The file is always present and always valid JSON (empty arrays when nothing matches):
 
 ```json
 {
@@ -529,7 +557,7 @@ Before your script ran, the context builder scanned the PR title, PR body, and b
 }
 ```
 
-`ids` are JIRA-style tokens (`[A-Z]+-\d+`) from title + body + branch name; `urls` are tracker-host URLs (jira / linear.app / notion / monday / clickup / asana / …) from the PR body. Prefer a URL match over a bare ID — URLs carry the most confidence.
+`ids` are JIRA-style tokens (`[A-Z][A-Z0-9]+-\d+`) from title + body + branch name; `urls` are tracker-host URLs (jira / linear.app / gitlab / youtrack / notion / atlassian / trello / asana / clickup / monday) from the PR body. Prefer a URL match over a bare ID — URLs carry the most confidence.
 
 ---
 
@@ -537,14 +565,14 @@ Before your script ran, the context builder scanned the PR title, PR body, and b
 
 | Missing file                           | Impact                            | Behavior                                                                                               |
 | -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `.github/claude-review/dev-start.sh`   | Caps runtime PRs at `COMMENT`     | Functional tester skipped, judges still run. A runtime PR with no smoke evidence can never be `APPROVE`d, and every affected review carries a **⚙️ Review setup health** section naming the gap and the fix. Docs-only / non-runtime PRs are exempt and review cleanly. |
-| `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Absent: skipped silently — GitHub-issue lookup remains the default spec source. Present but failing: reported in the review body's setup-health section. |
-| `review-config.md`                     | Reduced                           | No build prep doc, no convention-rule routing, no Known-service-ports URLs to probe, no auth setup. Reported in the review body's setup-health section. |
+| `.github/claude-review/dev-start.sh`   | Functional tester skipped         | No verdict effect at all — a missing or broken bring-up never blocks a PR and never withholds `APPROVE` (ADR 0003 deleted that gate, and with it the `⚙️ Review setup health` section). `/review functional` degrades to a plain code review. |
+| `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Absent: skipped silently — the linked GitHub issue, any referenced in-repo spec document, and the PR body remain the spec sources. Present but failing or hanging: killed at 60s, logged as an Actions warning, review continues. |
+| `review-config.md`                     | Reduced                           | No build prep doc, no suppression rules, no declared `Spec documents:` location (the other three discovery routes still run), no Known-service-ports URLs to probe, and no `### Auth` recipe for the functional tester (it treats authenticated surfaces as `untested`). |
 | `bugbot.md`                            | Minor                             | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
 | `CLAUDE.md`                            | Minor                             | No architecture context. Reviewers rely on diff + issue.                                               |
 | All config files                       | Significant                       | Code-only judge review on raw diff + build output. Still catches bugs, spec issues, security.          |
 
-Note: a _present but broken_ `dev-start.sh` is reported distinctly from a missing one — the review runs statically and its setup-health section quotes the script's actual error (exit code + the failing line, full log in the `dev-env/log` run artifact) so you fix the real problem instead of being told to "wire up" a script that already exists. Removing the file doesn't give you a clean "judges-only" review either: a runtime PR with no bring-up produces no smoke evidence, is capped at `COMMENT`, and carries the setup-health nag (only docs-only / non-runtime PRs review cleanly without it).
+Note: a _present but broken_ `dev-start.sh` is not a verdict input either — the review runs statically and the script's actual error (exit code + failing line) goes to the `dev-env/log` run artifact, not into the review body.
 
 ---
 
@@ -555,6 +583,8 @@ Note: a _present but broken_ `dev-start.sh` is reported distinctly from a missin
 The pipeline withheld `APPROVE` whenever the PR had no human-authored spec. The judges decided this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the judges set `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated. Bot-authored PRs (renovate, dependabot) are exempt — a machine PR can never carry a human spec, so the gate would be permanent noise there.
 
 ## Runtime-evidence gate
+
+> **Deleted by [ADR 0003](docs/adr/0003-two-call-review.md).** There is no runtime-evidence gate and no `⚙️ Review setup health` section. The functional tester is advisory: it can neither raise nor lower a verdict, and a missing or broken dev env costs nothing. The description below is kept for the record.
 
 Whenever the planner judged a PR has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}` in `test-plan.md`), the functional tester walks through one representative user flow (picked from which code paths the change affects) with screenshots, and the verdict depends on how that smoke run ended:
 
@@ -641,15 +671,14 @@ permissions:
 
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
-- **Runtime-evidence gate** — a PR the planner judged has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}`) is blocked with `REQUEST_CHANGES` only when the smoke run actually ran and `FAIL`ed. If the smoke never ran (no `.github/claude-review/dev-start.sh`, a bring-up that fails/times out, a tester crash), the verdict is capped at `COMMENT` — never `APPROVE` — and the review body's **⚙️ Review setup health** section states exactly what's broken and how to fix it. Docs-only / non-runtime PRs are exempt.
-- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with **no model call at all** — `guard.sh` renders that body itself. Ask again after splitting and the block re-evaluates against the new size. If the PR genuinely cannot be split, the `deep-review` label reviews it anyway; `skip-review` parks a PR the bot must not touch and wins over both. (`/review deep` is inert — depth is the scan's call now, not a flag.)
-- **Manual-spec gate** — PRs whose body is purely auto-generated (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code summaries) with no linked issue or PRD get downgraded APPROVE → COMMENT. Findings still post normally; only the green-check approval is gated. To re-enable APPROVE: link an issue, paste acceptance criteria into the PR body, or wire up an external tracker (`fetch-issue.sh`).
-
-These gates compose: `APPROVE` is granted only when _something_ substantively validated the change — either a manual spec or a working app smoke-tested under the diff. `REQUEST_CHANGES` is reserved for evidence against the PR (findings, a failed smoke run, an unreviewably large diff); setup problems surface loudly but downgrade to `COMMENT` instead of blocking.
+- **Runtime-evidence gate** — **deleted by [ADR 0003](docs/adr/0003-two-call-review.md).** A missing `dev-start.sh`, a failed bring-up or a tester crash no longer affects the verdict at all. Fleet data showed this gate produced 31% of all `REQUEST_CHANGES` while naming zero defects. Functional results are advisory: a reproduced failure becomes an ordinary finding or a human-review item.
+- **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with **no model call at all** — `guard.sh` renders that body itself. Ask again after splitting and the block re-evaluates against the new size. If the PR genuinely cannot be split, comment `/review deep` (or `/review code deep`, `/review all deep` — it composes with any pass) to review it anyway; the `deep-review` label is the persistent equivalent, applying to every push instead of one run. Either input alone lifts the ceiling. `skip-review` parks a PR the bot must not touch and wins over both — it stays label-only, because "never review this PR" is state, not a one-shot request.
+- **Manual-spec gate** — **deleted by [ADR 0003](docs/adr/0003-two-call-review.md).** A missing spec no longer downgrades the verdict on its own. `APPROVE` now requires `review-scan` to argue why a human pass would change nothing, plus no sensitive path touched and a low review-effort score — so an unspecified PR usually lands on `COMMENT` anyway, but because nothing could be vouched for, not because a gate fired.
+Only two things now decide a verdict: surviving findings, and the oversized guard. `REQUEST_CHANGES` means a confirmed critical or major finding, or a diff too large to read. Everything else — no spec, no dev env, a crashed tester — is reported, never blocked on.
 
 ### 3. New optional knobs (defaults preserve v1 behaviour)
 
-- `DEV_ENV_SECRETS` repo secret — newline-separated `KEY=VALUE` env exposed to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Mirrors `TRACKER_SECRETS`. Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot.
+- `DEV_ENV_SECRETS` repo secret — newline-separated `KEY=VALUE` env exposed to `dev-start.sh` (and to the legacy `## Functional validation` bash blocks + `### Auth` eval). Use it for registry tokens, cloud SDK keys, or third-party API creds your bring-up needs at boot.
 - New workflow inputs, all optional with sensible defaults: `pipeline_ref` (default `v2`), `dev_env_timeout_seconds` (360), `functional_budget_seconds` (480 — the functional tester's wall-clock bound; it records a start timestamp and hard-stops + writes its findings once elapsed exceeds this, so a thorough tester against a live backend can't run into the job's `timeout-minutes` ceiling and get cancelled with nothing posted), `free_disk_space` (`safe` — reclaims runner disk before a heavy `dev-start.sh` bring-up so it can't ENOSPC the post-orchestrate steps and lose a finished review; `safe` removes only tooling no Linux app bring-up needs (CodeQL/Haskell/Swift, ~12 GB), `aggressive` also drops Android + .NET, `off` disables), `model_high` (Opus — drives the high-recall judge), `model_fast` (Haiku — drives the cheap broad-coverage judge), `model_functional` (Sonnet — Haiku here regressed on severity calibration in dogfooding). The `core_max_turns` input from v1 has been removed (passing it is now a workflow-call error — drop it): the workflow caps the orchestrator at `--max-turns 100` and per-phase discipline lives inside the skill prompts. The functional tester is bounded by wall-clock (`functional_budget_seconds`), not turn count — turns are a poor proxy for runtime against a real backend. A `functional_max_turns` input existed briefly under `@v2`; it has been removed (passing it from the caller is a workflow-call error — drop it).
 
 ### 4. Already in `@v1`, called out for sub-tag pinners

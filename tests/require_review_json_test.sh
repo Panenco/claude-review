@@ -116,22 +116,62 @@ check "action.yml completeness check covers the new script" "yes" \
 check "orchestrator skill records that the rule is enforced" "yes" \
   "$(grep -qiE 'Stop.{0,2} hook' "$ORCHESTRATOR" && echo yes || echo no)"
 
-# Grepping the YAML only proves the text is present. Run the workflow's ACTUAL
-# merge expression against fixtures and assert the resulting settings.json
-# matches the documented Stop contract — and that it preserves what was already
-# there, since the runner image may ship its own user settings.
-MERGE='.hooks.Stop = [{"hooks": [{"type": "command", "command": $cmd}]}]'
-echo '{"model":"pre-existing","hooks":{"PreToolUse":[{"x":1}]}}' > "$WORK/settings.json"
-jq --arg cmd "/pipeline/scripts/require-review-json.sh" "$MERGE" \
-  "$WORK/settings.json" > "$WORK/merged.json" 2>/dev/null
+# Grepping the YAML only proves the text is present. Pull the workflow's ACTUAL
+# merge expression out of the run block and drive it with fixtures, so this test
+# can never pass against an expression the workflow no longer uses.
+HOOK_CMD="/pipeline/scripts/require-review-json.sh"
+MERGE=$(sed -n "/^ *STOP_HOOK_JQ='\$/,/^ *'\$/p" "$WORKFLOW" | sed '1d;$d')
+check "the merge expression was extractable from the workflow" "yes" \
+  "$([ -n "$MERGE" ] && echo yes || echo no)"
+
+# THE REGRESSION (2026-08-28): this was `.hooks.Stop = [...]`, a plain assignment
+# that discarded any Stop hooks the runner image already shipped — while the
+# step's own comment promised they were merged. It survived because the only
+# preservation assertion below used a PreToolUse hook, which an assignment to
+# .hooks.Stop never touches. Assert on Stop itself.
+check "workflow does not plainly assign .hooks.Stop (clobbers existing hooks)" "no" \
+  "$(grep -qE '\.hooks\.Stop *= *\[' "$WORKFLOW" && echo yes || echo no)"
+
+merge() { # merge <settings-json-literal> → $WORK/merged.json
+  printf '%s' "$1" > "$WORK/settings.json"
+  jq --arg cmd "$HOOK_CMD" "$MERGE" "$WORK/settings.json" > "$WORK/merged.json" 2>/dev/null
+}
+ours() { jq -r "[.hooks.Stop[]?.hooks[]?.command] | map(select(. == \"$HOOK_CMD\")) | length" \
+  "$WORK/merged.json" 2>/dev/null; }
+
+merge '{"model":"pre-existing","hooks":{"PreToolUse":[{"x":1}]}}'
 check "merge yields a Stop entry with a command hook" "command" \
-  "$(jq -r '.hooks.Stop[0].hooks[0].type' "$WORK/merged.json" 2>/dev/null)"
-check "merge points that command at the hook script" "/pipeline/scripts/require-review-json.sh" \
-  "$(jq -r '.hooks.Stop[0].hooks[0].command' "$WORK/merged.json" 2>/dev/null)"
+  "$(jq -r '.hooks.Stop[-1].hooks[0].type' "$WORK/merged.json" 2>/dev/null)"
+check "merge points that command at the hook script" "$HOOK_CMD" \
+  "$(jq -r '.hooks.Stop[-1].hooks[0].command' "$WORK/merged.json" 2>/dev/null)"
 check "merge preserves unrelated existing settings" "pre-existing" \
   "$(jq -r '.model' "$WORK/merged.json" 2>/dev/null)"
 check "merge preserves other existing hooks" "1" \
   "$(jq -r '.hooks.PreToolUse[0].x' "$WORK/merged.json" 2>/dev/null)"
+
+# A pre-existing STOP hook must survive registration, not be replaced by ours.
+merge '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/image/own-stop.sh"}]}]}}'
+check "a pre-existing Stop hook SURVIVES registration" "/image/own-stop.sh" \
+  "$(jq -r '[.hooks.Stop[].hooks[].command] | .[0]' "$WORK/merged.json" 2>/dev/null)"
+check "ours is appended alongside it, not instead of it" "2" \
+  "$(jq -r '[.hooks.Stop[].hooks[].command] | length' "$WORK/merged.json" 2>/dev/null)"
+check "ours is registered exactly once" "1" "$(ours)"
+
+# Reused runners: registering twice must not stack duplicate copies of our hook.
+cp "$WORK/merged.json" "$WORK/settings.json"
+jq --arg cmd "$HOOK_CMD" "$MERGE" "$WORK/settings.json" > "$WORK/merged.json" 2>/dev/null
+check "re-registering does not duplicate our hook" "1" "$(ours)"
+check "re-registering still keeps the image's Stop hook" "yes" \
+  "$(jq -e '[.hooks.Stop[].hooks[].command] | index("/image/own-stop.sh")' \
+    "$WORK/merged.json" >/dev/null 2>&1 && echo yes || echo no)"
+
+# Degenerate shapes the runner image could hand us.
+merge '{"model":"bare"}'
+check "no .hooks at all still registers ours" "1" "$(ours)"
+merge '{"hooks":{"Stop":"not-an-array"}}'
+check "a non-array .hooks.Stop is replaced, not crashed on" "1" "$(ours)"
+merge '{"hooks":"not-an-object"}'
+check "a non-object .hooks is replaced, not crashed on" "1" "$(ours)"
 
 # --- 6. the hook itself obeys the repo's shell rule -------------------------
 check "hook does not use set -e (bugbot.md)" "yes" \

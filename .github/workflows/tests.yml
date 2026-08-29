@@ -61,6 +61,9 @@ jobs:
       - name: Run upload_screenshots_test.sh
         run: bash tests/upload_screenshots_test.sh
 
+      - name: Run build_spec_test.sh
+        run: bash tests/build_spec_test.sh
+
       - name: Run pipeline_contract_test.sh
         run: bash tests/pipeline_contract_test.sh
 

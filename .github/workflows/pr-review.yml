@@ -59,7 +59,7 @@ on:
         type: string
         default: "skip-review"
       gate_deep_label:
-        description: "DEPRECATED and ignored — there are no depth tiers to force any more; review-scan self-scales. Kept so callers passing it do not break."
+        description: "Label that overrides the oversized size ceiling, so a PR that genuinely cannot be split is reviewed anyway. Persistent: it applies to every push, where a `/review deep` comment applies only to the run it starts."
         type: string
         default: "deep-review"
       gate_small_ceiling:
@@ -115,7 +115,14 @@ on:
       CLAUDE_REVIEW_APP_PRIVATE_KEY:
       CLAUDE_REVIEW_APP_SLUG:
       TRACKER_SECRETS:
-        description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/fetch-issue.sh."
+        # LIVE. Forwarded to the orchestrate step, where scripts/build-spec.sh
+        # exports each KEY=VALUE line as a named env var for the consumer's
+        # .github/claude-review/fetch-issue.sh hook (same parser as
+        # DEV_ENV_SECRETS — scripts/kv-secrets.sh). It briefly went unforwarded
+        # in v4; a repo tracking work in Linear/Jira got a reviewer with no
+        # requirements at all, which is why the seam is now pinned by
+        # tests/pipeline_contract_test.sh.
+        description: "Optional newline-separated KEY=VALUE pairs exposed as env vars to .github/claude-review/fetch-issue.sh."
       DEV_ENV_SECRETS:
         description: "Optional newline-separated KEY=VALUE pairs exposed to .github/claude-review/dev-start.sh."
 
@@ -243,7 +250,7 @@ jobs:
             echo "::error::CLAUDE_REVIEW_SCRIPTS is unset or missing — the install step did not run, or action.yml and pr-review.yml are from different versions."
             exit 1
           fi
-          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh pick-oauth-token.sh setup-dev-env.sh; do
+          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh; do
             if [ ! -x "$CLAUDE_REVIEW_SCRIPTS/$s" ]; then
               echo "::error::$CLAUDE_REVIEW_SCRIPTS/$s is missing or not executable."
               exit 1
@@ -444,6 +451,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMD_FUNCTIONAL: ${{ steps.cmd.outputs.run_functional }}
+          # `/review deep` lifts the size ceiling for THIS run; the `deep-review`
+          # label (GATE_FORCE_LABEL, read off the PR below) does it persistently.
+          # Either one is enough — guard.sh gate 3.
+          GATE_FORCE_DEEP: ${{ steps.cmd.outputs.force_deep }}
+          GATE_TRIGGER: ${{ inputs.command_trigger }}
+          GATE_FORCE_LABEL: ${{ inputs.gate_deep_label }}
           GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
           GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
           GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
@@ -868,12 +881,24 @@ jobs:
           mkdir -p "$HOME/.claude"
           S="$HOME/.claude/settings.json"
           [ -s "$S" ] || echo '{}' > "$S"
-          if ! jq empty "$S" >/dev/null 2>&1; then
-            echo "::warning::$S was not valid JSON; replacing it with the hook config only"
+          if ! jq -e 'type == "object"' "$S" >/dev/null 2>&1; then
+            echo "::warning::$S was not a JSON object; replacing it with the hook config only"
             echo '{}' > "$S"
           fi
-          jq --arg cmd "$HOOK" \
-            '.hooks.Stop = [{"hooks": [{"type": "command", "command": $cmd}]}]' \
+          # APPEND to whatever Stop hooks are already there — a plain assignment
+          # would silently drop the image's own, which is what the comment above
+          # promises never happens. A stale copy of OUR command is dropped first,
+          # so re-registering on a reused runner cannot stack duplicates.
+          # Extracted verbatim by tests/require_review_json_test.sh; keep the
+          # STOP_HOOK_JQ='...' delimiters on their own lines.
+          STOP_HOOK_JQ='
+            def stop_entries: if (.hooks.Stop? | type) == "array" then .hooks.Stop else [] end;
+            .hooks = (if (.hooks? | type) == "object" then .hooks else {} end)
+            | .hooks.Stop = (stop_entries
+                | map(select([.hooks[]?.command] | index($cmd) | not))
+                + [{"hooks": [{"type": "command", "command": $cmd}]}])
+          '
+          jq --arg cmd "$HOOK" "$STOP_HOOK_JQ" \
             "$S" > "$S.tmp" && mv "$S.tmp" "$S" || {
               echo "::error::failed to register the Stop hook in $S"; exit 1; }
           echo "Stop hook registered: $HOOK"
@@ -895,6 +920,8 @@ jobs:
           PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
+          # Read by scripts/build-spec.sh in the orchestrator's turn 1, which
+          # exports each KEY=VALUE line for the consumer's fetch-issue.sh hook.
           TRACKER_SECRETS: ${{ secrets.TRACKER_SECRETS }}
           # Separate token for the review-assets branch (a custom App token
           # may lack contents: write).

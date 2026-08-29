@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# dev_env_secrets_test.sh — covers export_dev_env_secrets in
-# scripts/setup-dev-env.sh. Mirrors the TRACKER_SECRETS parser in
-# pr-review.yml; consumers rely on identical semantics across the two.
+# dev_env_secrets_test.sh — covers export_kv_secrets in scripts/kv-secrets.sh,
+# the ONE parser behind both DEV_ENV_SECRETS (setup-dev-env.sh → dev-start.sh)
+# and TRACKER_SECRETS (build-spec.sh → fetch-issue.sh). Consumers rely on
+# identical semantics across the two, which is why there is only one of it.
 
 cd "$(dirname "$0")/.."
 
@@ -18,15 +19,11 @@ assert_eq() {
   fi
 }
 
-# Extract just the function (between `export_dev_env_secrets() {` and its
-# matching `}`) — sourcing the whole script would run phase 1, which has
-# real side effects (curl, file IO, GITHUB_OUTPUT writes).
-FN_SRC=$(awk '/^export_dev_env_secrets\(\) \{$/,/^\}$/' scripts/setup-dev-env.sh)
-if [ -z "$FN_SRC" ]; then
-  echo "FAIL: could not extract export_dev_env_secrets from scripts/setup-dev-env.sh"
-  exit 1
-fi
-eval "$FN_SRC"
+# The parser is a side-effect-free library, so it is sourced directly —
+# no more awk-extracting a function out of a script whose top level runs
+# curl, file IO and GITHUB_OUTPUT writes.
+# shellcheck source=scripts/kv-secrets.sh
+. scripts/kv-secrets.sh
 
 run_parser() {
   # Subshell so each case starts with a clean env. stdout = `name=value`
@@ -35,10 +32,21 @@ run_parser() {
   (
     unset DEV_ENV_SECRETS
     DEV_ENV_SECRETS="$input"
-    export_dev_env_secrets
+    export_kv_secrets DEV_ENV_SECRETS
     eval "$probe"
   )
 }
+
+# Both call sites must resolve to this one parser. A second copy of the loop
+# anywhere is the drift this file exists to prevent.
+for caller in scripts/setup-dev-env.sh scripts/build-spec.sh; do
+  if grep -q 'export_kv_secrets' "$caller"; then
+    echo "OK:   $caller uses the shared parser"
+  else
+    echo "FAIL: $caller does not call export_kv_secrets"
+    fail=$((fail + 1))
+  fi
+done
 
 # 1. Unset / empty input is a no-op (no error, no exports).
 RESULT=$(run_parser "" 'echo "rc=$?"')

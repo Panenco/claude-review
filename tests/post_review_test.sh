@@ -548,6 +548,302 @@ else
 fi
 rm -rf "$W"
 
+# ── (k5) inline-XOR-body: a finding posted inline is stripped from the body ──
+# skills/review-verify.md says each finding appears exactly once — inline OR as a
+# `### Findings` bullet. The model does not hold that (observed on PR #109: two
+# findings listed in the body AND posted inline on the same path:line), so the
+# poster enforces it. Matching is against `kept` — the comments really going
+# inline — on path+line OR path+title.
+echo ""
+echo "── (k5) findings posted inline are stripped from the body ──"
+
+# k5a: every bullet in the section is a duplicate → the header goes with them.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nTwo blocking findings.\n\n"
+               + "### Findings (2)\n"
+               + "- **critical** {{LINK:src/foo.ts:11}} — alpha loops forever\n"
+               + "- **major** {{LINK:src/foo.ts:12}} — beta returns another tenant"),
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT", body: "**critical** alpha loops forever"},
+                   {path: "src/foo.ts", line: 12, side: "RIGHT", body: "**major** beta returns another tenant"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "both findings posted inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "the emptied Findings header is gone" "### Findings" "$BODY"
+assert_not_contains "the critical is not repeated in the body" "alpha loops forever" "$BODY"
+assert_not_contains "the major is not repeated in the body" "another tenant" "$BODY"
+assert_contains "the verdict prose survives" "Two blocking findings." "$BODY"
+assert_contains "the strip is announced in the log" "duplicating an inline comment" "$OUT"
+rm -rf "$W"
+
+# k5b: one of two is a duplicate → the header renumbers to the survivor count.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nTwo blocking findings.\n\n"
+               + "### Findings (2)\n"
+               + "- **critical** {{LINK:src/foo.ts:11}} — alpha loops forever\n"
+               + "- **major** {{LINK:src/foo.ts:12}} — beta returns another tenant"),
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT", body: "**critical** alpha loops forever"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the header is renumbered to the survivor count" "### Findings (1)" "$BODY"
+assert_not_contains "the stale count is gone" "### Findings (2)" "$BODY"
+assert_not_contains "the inlined finding is stripped" "alpha loops forever" "$BODY"
+assert_contains "the body-only finding survives" "another tenant" "$BODY"
+rm -rf "$W"
+
+# k5c: the comment was DROPPED out of hunk, so it is NOT in `kept` — its bullet
+# is the only place the finding reaches the reader and must survive. Matching the
+# model's ORIGINAL comment list instead of `kept` would erase it.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne blocking finding.\n\n"
+               + "### Findings (1)\n"
+               + "- **critical** {{LINK:src/foo.ts:99}} — gamma drops the lock"),
+        comments: [{path: "src/foo.ts", line: 99, side: "RIGHT", body: "**critical** gamma drops the lock"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "nothing posted inline" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the out-of-hunk finding keeps its Findings bullet" "gamma drops the lock" "$BODY"
+assert_contains "and the section header stays at 1" "### Findings (1)" "$BODY"
+assert_contains "the fallback section is still rendered" "### Also flagged (1)" "$BODY"
+rm -rf "$W"
+
+# k5d: only `### Findings` is de-duplicated. A human-review item may legitimately
+# point at the very line a finding was posted on.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT",
+        body: ("## Claude review — COMMENT\n\nOne finding, one open question.\n\n"
+               + "### What a human should review\n"
+               + "- [ ] {{LINK:src/foo.ts:11}} — confirm the retry budget matches the gateway timeout\n\n"
+               + "### Findings (1)\n"
+               + "- **major** {{LINK:src/foo.ts:11}} — alpha loops forever"),
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT", body: "**major** alpha loops forever"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the human-review section survives" "### What a human should review" "$BODY"
+assert_contains "the human-review item on the same line survives" \
+  "confirm the retry budget matches the gateway timeout" "$BODY"
+assert_not_contains "the duplicated finding is stripped" "alpha loops forever" "$BODY"
+assert_not_contains "and its emptied header with it" "### Findings" "$BODY"
+rm -rf "$W"
+
+# k5e: a bullet that shares neither the line nor the title is a different
+# finding, not a duplicate — matching either half alone would silently delete it.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne blocking finding.\n\n"
+               + "### Findings (1)\n"
+               + "- **major** {{LINK:src/foo.ts:12}} — delta off by one"),
+        comments: [{path: "src/foo.ts", line: 11, side: "RIGHT", body: "**major** epsilon, a different defect"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the off-by-one bullet is NOT stripped" "delta off by one" "$BODY"
+assert_contains "the header keeps its count" "### Findings (1)" "$BODY"
+rm -rf "$W"
+
+# k5f: the strip runs BEFORE the budget, so the bytes it frees keep the
+# remaining content out of the truncator.
+W=$(mktemp -d)
+K5_WIDE=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -1,20 +1,20 @@\n" + ([range(20) | " ctx"] | join("\n")))}]' > "$K5_WIDE"
+{ echo "## Claude review — REQUEST_CHANGES"; echo ""
+  echo "Five defects survive verification across the broker's claim handling and the tenant cache."
+  echo ""
+  echo "### Findings (5)"
+  for i in 1 2 3 4 5; do
+    echo "- **major** {{LINK:src/foo.ts:$i}} — defect $i leaves the request in a state the caller cannot recover from, the retry path repeats it on every attempt, and the surrounding transaction is committed anyway so the damage is durable"
+  done
+} > "$W/dup-body.md"
+NL=$(grep -o '{{LINK:' "$W/dup-body.md" | wc -l | tr -d ' ')
+MEASURED=$(( $(wc -c < "$W/dup-body.md") - 9 * NL ))
+if [ "$MEASURED" -gt 1200 ]; then
+  echo "OK:   the fixture is over budget before the strip ($MEASURED bytes)"
+else
+  echo "FAIL: fixture is only $MEASURED bytes — it must be OVER 1200 to test this"; fail=$((fail + 1))
+fi
+jq -n --rawfile b "$W/dup-body.md" \
+  '{verdict: "REQUEST_CHANGES", body: $b,
+    comments: [range(1;4) | {path: "src/foo.ts", line: ., side: "RIGHT", body: "**major** defect \(.)"}],
+    meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$K5_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_not_contains "stripping the duplicates kept it under budget" "truncated to fit" "$BODY"
+assert_contains "the header renumbers to the two survivors" "### Findings (2)" "$BODY"
+assert_contains "survivor 4 is intact" "defect 4 leaves the request" "$BODY"
+assert_contains "survivor 5 is intact" "defect 5 leaves the request" "$BODY"
+assert_not_contains "the inlined bullets are gone" "defect 1 leaves the request" "$BODY"
+rm -rf "$W" "$K5_WIDE"
+
+# k5g: THE RE-ANCHOR BUG. review-verify is told "Wrong anchor → fix it from your
+# Read", so it may move a comment to a different hunk line than the one already
+# written into the body bullet. path:line alone then misses and the reader gets
+# the duplicate this strip exists to prevent. The title is identical in both by
+# construction, so path+title catches it.
+W=$(mktemp -d)
+REANCHOR_FILES=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -40,6 +40,6 @@\n" + ([range(6) | " ctx"] | join("\n")))}]' > "$REANCHOR_FILES"
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne blocking finding.\n\n"
+               + "### Findings (1)\n"
+               + "- **major** {{LINK:src/foo.ts:40}} — cache key omits the tenant"),
+        comments: [{path: "src/foo.ts", line: 42, side: "RIGHT", body: "**major** cache key omits the tenant"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$REANCHOR_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the re-anchored comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_eq "at the line verify re-anchored it to" "42" "$(echo "$PAYLOAD" | jq '.comments[0].line')"
+assert_not_contains "the bullet two lines off is still stripped" "cache key omits the tenant" "$BODY"
+assert_not_contains "and its emptied header with it" "### Findings" "$BODY"
+rm -rf "$W"
+
+# k5h: same path, same line, different title — the original exact match still
+# strips. Title matching is an ADDITION to path:line, not a replacement.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne blocking finding.\n\n"
+               + "### Findings (1)\n"
+               + "- **major** {{LINK:src/foo.ts:41}} — eta rewords the same defect"),
+        comments: [{path: "src/foo.ts", line: 41, side: "RIGHT", body: "**major** eta, phrased differently inline"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$REANCHOR_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "the same-line bullet is stripped on the anchor alone" \
+  "eta rewords the same defect" "$BODY"
+rm -rf "$W"
+
+# k5i: the same title in a DIFFERENT file is a different finding. Title alone
+# would erase it, which is why the rule is path AND title.
+W=$(mktemp -d)
+TWOFILE_FIXTURE=$(mktemp)
+jq -n '[{filename: "src/foo.ts",
+         patch: ("@@ -40,6 +40,6 @@\n" + ([range(6) | " ctx"] | join("\n")))},
+        {filename: "src/bar.ts",
+         patch: ("@@ -40,6 +40,6 @@\n" + ([range(6) | " ctx"] | join("\n")))}]' > "$TWOFILE_FIXTURE"
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne blocking finding.\n\n"
+               + "### Findings (1)\n"
+               + "- **major** {{LINK:src/bar.ts:40}} — unbounded retry loop"),
+        comments: [{path: "src/foo.ts", line: 42, side: "RIGHT", body: "**major** unbounded retry loop"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$TWOFILE_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the comment on the other file is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_contains "the same title in another file is NOT stripped" "unbounded retry loop" "$BODY"
+assert_contains "the header keeps its count" "### Findings (1)" "$BODY"
+rm -rf "$W" "$TWOFILE_FIXTURE"
+
+# k5j: a title carrying backticks and its own em dashes. Only the FIRST ` — `
+# after the placeholder is the separator; the ones inside the title are content
+# and must not shift the extracted title.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nOne blocking finding.\n\n"
+               + "### Findings (1)\n"
+               + "- **major** {{LINK:src/foo.ts:40}} — `retry()` — the backoff — never caps"),
+        comments: [{path: "src/foo.ts", line: 43, side: "RIGHT",
+                    body: "**major** `retry()` — the backoff — never caps"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$REANCHOR_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "the backtick/em-dash title still matches" "never caps" "$BODY"
+assert_not_contains "and its emptied header with it" "### Findings" "$BODY"
+rm -rf "$W"
+
+# k5k: a DROPPED comment (out of hunk) whose title matches a surviving bullet.
+# It is not in `kept`, so it contributes no title key — its bullet is the only
+# place that finding reaches the reader and must survive.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nTwo blocking findings.\n\n"
+               + "### Findings (2)\n"
+               + "- **major** {{LINK:src/foo.ts:40}} — theta double-frees the buffer\n"
+               + "- **major** {{LINK:src/foo.ts:41}} — zeta leaks the handle"),
+        comments: [{path: "src/foo.ts", line: 40, side: "RIGHT", body: "**major** theta double-frees the buffer"},
+                   {path: "src/foo.ts", line: 99, side: "RIGHT", body: "**major** zeta leaks the handle"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$REANCHOR_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "only the in-hunk comment posts inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "the inlined finding's bullet is stripped" "theta double-frees" "$BODY"
+assert_contains "the dropped comment's bullet survives" "zeta leaks the handle" "$BODY"
+assert_contains "the header renumbers to the one survivor" "### Findings (1)" "$BODY"
+assert_contains "and it is also listed as a fallback" "### Also flagged (1)" "$BODY"
+rm -rf "$W"
+
+# k5l: ONE-TO-ONE. Two bullets in the same file share a title and only one
+# comment carries it — a set-membership test would delete both and silently lose
+# the second finding, the same class of bug as the missed re-anchor. The first
+# bullet claims the comment; the second finds nothing left and survives.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nTwo blocking findings.\n\n"
+               + "### Findings (2)\n"
+               + "- **major** {{LINK:src/foo.ts:40}} — unchecked cast\n"
+               + "- **major** {{LINK:src/foo.ts:41}} — unchecked cast"),
+        comments: [{path: "src/foo.ts", line: 43, side: "RIGHT", body: "**major** unchecked cast"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$REANCHOR_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "the one comment is posted inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_eq "exactly one of the twin bullets is stripped" "1" \
+  "$(echo "$BODY" | grep -c 'unchecked cast')"
+assert_not_contains "the bullet that claimed the comment is gone" "[src/foo.ts:40]" "$BODY"
+assert_contains "the finding no comment carries survives" "[src/foo.ts:41]" "$BODY"
+assert_contains "the header renumbers to the survivor" "### Findings (1)" "$BODY"
+rm -rf "$W"
+
+# k5m: two comments really do carry both twins → both bullets go, header with them.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES",
+        body: ("## Claude review — REQUEST_CHANGES\n\nTwo blocking findings.\n\n"
+               + "### Findings (2)\n"
+               + "- **major** {{LINK:src/foo.ts:40}} — unchecked cast\n"
+               + "- **major** {{LINK:src/foo.ts:41}} — unchecked cast"),
+        comments: [{path: "src/foo.ts", line: 42, side: "RIGHT", body: "**major** unchecked cast"},
+                   {path: "src/foo.ts", line: 43, side: "RIGHT", body: "**major** unchecked cast\n\nsecond site"}],
+        meta: {findings: []}}' > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$REANCHOR_FILES" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+BODY=$(echo "$PAYLOAD" | jq -r '.body')
+assert_eq "exit 0" "0" "$RC"
+assert_eq "both comments are posted inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "both twin bullets are stripped" "unchecked cast" "$BODY"
+assert_not_contains "and the emptied header with them" "### Findings" "$BODY"
+assert_contains "the verdict prose survives" "Two blocking findings." "$BODY"
+rm -rf "$W" "$REANCHOR_FILES"
+
 # ── (l) inline comments: 5 max, critical/major first ─────────────────────────
 echo ""
 echo "── (l) inline-comment cap ──"

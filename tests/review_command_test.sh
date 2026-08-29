@@ -60,9 +60,34 @@ assert_passes "no duplicate code"       "code functional" CMD_BODY="/review code
 assert_passes "all expands"             "code functional" CMD_BODY="/review all"
 assert_passes "deep is a modifier"      "code deep"       CMD_BODY="/review deep"
 
-# ── `deep` is accepted but inert downstream; it never implies the add-on pass. ──
+# ── `deep` lifts guard.sh's oversized ceiling for THIS run (GATE_FORCE_DEEP).
+#    It is a modifier, not a pass: it never implies the browser tester, and it
+#    composes with the passes in the same comment. ──
 assert_cmd "deep alone"          "run false true"   CMD_BODY="/review deep"
 assert_cmd "deep + functional"   "run true true"    CMD_BODY="/review deep functional"
+assert_cmd "code + deep"         "run false true"   CMD_BODY="/review code deep"
+assert_cmd "all + deep"          "run true true"    CMD_BODY="/review all deep"
+assert_cmd "full deep (aliases)" "run false true"   CMD_BODY="/review full deep"
+assert_passes "code + deep"         "code deep"            CMD_BODY="/review code deep"
+assert_passes "deep + functional"   "code deep functional" CMD_BODY="/review deep functional"
+assert_passes "functional + deep"   "code functional deep" CMD_BODY="/review functional deep"
+assert_passes "full and deep dedupe" "code deep"           CMD_BODY="/review full deep"
+
+# The menu is the only place most people learn this exists, and the label/comment
+# split is the part that is NOT guessable — a comment covers the run it starts,
+# the label survives every push.
+HELP=$(message_of CMD_BODY="/review")
+for needle in '`deep`' 'deep-review' 'size ceiling'; do
+  case "$HELP" in
+    *"$needle"*) echo "OK:   help menu mentions $needle" ;;
+    *) echo "FAIL: help menu never mentions $needle"; fail=$((fail + 1)) ;;
+  esac
+done
+case "$HELP" in
+  *'`deep` are accepted but do nothing'*|*'`deep` is accepted but does nothing'*)
+    echo "FAIL: help menu still calls deep inert"; fail=$((fail + 1)) ;;
+  *) echo "OK:   help menu no longer calls deep inert" ;;
+esac
 
 # ── The `native` pass is DELETED (ADR 0003). The token must still parse — a
 #    reviewer who types the documented old command deserves a review, not the
@@ -207,6 +232,11 @@ assert_wiring "workflow reads the comment body off the caller event" \
 # resolves to empty and the run dies on every comment.
 assert_wiring "no step reads github.event.pull_request" \
   "$(grep -q 'github.event.pull_request' "$WF" && echo no || echo yes)"
+
+# `deep` is parsed here but ENFORCED in guard.sh. Without this env line the token
+# parses, logs, and changes nothing — exactly the inert state this replaced.
+assert_wiring "the guard reads force_deep as GATE_FORCE_DEEP" \
+  "$(grep -q 'GATE_FORCE_DEEP: ${{ steps.cmd.outputs.force_deep }}' "$WF" && echo yes || echo no)"
 
 # A step still on the plan's advisory flag would install a browser and boot a
 # dev-env for a comment that never asked for one.

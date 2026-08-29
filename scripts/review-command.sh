@@ -3,14 +3,16 @@
 # Pure function of its env; unit-tested in tests/review_command_test.sh.
 #
 # The code review always runs and scales its own depth (review-scan decides), so
-# there is no token to turn it off and none to deepen it. Only the browser tester
-# is opt-in.
+# there is no token to turn it off. Only the browser tester (`functional`) and
+# the guard's size-ceiling override (`deep`) are opt-in.
 #
 # In  (env): CMD_BODY (comment body or the `command` input), CMD_TRIGGER, CMD_EVENT
 # Out (KEY=value on stdout, ready for $GITHUB_OUTPUT):
 #   action=run|help|unknown|ignore   run | post the menu | bad token, post the menu | not for us
 #   run_functional=true|false        browser tester
-#   force_deep=true|false            accepted, ignored downstream (review-scan self-scales)
+#   force_deep=true|false            `deep`: overrides guard.sh's oversized ceiling
+#                                    for THIS run (workflow passes it as GATE_FORCE_DEEP).
+#                                    The `deep-review` label is the persistent equivalent.
 #   passes=<normalized tokens>       for logs
 #   message=<single-line reply>      help/unknown, and the `native` removal notice
 #
@@ -29,7 +31,7 @@ emit() {
     "$1" "$2" "$3" "$4" "$5"
 }
 help_msg() {
-  printf '%s' "Comment \`$TRIGGER code\` (code review) or \`$TRIGGER functional\` (+ browser test), or \`$TRIGGER all\` for both — combine them in ONE comment; separate comments queue up and post separate reviews. The reviewer scales its own depth, so there is nothing to tune. \`native\` and \`deep\` are accepted but do nothing."
+  printf '%s' "Comment \`$TRIGGER code\` (code review) or \`$TRIGGER functional\` (+ browser test), or \`$TRIGGER all\` for both — combine them in ONE comment; separate comments queue up and post separate reviews. Add \`deep\` (e.g. \`$TRIGGER code deep\`) to review a PR that is over the size ceiling; it applies to that run only, while the \`deep-review\` label does the same on every push. Otherwise the reviewer scales its own depth. \`native\` is accepted but does nothing."
 }
 
 # `native` ran Anthropic's `code-review` plugin as a second opinion in-session.
@@ -80,6 +82,7 @@ for raw in $ARGS; do
     native|anthropic|plugin)       native_note="$NATIVE_NOTE"; add_pass code ;;
     all|everything)                run_functional=true
                                    add_pass code; add_pass functional ;;
+    # Not a pass of its own: it lifts the guard's size ceiling for this run.
     deep|full)                     force_deep=true;     add_pass deep ;;
     help|\?)
       emit "help" "false" "false" "" "$(help_msg)"
