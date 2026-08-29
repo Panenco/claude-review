@@ -346,7 +346,10 @@ DEV_ENV_NOTICE=""
 if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ]; then
   DEV_ENV_RC=$(cat "${DEV_ENV_RC_FILE:-/tmp/dev-env/rc}" 2>/dev/null || echo "")
   if [ "$DEV_ENV_RC" != "0" ]; then
-    why=$([ -z "$DEV_ENV_RC" ] && echo "did not finish starting in time" || echo "exited $DEV_ENV_RC")
+    # html_escape, exactly like `tail` below: the rc is FILE CONTENT, not a
+    # number this script computed, and it lands inside an HTML <sub> block. A
+    # `<b>` in that file reached a public review body raw.
+    why=$([ -z "$DEV_ENV_RC" ] && echo "did not finish starting in time" || echo "exited $(html_escape "$DEV_ENV_RC")")
     # One line, and the LAST error the bring-up printed — a whole log in a review
     # body is unreadable and would evict findings under the byte budget.
     # Prefer the consumer script's OWN `::error::` annotation. setup-dev-env.sh
@@ -530,8 +533,12 @@ awk '
 # NOTHING IS SILENTLY DROPPED (see this header): the fence a check loses below is
 # model-written content, so its removal is announced even though keeping it could
 # damage the PR.
+# THREE OR MORE backticks, both here and in `unfence` below. GitHub opens a
+# fenced block on any run of three or more, so ````suggestion is as committable
+# as ```suggestion — and a regex pinned to exactly three let that shape through
+# with its range intact AND no warning anywhere.
 FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
-                                  and ((.body // "") | test("(^|\n)[ \t]*```[ \t]*suggestion"; "i")))] | length' \
+                                  and ((.body // "") | test("(^|\n)[ \t]*`{3,}[ \t]*suggestion"; "i")))] | length' \
                   "$WORK/comments.json" 2>/dev/null || echo 0)
 if [ "${FENCED_CHECKS:-0}" -gt 0 ]; then
   echo "::warning::Stripped a committable suggestion fence from $FENCED_CHECKS check comment(s) — a check spans a whole block, so an applied fence would replace every line of it."
@@ -559,13 +566,35 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # fence. The RANGE is the feature (a check points at the block it asks about),
   # so the FENCE is what goes. Everything else — the question, the prose either
   # side of it — is left exactly as written.
+  #
+  # THREE OR MORE BACKTICKS, and the closer must be at least as long as the
+  # opener — the rule GitHub itself applies. Pinning both ends to exactly three
+  # let a ````suggestion block through untouched, and closing a four-backtick
+  # opener on a three-backtick line inside it would stop the strip early and
+  # leave the real closer stranded in the output.
+  #
+  # AN UNTERMINATED FENCE DROPS THE OPENER, NOT THE QUESTION. The in-fence flag
+  # never cleared without a closer, so every line the model wrote after the
+  # opener vanished — and the warning said a FENCE was stripped, which is not the
+  # same as saying the question went with it. That is what the NOTHING IS
+  # SILENTLY DROPPED banner at the top of this file forbids, and losing the fence
+  # is the safety requirement while losing the question never was. So in-fence
+  # lines are BUFFERED, not discarded: a closer discards the buffer (the fence
+  # really was a suggestion), and reaching the end still inside one restores it.
+  # Safe by construction — if any line after the opener had been a fence, the
+  # fence would have closed, so an unterminated buffer holds no fence line and
+  # cannot re-open one. The lone exception is a SHORTER fence line the closer
+  # rule skipped over; it is a bare marker carrying no words, so it is dropped
+  # rather than left behind unbalanced.
+  def fencelen: ((capture("^[ \t]*(?<b>`{3,})") | .b | length) // 0);
   def unfence:
     ((. // "") | split("\n")
-     | reduce .[] as $l ({o: [], f: false};
-         if .f then (if ($l | test("^\\s*```")) then .f = false else . end)
-         elif ($l | test("^\\s*```\\s*suggestion"; "i")) then .f = true
+     | reduce .[] as $l ({o: [], b: [], f: 0};
+         if .f > 0 then (if ($l | fencelen) >= .f then .b = [] | .f = 0 else .b += [$l] end)
+         elif ($l | test("^[ \t]*`{3,}[ \t]*suggestion"; "i")) then .f = ($l | fencelen)
          else .o += [$l] end)
-     | .o | join("\n") | gsub("\n{3,}"; "\n\n") | sub("\\s+$"; ""));
+     | (if .f > 0 then .o + (.b | map(select((fencelen) == 0))) else .o end)
+     | join("\n") | gsub("\n{3,}"; "\n\n") | sub("\\s+$"; ""));
   def title:
     ((.body // "") | split("\n") | (.[0] // "")
      | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "") | .[:90] | sub("\\s+$"; ""))
@@ -703,10 +732,18 @@ function mlen(s) { return length(s) - 9 * nph(s) }
 function phkey(s) { return (match(s, /\{\{LINK:[^{}]*\}\}/) ? substr(s, RSTART + 7, RLENGTH - 9) : "") }
 # `path` of a phkey, with the `:<line>` suffix (if any) removed.
 function bpath(s) { sub(/:[0-9]+$/, "", s); return s }
+# The `:<line>` suffix of a phkey, or "" — the other half of bpath().
+function bline(s) { return (match(s, /:[0-9]+$/) ? substr(s, RSTART + 1) : "") }
 # Compare titles on their text alone: CR gone, whitespace runs collapsed, trimmed.
 # Backticks, markdown and non-ASCII are left exactly as written — both sides are
 # rendered from the same string, so byte equality is the point.
 function norm(s) { gsub(/\r/, "", s); gsub(/[ \t]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
+# The 90-character title prefix the two SURFACES can be compared on. A fallback
+# bullet's title came through the jq `title` def, which clamps to `.[:90]` and
+# then trims what the cut left dangling; a body bullet's title is whole. Compared
+# whole they never match, so the body side is cut here — and trimmed the same
+# way, or a title whose 90th character is a space differs by that one byte.
+function t90(s) { s = substr(norm(s), 1, 90); sub(/[ \t]+$/, "", s); return s }
 # Title of an inline comment = its first line minus the leading `**severity**`.
 function ctitle(s) { sub(/^[ \t]*\*\*[A-Za-z]+\*\*[ \t]*/, "", s); return norm(s) }
 # Title of a `### Findings` bullet = everything after its first {{LINK:}} and the
@@ -753,13 +790,30 @@ function isdup(key, ln,   p, t) {
 # `**critical** SQL injection` at src/foo.ts:99 was discarded because an
 # unrelated `**minor** variable name is unclear` bullet sat at that same line,
 # and the log announced the deletion as a de-duplication.
-# Same finding = same path AND same severity AND same title. The LINE may differ:
-# verify re-anchors, and the title is the identity. A bullet the body does not
-# carry under that signature is a second finding, and it stays.
-function fbdup(key, ln,   p) {
+# BUT UNANIMITY IS TOO STRICT, AND #132's VERSION DOUBLE-PRINTED. Demanding path
+# AND severity AND title, with no line key at all, means any drift on either
+# field prints the finding twice — once under `### Findings`, once under
+# `### Also flagged`, with two contradictory severities on one defect. Two ways
+# it fires: the model writes `**critical**` in the body and `**major**` in the
+# comment (routine), and — MECHANICALLY, with no inconsistency at all — the jq
+# `title` def clamps to `.[:90]`, so every finding with a longer title has a
+# fallback bullet that is a truncated PREFIX of the body's.
+#
+# The identity is path + the 90-char title prefix + (line OR severity). Both
+# weak keys are kept, and either one confirming is enough: the title carries the
+# identity, and one corroborating field distinguishes a drifted restatement from
+# a genuinely second finding that happens to share a title. (y1b) — same title,
+# different line AND different severity — is what keeps both keys honest.
+function fbdup(key, ln,   p, m, a, i, id) {
   p = bpath(key)
   if (p == "") return 0
-  return claim(fidx[p SUBSEP bsev(ln) SUBSEP btitle(ln)])
+  m = split(fidx[p SUBSEP t90(btitle(ln))], a, " ")
+  for (i = 1; i <= m; i++) {
+    id = a[i]
+    if (used[id]) continue
+    if (fline[id] == bline(key) || fsev[id] == bsev(ln)) { used[id] = 1; return 1 }
+  }
+  return 0
 }
 function hardcut(s, budget,   out, ml, ph, phm) {
   out = ""; ml = 0
@@ -781,9 +835,13 @@ function hardcut(s, budget,   out, ml, ph, phm) {
 # callers, so the two passes cannot drift on what a bullet or a section is.
 function ishdr(s)    { return (s ~ /^[ \t]*###/) }
 function isblank(s)  { return (s ~ /^[ \t]*$/) }
-function isbullet(s) { return (s ~ /^[ \t]*[-*][ \t]/) }
 # A TOP-LEVEL bullet is ONE finding. An indented `  - ` beneath it is that
-# finding's detail, and counting it as a finding is how `### Findings (5)` ended
+# finding's detail — never a finding of its own, and never a block boundary. It
+# is the ONLY bullet predicate any pass may use: an `isbullet` that also matched
+# the indented form let a detail line into the strip's bullet arm, where it found
+# no {{LINK:}}, took an empty key, skipped the duplicate test and came out as
+# "kept" while its parent was stripped. See the strip loop.
+# Counting an indented bullet as a finding is also how `### Findings (5)` ended
 # up over two findings.
 function istop(s)    { return (s ~ /^[-*][ \t]/) }
 # Drop every `###` section left with no item, plus trailing blank lines.
@@ -829,7 +887,12 @@ BEGIN {
       ka = kfld[1]
       if (ka == "" || nf < 3) continue
       nk++
-      fk = bpath(ka) SUBSEP tolower(kfld[2]) SUBSEP norm(kfld[3])
+      # Keyed on path + the 90-char title prefix ALONE; the line and the
+      # severity ride alongside so fbdup() can require either one of them, not
+      # both. Keying on all three is what made a drifted severity — or a title
+      # the jq clamp truncated — miss and print the finding twice.
+      fk = bpath(ka) SUBSEP t90(kfld[3])
+      fline[nk] = bline(ka); fsev[nk] = tolower(kfld[2])
       fidx[fk] = fidx[fk] " " nk
       continue
     }
@@ -893,12 +956,18 @@ END {
         continue
       }
       if (isblank(l)) { skipping = 0; out[++kept] = l; continue }
-      if (insec && isbullet(l)) {
+      # TOP-LEVEL bullets only. An indented `  - ` detail line belongs to the
+      # bullet above it, so it must fall through to the `skipping` test below and
+      # go wherever its parent went. Matching it here gave it an empty key (it
+      # carries no {{LINK:}}), skipped the duplicate test, kept it AND cleared
+      # `skipping` — so a stripped critical left its own detail prose standing,
+      # reparented under `### Findings`, which renumber() then counted as (0).
+      if (insec && istop(l)) {
         k = phkey(l)
         if (k != "" && isdup(k, l)) { skipping = 1; continue }
         skipping = 0; out[++kept] = l; continue
       }
-      if (skipping) continue          # a wrapped continuation line of a stripped bullet
+      if (skipping) continue          # a continuation or detail line of a stripped bullet
       out[++kept] = l
     }
     for (h = 1; h <= nh; h++) {
