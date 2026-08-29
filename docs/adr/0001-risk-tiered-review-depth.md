@@ -6,7 +6,7 @@ date: 2026-06-04
 
 # 0001 — Risk-tiered review depth
 
-> **SUPERSEDED by [ADR 0003](0003-two-call-review.md) (2026-08-27).** There are
+> **SUPERSEDED by [ADR 0003](0004-two-call-review.md) (2026-08-27).** There are
 > no depth tiers any more. `scripts/review-plan.sh` and `docs/review-plan.md`
 > are deleted; `skills/review-scan.md` reads the diff and
 > scales its own depth, and `scripts/guard.sh` decides only whether a model runs

@@ -1,6 +1,6 @@
 # Claude PR Review Pipeline
 
-Reusable PR review pipeline powered by Claude Code. **Two model calls:** a reviewer that reads the diff and scales its own depth, then an adversary whose only job is to refute what the first one found. An end-to-end functional tester (Sonnet driving a real browser) runs when you ask for one, and can never change the verdict. See [ADR 0003](docs/adr/0003-two-call-review.md).
+Reusable PR review pipeline powered by Claude Code. **Two model calls:** a reviewer that reads the diff and scales its own depth, then an adversary whose only job is to refute what the first one found. An end-to-end functional tester (Sonnet driving a real browser) runs when you ask for one, and can never change the verdict. See [ADR 0003](docs/adr/0004-two-call-review.md).
 
 **Reviews are on demand.** Nothing runs on push. You ask for a review by commenting on the PR, and the comment says which passes to run.
 
@@ -28,14 +28,13 @@ Reusable PR review pipeline powered by Claude Code. **Two model calls:** a revie
 
 ### 1. Add the caller workflow
 
-Create `.github/workflows/claude-review.yml` in your repo. Track the `@v3` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 3 so the reviewer does not re-flag `@v3 + secrets: inherit` on every PR.
+Create `.github/workflows/claude-review.yml` in your repo. Track the `@v3` tag so pipeline fixes propagate automatically across all consumer repos — the reusable workflow and its composite action both get pulled fresh at job start. Pair this with the `bugbot.md` policy line in Step 4 so the reviewer does not re-flag `@v3 + secrets: inherit` on every PR.
 
 ```yaml
 name: Claude PR Review
 on:
   issue_comment:
     types: [created]
-  pull_request_target: # warms the browser cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
@@ -69,7 +68,7 @@ jobs:
 
 You do **not** forward the comment body. A reusable workflow sees the caller's `github` context, so it reads `github.event.comment.body` itself; `command` exists only for `workflow_dispatch`, which has no comment to read (an empty command there means a plain judge review — clicking *Run workflow* is the opt-in).
 
-`pull_request_target` only warms the browser/dependency cache; it never reviews. Keep it if your team uses `/review functional` regularly, drop it otherwise.
+There is deliberately **no `pull_request_target`**. Earlier versions used it to run a cache-warm job here; that trigger has read-only access to the cache and the warm stored nothing. Warming now lives in its own workflow — see *Add the cache-warm workflow* below.
 
 The `permissions:` block is required: reusable workflow permissions are capped by the caller's, and GitHub's default `GITHUB_TOKEN` is read-only at most orgs. Omitting it produces `startup_failure` with no logs. Add `id-token: write` now even though nothing uses it yet — the reviewer will soon mint an OIDC token to draw on the requester's own Claude seat, and a caller that lacks the line then fails at startup with no logs. `actions: read` is **no longer required** — round-2 state is derived from the PR's own review history, not from workflow artifacts; existing callers that still grant it are unaffected and can leave it in. See `prompts/setup-review.md` for the full troubleshooting flow.
 
@@ -94,7 +93,7 @@ Without `pipeline_ref`, the install defaults to `@v3` and consumers get new orch
 
 Empty (the default) skips all bot-initiated runs. Two notes for allowed bots: dependabot-triggered events receive *Dependabot secrets*, not Actions secrets — add `CLAUDE_CODE_OAUTH_TOKEN` there too or the token picker fails. And bot-authored PRs waive the manual-spec gate (a machine PR can never link a human spec), so they can reach APPROVE on review merit alone.
 
-**Caching the dev-env build (`dev_cache_*`).** The functional tester runs `dev-start.sh` on a fresh runner every review, so any compiled/downloaded artefacts (a Gradle/Maven build, a Go module cache, a Rust `target`, …) are rebuilt cold each time — often the single biggest chunk of bring-up wall-time. The pnpm/npm store is already cached for you; everything else is opt-in and **stack-agnostic** via four inputs. It reuses the same producer/consumer split as the package store — the lightweight **warm-cache job** (which runs in `main` scope on `pull_request_target`) populates the cache, and the functional job only restores it:
+**Caching the dev-env build (`dev_cache_*`).** The functional tester runs `dev-start.sh` on a fresh runner every review, so any compiled/downloaded artefacts (a Gradle/Maven build, a Go module cache, a Rust `target`, …) are rebuilt cold each time — often the single biggest chunk of bring-up wall-time. The pnpm/npm store is already cached for you; everything else is opt-in and **stack-agnostic** via four inputs. It reuses the same producer/consumer split as the package store — the lightweight **warm-cache workflow** (below) populates the cache, and the functional job only restores it. Pass the same four values to both workflows:
 
 ```yaml
 with:
@@ -114,10 +113,10 @@ You pass **globs, not a pre-hashed key**: a reusable-workflow caller's `with:` h
 
 Other stacks are the same shape — Go: `~/go/pkg/mod`, key files `**/go.sum`, warm `go mod download`; Maven: `~/.m2/repository`, key files `**/pom.xml`, warm `mvn -q dependency:go-offline`; Rust: `~/.cargo`, key files `**/Cargo.lock`, warm `cargo fetch`.
 
-> The warm-cache job is a vanilla runner (`ubuntu-latest` unless you set `runner`) with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
+> The warm-cache workflow is a vanilla runner (`ubuntu-latest` unless you set `runner`) with only Node set up, so the warm command owns its toolchain. Use the runner's preinstalled versions (`$JAVA_HOME_21_X64`, `$GOROOT_1_22_X64`, …) or install what it needs — no `setup-java`/`setup-go` runs for you there.
 
 How it works and how far the warmth reaches:
-- **`dev_cache_warm_command`** runs in the warm-cache job — `main` scope, against the trusted **base ref** (never PR head). Because it writes to `main` scope, **every** PR's functional job restores it, not just re-pushes of the same branch. It runs **only on a cache miss** (i.e. after the key rotates), so steady-state it's a no-op. Keep it cheap and PR-code-free — a dependency *resolve/prefetch*, not a full build.
+- **`dev_cache_warm_command`** runs in the warm-cache workflow — the default branch's cache scope, against the default branch (never PR head). `pr-review.yml` accepts the input too but ignores it; only the warm workflow acts on it. Because it writes to the default branch's scope, **every** PR's functional job restores it, not just re-pushes of the same branch. It runs **only on a cache miss** (i.e. after the key rotates), so steady-state it's a no-op. Keep it cheap and PR-code-free — a dependency *resolve/prefetch*, not a full build.
 - The functional job **restores** the cache after disk cleanup, before the bring-up, so `dev-start.sh` builds warm. It does **not** save (no extra weight on the long review job).
 - Omit `dev_cache_warm_command` and only the restore runs — useful if your **own** main CI already writes a cache under the same key/prefix (Actions caches are repo-scoped, so it's reused here).
 - Leave all of it unset to disable caching entirely — no cache step runs.
@@ -135,11 +134,11 @@ with:
 
 **This default fails closed, not open.** ARC resolves the label through the runner group; a repo the group does not list gets no runner and no fallback — the job queues until GitHub's 24 h timeout and then fails. Two rules follow. A repo must be added to the `claude-review` group's selected-repositories list *before* it inherits this default. And the group is created with `allows_public_repositories: false`, so **every public repo must pass `runner: ubuntu-latest`** — including `panenco/claude-review` itself, which is why its own caller sets it explicitly.
 
-`runner` sets `runs-on` for **both** the review job and the warm-cache job — one input, deliberately, because the two must land on the same fleet. The Actions cache is a repo-scoped remote service, so a self-hosted job *can* restore what a hosted job saved, but cache keys are scoped by `runner.os` **and** `runner.arch`: a warm-cache job on hosted x64 and a review job on an arm64 fleet would never match keys, and every review would run cold.
+Pass the **same `runner` to `pr-review.yml` and `warm-cache.yml`** — the two must land on the same fleet. The Actions cache is a repo-scoped remote service, so a self-hosted job *can* restore what a hosted job saved, but cache keys are scoped by `runner.os` **and** `runner.arch`: a warm on hosted x64 and a review job on an arm64 fleet would never match keys, and every review would run cold.
 
 Two things your fleet needs. It must have **network egress to the GitHub Actions cache service** — without it, caching silently degrades to always-cold (reviews still work, just slower). And the image should carry **Chrome's shared libraries** (`libnss3`, `libatk1.0-0t64`, `libgbm1`, `libasound2t64`, … — what `playwright install --with-deps` or `agent-browser install --with-deps` apt-installs): the browser binary itself unpacks into `$HOME` and needs no root, but those libs do, and a non-root container cannot apt-install them at review time. The pipeline preflights the browser and warns rather than failing when they're missing; the functional tester then reports `CRASH` instead of testing.
 
-The warm-cache job is `pull_request_target`-triggered but PR-code-free by construction — the checkout lands on the base ref, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. Note that it inherits `runner` too, so a caller that wires the `pull_request_target` trigger lands a `secrets: inherit` job on the fleet; callers that would rather keep that combination off self-hosted infrastructure simply omit the trigger.
+The warm-cache workflow is PR-code-free by construction — it runs off the default branch, `pnpm fetch` reads only the lockfile, and `dev_cache_warm_command` is trusted caller config — so it is safe to run on your own fleet. It needs no secrets at all.
 
 **The native `code-review` pass is gone.** `/review native` used to dispatch Anthropic's official `code-review` plugin in-session as a second opinion. The v4 rewrite removed it along with the judge panel it second-guessed: the review is now one self-scaling reviewer plus a refutation pass, and a third opinion bought no signal it could not already produce. Deleted with it: the `plugin_marketplaces` / `plugins` inputs on the action (and the unpinnable marketplace ref they installed), `skills/review-native.md`, `agents/review-native.md`, the `SubagentStop` hook that enforced its output, and `scripts/require-native-findings.sh`.
 
@@ -149,7 +148,52 @@ The warm-cache job is `pull_request_target`-triggered but PR-code-free by constr
 
 
 
-### 2. Set secrets
+### 2. Add the cache-warm workflow
+
+Create `.github/workflows/claude-review-warm.yml`. This is the **producer** half of the review cache; the review job only ever restores.
+
+```yaml
+name: Claude Review Cache Warm
+on:
+  push:
+    branches: [main]          # your default branch
+    paths:
+      - '**/pnpm-lock.yaml'
+      - '**/package-lock.json'
+  schedule:
+    - cron: '0 5 * * 1'       # covers the 7-day idle eviction on a quiet week
+  workflow_dispatch:
+
+concurrency:
+  group: claude-review-warm
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    uses: panenco/claude-review/.github/workflows/warm-cache.yml@v3
+    permissions:
+      contents: read
+    with:
+      # Same value you pass to pr-review.yml. Public repos MUST set
+      # ubuntu-latest — see "Self-hosted runners" below.
+      runner: panenco-claude-review
+      # Only if you use the dev_cache_* feature — same four values as the
+      # review caller. Add the key-file globs to `paths:` above too.
+      # dev_cache_paths: |
+      #   ~/.gradle/caches/modules-2
+      # dev_cache_key_files: |
+      #   **/gradle/libs.versions.toml
+      # dev_cache_key_prefix: gradle
+      # dev_cache_warm_command: cd backend/java && ./gradlew :api:dependencies --no-daemon
+```
+
+**Why this is a separate workflow, and why the trigger list is not negotiable.** GitHub lets only `push`, `workflow_dispatch`, `repository_dispatch`, `schedule`, `delete`, `registry_package` and `page_build` create or overwrite caches in the default branch's scope. Every other event that resolves to the default branch gets **read-only** access — explicitly including `pull_request_target`, `issue_comment` and `workflow_run`, whose payload or initiating actor can be influenced from outside the repo. It is cache-poisoning protection and it cannot be granted away; `actions: write` makes no difference.
+
+A reusable workflow inherits the **caller's** event, so a warm job living next to the review trigger inherits a read-only one and every save is refused. GitHub reports that refusal as a warning, not a failure — which is why the earlier design ran green while storing nothing for a month ([#101](https://github.com/panenco/claude-review/issues/101)). `warm-cache.yml` now asserts its caller's event up front and **fails** if it cannot write, so a misconfigured trigger is visible on the first run.
+
+Skip this workflow entirely if your team does not use `/review functional`: without it reviews still work, they just install cold.
+
+### 3. Set secrets
 
 Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo or org secret. Generate it with:
 
@@ -161,7 +205,7 @@ Optional — when one Claude.ai subscription's 5-hour rate-limit window keeps bl
 
 Optional: for a custom review bot identity, also set `CLAUDE_REVIEW_APP_CLIENT_ID`, `CLAUDE_REVIEW_APP_PRIVATE_KEY`, and `CLAUDE_REVIEW_APP_SLUG`.
 
-### 3. (Optional) Add project config
+### 4. (Optional) Add project config
 
 For best results, add two optional files:
 
@@ -242,7 +286,7 @@ The v4 answer is cheaper and sharper: **one reviewer, then one adversary.** `rev
 
 Two rules do most of the work upstream of it. **Every finding must name a concrete failure scenario** — a real input or state producing a real wrong output — and a finding that cannot is deleted by the model that found it, not downgraded to `minor` to survive. And **zero findings is the correct output for a clean PR**; most PRs deserve one.
 
-> **Depth is the model's call, not a table's.** There are no tiers. `scripts/guard.sh` answers exactly one question — does a model run at all — and `review-scan` picks light or full from the diff itself, recording which and why in `depth_used`. A small change to auth logic gets the full pass because the reviewer can see what it touches, not because a glob matched. Oversized PRs (over the size ceiling) are still blocked with a `REQUEST_CHANGES` asking to split, with no model call at all. Functional testing runs when, and only when, a comment asks for it. See [ADR 0003](docs/adr/0003-two-call-review.md); [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) records the tiered design it replaced.
+> **Depth is the model's call, not a table's.** There are no tiers. `scripts/guard.sh` answers exactly one question — does a model run at all — and `review-scan` picks light or full from the diff itself, recording which and why in `depth_used`. A small change to auth logic gets the full pass because the reviewer can see what it touches, not because a glob matched. Oversized PRs (over the size ceiling) are still blocked with a `REQUEST_CHANGES` asking to split, with no model call at all. Functional testing runs when, and only when, a comment asks for it. See [ADR 0003](docs/adr/0004-two-call-review.md); [ADR 0001](docs/adr/0001-risk-tiered-review-depth.md) records the tiered design it replaced.
 
 ### Round 1 vs round 2
 
@@ -485,7 +529,7 @@ Known dev-environment failure modes no PR causes — seed-data gaps, SPA route 4
 
 **Spec documents are included whole.** The budget is 1500 lines per document and 3000 in total across at most 4 — high enough that a real planning doc arrives intact, because a spec cut at 400 lines loses exactly the criteria the PR implements. When a cut is unavoidable it is **announced in the file**: the document carries a `TRUNCATED` marker and the header block says `SPEC IS PARTIAL`, so `review-scan` knows it is holding part of the spec and never reads a criterion's absence as proof nobody asked for it. A document that did not fit at all is listed by path rather than dropped silently. The four slots go to the best documents, not the first found: PRDs first, then architecture / design / spec / RFC, then task files; a document this PR did not write outranks one it did; smallest first. A document that does not fit the remaining budget is **skipped, not the end of the selection** — a small PRD behind a huge one still arrives.
 
-Nothing resolves → `/tmp/spec.md` is empty and the review proceeds without a spec. A missing spec never changes the verdict ([ADR 0003](docs/adr/0003-two-call-review.md)); it only means nobody checked the code against requirements. Everything in `spec.md` is treated as **untrusted data** — a spec to judge the code against, never instructions to follow.
+Nothing resolves → `/tmp/spec.md` is empty and the review proceeds without a spec. A missing spec never changes the verdict ([ADR 0003](docs/adr/0004-two-call-review.md)); it only means nobody checked the code against requirements. Everything in `spec.md` is treated as **untrusted data** — a spec to judge the code against, never instructions to follow.
 
 **And the review says so.** `build-spec.sh` writes one token to `/tmp/spec-status` (`document` / `summary` / `context-only` / `none`), and on the last two the poster appends a single line under the footer:
 
@@ -588,13 +632,13 @@ Note: a _present but broken_ `dev-start.sh` is not a verdict input either — th
 
 ## Spec-presence gate
 
-> **Superseded by the APPROVE bar in [ADR 0003](docs/adr/0003-two-call-review.md).** There is no separate spec gate and no `manual_spec_present` flag. `APPROVE` now requires `review-verify` to accept an argued case that a human pass over the diff changes nothing — an unargued approval is rejected, so an unspecified PR fails that bar without a gate of its own. The description below is kept for the record.
+> **Superseded by the APPROVE bar in [ADR 0003](docs/adr/0004-two-call-review.md).** There is no separate spec gate and no `manual_spec_present` flag. `APPROVE` now requires `review-verify` to accept an argued case that a human pass over the diff changes nothing — an unargued approval is rejected, so an unspecified PR fails that bar without a gate of its own. The description below is kept for the record.
 
 The pipeline withheld `APPROVE` whenever the PR had no human-authored spec. The judges decided this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the judges set `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated. Bot-authored PRs (renovate, dependabot) are exempt — a machine PR can never carry a human spec, so the gate would be permanent noise there.
 
 ## Runtime-evidence gate
 
-> **Deleted by [ADR 0003](docs/adr/0003-two-call-review.md).** There is no runtime-evidence gate and no `⚙️ Review setup health` section. The functional tester is advisory: it can neither raise nor lower a verdict, and a missing or broken dev env costs nothing. The description below is kept for the record.
+> **Deleted by [ADR 0003](docs/adr/0004-two-call-review.md).** There is no runtime-evidence gate and no `⚙️ Review setup health` section. The functional tester is advisory: it can neither raise nor lower a verdict, and a missing or broken dev env costs nothing. The description below is kept for the record.
 
 Whenever the planner judged a PR has runtime behaviour to exercise (`## Strategy ∈ {quick, functional}` in `test-plan.md`), the functional tester walks through one representative user flow (picked from which code paths the change affects) with screenshots, and the verdict depends on how that smoke run ended:
 
@@ -715,9 +759,9 @@ permissions:
 
 ### 2. New verdict gates (no wiring needed; verdicts on existing PRs may shift)
 
-- **Runtime-evidence gate** — **deleted by [ADR 0003](docs/adr/0003-two-call-review.md).** A missing `dev-start.sh`, a failed bring-up or a tester crash no longer affects the verdict at all. Fleet data showed this gate produced 31% of all `REQUEST_CHANGES` while naming zero defects. Functional results are advisory: a reproduced failure becomes an ordinary finding or a human-review item.
+- **Runtime-evidence gate** — **deleted by [ADR 0003](docs/adr/0004-two-call-review.md).** A missing `dev-start.sh`, a failed bring-up or a tester crash no longer affects the verdict at all. Fleet data showed this gate produced 31% of all `REQUEST_CHANGES` while naming zero defects. Functional results are advisory: a reproduced failure becomes an ordinary finding or a human-review item.
 - **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with **no model call at all** — `guard.sh` renders that body itself. Ask again after splitting and the block re-evaluates against the new size. If the PR genuinely cannot be split, comment `/review deep` (or `/review code deep`, `/review all deep` — it composes with any pass) to review it anyway; the `deep-review` label is the persistent equivalent, applying to every push instead of one run. Either input alone lifts the ceiling. `skip-review` parks a PR the bot must not touch and wins over both — it stays label-only, because "never review this PR" is state, not a one-shot request.
-- **Manual-spec gate** — **deleted by [ADR 0003](docs/adr/0003-two-call-review.md).** A missing spec no longer downgrades the verdict on its own. `APPROVE` now requires `review-scan` to argue why a human pass would change nothing, plus no sensitive path touched and a low review-effort score — so an unspecified PR usually lands on `COMMENT` anyway, but because nothing could be vouched for, not because a gate fired.
+- **Manual-spec gate** — **deleted by [ADR 0003](docs/adr/0004-two-call-review.md).** A missing spec no longer downgrades the verdict on its own. `APPROVE` now requires `review-scan` to argue why a human pass would change nothing, plus no sensitive path touched and a low review-effort score — so an unspecified PR usually lands on `COMMENT` anyway, but because nothing could be vouched for, not because a gate fired.
 Only two things now decide a verdict: surviving findings, and the oversized guard. `REQUEST_CHANGES` means a confirmed critical or major finding, or a diff too large to read. Everything else — no spec, no dev env, a crashed tester — is reported, never blocked on.
 
 ### 3. New optional knobs (defaults preserve v1 behaviour)

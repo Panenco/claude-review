@@ -15,6 +15,11 @@ on:
       # not run when the wiring changes is not a test.
       - 'action.yml'
       - '.github/workflows/pr-review.yml'
+      # warm_cache_wiring_test.sh asserts that the cache warm sits on a trigger
+      # that can WRITE the default branch's cache scope, and that pr-review.yml
+      # never saves. Both halves and both callers are the wiring under test.
+      - '.github/workflows/warm-cache.yml'
+      - '.github/workflows/claude-review-warm.yml'
       # review_command_test.sh asserts on the CALLER too — that it triggers on
       # issue_comment and not pull_request. A wiring test that does not run when
       # the wiring changes is not a test.
@@ -45,6 +50,9 @@ jobs:
 
       - name: Run guard_test.sh
         run: bash tests/guard_test.sh
+
+      - name: Run warm_cache_wiring_test.sh
+        run: bash tests/warm_cache_wiring_test.sh
 
       - name: Run review_command_test.sh
         run: bash tests/review_command_test.sh

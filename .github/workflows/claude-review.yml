@@ -2,10 +2,14 @@ name: Claude PR Review
 
 # ON DEMAND — nothing reviews on push. Comment `/review code | functional | all`
 # on a PR; combine passes in one comment for a single review.
+#
+# No `pull_request_target`. It used to be here to run the warm-cache job, but that
+# trigger has READ-ONLY access to the default branch's cache scope, so the warm
+# stored nothing. The warm now lives in claude-review-warm.yml, on a trigger that
+# can write. See panenco/claude-review#101.
 on:
   issue_comment:
     types: [created]
-  pull_request_target: # warms the browser cache in main scope
   workflow_dispatch:
     inputs:
       pr_number:
