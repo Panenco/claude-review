@@ -182,7 +182,7 @@ These are signals you weigh while reading, **not a lookup table that decides for
 
 ### The test
 
-Not *"am I uncertain about this?"* — uncertainty is not what a note is for. You can be entirely sure what a block does and still owe the reader the note, and you can be thoroughly unsure about a block nobody needs to read. The test is:
+You can be entirely sure what a block does and still owe the reader the note, and you can be thoroughly unsure about a block nobody needs to read. The test is:
 
 > **Does a reviewer reading this block go faster for having read the note first?**
 
@@ -231,7 +231,7 @@ Each note: `{path, start_line, end_line, what_it_does (≤140 chars), spec_ref (
 
 `approve_argument` (≤240 chars) is the case for approving: what you verified and why the remaining risk is nil. Write it whenever you believe this diff is approvable; leave it empty when you do not. Stage 2 approves on that argument plus its own gates, and rejects an unargued approval outright — there is no separate boolean, because a boolean without the argument was only ever a guess.
 
-**Zero notes is a reason to approve, not a reason to hesitate.** It used to be the opposite: an item meant "a human pass changes something", so notes and approval were the same judgement from two sides and could not both stand. A note is now a reading aid, so an empty list means *no block needed orienting* — on a simple diff that is the normal, correct, confident outcome, and the verdict that belongs with it is APPROVE, not a COMMENT carrying filler.
+**Zero notes is a reason to approve, not a reason to hesitate.** It used to be the opposite, when an item meant "a human pass changes something". A note is now a reading aid, so an empty list means *no block needed orienting* — on a simple diff that is the normal, correct, confident outcome, and the verdict that belongs with it is APPROVE, not a COMMENT carrying filler.
 
 **A doubt you cannot name is not a reason to withhold approval.** Name it as a finding at the finding bar, or let it go.
 
