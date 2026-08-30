@@ -4,7 +4,7 @@
 # claude-code-action's restore-config.ts lists .claude in SENSITIVE_PATHS and replaces the
 # workspace .claude/ tree on PR-head jobs, wiping any project-scope subagent file.
 name: review-scan
-description: Stage 1 of the review. Reads the PR diff itself, self-scales its depth, and writes /tmp/scan.json with candidate findings, model-chosen human-review items, and an argued approve position. Never posts anything.
+description: Stage 1 of the review. Reads the PR diff itself, self-scales its depth, and writes /tmp/scan.json with candidate findings, orientation notes for the human reviewer, and an argued approve position. Never posts anything.
 model: ${MODEL_HIGH}
 effort: medium
 tools: Bash, Read, Write, Glob, Grep

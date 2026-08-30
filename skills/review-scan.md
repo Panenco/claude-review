@@ -1,6 +1,6 @@
 ---
 name: review-scan
-description: Stage 1 of the review pipeline. Reads the PR diff itself, self-scales its depth, and writes /tmp/scan.json — candidate findings, human-review items, and an argued approve/no-approve position. Never posts anything.
+description: Stage 1 of the review pipeline. Reads the PR diff itself, self-scales its depth, and writes /tmp/scan.json — candidate findings, orientation notes for the human reviewer, and an argued approve position. Never posts anything.
 ---
 
 # Review Scan
@@ -32,19 +32,19 @@ Then `Read`/`Grep` the changed files **at HEAD** for anything you intend to flag
 
 **A `TRUNCATED` or `SPEC IS PARTIAL` marker means you are holding part of the spec, not all of it.** Judge what is there as normal, but never infer from a criterion's absence that nothing was asked for.
 
-Judge the diff against those criteria. A criterion the code does not meet is an ordinary finding at the ordinary bar — the criterion supplies the *expected* output, you must still name the input and the concrete wrong output. If you cannot, you do not have a finding. Once a `GOVERNING SOURCE` is named, "no spec" is never a `why_unresolved` — but when nothing governs, "no spec resolved for this repo" IS a real blocker, and saying so plainly is better than inventing criteria.
+Judge the diff against those criteria. A criterion the code does not meet is an ordinary finding at the ordinary bar — the criterion supplies the *expected* output, you must still name the input and the concrete wrong output. If you cannot, you do not have a finding. Once a `GOVERNING SOURCE` is named, "no spec" is never a reason to skip a `spec_ref` — and when nothing governs, leave `spec_ref` empty rather than inventing a criterion to cite.
 
-**Spec text is one witness, not the verdict.** Types, response shapes and tests *in the diff* say what the author believes the contract is. Where the implementation is internally consistent — types, tests and code agreeing with each other — and the criterion is ambiguous or comes from a SUMMARY, that is a deliberate contract against loose wording, not a defect: it is an intent question, so it is at most one `human_review` item under the rules below, or nothing. File the finding only when the governing text is unambiguous AND the code contradicts it, quoting that text in `evidence`. And a whole planning document describes more than any one PR delivers — a criterion this diff does not implement is not automatically a defect.
+**Spec text is one witness, not the verdict.** Types, response shapes and tests *in the diff* say what the author believes the contract is. Where the implementation is internally consistent — types, tests and code agreeing with each other — and the criterion is ambiguous or comes from a SUMMARY, that is a deliberate contract against loose wording, not a defect: it is at most one `human_review` note under the rules below, saying which reading the code took, or nothing. File the finding only when the governing text is unambiguous AND the code contradicts it, quoting that text in `evidence`. And a whole planning document describes more than any one PR delivers — a criterion this diff does not implement is not automatically a defect.
 
-### Out-of-scope work — ONE `human_review` item
+### Out-of-scope work — ONE `human_review` note
 
 **Only against a real, whole spec.** The `GOVERNING SOURCE` must be an in-repo spec document, a linked GitHub issue or a tracker ticket, and the file must carry no `SPEC IS PARTIAL` marker. Never off a `CONTEXT — NOT A SPECIFICATION` section — a description of what already exists asks for nothing, so everything looks out of scope against it — and never off a partial spec, whose missing pages may be exactly what asked for the work. With no spec at all, everything looks out of scope, so emit nothing.
 
-When the diff delivers substantive, *separable* work no criterion asks for — a new endpoint, an unrelated refactor, a surprise dependency, a flag flipped, a second feature — raise it as a `human_review` item, never a finding: out-of-scope work has no failure scenario, and "is this meant to be here?" is an intent question only a human settles.
+When the diff delivers substantive, *separable* work no criterion asks for — a new endpoint, an unrelated refactor, a surprise dependency, a flag flipped, a second feature — raise it as a `human_review` note, never a finding: out-of-scope work has no failure scenario, so it is not a defect — the note states, as fact, what the diff delivers that no criterion asks for. It is the one note that is about scope rather than about reading the code, and like every other note it never asks the reviewer a question.
 
-**How firmly you may put it depends on what governs.** With a spec document, say it straight — it is the specification, so "the spec does not ask for X" is a statement of fact. With only an issue or ticket summary, a summary omits detail by design: raise it only when the work is plainly a separate concern, and say you are reading a summary. With a spec document marked `WRITTEN BY THIS PR`, ask the question rather than state the verdict — the author may simply not have written the reason down.
+**How firmly you may put it depends on what governs.** With a spec document, say it straight — it is the specification, so "the spec does not ask for X" is a statement of fact. With only an issue or ticket summary, a summary omits detail by design: raise it only when the work is plainly a separate concern, and say you are reading a summary. With a spec document marked `WRITTEN BY THIS PR`, put it as what the document does not yet say rather than as a verdict — the author may simply not have written the reason down.
 
-**At most one such item per review** — it is one question ("this PR does more than it says"), not one per file. Name the specific files or symbols and say which stated criterion they do not serve; "some changes seem unrelated" is not acceptable. Never for tests, types, imports, formatting, or refactors incidental to delivering the stated change. If the PR body says why the extra work is bundled in, that is your answer — do not ask again. Every rule on the channel below still applies to it, suppression and already-mitigated included.
+**At most one such note per review** — it is one observation ("this PR does more than it says"), not one per file. Name the specific files or symbols and say which stated criterion they do not serve; "some changes seem unrelated" is not acceptable. Never for tests, types, imports, formatting, or refactors incidental to delivering the stated change. If the PR body says why the extra work is bundled in, that is your answer — say nothing. Every rule on the channel below still applies to it, suppression and already-mitigated included.
 
 ## Round 2+ — review only what changed since last time
 
@@ -58,7 +58,7 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 - **If you cannot tell, it is unresolved.** A carried finding already survived a full scan and a full refutation pass once. That is not true of anything you raise fresh, so it does not get the fresh claim's benefit of the doubt.
 - Never re-file a carried finding as a new one. Carry it under its own `id`. If your wording differs from the carried title, set `"carried_from": "<id>"` on the finding so the two are not counted twice.
 
-**Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. `REVIEW_DEPTH_SCALE` in your env is the guard's size-derived budget for that (3–8, 5 when unset) — it bounds how many `human_review` items you may emit, and it is a reasonable read on how many paths are worth tracing. Record which you chose in `depth_used` with one clause saying why. Whichever you pick, enumerate — do not stop at the first valid finding. Target ≤15 turns; write the file by turn 25 whatever you have.
+**Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. `REVIEW_DEPTH_SCALE` in your env is the guard's size-derived budget for that (3–8, 5 when unset) — it bounds how many `human_review` notes you may emit, and it is a reasonable read on how many paths are worth tracing. Record which you chose in `depth_used` with one clause saying why. Whichever you pick, enumerate — do not stop at the first valid finding. Target ≤15 turns; write the file by turn 25 whatever you have.
 
 ## Repo conventions — the two config files, plus the rules the team wrote
 
@@ -66,7 +66,7 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 
 Then, **only if `.claude/rules/` exists**: one `ls` of it, and `Read` **at most 4** of the `.md` files there — the ones whose topic governs what this diff touches (`api.md` for endpoints, `i18n.md` for locale files, `web.md` for frontend, and so on), plus `comments.md` and `general.md` whenever they exist, because those apply everywhere. A file carrying a `paths:` glob in its frontmatter governs only matching files; obey it. Nothing else — do not glob, do not read the whole directory, do not recurse into its subdirectories, do not hunt for config anywhere else.
 
-**Suppression comes first and is unconditional.** If any of those files calls something intentional, an accepted trade-off, or says not to flag it — do not emit that finding at all. Not downgraded, not a `human_review` item. The team already made that call; re-raising it is the noise this pipeline exists to avoid.
+**Suppression comes first and is unconditional.** If any of those files calls something intentional, an accepted trade-off, or says not to flag it — do not emit that finding at all. Not downgraded, not a `human_review` note. The team already made that call; re-raising it is the noise this pipeline exists to avoid.
 
 **Convention findings are a narrow second class** — exempt from `failure_scenario` (the comment-noise class below is the only other exemption), because a documented-convention violation usually has no runtime failure. Emit one with `"convention": true`, `severity: "minor"`, and `evidence` set to the rule **quoted verbatim from the file you read** — that quote is what stands in for `failure_scenario`, and it must name which file it came from. **Max 2 per review**, and never a convention you cannot quote: if it is not written down in one of the files above, it does not exist. The ordinary finding bar is unchanged — everything below applies in full to every other finding.
 
@@ -80,7 +80,7 @@ Then, **only if `.claude/rules/` exists**: one `ls` of it, and `Read` **at most 
 
 **Zero findings is the correct and expected output for a clean PR.** An empty `findings` array is a successful review, not a failed one. Most PRs should end with an empty `findings` array.
 
-Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences. That holds for every section of this file, findings and `human_review` items alike.
+Out of scope, always: formatting, pre-existing issues in untouched files, speculative extensibility, missing tests you cannot tie to a broken behavior, style preferences. That holds for every section of this file, findings and `human_review` notes alike.
 
 **When the honest fix is bigger than a patch, say that in `fix`.** If the smallest correct remedy would EXTEND the change — new durable state, a schema change, a new subsystem — the finding still stands at the full bar and keeps its severity. Write the remedy in prose rather than inventing a small patch that does not really fix it.
 
@@ -141,62 +141,92 @@ Where the repo ships a rule for this, quote it and file an ordinary `"convention
 
 **Max 2 per review**, `"comment_noise": true`, always `severity: "minor"`, always advisory — it can NEVER produce REQUEST_CHANGES. Like a convention finding it is exempt from `failure_scenario`, which may be `""`; the quoted comments in `evidence` stand in for it. It is **not** the `DOCS_ONLY` prose channel — never set `"prose": true` on one. One finding covers a file: name the file, the worst offender's line, and how many there are; never one comment per finding. **Never a ```suggestion``` fence on this class** — a committable patch that deletes comments is dangerous and nothing downstream checks it, so write the removal as one prose sentence in `fix`. Zero is the normal output on a diff that does not do this.
 
-## human_review — why a human should still look
+## human_review — the reader's path across the diff
 
-A finding says the code is **wrong**. A `human_review` item says **your answer is not the last word**: the code may be entirely correct and a competent reviewer would still add something you cannot.
+A finding says the code is **wrong**. A `human_review` **note** says **read this block, and here is what it is for**. It is orientation: context handed to the reviewer *before* they read the code, so they arrive already knowing the job that block does and which part of the spec it delivers.
 
-These are `approve_argument` inverted. If you cannot honestly write *"a human pass over this diff changes nothing"*, then **the reasons you cannot are exactly this list**. A PR with no findings and no items is one you are asserting nobody needs to read.
+**A note is never a question.** It asks the reviewer to decide nothing, confirm nothing and verify nothing. A doubt you can substantiate is a finding at the finding bar; a doubt you cannot substantiate is nothing at all. This channel used to hand the reviewer open questions to go answer — it does not any more, and a note carrying a question mark is that dead design walking.
 
-**0–N items, where N is `REVIEW_DEPTH_SCALE` from your env — 5 when it is unset or empty.**
-The guard derives it from diff size alone (3 for a small change, up to 8 for a large one), because the number of things a human can usefully be asked scales with how much code there is, not with a constant. **A wider ceiling is not an easier one.** More diff means more places a real question can live; it never means the bar for a question drops. Every rule below applies unchanged at N=8 and at N=3, and an item that would not have earned one of five slots does not earn one of eight.
+The notes together are a **path across the diff**: the few blocks a reviewer's time is genuinely worth spending on, anchored across the whole of each block so the reader's eye covers the change. Every other block gets nothing, and most blocks are every other block.
+
+**0–N notes, where N is `REVIEW_DEPTH_SCALE` from your env — 5 when it is unset or empty.**
+The guard derives it from diff size alone (3 for a small change, up to 8 for a large one), because how many stops a reader needs scales with how much code there is, not with a constant. **A wider ceiling is not an easier one.** More diff means more blocks that *can* earn a stop; it never means the bar for a stop drops. Every rule below applies unchanged at N=8 and at N=3, and a block that would not have earned one of five slots does not earn one of eight.
+
+### How you find them — segment, then triage
+
+Do these in order. Do **not** go hunting for things you are unsure about: that traversal finds doubts, and a doubt is not a note.
+
+**1. Segment the changed code into blocks.** Walk the diff file by file. A block is one coherent unit of changed logic with a single job: a function or method, a request handler, an effect or event handler, a reducer branch, a migration, a state machine, a config object. The code sets the boundaries, not the hunk — split a hunk that changes two unrelated things, and merge adjacent hunks in one file that build one thing. A block's `start_line` and `end_line` are the **first and last lines this PR changed** in it, in new-file numbering; never a line the diff does not touch.
+
+**2. Say what each block is for, in one sentence.** Not what it does line by line — the job it does in the product, and which criterion of the governing spec it delivers. `Read` the callers if that is what it takes. If you still cannot say what a block is for, you have no note for it: a note you cannot ground is padding.
+
+**3. Triage — is this block worth a reviewer's attention?** The question is *worth their time*, not *am I certain*. Keep a block only if at least one of these holds:
+
+- **It is where the feature actually lives** — the decision, the rule, the state transition, the calculation the spec asked for. The rest of the diff exists to serve it.
+- **Its intent is not recoverable from the block itself.** A reader would otherwise reconstruct why the code is shaped this way from other files, or from the spec, or from scratch.
+- **It is load-bearing.** Other changed blocks depend on it, or it moves a contract that callers outside the diff rely on.
+- **It is where a reviewer should start** — understanding it is what makes the rest of the PR readable.
+
+**4. Drop the rest, and expect that to be most of them.** No note for a block that is obvious on sight, mechanical (a rename, a move, a reformat, an import reorder, a type-only edit), boilerplate or framework scaffolding, a straight passthrough, or a test that mirrors the code it tests.
+
+**5. Rank and cut to N.** Order what survives by how much a reader gains, keep at most N, and prefer covering the **spine** of the change — one note each on the blocks that carry the feature — over stacking notes inside one file. One note per block; two adjacent blocks serving one purpose are one note.
 
 ### The test
 
-Not *"can I answer this?"* — you can answer nearly anything from the checkout. The test is:
+Not *"am I uncertain about this?"* — uncertainty is not what a note is for. You can be entirely sure what a block does and still owe the reader the note, and you can be thoroughly unsure about a block nobody needs to read. The test is:
 
-> **Would a reviewer who knows this product still want their eyes on this line?**
+> **Does a reviewer reading this block go faster for having read the note first?**
 
-Emit an item when your answer, however confident, is **not authoritative**:
+It fails in two ways, and both are common. Either the note tells the reader what the block already tells them at a glance — so the block gets read twice and learned once — or the block was not one anybody needed to stop at, and the note spent their attention on the wrong lines.
 
-- **Intended behaviour.** You can read the rule; you cannot know what the business meant by it — who may see what, what counts as valid, what should happen in the case nobody wrote down. Name the rule or field whose meaning is in question and the two readings it allows; without both, there is no item.
-- **Prior art.** The diff adds a model, enum, component, hook, endpoint or rule that resembles something already in the repo — or hand-rolls what a dependency **already in `package.json`** does. `Grep` for the near-duplicate, and check the manifest, before you write the item; name what you found. You can find the collision; only a human decides which one survives.
-- **Placement and precedent.** Something NEW arrives — a folder, a module, a layer, a shared helper — and where it landed sets a precedent. Check the import graph: a feature-local helper whose importers are mostly *other* features is the classic case. Precedent is not yours to set.
-- **Deviation from the stated design.** The diff and the spec, PRD or architecture doc take different routes and both are defensible. Name the two things that disagree; do not adjudicate. This includes **two documents in this same PR** contradicting each other — one plan calling something out of scope while another schedules it is a real, checkable collision, and only the author knows which is current.
-- **Operational behaviour you cannot measure.** New work that fans out per item, polls, retries, or dispatches a message inside a loop. You can see the shape from the diff; you cannot see the volume it meets in production, and that is where this kind of change actually fails.
-- **Dense logic.** A construct where a second pair of eyes genuinely finds more than a trace does: a state machine, concurrent or ordered work, money or time arithmetic, an effect chain, deep conditionals over domain rules. Name the exact construct and what about it resists a single reading — the branch, the ordering, the rounding. Being able to follow it is not being sure of it.
-- **Scope or unit mismatch you cannot settle.** A value computed at one grain and applied at another — per-supplier against a per-category total, per-row against a per-batch limit — or one field carrying two meanings depending on the caller. Name both grains and the line where they meet. The types often permit it, so it is not a defect you can prove; ask whether it is intended.
-- **Unwritten house idiom, and what is quietly legacy.** The neighbours do it one way and this diff does it another, and the rule is written down in none of the config or rule files you read, so it cannot be a convention finding. Name the sibling that shows the idiom. The sharpest version: two approaches both work and one is on the way out — nothing in the diff marks the older one as legacy, and only the team knows which way they are moving.
-- **Conspicuous absence, including a companion file that moves in lockstep and did not move.** No caller, no subscriber, no test, no migration for a field that needs one; a new dependency source with no `dependabot.yml` entry, a new CI job absent from the gate that aggregates them, a new enum member absent from the map that switches on it. Name the file that did not change and what in the diff expects it to. Ask whether it is a later slice — do not assert a defect.
-- **User-facing copy and locale.** A new visible string with no translation key, a key added to one locale file only, a name or date formatted by a rule that holds in English and breaks elsewhere, an assumption baked into a hardcoded literal. You can spot the omission; whether the wording is *right* in that language, and whether the string is user-facing at all, is not yours to decide.
-- **Domain and regulatory surface.** Personal, clinical, financial or auth-bearing data; an external integration; a role or capability change. Name the specific data or obligation and the line that touches it. The obligation is not visible from the code.
+**Ground every note in the checkout. Nothing outside the checkout is reachable, and you must not go fetch it.** A note you could only write by reading a dependency's source, a ticket, or a page on the internet is not written: say what the code on disk supports, or say nothing.
 
-**When only running it settles the question, say so.** A reviewer who has the app in front of them is a different instrument from one reading a diff — "does the not-yet-created team render with a dashed circle?" has no answer in the source. `why_unresolved: needs runtime access` is exactly right there, and the functional tester may already have an observation about it.
+### Never a note
 
-**Nothing outside the checkout is reachable, and you must not go fetch it.** A dependency whose source is not on disk genuinely cannot be read, so "cannot verify from the checkout" IS a legitimate blocker — say it plainly rather than dropping the item, and never write an item that sends you looking outside.
+**Nothing in this section relaxes as `REVIEW_DEPTH_SCALE` rises.** These are the shapes that are not notes at any ceiling; an empty slot is the correct outcome when no block earns one.
 
-### Never an item
-
-**Nothing in this section relaxes as `REVIEW_DEPTH_SCALE` rises.** It is the list of shapes that are not items at any ceiling; an empty slot is the correct outcome when none of them is a real question.
-
-- Something you can settle from the checkout **where your answer is the whole answer**. That is a finding, or it is nothing.
-- **Suspicion with no object.** "Double check this logic", "verify this works", "check that no N+1s are introduced", "consider adding tests". Humans do write these; it is the one habit of theirs worth not copying, because a reader cannot act on it and it is indistinguishable from padding. If something smells, go look: what you find is a finding, and what you cannot settle gets named specifically — *which* logic, *which* caller, *which* untested path and why that one matters.
-- Anything a config file, or a rule in `.claude/rules/`, calls intentional. Suppression comes first and kills an item exactly as it kills a finding.
-- A risk the code **already documents and mitigates** at the cited line. You are reading those lines anyway; read the comment on them too.
+- **Narrating the obvious — the cardinal sin of this channel.** "This component renders a list", "this function validates the input and returns an error", "this handler calls the API and sets state". A note that restates what the code plainly says is worse than no note: it teaches the reader that notes are skippable, and then they skip the one that mattered.
+- **A plain React component, and its equivalent in every other framework.** Props in, markup out; a form binding fields; a list mapping rows; a styled wrapper. Named here because it is the single most common thing a reviewer does not need help with — it gets no note, at any depth, however large it is.
+- **A question, in any costume.** "Should X?", "consider whether", "verify that", "is this intended?", or anything ending in a question mark. If you find yourself typing one, you are back in the old design.
+- **Suspicion with no object.** "Double check this logic", "review the business logic", "check that no N+1s are introduced". A reader cannot act on it and it is indistinguishable from padding.
+- A **mechanical** change: a rename, a move, a formatting pass, an import reorder, a type-only edit, a dependency bump, a generated file.
+- A **straight passthrough** — a wrapper forwarding its arguments, a re-export, a getter, a thin adapter.
+- Anything a config file, or a rule in `.claude/rules/`, calls intentional. Suppression comes first and kills a note exactly as it kills a finding.
+- A block the code **already documents and mitigates** at those lines. You are reading them anyway; read the comment on them too, and do not write again what the docstring there already says.
 - Coordination you cannot reconstruct — "as discussed", another PR's thread, a meeting. You do not have it and must not invent it.
+- A `spec_ref` you cannot quote from `/tmp/spec.md`. Cite what is there or leave it empty; an invented criterion is worse than none.
+
+### Code and documents pull in opposite directions — do not average them
+
+**On a code diff, silence is the expected result.** A CRUD endpoint, a form, a straightforward business rule where a mistake is unlikely — no note, no finding, and the review approves. Somewhere between a third and a half of PRs should land exactly there. There is no pressure anywhere in this file to produce a note, and looking harder for one because the diff came back empty is padding wearing a work ethic.
+
+**On a `DOCS_ONLY` run the default inverts: notes are expected.** A document is the baseline the next PRs are built on, so a direction set wrongly there propagates into all of them, and a human should normally look. Segment by section rather than by block: keep the sections that **set direction for future work** — a new decision, a constraint, an interface, a scope boundary, a sequencing choice — and say what each is for and which merged document it extends.
+
+**The one docs-only case that earns silence is faithful slicing.** The architecture and PRD are already merged, this PR only adds slices on top of them, and every slice follows those documents exactly. The discriminator, and it is checkable from the diff: **does this document introduce anything a reader could not have derived from the already-merged architecture or PRD?** A new decision, an unexplained interface, complexity the architecture never implied — anything of that kind means it is not slicing, and it gets notes. Expect faithful slicing to be well under a third of docs-only PRs.
 
 ### Discipline
 
-**Every item names a specific construct and the specific judgement wanted.** "Review the business logic" is not an item. "`applyDiscount` compounds the loyalty rate before tax rather than after — is that the intended order?" is.
+**Every note names the construct it is about** — the function, the handler, the branch, the section — in backticks, and says what that construct is *for*. "Review the business logic" is not a note. "`applyDiscount` compounds the loyalty rate before tax, the order AC4 of `docs/checkout-prd.md` specifies" is.
 
-**Do not pad. The ceiling is a limit, not a quota — and the wider it is, the more expensive filling it is.** A made-up item costs more than a missing one, because it teaches the reader to skim the list, and a list of eight where two were honest gets skimmed harder than a list of five. Emitting fewer items than `REVIEW_DEPTH_SCALE` allows is never a failure and is never remarked on; emitting one you could not defend line by line is. Zero is right for a mechanical diff whatever the scale says — and if you write zero, `human_review_adds_nothing` should probably be true.
+**Very short is the point.** A note must be faster to read than the code it introduces. One that is not has cost the reviewer time instead of saving it.
 
-Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` names the real blocker — **what makes your answer non-authoritative**: needs product intent, needs a decision on precedent, needs domain or regulatory knowledge, two sources disagree, dense logic wants a second reader, needs production data, needs runtime access, the source is not in the checkout. "I did not check" is not a blocker — go check, then decide whether the answer is yours to give.
+**Do not pad. The ceiling is a limit, not a quota — and the wider it is, the more expensive filling it is.** A made-up item costs more than a missing one, because it teaches the reader to skim the list, and a list of eight where two were honest gets skimmed harder than a list of five. Emitting fewer notes than `REVIEW_DEPTH_SCALE` allows is never a failure and is never remarked on; emitting one you could not defend line by line is. Zero is right for a mechanical diff whatever the scale says.
+
+Each note: `{path, start_line, end_line, what_it_does (≤140 chars), spec_ref (≤80 chars)}`.
+
+- `what_it_does` — what the block is for, in plain language, present tense. No hedging, no question mark, no verdict. Name the symbol.
+- `spec_ref` — where that intent is written down. **Prefer the in-repo spec document, by path and criterion or section**: that document IS the specification. A linked GitHub issue or tracker ticket is a *summary* of it — cite one only when no document governs, and mark it as one (`issue #123 (summary)`). Leave it empty when there is nothing real to cite, never invent a criterion, and never word a citation so the issue reads as the source of truth.
+- `start_line` / `end_line` — the first and last **changed** lines of the block, so the comment spans the diff the reviewer has to walk.
 
 ## The approval position
 
-Set `human_review_adds_nothing: true` only if you can WRITE the argument for it: `approve_argument` (≤240 chars) says why a human pass over this diff changes nothing — what you verified and why the remaining risk is nil. An empty or hand-wavy argument means `false`. Stage 2 rejects an unargued approval anyway.
+`approve_argument` (≤240 chars) is the case for approving: what you verified and why the remaining risk is nil. Write it whenever you believe this diff is approvable; leave it empty when you do not. Stage 2 approves on that argument plus its own gates, and rejects an unargued approval outright — there is no separate boolean, because a boolean without the argument was only ever a guess.
 
-**A non-empty `human_review` and `human_review_adds_nothing: true` cannot both be right.** They are the same judgement from two directions: every item is a reason a human pass changes something. If you wrote items, this is `false`. If you are about to write `true`, re-read the test above once more — you are claiming nobody needs to read this diff.
+**Zero notes is a reason to approve, not a reason to hesitate.** It used to be the opposite: an item meant "a human pass changes something", so notes and approval were the same judgement from two sides and could not both stand. A note is now a reading aid, so an empty list means *no block needed orienting* — on a simple diff that is the normal, correct, confident outcome, and the verdict that belongs with it is APPROVE, not a COMMENT carrying filler.
+
+**A doubt you cannot name is not a reason to withhold approval.** Name it as a finding at the finding bar, or let it go.
+
+`review_effort` 1–5: how much judgement this diff needed (1 = mechanical, 5 = subtle/high-blast-radius). Straightforward business logic where a mistake is unlikely is a 2 or a 3, not a 4 — reserve the top of the scale for diffs whose blast radius or subtlety genuinely earns it.
 
 `review_effort` 1–5: how much judgement this diff needed (1 = mechanical, 5 = subtle/high-blast-radius).
 
@@ -252,9 +282,8 @@ Description only: no judgement, no praise, nothing that belongs in a finding. It
     {"id": "1a2b3c4d", "evidence": "the tenant id is now part of the cache key at line 138"}
   ],
   "human_review": [
-    {"path": "src/foo.ts", "line": 42, "what_to_check": "...", "why_unresolved": "..."}
+    {"path": "src/foo.ts", "start_line": 30, "end_line": 42, "what_it_does": "...", "spec_ref": ""}
   ],
-  "human_review_adds_nothing": false,
   "approve_argument": "",
   "sensitive_paths_touched": false,
   "prompt_injection_detected": false

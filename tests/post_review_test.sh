@@ -1590,7 +1590,7 @@ check_review() { # check_review <start_line> <line>
   jq -n --argjson s "$1" --argjson l "$2" \
     '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
       comments: [{path: "src/foo.ts", start_line: $s, line: $l, side: "RIGHT",
-                  body: "**check** Should a refused code still navigate the fan?\n\n- Refusal shown, claim skipped — correct\n- Handler still falls through to navigate()"}],
+                  body: "**check** `onRefuse` shows the refusal and skips the claim before navigating the fan\n\n- Implements AC3 of `docs/prds/fan-claim.md`\n- Refusal path and claim path share `navigate()`"}],
       meta: {findings: [], human_review: []}}'
 }
 
@@ -1641,23 +1641,39 @@ done
 # (r4) an absurd range is not a "block". Needs its own WIDE hunk: against the
 # shared 10-13 fixture an over-long range is rejected for being out of hunk, so
 # it would never reach the size rule at all.
+#
+# THE CAP IS 120, NOT 30. A check is orientation across a whole changed block, so
+# 30 lines was a fragment of one: measured over this repo history 89% of
+# contiguous changed runs fit in 30 and 96% in 120. Above 120 is a whole-file
+# rewrite, which no single note orients anyone through — and the cap still has to
+# exist, because a run whose hunks could not be derived skips the in-hunk range
+# check entirely and a 422 on a malformed range kills the ATOMIC post.
 WIDE_FIXTURE=$(mktemp)
 python3 - "$WIDE_FIXTURE" <<'WIDE'
 import json, sys
-patch = "@@ -10,60 +10,60 @@\n" + "\n".join(" line%d" % i for i in range(10, 70))
+patch = "@@ -10,300 +10,300 @@\n" + "\n".join(" line%d" % i for i in range(10, 310))
 json.dump([{"filename": "src/foo.ts", "patch": patch}], open(sys.argv[1], "w"))
 WIDE
-W=$(mktemp -d); check_review 10 50 > "$W/review.json"
+W=$(mktemp -d); check_review 10 200 > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W"
-assert_eq "a 40-line range still posts" "1" "$(payload_of "$W" | jq '.comments | length')"
+assert_eq "a 190-line range still posts" "1" "$(payload_of "$W" | jq '.comments | length')"
 assert_eq "…collapsed to one line, not wrapping half the file" "null" \
   "$(payload_of "$W" | jq -r '.comments[0].start_line // "null"')"
-# The boundary itself: 30 lines is a block, 31 is not.
-W2=$(mktemp -d); check_review 20 50 > "$W2/review.json"
+# The boundary itself: 120 lines is a block, 121 is not.
+W2=$(mktemp -d); check_review 20 140 > "$W2/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W2"
-assert_eq "exactly 30 lines is still a block" "20" \
+assert_eq "exactly 120 lines is still a block" "20" \
   "$(payload_of "$W2" | jq -r '.comments[0].start_line // "null"')"
-rm -rf "$W" "$W2" "$WIDE_FIXTURE"
+W3=$(mktemp -d); check_review 20 141 > "$W3/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W3"
+assert_eq "121 lines is not" "null" \
+  "$(payload_of "$W3" | jq -r '.comments[0].start_line // "null"')"
+# What 30 used to reject and 120 must now keep: a 40-line block posts as a range.
+W4=$(mktemp -d); check_review 20 60 > "$W4/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W4"
+assert_eq "a 40-line block keeps its range under the new cap" "20" \
+  "$(payload_of "$W4" | jq -r '.comments[0].start_line // "null"')"
+rm -rf "$W" "$W2" "$W3" "$W4" "$WIDE_FIXTURE"
 
 # (r5) findings are unaffected: no start_line in, none out
 W=$(mktemp -d); echo "$VALID_REVIEW" > "$W/review.json"
