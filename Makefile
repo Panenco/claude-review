@@ -45,3 +45,24 @@ eval:
 eval-spec:
 	@test -n "$(PRS)$(EVAL_PRS)" || { echo "usage: make eval-spec PRS=\"101 102\" (or set EVAL_PRS in .eval.env)"; exit 1; }
 	@for pr in $(if $(PRS),$(PRS),$(EVAL_PRS)); do bash scripts/review-local.sh $$pr --spec-only || exit 1; done
+
+# Probe corpus scorecard (scripts/probe-score.sh). Measures the reviewer against
+# a LABELLED corpus of real merged PRs, so "simple PRs get approved with no
+# findings and no check comments" is a number instead of an impression.
+#
+# The corpus itself (tests/fixtures/probe-corpus.json) is GIT-IGNORED — it names
+# private client repos and PR titles. tests/fixtures/probe-corpus.example.json
+# is the committed template.
+#
+#   make probe-plan                        # label breakdown + what a live sweep costs
+#   make probe-score RESULTS=/path/to/dir  # offline scorecard — free, seconds
+#   make probe-score RESULTS=... LABEL=simple
+.PHONY: probe-score probe-plan
+probe-plan:
+	@bash scripts/probe-score.sh plan $(if $(CORPUS),--corpus $(CORPUS))
+
+probe-score:
+	@test -n "$(RESULTS)" || { echo "usage: make probe-score RESULTS=/path/to/results-dir"; exit 1; }
+	@bash scripts/probe-score.sh score --results $(RESULTS) \
+	  $(if $(CORPUS),--corpus $(CORPUS)) \
+	  $(if $(LABEL),--label $(LABEL))

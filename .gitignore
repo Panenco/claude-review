@@ -13,6 +13,10 @@ docs/metrics/
 # Local-eval corpus manifest — names private repos. Never commit (.eval.env.example is the template).
 .eval.env
 
+# Labelled probe corpus — names private client repos, PR numbers and PR titles.
+# Never commit (tests/fixtures/probe-corpus.example.json is the template).
+tests/fixtures/probe-corpus.json
+
 # macOS junk
 .DS_Store
 
