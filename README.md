@@ -671,6 +671,36 @@ bash scripts/usage-report.sh --json                 # raw JSONL on stdout for pi
 
 The script uses your local `gh` auth (already cross-org), discovers repos via `gh search code 'panenco/claude-review path:.github/workflows'`, lists each repo's `claude-review-usage` artifacts via the GitHub Actions API, and prints per-repo run counts, verdict mix, round-1 vs round-2 split, total findings raised, and a recent-runs feed. Requires `gh`, `jq`, `unzip`.
 
+### Where one run's money and minutes went (`scripts/run-breakdown.sh`)
+
+`usage.json` records one cost for the whole session. To see **which stage** spent it,
+break down a single run against the session transcript in the `claude-review-<pr>`
+artifact — every subagent message carries a `parent_tool_use_id` pointing back at the
+`Agent` call that dispatched it:
+
+```bash
+bash scripts/run-breakdown.sh 33300467953 Panenco/seaters   # downloads the artifacts
+bash scripts/run-breakdown.sh --transcript orchestrator-output.txt --jobs jobs.json
+bash scripts/run-breakdown.sh 33300467953 Panenco/seaters --json
+```
+
+It prints per-stage tokens (input / cache-read / cache-write / output), dollars and
+share, a timeline of when each stage ran, and — from the runs API — the workflow's
+step timings, so model time and runner bring-up are separable. This is the
+before/after ruler for a pipeline optimisation: capture a baseline run id, land the
+change, run it again, diff the tables.
+
+Three counting traps it handles, each of which otherwise produces a plausible but
+wrong table: the stream repeats the same `message.usage` once per content block (so
+usage is deduped by `message.id`); an assistant entry's `output_tokens` is a
+`message_start` placeholder, not the final count (so output comes from the result
+entry's `modelUsage`, and is the one estimated column, marked `~`); and the native
+pass's plugin fans out to subagents some runs never record (so a per-model shortfall
+is credited to the stage that owns them, never smeared across stages that merely
+share the model). The attributed total is printed beside the session's own
+`total_cost_usd` — they should agree within ~1%, and a wider gap means the script's
+price table has drifted from the models actually in use.
+
 ---
 
 ## Local review runs (`scripts/review-local.sh`)
