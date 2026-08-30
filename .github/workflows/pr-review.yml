@@ -19,9 +19,13 @@ on:
         type: string
         default: "panenco-claude-review"
       model_high:
-        description: "The reviewing model. Runs the top-level session (at `--effort low` — it only orchestrates and writes files) and both review subagents: review-scan at `effort: medium`, review-verify at `effort: low`."
+        description: "The reviewing model. Runs both review subagents: review-scan at `effort: medium`, review-verify at `effort: low`. It no longer runs the top-level session — see `model_orchestrator`."
         type: string
         default: "claude-opus-5"
+      model_orchestrator:
+        description: "Model for the top-level orchestrator session. Deliberately NOT `model_high`: this session reviews nothing and writes no review prose — it makes ~7-12 API calls (one Read, one Bash, the Task dispatches, one jq) to fan out subagents and copy one file through. Measured at 7-19% of a run's spend for pure plumbing. Every subagent pins its own model in its installed frontmatter (`model_high` / `model_functional` / `model_standard`), so this value never reaches a reviewing pass."
+        type: string
+        default: "claude-sonnet-5"
       model_standard:
         description: "Model for the `/review native` second-opinion pass (Anthropic's official `code-review` plugin, run in-session). LIVE AGAIN as of ADR 0005 — it was a deprecated no-op while that pass was deleted. Deliberately not `model_high`: the plugin's own prompt fans out to ~10 short-lived subagents and picks their models itself."
         type: string
@@ -39,7 +43,7 @@ on:
         type: string
         default: "v3"
       dev_env_timeout_seconds:
-        description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up."
+        description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. CLAMPED TO 540s by the orchestrator: the wait runs inside one Bash tool call, that tool kills its own call at 600s, and the kill loses the whole call's stdout — DEV_ENV_RC and DEADLINE_EPOCH with it, not just the wait. Passing more than 540 buys nothing. The wait is also skipped entirely when no dev-env was started (docs-only diff, no dev-start.sh, or no functional pass)."
         type: number
         default: 360
       functional_budget_seconds:
@@ -798,6 +802,16 @@ jobs:
           fi
           echo "Disk after:"; df -h / | tail -1
 
+      # This fleet reuses runners and /tmp survives between jobs, so a previous
+      # review's /tmp/dev-env would make the orchestrator wait for — and then
+      # trust — a dev-env that belongs to another PR. Runs whenever the review
+      # proceeds, and BEFORE the conditional pre-start below, which is what makes
+      # "no /tmp/dev-env/started" mean "no bring-up on THIS run".
+      - name: Clear stale dev-env state
+        if: steps.cmd.outputs.proceed == 'true'
+        shell: bash
+        run: rm -rf /tmp/dev-env
+
       # Generic, opt-in dev build/dependency cache (the dev_cache_* inputs).
       # The key is computed HERE (not passed in) because a reusable-workflow
       # caller's `with:` has no runner/checkout, so it can't use runner/hashFiles
@@ -855,6 +869,15 @@ jobs:
           : > /tmp/dev-env/outputs
           : > /tmp/dev-env/log
           rm -f /tmp/dev-env/rc
+          # THE MARKER THE ORCHESTRATOR GATES ITS WAIT ON. This step is
+          # conditional; the orchestrator's turn-1 wait for /tmp/dev-env/rc used
+          # to be unconditional, so on every code-only review it blocked for the
+          # full dev_env_timeout_seconds on a file nothing would ever write
+          # (~600s, about half the job's wall clock). Written BEFORE the launch,
+          # so the marker can never be newer than the bring-up it promises. The
+          # "Clear stale dev-env state" step above guarantees its absence means
+          # "no bring-up this run" even on a reused runner.
+          date +%s > /tmp/dev-env/started
           setsid nohup bash -c '
             GITHUB_OUTPUT=/tmp/dev-env/outputs "$CLAUDE_REVIEW_SCRIPTS"/setup-dev-env.sh
             echo $? > /tmp/dev-env/rc
@@ -1173,8 +1196,16 @@ jobs:
           # `--effort low` because this session writes no review prose: it fans out
           # two subagents (which carry their own `effort:` frontmatter) and copies
           # one file. Verified present on the CLI as `--effort <low|medium|high>`.
+          #
+          # SAME REASON, THE MODEL. `model_orchestrator` (Sonnet), not
+          # `model_high`: at Opus rates this plumbing measured 7-19% of a run's
+          # spend ($0.30-0.67) for a Read, a Bash, some Task calls and a jq. It
+          # does NOT cascade — `--model` sets this session only, and every
+          # subagent's model comes from the `model:` frontmatter the "Install
+          # review subagents" step envsubst'd from model_high/_functional/
+          # _standard. Do not collapse these two inputs back into one.
           claude_args: |
-            --model ${{ inputs.model_high }}
+            --model ${{ inputs.model_orchestrator }}
             --effort low
             --permission-mode dontAsk
             --setting-sources user

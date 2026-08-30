@@ -24,14 +24,38 @@ awk '/^(##|###) /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config
 # waits for its rc rather than reading a file still being written. A bare `cat`
 # raced it and always lost: the tester was ruled ineligible on every consumer
 # whose bring-up was not instant, which is all of them.
-end=$(( $(date +%s) + ${DEV_ENV_TIMEOUT_SECONDS:-600} ))
-while [ ! -f /tmp/dev-env/rc ] && [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
-cat /tmp/dev-env/outputs 2>/dev/null || echo "WEB_READY=false"
-echo "DEV_ENV_RC=$(cat /tmp/dev-env/rc 2>/dev/null || echo timeout)"
+#
+# WAIT ONLY WHEN A BRING-UP IS ACTUALLY COMING. That history is why the wait
+# exists, not why it should be unconditional. The workflow's "Pre-start dev
+# environment (background)" step is itself conditional — it needs RUN_FUNCTIONAL,
+# a non-docs diff AND the consumer's .github/claude-review/dev-start.sh. When it
+# is skipped nothing will ever create /tmp/dev-env/rc, and this loop used to spin
+# to its full timeout: ~600s of waiting for a file that cannot appear, about half
+# the wall clock of a code-only review. That step now writes /tmp/dev-env/started
+# as its first act, so marker + RUN_FUNCTIONAL is the honest "something is
+# coming" signal; w=0 means do not wait at all.
+#
+# THE 540 CAP IS LOAD-BEARING — never "restore" a bigger caller value. The Bash
+# tool kills its own call at 600s, and that kills the WHOLE block, not just the
+# wait: the stdout is lost, so DEV_ENV_RC and DEADLINE_EPOCH never reach you. A
+# consumer passing dev_env_timeout_seconds=900 hit exactly that.
+w=${DEV_ENV_TIMEOUT_SECONDS:-360}
+case "$w" in ''|*[!0-9]*) w=360 ;; esac
+[ "$w" -gt 540 ] && w=540
+[ "${RUN_FUNCTIONAL:-}" = "true" ] && [ -f /tmp/dev-env/started ] || w=0
+echo "DEV_ENV_WAIT=$w"
+end=$(( $(date +%s) + w ))
+while [ "$w" -gt 0 ] && [ ! -f /tmp/dev-env/rc ] && [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
+if [ "$w" -gt 0 ] && grep -qi '^web_ready=' /tmp/dev-env/outputs 2>/dev/null; then cat /tmp/dev-env/outputs; else echo "WEB_READY=false"; fi
+if [ -f /tmp/dev-env/rc ]; then echo "DEV_ENV_RC=$(cat /tmp/dev-env/rc)"
+elif [ "$w" -gt 0 ]; then echo "DEV_ENV_RC=timeout"
+else echo "DEV_ENV_RC=not-started"; fi
 echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 ```
 
-Each `${VAR}` below means that literal value. Task `model:` must be the exact model id from env (`claude-opus-5`), never an alias.
+Each `${VAR}` below means that literal value.
+
+**You never choose a subagent's model.** Every `review-*` subagent is pre-installed with its model pinned in its own frontmatter — `MODEL_HIGH` for `review-scan` and `review-verify`, `MODEL_FUNCTIONAL` for the tester, `MODEL_STANDARD` for `review-native` — so omit `model:` from your `Task` calls and let that frontmatter decide. If you ever pass one anyway it must be the exact model id from the matching env var, never an alias and **never the model you yourself are running on**: this session deliberately runs a cheaper orchestration model because it writes no review prose, and the reviewing passes must not inherit it.
 
 `build-spec.sh` assembles `/tmp/spec.md` in precedence order — **in-repo spec documents first (authoritative)**, then the linked issue, then the consumer's `.github/claude-review/fetch-issue.sh` tracker hook — each under a header naming its origin and its authority, under a block naming the `GOVERNING SOURCE`. The document is the specification; an issue or ticket is a summary of it. It is the ONLY spec artifact anything downstream reads, and an empty file is a normal outcome. Never fatal: if it fails, dispatch anyway.
 

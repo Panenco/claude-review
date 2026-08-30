@@ -242,9 +242,11 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
         Functional-only work is skipped unless a comment asked for it.
     |
 [One agent: Review: orchestrate]  (anthropics/claude-code-action)
-    A single opus-5 session at --effort low. It orchestrates and writes
-    files; it never reviews the diff and never rewrites a subagent's
-    prose. Two Task calls:
+    A single sonnet-5 session at --effort low (`model_orchestrator`).
+    It orchestrates and writes files; it never reviews the diff and
+    never rewrites a subagent's prose, so it does not need the
+    reviewing model — and it never lends its own to a subagent: each
+    one pins its model in its installed frontmatter. Two Task calls:
       review-scan   (opus-5, effort: medium) — reads the diff itself,
                     picks light vs full and says why, emits candidate
                     findings that MUST each name a concrete failure
@@ -796,7 +798,7 @@ The pipeline consists of:
 - **Reusable workflow** (`.github/workflows/pr-review.yml`) — prior-state derivation from the PR's review history, the deterministic guard, dev-env setup, pinned agent-browser + Chrome install and launch preflight (cached, decoupled from the consumer repo), subagent installation, the single `claude-code-action` invocation, the deterministic poster
 - **Deterministic guard** (`scripts/guard.sh`) — ~90 lines of pure bash, no network, unit-tested. The only thing that decides whether a model runs at all: skip-review label, empty since-last delta, oversized PR (blocked with a split request it renders itself), no non-generated files. There are no depth tiers
 - **4 skill files** (`skills/`) — prompt templates defining review methodology:
-  - `review-orchestrator` — the single top-level Claude Code agent (opus-5, `--effort low`); dispatches `review-scan` and the optional functional tester in one response, then `review-verify`, then copies verify's output into `/tmp/review.json` **verbatim**. It never reviews the diff and never rewrites a subagent's prose
+  - `review-orchestrator` — the single top-level Claude Code agent (sonnet-5 via `model_orchestrator`, `--effort low` — it is plumbing, not judgment, and its model never reaches a subagent); dispatches `review-scan` and the optional functional tester in one response, then `review-verify`, then copies verify's output into `/tmp/review.json` **verbatim**. It never reviews the diff and never rewrites a subagent's prose
   - `review-scan` — Task subagent (opus-5, `effort: medium`); reads the diff itself with `gh`/`Read`/`Grep`, self-scales light vs full and records why, and emits candidate findings that must each name a concrete failure scenario. On round 2+ it scopes to `git diff <prior_head_sha>..HEAD` and carries the prior review's still-unresolved findings → `/tmp/scan.json`
   - `review-verify` — Task subagent (opus-5, `effort: low`); ONE pass over all candidates whose mandate is to **refute** them against the source at HEAD, defaulting to refuted when uncertain. Decides the verdict and renders the posted body and inline comments → `/tmp/verify.json`. Its prose is final. It is also the **only** consumer of `/tmp/functional.json`, which is the one narrow exception to its never-invent-a-finding rule: the tester is dispatched in the same response as `review-scan` and finishes long after it, so scan can never read it
   - `review-functional-tester` — drives the live app with the `agent-browser` CLI under a wall-clock budget; first turn is a browser smoke check that hard-fails the run as `overall: CRASH` if Chrome can't launch — silent fallback to curl is forbidden. **Advisory only:** it can never raise or lower the verdict, and its test plan comes only from a linked issue's acceptance criteria (no issue, no test)
