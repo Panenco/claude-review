@@ -568,6 +568,12 @@ never "…and no refutation reason reaches the review" "$POSTER" \
 # read the drops after a run without any new plumbing.
 want "the workflow uploads /tmp/verify.json as an artifact" "$WORKFLOW" \
   '^ +/tmp/verify\.json$'
+# The native pass is advisory and its findings are deduplicated into scan's
+# wording, so its own output is the ONLY record of what the second opinion
+# actually said. The stale sweep already clears it (see above); uploading it is
+# what makes a disagreement between the two reviewers auditable after the fact.
+want "the workflow uploads /tmp/native.json as an artifact" "$WORKFLOW" \
+  '^ +/tmp/native\.json$'
 # The judge: the answer an author most wants is whether the fix actually works.
 want "review-scan verifies the PR's stated fix holds at HEAD" "$SCAN" \
   'if the PR exists to fix something'
