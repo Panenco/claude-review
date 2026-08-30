@@ -63,7 +63,7 @@ Read `/tmp/scan.json`. Missing or unparseable → skip to the degraded write bel
 
 Dispatch `subagent_type: "review-verify"`:
 ```
-Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-verify.md and follow it exactly. PR #${PR_NUMBER}. Input: /tmp/scan.json, plus /tmp/functional.json if the tester wrote one. Write /tmp/verify.json.
+Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-verify.md and follow it exactly. PR #${PR_NUMBER}. Input: /tmp/scan.json, plus /tmp/functional.json if the tester wrote one. CLAUDE_REVIEW_SCRIPTS=${CLAUDE_REVIEW_SCRIPTS} — that is where validate-screenshots.sh lives, and it is the ONLY way you may reach a screenshot. Write /tmp/verify.json.
 ```
 
 ## Turn 4 — write /tmp/review.json
@@ -87,7 +87,9 @@ Then run `jq empty /tmp/review.json`. Non-zero means an unescaped `"`, raw newli
 
 **You do not publish them.** `post-review.sh` uploads every screenshot the tester named in `/tmp/functional.json` and renders the gallery itself, on a PASS as much as on a failure — do not run `upload-screenshots.sh`, and do not write a functional section.
 
-To put a shot inside a finding's comment, embed `https://github.com/${GITHUB_REPOSITORY}/raw/review-assets/pr-${PR_NUMBER}/<basename>` — the poster's upload runs before the review is posted, so the URL resolves. Never `Read` a file under `/tmp/screenshots/`.
+To put a shot inside a finding's comment, embed `https://github.com/${GITHUB_REPOSITORY}/raw/review-assets/pr-${PR_NUMBER}/<basename>` — the poster's upload runs before the review is posted, so the URL resolves.
+
+**You never `Read` a file under `/tmp/screenshots/`, and neither does any agent but `review-verify`.** A truncated PNG returns `400 Could not process image` and ends the turn before its output file is written, and you have no safety net for that. `review-verify` does: it writes its review first and only opens images `scripts/validate-screenshots.sh` cleared (its § "Seeing the screenshots"). That narrow exception is the only one — do not borrow it, and do not run the validator yourself.
 
 ### Degraded write (scan or verify failed)
 

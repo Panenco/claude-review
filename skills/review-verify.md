@@ -52,6 +52,34 @@ Then emit it as a normal finding meeting the full bar (`path`, in-hunk `line`, `
 
 Everything else in that file is discarded silently. A failed, crashed or skipped functional run **never** lowers the verdict on its own (contract: the tester can neither raise nor lower a verdict), never derives severity from the PR title, and never gets its own body section — it appears as a finding or a human-review item or not at all.
 
+### Seeing the screenshots
+
+You are the only agent in this pipeline that may look at a screenshot, and only down the path below. **A truncated PNG handed to a model returns `400 Could not process image`, which ends the turn before any output file is written** — that is why every skill here carried a blanket ban, and it is still the thing this procedure is built around. Two rules make it survivable, and you do both:
+
+1. **Write a complete `/tmp/verify.json` BEFORE you open a single image.** Not a stub, not a placeholder — the whole postable review you would have written with no pictures at all: real verdict, real body, real comments, valid JSON, `jq empty` clean. Only then look at anything.
+2. **`Read` a screenshot only if the validator listed it.** One Bash call, before the first image:
+
+   ```bash
+   SCREENSHOT_ALLOWLIST=/tmp/screenshots.ok \
+     "${CLAUDE_REVIEW_SCRIPTS:-$CLAUDE_REVIEW_PIPELINE_DIR/scripts}"/validate-screenshots.sh
+   ```
+
+   It checks the PNG signature, walks every chunk to a complete `IEND` at exactly end-of-file, verifies each chunk's CRC, and applies the API's per-image size and dimension ceilings. Anything that fails never reaches the list. **That list is the whitelist: a path not in `/tmp/screenshots.ok` byte for byte is forbidden — including one you read out of `/tmp/functional.json`.** Never glob `/tmp/screenshots/`, never `ls` it, never assemble a path yourself. Read at most what it lists; it is already capped.
+
+**The guarantee, plainly: a bad image cannot lose this run.** The review is on disk before any image is opened, and the only images opened are ones a structural check already cleared. The worst case is a text-only review, never no review.
+
+If a `Read` still returns `400 Could not process image`, stop looking at images for the rest of the run — no retry, no next file — and go straight back to revising the review you already wrote.
+
+**What the images may change — three things, and nothing else:**
+
+- **Refute an observation the shot contradicts.** The image outranks the tester's prose: an observation whose own screenshot shows the expected state is discarded, and any finding promoted from it falls with it.
+- **Catch a mis-captioned shot.** A caption naming a state the image does not show — a login wall captioned as the catalogue, an error boundary captioned as a success — supports nothing. Record it in `meta.refuted` with `"kind": "screenshot"`, the file as `path` and the caption as `title`.
+- **Strengthen a surviving finding's `failure_scenario`** with what is visibly on screen: the rendered text, the actual state, the actual empty list.
+
+**Seeing something in a picture is never licence to file a finding.** The gate above is untouched — a finding must still tie to a changed line, still come from the acceptance criteria, and you must still restate its failure from the code. A screenshot is evidence about an observation the tester already made; it is not an observation of its own, and it never moves the verdict by itself.
+
+Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
+
 `prior_findings` (round 2+) are findings an earlier round raised that scan re-checked and believes are STILL unresolved at HEAD. **They carry the opposite default to a new finding.** A new claim is refuted when you are uncertain; a carried one already survived a full scan and a full refutation pass once, so it is KEPT when you are uncertain. Refute one only by showing what changed — the guard that now exists, the caller that now handles it, the line that no longer runs — and when you do, record it in `meta.refuted` with `"kind": "finding"`, its `id`, and that reason. Survivors are findings and count like any other. Copy scan's `resolved_prior` into `meta.resolved_prior` after spot-checking the two highest-severity entries against the code; drop any whose `evidence` you cannot confirm, and it goes back to being a finding.
 
 ## Verdict
@@ -176,7 +204,7 @@ The `**check**` prefix is load-bearing — the poster reads it to route a check 
     "human_review": [
       {"path": "...", "line": 12, "what_to_check": "...", "why_unresolved": "..."}
     ],
-    "refuted": [{"kind": "finding|human_review", "id": "<carried id, when refuting a carried finding>",
+    "refuted": [{"kind": "finding|human_review|screenshot", "id": "<carried id, when refuting a carried finding>",
                  "path": "...", "line": 12, "title": "<title, or the what_to_check that was asked>",
                  "reason": "suppressed by <file> | already mitigated at the cited line | answered: <answer> | <one line>"}],
     "depth_used": "light|full",

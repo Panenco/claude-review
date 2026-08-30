@@ -26,6 +26,8 @@ WORKFLOW="$ROOT/.github/workflows/pr-review.yml"
 CMD="$ROOT/scripts/review-command.sh"
 BUILDSPEC="$ROOT/scripts/build-spec.sh"
 GUARD="$ROOT/scripts/guard.sh"
+TESTER="$ROOT/skills/review-functional-tester.md"
+VALIDATOR="$ROOT/scripts/validate-screenshots.sh"
 fail=0
 
 ok()   { echo "OK:   $1"; }
@@ -37,7 +39,7 @@ never() { # never <label> <file> <extended-regex>
   if grep -qiE "$3" "$2"; then bad "$1 — unexpected match for /$3/ in ${2#"$ROOT"/}"; else ok "$1"; fi
 }
 
-for f in "$SCAN" "$VERIFY" "$ORCH" "$POSTER" "$WORKFLOW" "$CMD" "$BUILDSPEC" "$GUARD"; do
+for f in "$SCAN" "$VERIFY" "$ORCH" "$POSTER" "$WORKFLOW" "$CMD" "$BUILDSPEC" "$GUARD" "$TESTER" "$VALIDATOR"; do
   [ -f "$f" ] || { echo "FAIL: $f not found"; exit 1; }
 done
 
@@ -70,6 +72,82 @@ want "…with the fallback to a human_review item" "$VERIFY" \
   'human_review.*item|one `human_review`'
 want "…and the tester still cannot move the verdict" "$VERIFY" \
   'never.*lowers the verdict|neither raise nor lower'
+
+echo ""
+echo "── only review-verify may look at a screenshot, and only through the validator ──"
+# A truncated PNG returns `400 Could not process image`, which ends the reading
+# turn BEFORE any output file is written. That is a total loss, not a lost
+# image, which is why the ban was blanket. It is now narrow instead of gone, and
+# every half of the replacement has to still be there.
+want "review-verify names the validator" "$VERIFY" \
+  'validate-screenshots\.sh'
+want "…and treats its output file as the whitelist" "$VERIFY" \
+  '/tmp/screenshots\.ok'
+want "…and still names the 400 it is engineering around" "$VERIFY" \
+  '400 Could not process image'
+want "…and forbids a path the validator did not list" "$VERIFY" \
+  'not in `?/tmp/screenshots\.ok`? byte for byte is forbidden|is forbidden'
+want "…and stops reading images if a 400 arrives anyway" "$VERIFY" \
+  'stop looking at images'
+# The belt-and-braces half: the review is on disk before any image is opened, so
+# a lost turn degrades to a text-only review instead of no review at all.
+want "review-verify writes a complete verify.json BEFORE any image" "$VERIFY" \
+  'BEFORE you open a single image'
+want "…and says it must be postable, not a stub" "$VERIFY" \
+  'Not a stub'
+PROV_LINE=$(grep -n 'BEFORE you open a single image' "$VERIFY" | head -1 | cut -d: -f1)
+VAL_LINE=$(grep -n 'validate-screenshots\.sh' "$VERIFY" | head -1 | cut -d: -f1)
+if [ -n "$PROV_LINE" ] && [ -n "$VAL_LINE" ] && [ "$PROV_LINE" -lt "$VAL_LINE" ]; then
+  ok "the write-first rule (line $PROV_LINE) precedes the validator call (line $VAL_LINE)"
+else
+  bad "review-verify must tell the model to write verify.json BEFORE it runs the validator (write=$PROV_LINE validator=$VAL_LINE)"
+fi
+# Vision is not a licence to invent. The changed-line gate is what keeps a
+# picture from becoming a finding on its own.
+want "review-verify still requires a changed line for anything promoted" "$VERIFY" \
+  'tie to a changed line|point at the changed line'
+want "…and says a picture alone is never a finding" "$VERIFY" \
+  'never licence to file a finding|never grounds for a new finding'
+
+# The tester keeps the ABSOLUTE ban: it runs against a wall clock with no
+# provisional output to fall back on.
+want "the functional tester still bans every screenshot Read" "$TESTER" \
+  'Never `Read` anything under `/tmp/screenshots/`'
+want "…and says why the exception is not its to borrow" "$TESTER" \
+  'no such fallback|racing a wall clock'
+want "the orchestrator still bans it for itself" "$ORCH" \
+  'never `Read` a file under `/tmp/screenshots/`'
+want "…and points the exception at review-verify only" "$ORCH" \
+  'review-verify'
+never "review-scan is never handed a screenshot path" "$SCAN" \
+  '/tmp/screenshots'
+
+# The subagent cannot resolve the script without being told where it lives.
+want "the orchestrator hands review-verify the scripts dir" "$ORCH" \
+  'CLAUDE_REVIEW_SCRIPTS=\$\{CLAUDE_REVIEW_SCRIPTS\}'
+
+want "pr-review.yml verifies validate-screenshots.sh installed" "$WORKFLOW" \
+  'validate-screenshots\.sh'
+want "action.yml verifies it too" "$ROOT/action.yml" \
+  'validate-screenshots\.sh'
+
+# The API's own ceiling, not a guess: 5 MB of base64 (the Bedrock/Vertex limit,
+# lower than the 10 MB direct one) is 3,750,000 raw bytes. A default above that
+# would hand the model a file the API refuses.
+DEFAULT_MAX=$(grep -o 'SCREENSHOT_MAX_BYTES:-[0-9]*' "$VALIDATOR" | head -1 | cut -d- -f2)
+if [ -n "$DEFAULT_MAX" ] && [ "$DEFAULT_MAX" -le 3750000 ]; then
+  ok "the default byte ceiling ($DEFAULT_MAX) stays under the 5 MB-base64 API limit"
+else
+  bad "SCREENSHOT_MAX_BYTES defaults to '$DEFAULT_MAX' — over the 3750000-byte equivalent of the API's 5 MB base64 cap"
+fi
+want "the validator refuses anything without a complete IEND" "$VALIDATOR" \
+  'IEND'
+DEPS=$(grep -vE '^[[:space:]]*#' "$VALIDATOR" | grep -cE '\b(python3|python|magick|convert|sips)\b')
+if [ "${DEPS:-0}" -eq 0 ]; then
+  ok "the validator adds no new binary dependency outside its comments"
+else
+  bad "the validator reaches for an image/scripting binary in $DEPS code line(s)"
+fi
 
 echo ""
 echo "── the body budget the model is told matches the one enforced ──"
@@ -410,8 +488,8 @@ want "review-scan drops an item the cited code already mitigates" "$SCAN" \
 # the uploaded verify.json, and must stay OUT of the posted review.
 want "review-verify records every dropped human_review item" "$VERIFY" \
   'Every dropped item leaves a trace'
-want "…tagged so the two kinds are distinguishable in meta.refuted" "$VERIFY" \
-  '"kind": "finding\|human_review"'
+want "…tagged so the kinds are distinguishable in meta.refuted" "$VERIFY" \
+  '"kind": "finding\|human_review\|screenshot"'
 want "…carrying what was asked" "$VERIFY" \
   'what_to_check that was asked'
 want "…and why it was dropped" "$VERIFY" \

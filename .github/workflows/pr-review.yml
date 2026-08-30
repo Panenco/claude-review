@@ -257,7 +257,7 @@ jobs:
             echo "::error::CLAUDE_REVIEW_SCRIPTS is unset or missing — the install step did not run, or action.yml and pr-review.yml are from different versions."
             exit 1
           fi
-          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh upload-screenshots.sh; do
+          for s in post-review.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh pick-oauth-token.sh setup-dev-env.sh build-spec.sh upload-screenshots.sh validate-screenshots.sh; do
             if [ ! -x "$CLAUDE_REVIEW_SCRIPTS/$s" ]; then
               echo "::error::$CLAUDE_REVIEW_SCRIPTS/$s is missing or not executable."
               exit 1
