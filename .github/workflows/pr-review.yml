@@ -43,7 +43,7 @@ on:
         type: string
         default: "v3"
       dev_env_timeout_seconds:
-        description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. CLAMPED TO 540s by the orchestrator: the wait runs inside one Bash tool call, that tool kills its own call at 600s, and the kill loses the whole call's stdout — DEV_ENV_RC and DEADLINE_EPOCH with it, not just the wait. Passing more than 540 buys nothing. The wait is also skipped entirely when no dev-env was started (docs-only diff, no dev-start.sh, or no functional pass)."
+        description: "How long to wait for the background dev-env (.github/claude-review/dev-start.sh) to come up. CLAMPED TO 540s by the orchestrator, so passing more than 540 buys nothing. The clamp is a courtesy, NOT the guarantee: the Bash tool ceiling is a per-call argument that defaults to 120s and tops out at 600s, so no fixed clamp can promise the call survives — what protects the run is that the wait is its OWN tool call (orchestrator turn 1b), so a kill costs the wait and nothing else. Never lower it below ~360 either: real bring-up measures 291-305s, and a shorter wait rules the tester ineligible on every consumer. The wait is skipped entirely when no dev-env was started (docs-only diff, no dev-start.sh, or no functional pass)."
         type: number
         default: 360
       functional_budget_seconds:
