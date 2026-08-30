@@ -55,7 +55,8 @@ set -uo pipefail
 # (see .eval.env.example):
 #   EVAL_REPO    owner/repo to review against          (required)
 #   EVAL_ROOT    working root for clones and results   (default $TMPDIR/claude-review-eval)
-#   EVAL_MODEL   orchestrator + subagent model         (default claude-opus-5)
+#   EVAL_MODEL   the REVIEWING model, i.e. the subagents  (default claude-opus-5)
+#   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-sonnet-5)
 
 usage() { echo "usage: ${0##*/} <pr-number> [--spec-only]" >&2; }
 
@@ -76,7 +77,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd) || { echo "cannot resolve repo root" >&2;
 # arguments (`EVAL_PRS=101 102 103` runs `102`). Quoting it fixes the shell and
 # breaks `make eval` instead — one call with three arguments. So neither form
 # satisfies a blanket `.`, and sourcing an operator-edited file executes whatever
-# is in it anyway. Read only the three keys this script actually uses, as data.
+# is in it anyway. Read only the four keys this script actually uses, as data.
 unquote() { local s="$1"; s="${s%\"}"; s="${s#\"}"; s="${s%\'}"; s="${s#\'}"; printf '%s' "$s"; }
 read_eval_env() {
   local f="$ROOT/.eval.env" val
@@ -86,6 +87,7 @@ read_eval_env() {
   val=$(sed -n 's/^[[:space:]]*EVAL_REPO[[:space:]]*=[[:space:]]*//p'  "$f" | tail -1); [ -n "$val" ] && EVAL_REPO=$(unquote "$val")
   val=$(sed -n 's/^[[:space:]]*EVAL_ROOT[[:space:]]*=[[:space:]]*//p'  "$f" | tail -1); [ -n "$val" ] && EVAL_ROOT=$(unquote "$val")
   val=$(sed -n 's/^[[:space:]]*EVAL_MODEL[[:space:]]*=[[:space:]]*//p' "$f" | tail -1); [ -n "$val" ] && EVAL_MODEL=$(unquote "$val")
+  val=$(sed -n 's/^[[:space:]]*EVAL_ORCH_MODEL[[:space:]]*=[[:space:]]*//p' "$f" | tail -1); [ -n "$val" ] && EVAL_ORCH_MODEL=$(unquote "$val")
   return 0
 }
 read_eval_env
@@ -97,6 +99,10 @@ if [ -z "$REPO" ]; then
 fi
 EVAL_ROOT="${EVAL_ROOT:-${TMPDIR:-/tmp}/claude-review-eval}"
 MODEL="${EVAL_MODEL:-claude-opus-5}"
+# The orchestrator reviews nothing — it dispatches and copies one file — so it
+# runs the cheap model in CI (`model_orchestrator`). Mirrored here, else a local
+# sweep measures a cost this pipeline no longer pays.
+ORCH_MODEL="${EVAL_ORCH_MODEL:-claude-sonnet-5}"
 
 for bin in gh jq git claude; do
   command -v "$bin" >/dev/null 2>&1 || { echo "$bin not on PATH" >&2; exit 1; }
@@ -281,9 +287,9 @@ PROMPT="Read $PIPE/skills/review-orchestrator.md and follow it exactly. PR numbe
 DENY='Edit,WebFetch,WebSearch,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr merge:*),Bash(gh pr ready:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue close:*),Bash(gh release:*),Bash(git push:*)'
 
 date +%s > "$RUNDIR/job-start"
-echo "Running the orchestrator ($MODEL) — this takes minutes and posts nothing"
+echo "Running the orchestrator ($ORCH_MODEL; subagents $MODEL) — this takes minutes and posts nothing"
 ( cd "$WT" && claude -p "$PROMPT" \
-    --model "$MODEL" \
+    --model "$ORCH_MODEL" \
     --effort low \
     --permission-mode dontAsk \
     --setting-sources project \

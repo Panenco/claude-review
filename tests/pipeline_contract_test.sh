@@ -1428,6 +1428,205 @@ case "$GOT" in
 esac
 rm -f "$CFG"
 
+# ── the turn-1 dev-env wait: gated, clamped, and still a real wait ──────────
+# Two measured failures, one block:
+#   * The wait was UNCONDITIONAL, but the workflow step that creates
+#     /tmp/dev-env/rc is not. On a code-only review that step is skipped, so the
+#     loop spun to its full timeout waiting for a file nothing would write —
+#     Panenco/qiv run 33298278779: ~600s of a 1185s job, 49% of the wall clock.
+#   * The timeout came straight from the caller, and qiv passes 900 — past the
+#     Bash tool's own 600s ceiling. The tool killed the call (exit 143) and the
+#     WHOLE block's stdout was lost: no DEV_ENV_RC, no DEADLINE_EPOCH.
+# So this section EXECUTES the shipped block (paths repointed at a temp dir)
+# instead of grepping it.
+echo ""
+echo "── the turn-1 dev-env wait is gated and clamped ──"
+DEVROOT=$(mktemp -d)
+DEVENV="$DEVROOT/dev-env"
+SNIP="$DEVROOT/wait.sh"
+awk '/^# The dev-env boots in the background/{p=1} p{print} p&&/^echo "DEADLINE_EPOCH=/{exit}' \
+  "$ORCH" | sed "s#/tmp/dev-env#$DEVENV#g" > "$SNIP"
+if grep -q 'while ' "$SNIP" && grep -q '^echo "DEADLINE_EPOCH=' "$SNIP" && grep -q "$DEVENV" "$SNIP"; then
+  ok "extracted the orchestrator's turn-1 dev-env block"
+else
+  bad "could not extract the turn-1 dev-env block from review-orchestrator.md"
+fi
+
+OUT=""; ELAPSED=0
+run_wait() { # run_wait <RUN_FUNCTIONAL> <DEV_ENV_TIMEOUT_SECONDS>
+  local t0 t1
+  t0=$(date +%s)
+  OUT=$(RUN_FUNCTIONAL="$1" DEV_ENV_TIMEOUT_SECONDS="$2" FUNCTIONAL_BUDGET_SECONDS=480 \
+        bash "$SNIP" 2>&1)
+  t1=$(date +%s)
+  ELAPSED=$(( t1 - t0 ))
+}
+# NOTE: a here-string, not `printf | grep -q`. Under `set -o pipefail` grep -q
+# exits on the first match, printf takes SIGPIPE, and the pipeline returns 141 —
+# an assertion that fails at random.
+has() { grep -qiE "$1" <<<"$OUT"; }
+
+# (a) code-only review: the pre-start step was skipped, so nothing exists at all.
+rm -rf "$DEVENV"
+run_wait false 900
+if [ "$ELAPSED" -lt 10 ]; then ok "a code-only run does not wait at all (${ELAPSED}s)"
+else bad "a code-only run still waited ${ELAPSED}s"; fi
+has '^DEV_ENV_WAIT=0$'   && ok "…and says so: DEV_ENV_WAIT=0"          || bad "…DEV_ENV_WAIT was not 0"
+has '^WEB_READY=false$'  && ok "…still emits WEB_READY=false"          || bad "…did not emit WEB_READY=false"
+has '^DEADLINE_EPOCH=[0-9]+$' && ok "…still emits DEADLINE_EPOCH"      || bad "…did not emit DEADLINE_EPOCH"
+if has '^DEV_ENV_RC=timeout$'; then bad "…but DEV_ENV_RC lies: nothing timed out, nothing was started"
+else ok "…and DEV_ENV_RC is honest about never having started"; fi
+
+# (b) functional asked for, but the consumer ships no dev-start.sh — the step is
+# skipped just the same, so the marker is the signal, not RUN_FUNCTIONAL alone.
+mkdir -p "$DEVENV"
+run_wait true 900
+if [ "$ELAPSED" -lt 10 ] && has '^DEV_ENV_WAIT=0$'; then
+  ok "RUN_FUNCTIONAL=true with no bring-up marker still does not wait"
+else
+  bad "RUN_FUNCTIONAL=true with no marker waited ${ELAPSED}s (DEV_ENV_WAIT not 0)"
+fi
+
+# (c) a real bring-up that already finished: the clamp must bind on the caller's
+# 900 and the outputs must come through.
+date +%s > "$DEVENV/started"
+echo 0 > "$DEVENV/rc"
+printf 'web_ready=true\nweb_url=http://127.0.0.1:3000\n' > "$DEVENV/outputs"
+run_wait true 900
+has '^DEV_ENV_WAIT=540$' && ok "a 900s caller value is clamped to 540" || bad "900 was not clamped to 540 — the Bash tool would kill the call at 600s"
+has '^web_ready=true$'   && ok "…and the dev-env outputs still come through" || bad "…dev-env outputs were dropped"
+has '^DEV_ENV_RC=0$'     && ok "…and DEV_ENV_RC reports the real rc"         || bad "…DEV_ENV_RC did not report rc=0"
+
+# (d) a value under the cap is the caller's, not the cap's.
+run_wait true 120
+has '^DEV_ENV_WAIT=120$' && ok "a value under the cap is honoured as passed" || bad "120 was not honoured"
+
+# (e) junk from a caller must not become an unbounded (or zero) wait.
+run_wait true "15 minutes"
+has '^DEV_ENV_WAIT=360$' && ok "a non-numeric timeout falls back to 360" || bad "a non-numeric timeout did not fall back to 360"
+
+# (f) THE WAIT MUST STILL WAIT. This is the regression the gate could cause: a
+# bare `cat` raced the background bring-up and ruled the tester ineligible on
+# every consumer. rc lands 2s in; the block must still be there to see it.
+rm -f "$DEVENV/rc"
+( sleep 2; echo 0 > "$DEVENV/rc" ) &
+run_wait true 60
+if [ "$ELAPSED" -ge 1 ] && [ "$ELAPSED" -le 30 ] && has '^DEV_ENV_RC=0$'; then
+  ok "the wait still waits for a bring-up in flight (${ELAPSED}s, rc seen)"
+else
+  bad "the wait did not pick up an rc that landed 2s in (${ELAPSED}s)"
+fi
+wait 2>/dev/null
+
+# (g) and a bring-up that never finishes is still reported as a timeout.
+rm -f "$DEVENV/rc"
+run_wait true 3
+has '^DEV_ENV_RC=timeout$' && ok "a bring-up that never finishes still reads as timeout" || bad "a never-finishing bring-up did not report timeout"
+
+# The cap must leave real headroom under the 600s ceiling — the block still has
+# to print DEV_ENV_RC and DEADLINE_EPOCH after the wait returns.
+CAP=$(sed -n 's/^\[ "\$w" -gt \([0-9]*\) \].*/\1/p' "$SNIP" | head -1)
+if [ -n "$CAP" ] && [ "$CAP" -le 540 ]; then
+  ok "the clamp is ${CAP}s — at least 60s of headroom under the Bash tool's 600s ceiling"
+else
+  bad "the clamp is '${CAP:-missing}' — it must be <= 540 or the tool kills the call and loses its stdout"
+fi
+rm -rf "$DEVROOT"
+
+# ── the marker the gate depends on is actually produced ────────────────────
+echo ""
+echo "── the workflow produces the bring-up marker, and no stale one ──"
+step_body() { # step_body <line number of the "- name:" line> → that step only
+  awk -v s="$1" 'NR>s{ if ($0 ~ /^      - name:/) exit; print }' "$WORKFLOW"
+}
+PRE_LN=$(grep -n 'name: Pre-start dev environment' "$WORKFLOW" | head -1 | cut -d: -f1)
+CLR_LN=$(grep -n 'name: Clear stale dev-env state' "$WORKFLOW" | head -1 | cut -d: -f1)
+PRE_BODY=$(step_body "${PRE_LN:-0}")
+case "$PRE_BODY" in
+  *"date +%s > /tmp/dev-env/started"*) ok "the pre-start step writes /tmp/dev-env/started" ;;
+  *) bad "the pre-start step does not write the marker the orchestrator gates on" ;;
+esac
+if [ -n "$CLR_LN" ] && [ -n "$PRE_LN" ] && [ "$CLR_LN" -lt "$PRE_LN" ]; then
+  ok "…and stale dev-env state is cleared before it, so an absent marker means this run"
+else
+  bad "no 'Clear stale dev-env state' step before the pre-start step — a reused runner's marker would be trusted"
+fi
+CLR_BODY=$(step_body "${CLR_LN:-0}")
+case "$CLR_BODY" in
+  *"rm -rf /tmp/dev-env"*) ok "…and it really removes /tmp/dev-env" ;;
+  *) bad "the clear step does not remove /tmp/dev-env" ;;
+esac
+# It must NOT inherit the pre-start step's own conditions, or it would only ever
+# run on the runs that recreate the directory anyway.
+case "$CLR_BODY" in
+  *functional*|*needs_build*) bad "the clear step is gated on the functional/build conditions — it would never clear a stale marker" ;;
+  *) ok "…on every proceeding run, not only the ones that start a dev-env" ;;
+esac
+
+# ── the orchestrator's model is plumbing-grade, and it does not cascade ────
+# The top-level session makes ~7-12 API calls (a Read, one Bash, the Task
+# dispatches, one jq) and writes no review prose — 7-19% of a run's spend at
+# Opus rates. Every reviewing pass keeps its own model, pinned in the frontmatter
+# the install step envsubst's, so `--model` here reaches nothing else.
+echo ""
+echo "── the orchestrator session runs the cheap model, and it does not cascade ──"
+if grep -F -q -- '--model ${{ inputs.model_orchestrator }}' "$WORKFLOW"; then
+  ok "the orchestrate step runs inputs.model_orchestrator"
+else
+  bad "the orchestrate step does not run inputs.model_orchestrator"
+fi
+if grep -F -q -- '--model ${{ inputs.model_high }}' "$WORKFLOW"; then
+  bad "the orchestrate step still runs the REVIEWING model for pure plumbing"
+else
+  ok "…not the reviewing model"
+fi
+ORCH_DEFAULT=$(awk '/^      model_orchestrator:/{p=1;next} p&&/^        default:/{gsub(/^ *default: *"?|"$/,"");print;exit} p&&/^      [a-z_]+:/{exit}' "$WORKFLOW")
+case "$ORCH_DEFAULT" in
+  claude-sonnet-*|claude-haiku-*) ok "model_orchestrator defaults to a cheap model ($ORCH_DEFAULT)" ;;
+  "") bad "model_orchestrator has no default — callers would get an empty --model" ;;
+  *) bad "model_orchestrator defaults to '$ORCH_DEFAULT', which is not a cheap model" ;;
+esac
+
+# THE CASCADE CHECK. Every subagent must pin its own model to an env var the
+# install step fills from an input that is NOT model_orchestrator. If any agent
+# file stopped pinning one, it would silently inherit this session's Sonnet —
+# a quality regression, not a saving.
+INSTALL_LN=$(grep -n 'name: Install review subagents' "$WORKFLOW" | head -1 | cut -d: -f1)
+INSTALL_BODY=$(step_body "${INSTALL_LN:-0}")
+for af in "$ROOT"/agents/*.md; do
+  an=$(basename "$af" .md)
+  mv_=$(sed -n '/^---$/,/^---$/p' "$af" | sed -n 's/^model:[[:space:]]*//p' | head -1)
+  case "$mv_" in
+    '${MODEL_HIGH}'|'${MODEL_FUNCTIONAL}'|'${MODEL_STANDARD}') ;;
+    '') bad "$an pins no model — it would inherit the orchestrator's cheap session model"
+        continue ;;
+    *)  bad "$an pins '$mv_', which is not one of the reviewing model vars"
+        continue ;;
+  esac
+  vn=${mv_#'${'}; vn=${vn%'}'}
+  in_=$(printf '%s' "$vn" | tr 'A-Z' 'a-z')          # MODEL_HIGH -> model_high
+  if grep -F -q "$vn: \${{ inputs.$in_ }}" <<<"$INSTALL_BODY" \
+     && grep -F -q "\$$vn" <<<"$INSTALL_BODY"; then
+    ok "$an pins \${$vn}, filled from inputs.$in_ — the orchestrator's model cannot reach it"
+  else
+    bad "$an pins \${$vn} but the install step does not fill it from inputs.$in_"
+  fi
+done
+# Belt and braces: the orchestrator must not be told to hand its own model down.
+want "the orchestrator is told never to pass its own model to a subagent" "$ORCH" \
+  'never the model you yourself are running on'
+never "…and no longer names a specific model id as the one to pass" "$ORCH" \
+  'exact model id from env \(`claude-opus-5`\)'
+
+# The local sweep must measure the cost production actually pays.
+LOCAL="$ROOT/scripts/review-local.sh"
+want "review-local runs the orchestrator on its own (cheap) model" "$LOCAL" \
+  '\-\-model "\$ORCH_MODEL"'
+want "…defaulting to Sonnet, like the workflow" "$LOCAL" \
+  'ORCH_MODEL="\$\{EVAL_ORCH_MODEL:-claude-sonnet-5\}"'
+want "…while the subagents keep EVAL_MODEL" "$LOCAL" \
+  'MODEL_HIGH="\$MODEL"'
+
 echo ""
 if [ "$fail" -eq 0 ]; then
   echo "All pipeline contract tests passed."
