@@ -12,7 +12,34 @@ Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `RUN_NATIVE`, `NATIVE_R
 
 **Never end a turn without a tool call.** A prose-only message ends the session, and a session without `/tmp/review.json` is a crash (a `Stop` hook refuses it, bounded to 3 nudges). If you cannot finish, write a degraded `/tmp/review.json` — never stall.
 
-## Turn 1 — env, spec, functional eligibility (one Bash call)
+## Turn 1 — env, spec, functional eligibility (two Bash calls, ONE response)
+
+Issue **both blocks below in the same response**. Neither reads the other's
+output, so this is still one turn: the split is about what a killed call costs,
+not about ordering.
+
+**WHY TWO CALLS.** The Bash tool kills a call that outruns its timeout, and the
+kill throws away that call's stdout from the point of the kill. While the wait
+sat in the same block as everything else, one kill took `DEV_ENV_RC` **and**
+`DEADLINE_EPOCH` with it — and `DEADLINE_EPOCH` is the functional tester's hard
+wall-clock stop, which you must never invent. Measured on Panenco/qiv run
+33305382018: `Exit code 143` / `Command timed out after 2m 0s`, with the
+`printenv` output present and none of the values that came after the wait. Split
+this way, a kill can only ever cost the wait.
+
+**THE CEILING IS A PER-CALL PARAMETER, AND IT IS 120s UNLESS YOU SET IT.** It is
+NOT a reliable 600s — that belief is what sized the clamp below, and it is wrong:
+the same block was killed at 600s on one run and at 120s on another. The Bash
+tool's `timeout` argument is milliseconds, defaults to 120000 and accepts up to
+600000 (raisable only by `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` in the
+job env, which this workflow deliberately does not set — it would also lengthen
+every hung command the functional tester makes). Real bring-ups measure 291-305s,
+so **the wait call must pass `timeout: 600000`**; at the 120s default it is
+killed before any consumer's dev-env is up, which is exactly the
+"tester ineligible on every consumer" bug the wait exists to fix. Block 1a needs
+no `timeout` — it waits for nothing.
+
+### 1a — env, spec, deadline (never blocks)
 
 ```bash
 printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL RUN_NATIVE NATIVE_REVIEW_SCOPE FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
@@ -20,6 +47,17 @@ gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesR
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
 awk '/^(##|###) /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
+# DEADLINE_EPOCH IS EMITTED HERE, IN THE BLOCK THAT CANNOT BLOCK. It is the
+# clock plus FUNCTIONAL_BUDGET_SECONDS and depends on the dev-env not at all,
+# yet it used to be printed last, after the wait — so the kill that took the
+# wait took the tester's only real deadline with it. Nothing above this line
+# sleeps or polls, so this value reaches you on every run there is.
+echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
+```
+
+### 1b — the dev-env wait (pass `timeout: 600000`)
+
+```bash
 # The dev-env boots in the background from BEFORE this session started, so this
 # waits for its rc rather than reading a file still being written. A bare `cat`
 # raced it and always lost: the tester was ruled ineligible on every consumer
@@ -33,12 +71,16 @@ awk '/^(##|###) /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config
 # to its full timeout: ~600s of waiting for a file that cannot appear, about half
 # the wall clock of a code-only review. That step now writes /tmp/dev-env/started
 # as its first act, so marker + RUN_FUNCTIONAL is the honest "something is
-# coming" signal; w=0 means do not wait at all.
+# coming" signal; w=0 means do not wait at all, and this call then returns in
+# milliseconds — which is why issuing it unconditionally costs nothing.
 #
-# THE 540 CAP IS LOAD-BEARING — never "restore" a bigger caller value. The Bash
-# tool kills its own call at 600s, and that kills the WHOLE block, not just the
-# wait: the stdout is lost, so DEV_ENV_RC and DEADLINE_EPOCH never reach you. A
-# consumer passing dev_env_timeout_seconds=900 hit exactly that.
+# THIS BLOCK BEING ITS OWN TOOL CALL IS THE GUARANTEE. The clamp below is only a
+# courtesy: the ceiling is per-call and variable (120s by default, 600s at most
+# — see the section head), so no single number can promise the block survives.
+# What CAN be promised is the blast radius, and it is now this call alone.
+# Never clamp BELOW a real bring-up either: measured bring-up on seaters is
+# 291-305s, so anything under ~360 would re-create the original bug — the tester
+# ruled ineligible on every consumer — while pretending to be a safety margin.
 w=${DEV_ENV_TIMEOUT_SECONDS:-360}
 case "$w" in ''|*[!0-9]*) w=360 ;; esac
 [ "$w" -gt 540 ] && w=540
@@ -52,6 +94,15 @@ elif [ "$w" -gt 0 ]; then echo "DEV_ENV_RC=timeout"
 else echo "DEV_ENV_RC=not-started"; fi
 echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 ```
+
+**Reading the two results.** `DEADLINE_EPOCH` is printed by both blocks and **the
+last one you actually received wins**: 1b re-measures it after the wait so the
+tester gets its whole budget from dispatch, while 1a's is the copy that survives
+anything. If 1b came back killed, empty or truncated, use 1a's value, take
+`WEB_READY=false`, dispatch no tester, and carry on to turn 2 — a lost wait
+degrades to "no functional run", never to a stall and never to a deadline you
+made up. Re-issuing 1b once is safe (it only polls files) if the kill looks like
+a missing `timeout`; a second failure is `WEB_READY=false`, not a third try.
 
 Each `${VAR}` below means that literal value.
 

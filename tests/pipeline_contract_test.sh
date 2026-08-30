@@ -1429,16 +1429,22 @@ esac
 rm -f "$CFG"
 
 # ── the turn-1 dev-env wait: gated, clamped, and still a real wait ──────────
-# Two measured failures, one block:
+# Three measured failures, one block:
 #   * The wait was UNCONDITIONAL, but the workflow step that creates
 #     /tmp/dev-env/rc is not. On a code-only review that step is skipped, so the
 #     loop spun to its full timeout waiting for a file nothing would write —
 #     Panenco/qiv run 33298278779: ~600s of a 1185s job, 49% of the wall clock.
-#   * The timeout came straight from the caller, and qiv passes 900 — past the
-#     Bash tool's own 600s ceiling. The tool killed the call (exit 143) and the
-#     WHOLE block's stdout was lost: no DEV_ENV_RC, no DEADLINE_EPOCH.
-# So this section EXECUTES the shipped block (paths repointed at a temp dir)
-# instead of grepping it.
+#   * The timeout came straight from the caller, and qiv passes 900. The tool
+#     killed the call (exit 143) and the WHOLE block's stdout was lost: no
+#     DEV_ENV_RC, no DEADLINE_EPOCH.
+#   * The clamp that answered that assumed a fixed 600s ceiling. It is not
+#     fixed: the Bash tool's timeout is a PER-CALL argument, 120000ms by
+#     default and 600000ms at most, and Panenco/qiv run 33305382018 was killed
+#     at "2m 0s" with exactly the same loss. No clamp can promise survival, so
+#     the wait is now its own tool call and DEADLINE_EPOCH is emitted by the
+#     block that never blocks — see "turn 1 survives a killed wait" below.
+# So this section EXECUTES the shipped blocks (paths repointed at a temp dir)
+# instead of grepping them.
 echo ""
 echo "── the turn-1 dev-env wait is gated and clamped ──"
 DEVROOT=$(mktemp -d)
@@ -1493,7 +1499,7 @@ date +%s > "$DEVENV/started"
 echo 0 > "$DEVENV/rc"
 printf 'web_ready=true\nweb_url=http://127.0.0.1:3000\n' > "$DEVENV/outputs"
 run_wait true 900
-has '^DEV_ENV_WAIT=540$' && ok "a 900s caller value is clamped to 540" || bad "900 was not clamped to 540 — the Bash tool would kill the call at 600s"
+has '^DEV_ENV_WAIT=540$' && ok "a 900s caller value is clamped to 540" || bad "900 was not clamped to 540"
 has '^web_ready=true$'   && ok "…and the dev-env outputs still come through" || bad "…dev-env outputs were dropped"
 has '^DEV_ENV_RC=0$'     && ok "…and DEV_ENV_RC reports the real rc"         || bad "…DEV_ENV_RC did not report rc=0"
 
@@ -1523,14 +1529,137 @@ rm -f "$DEVENV/rc"
 run_wait true 3
 has '^DEV_ENV_RC=timeout$' && ok "a bring-up that never finishes still reads as timeout" || bad "a never-finishing bring-up did not report timeout"
 
-# The cap must leave real headroom under the 600s ceiling — the block still has
-# to print DEV_ENV_RC and DEADLINE_EPOCH after the wait returns.
+# The clamp is a courtesy, not the guarantee (the ceiling is per-call and as low
+# as 120s) — but it still has to sit in the band that is defensible at both ends:
+# at most 540 so a 600s call has room to print its tail, and never below 360,
+# because real bring-up measures 291-305s and a shorter wait re-creates the
+# original bug — the tester ruled ineligible on every consumer.
 CAP=$(sed -n 's/^\[ "\$w" -gt \([0-9]*\) \].*/\1/p' "$SNIP" | head -1)
-if [ -n "$CAP" ] && [ "$CAP" -le 540 ]; then
-  ok "the clamp is ${CAP}s — at least 60s of headroom under the Bash tool's 600s ceiling"
+if [ -n "$CAP" ] && [ "$CAP" -le 540 ] && [ "$CAP" -ge 360 ]; then
+  ok "the clamp is ${CAP}s — under a 600s call's ceiling and above a real 291-305s bring-up"
 else
-  bad "the clamp is '${CAP:-missing}' — it must be <= 540 or the tool kills the call and loses its stdout"
+  bad "the clamp is '${CAP:-missing}' — it must be between 360 and 540"
 fi
+
+# ── turn 1 survives a killed wait ──────────────────────────────────────────
+# THE BUG THIS PINS. Panenco/qiv run 33305382018 ended the turn-1 tool result
+# with "Exit code 143 / Command timed out after 2m 0s". The kill threw away the
+# block's stdout from the point of the kill, so WEB_READY, DEV_ENV_RC and
+# DEADLINE_EPOCH never reached the orchestrator — and DEADLINE_EPOCH is the
+# functional tester's hard wall-clock stop, handed to it in its Task prompt. A
+# tester dispatched without a real deadline, or an orchestrator inventing one,
+# is a correctness failure, not a slow run.
+#
+# The clamp shipped in #141 cannot fix this: the ceiling is a PER-CALL argument
+# (120000ms default, 600000ms max), so it is 120s on any call that does not ask
+# for more, and no clamp value survives that. The fix is structural — turn 1 is
+# two Bash calls in one response, and everything that does not depend on the
+# wait is printed by the block that never waits.
+echo ""
+echo "── turn 1 survives a killed wait ──"
+
+# The nth ```bash fence inside the "## Turn 1" section.
+turn1_block() {
+  awk -v want="$1" '
+    /^## Turn 1/ { s = 1; next }
+    s && /^## /  { exit }
+    s && /^```bash$/ { n++; if (n == want) inb = 1; next }
+    s && /^```$/ { if (inb) exit; next }
+    s && inb { print }
+  ' "$ORCH"
+}
+NBLOCKS=$(awk '
+  /^## Turn 1/ { s = 1; next }
+  s && /^## /  { exit }
+  s && /^```bash$/ { n++ }
+  END { print n + 0 }
+' "$ORCH")
+if [ "$NBLOCKS" = "2" ]; then
+  ok "turn 1 ships exactly two Bash blocks"
+else
+  bad "turn 1 ships $NBLOCKS Bash block(s) — the wait must be its own call, so a kill costs only the wait"
+fi
+want "…and the heading says so, so the contract is honest" "$ORCH" \
+  '^## Turn 1 .*two Bash calls'
+want "…both issued in ONE response, so the split costs no extra turn" "$ORCH" \
+  'both blocks below in the same response'
+# The wait genuinely needs more than the 120s default: bring-up measures
+# 291-305s. Without an explicit per-call timeout the wait is killed on every
+# consumer, which IS the original ineligibility bug.
+want "…and the wait call is told to ask for the ceiling it needs" "$ORCH" \
+  'timeout: 600000'
+
+A1RAW="$DEVROOT/turn1a.raw"
+turn1_block 1 > "$A1RAW"
+if [ -s "$A1RAW" ] && grep -q '^echo "DEADLINE_EPOCH=' "$A1RAW"; then
+  ok "the first block emits DEADLINE_EPOCH"
+else
+  bad "the first turn-1 block does not emit DEADLINE_EPOCH — a killed wait would take it"
+fi
+# …and it must be unable to block, or "it emits it" means nothing.
+if grep -qE '^(while |.*[^a-z]sleep )' "$A1RAW" || grep -q '/tmp/dev-env' "$A1RAW"; then
+  bad "the first turn-1 block waits on the dev-env — then a kill can still take DEADLINE_EPOCH"
+else
+  ok "…and nothing in it sleeps, polls, or touches /tmp/dev-env"
+fi
+
+# Behavioural, not a grep: run the shipped block with gh and build-spec.sh
+# stubbed and every /tmp path repointed, and read what actually comes out.
+A1DIR="$DEVROOT/a1"
+mkdir -p "$A1DIR/tmp" "$A1DIR/bin" "$A1DIR/scripts"
+printf '#!/bin/sh\nprintf "{}\\n"\n' > "$A1DIR/bin/gh"
+printf '#!/bin/sh\nexit 0\n'        > "$A1DIR/scripts/build-spec.sh"
+chmod +x "$A1DIR/bin/gh" "$A1DIR/scripts/build-spec.sh"
+sed "s#/tmp/#$A1DIR/tmp/#g" "$A1RAW" > "$A1DIR/turn1a.sh"
+T0=$(date +%s)
+A1OUT=$(cd "$A1DIR" && PATH="$A1DIR/bin:$PATH" CLAUDE_REVIEW_SCRIPTS="$A1DIR/scripts" \
+        PR_NUMBER=1 RUN_FUNCTIONAL=true FUNCTIONAL_BUDGET_SECONDS=480 \
+        bash "$A1DIR/turn1a.sh" 2>&1)
+T1=$(date +%s)
+if grep -qE '^DEADLINE_EPOCH=[0-9]+$' <<<"$A1OUT"; then
+  ok "running it really prints DEADLINE_EPOCH=<epoch>"
+else
+  bad "running the first turn-1 block printed no DEADLINE_EPOCH"
+fi
+if [ $(( T1 - T0 )) -lt 10 ]; then
+  ok "…in $(( T1 - T0 ))s, so no tool ceiling can reach it"
+else
+  bad "the first turn-1 block took $(( T1 - T0 ))s — it is not the non-blocking half"
+fi
+
+# THE KILL ITSELF. Put the wait block in a real bring-up wait and SIGKILL it
+# mid-loop, exactly as the tool does at its ceiling. Its own tail is lost — that
+# is the point — and the deadline the orchestrator holds is the one block 1a
+# already delivered above.
+rm -rf "$DEVENV"
+mkdir -p "$DEVENV"
+date +%s > "$DEVENV/started"
+KOUT="$DEVROOT/killed.out"
+RUN_FUNCTIONAL=true DEV_ENV_TIMEOUT_SECONDS=900 FUNCTIONAL_BUDGET_SECONDS=480 \
+  bash "$SNIP" > "$KOUT" 2>&1 &
+KPID=$!
+sleep 3
+kill -9 "$KPID" 2>/dev/null
+wait "$KPID" 2>/dev/null
+if grep -q '^DEV_ENV_WAIT=540$' "$KOUT"; then
+  ok "the wait block was really mid-wait when it was killed"
+else
+  bad "could not get the wait block into a wait to kill it"
+fi
+if grep -q '^DEADLINE_EPOCH=' "$KOUT"; then
+  bad "the killed wait somehow still printed its tail — this case is not testing the kill"
+else
+  ok "…and the kill did take its tail, DEADLINE_EPOCH included"
+fi
+if grep -qE '^DEADLINE_EPOCH=[0-9]+$' <<<"$A1OUT"; then
+  ok "…yet the orchestrator still holds a real DEADLINE_EPOCH, from the block that never waits"
+else
+  bad "a killed wait leaves the orchestrator with no DEADLINE_EPOCH at all"
+fi
+# And the degraded path must be spelled out, or the orchestrator stalls or
+# invents a deadline instead.
+want "a lost wait degrades to WEB_READY=false, never to a stall" "$ORCH" \
+  'came back killed, empty or truncated'
 rm -rf "$DEVROOT"
 
 # ── the marker the gate depends on is actually produced ────────────────────
