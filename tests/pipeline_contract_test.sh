@@ -69,8 +69,20 @@ want "…and states the exception explicitly" "$VERIFY" \
   'exception'
 want "…scoped to a REPRODUCED failure" "$VERIFY" \
   'reproduced'
-want "…and an unplaceable observation is discarded, not parked as a check" "$VERIFY" \
-  'discard it.{0,200}not a parking space'
+want "…and an unplaceable observation is not parked as a check" "$VERIFY" \
+  'not a parking space for an observation you could not place'
+# ...but it is the highest-evidence signal the pipeline produces, so it cannot be
+# dropped silently either: this file's own rule is that every drop leaves a trace,
+# and "the tester saw nothing" must stay distinguishable from "the tester
+# reproduced a failure and verify could not place it".
+want "…and never dropped silently — it lands in meta.refuted" "$VERIFY" \
+  'never dropped silently'
+want "…under a kind of its own" "$VERIFY" \
+  '"kind": "functional"'
+want "…declared in the verify.json schema" "$VERIFY" \
+  'screenshot\|functional'
+want "…while still moving the verdict in neither direction" "$VERIFY" \
+  'moves the verdict in neither direction'
 want "…and the tester still cannot move the verdict" "$VERIFY" \
   'never.*lowers the verdict|neither raise nor lower'
 
@@ -512,15 +524,54 @@ want "…and demands a named construct, not a category" "$SCAN" \
 # The two rates the owner asked for, and the tension between them, stated so a
 # model cannot average them into one lukewarm behaviour.
 want "review-scan says silence is the expected result on a simple code diff" "$SCAN" \
-  'silence is the expected result'
-want "…and names the third-to-a-half target" "$SCAN" \
-  'third and a half of PRs'
+  'silence is the expected result when the bar below is met'
+# A RATE IS NOT A BAR. The owner estimated 30-50% of PRs would be simple; 39
+# labelled merged PRs from the two consumer repos measured 14% (4 of 28 code
+# PRs, 3 of them borderline). A prompt carrying a target percentage invites the
+# model to manufacture approvals to meet it — the padding failure with the sign
+# flipped — so the skill encodes the BAR and never a rate, in either direction.
+want "…with no quota in either direction" "$SCAN" \
+  'no quota in either direction'
+want "…and says the rate is not the model's concern" "$SCAN" \
+  'How often a diff clears that bar is not your concern'
+for f in "$SCAN" "$VERIFY"; do
+  n=${f##*/}
+  never "$n encodes no target approval rate" "$f" \
+    'third (and|to) a half|[0-9]+% of (PRs|code PRs|reviews)|[0-9]+-[0-9]+% of'
+done
+want "review-verify carries no target rate either" "$VERIFY" \
+  'no target rate in either direction'
+# Blast radius, measured rather than guessed: size is necessary but not
+# sufficient (0 of 14 PRs over 100 added lines were simple; only 4 of 14 under
+# it were), and three path/vocabulary signals decided the rest.
+want "review-scan says size does not predict blast radius" "$SCAN" \
+  'size does not predict it'
+want "…naming the workflow / deploy / dev-env path signal" "$SCAN" \
+  'workflow file, a deploy script or a dev-env script'
+want "…the migration signal" "$SCAN" \
+  'A migration\*\* — `\.sql`, `\.prisma`'
+want "…the auth/tenancy/visibility vocabulary signal" "$SCAN" \
+  'Auth, tenancy or visibility vocabulary in the changed lines'
+want "…and the new-identifier-others-call signal" "$SCAN" \
+  'A new identifier something outside the diff will call'
+want "…with the positive shape a quiet diff had" "$SCAN" \
+  'introducing nothing new for anyone else to call'
+# ADR 0004 killed the structural classifier on purpose. These are signals a
+# reader weighs, not a tier resolver that decides before the model reads.
+want "…explicitly NOT a lookup table, so no tier ladder comes back" "$SCAN" \
+  'not a lookup table that decides for you'
+want "…and a mechanical-looking change in that set is not quiet" "$SCAN" \
+  'Mechanical-looking is not the same as quiet'
+want "…so the never-a-note mechanical rule carves it out" "$SCAN" \
+  'the shape is mechanical and the reach is not'
 want "…while a DOCS_ONLY run inverts the default" "$SCAN" \
   'DOCS_ONLY.{0,20}run the default inverts'
 want "…because a document is the baseline for future work" "$SCAN" \
   'baseline the next PRs are built on'
 want "…with faithful slicing as the one docs-only case that earns silence" "$SCAN" \
   'faithful slicing'
+want "…which is the exception, stated without a rate" "$SCAN" \
+  'exception rather than the rule'
 want "…discriminated by what the merged documents did not already imply" "$SCAN" \
   'could not have derived from the already-merged architecture'
 # APPROVE. "No notes" no longer means "nobody needs to read this diff", so the
@@ -609,7 +660,7 @@ want "review-scan drops a note the cited code already mitigates" "$SCAN" \
 want "review-verify records every dropped human_review note" "$VERIFY" \
   'Every dropped note leaves a trace'
 want "…tagged so the kinds are distinguishable in meta.refuted" "$VERIFY" \
-  '"kind": "finding\|human_review\|screenshot"'
+  '"kind": "finding\|human_review\|screenshot\|functional"'
 want "…carrying what was written" "$VERIFY" \
   'what_it_does that was written'
 want "…and why it was dropped" "$VERIFY" \

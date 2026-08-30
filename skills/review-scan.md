@@ -167,7 +167,16 @@ Do these in order. Do **not** go hunting for things you are unsure about: that t
 - **It is load-bearing.** Other changed blocks depend on it, or it moves a contract that callers outside the diff rely on.
 - **It is where a reviewer should start** — understanding it is what makes the rest of the PR readable.
 
-**4. Drop the rest, and expect that to be most of them.** No note for a block that is obvious on sight, mechanical (a rename, a move, a reformat, an import reorder, a type-only edit), boilerplate or framework scaffolding, a straight passthrough, or a test that mirrors the code it tests.
+**Blast radius is the disqualifier that fires most often, and size does not predict it.** Measured over 39 merged PRs across two consumer repos: no PR over 100 added lines was quiet, and most PRs *under* 100 lines were not quiet either — small says nothing on its own, which is exactly where intuition fails. What actually decided it, and what to read for:
+
+- **A workflow file, a deploy script or a dev-env script in the diff.** The strongest signal in the set: every such PR was tiny — 15 to 41 added lines — and not one of them was quiet. The path carries the blast radius the line count hides.
+- **A migration** — `.sql`, `.prisma`, or whatever this repo uses.
+- **Auth, tenancy or visibility vocabulary in the changed lines** — company scoping, a role, a permission flag, a CORS origin, a token gate. This one is not a path rule: the file around it can look entirely ordinary.
+- **A new identifier something outside the diff will call** — a barrel export, a hook signature, a shared package surface, a wire contract. The quiet diffs were the opposite shape: single-purpose, introducing nothing new for anyone else to call — a constant re-pinned, a deletion whose callers move in the same diff, entries added to a config list, a mechanical rename.
+
+These are signals you weigh while reading, **not a lookup table that decides for you**. There are no tiers here: a match is not an automatic note, and a miss is not automatic silence.
+
+**4. Drop the rest, and expect that to be most of them.** No note for a block that is obvious on sight, mechanical (a rename, a move, a reformat, an import reorder, a type-only edit), boilerplate or framework scaffolding, a straight passthrough, or a test that mirrors the code it tests. **Mechanical-looking is not the same as quiet**: a three-line edit to a workflow, a migration or a permission check is not a rename however much it reads like one.
 
 **5. Rank and cut to N.** Order what survives by how much a reader gains, keep at most N, and prefer covering the **spine** of the change — one note each on the blocks that carry the feature — over stacking notes inside one file. One note per block; two adjacent blocks serving one purpose are one note.
 
@@ -189,7 +198,7 @@ It fails in two ways, and both are common. Either the note tells the reader what
 - **A plain React component, and its equivalent in every other framework.** Props in, markup out; a form binding fields; a list mapping rows; a styled wrapper. Named here because it is the single most common thing a reviewer does not need help with — it gets no note, at any depth, however large it is.
 - **A question, in any costume.** "Should X?", "consider whether", "verify that", "is this intended?", or anything ending in a question mark. If you find yourself typing one, you are back in the old design.
 - **Suspicion with no object.** "Double check this logic", "review the business logic", "check that no N+1s are introduced". A reader cannot act on it and it is indistinguishable from padding.
-- A **mechanical** change: a rename, a move, a formatting pass, an import reorder, a type-only edit, a dependency bump, a generated file.
+- A **mechanical** change: a rename, a move, a formatting pass, an import reorder, a type-only edit, a dependency bump, a generated file. The one exception is a mechanical change that lands in the blast-radius set above — a rename across a shared barrel, a bumped pin in a workflow — where the shape is mechanical and the reach is not.
 - A **straight passthrough** — a wrapper forwarding its arguments, a re-export, a getter, a thin adapter.
 - Anything a config file, or a rule in `.claude/rules/`, calls intentional. Suppression comes first and kills a note exactly as it kills a finding.
 - A block the code **already documents and mitigates** at those lines. You are reading them anyway; read the comment on them too, and do not write again what the docstring there already says.
@@ -198,11 +207,11 @@ It fails in two ways, and both are common. Either the note tells the reader what
 
 ### Code and documents pull in opposite directions — do not average them
 
-**On a code diff, silence is the expected result.** A CRUD endpoint, a form, a straightforward business rule where a mistake is unlikely — no note, no finding, and the review approves. Somewhere between a third and a half of PRs should land exactly there. There is no pressure anywhere in this file to produce a note, and looking harder for one because the diff came back empty is padding wearing a work ethic.
+**On a code diff, silence is the expected result when the bar below is met.** A CRUD endpoint, a form, a straightforward business rule where a mistake is unlikely — no note, no finding, and the review approves. **There is no quota in either direction.** How often a diff clears that bar is not your concern and you are never owed a note or an approval by the numbers: looking harder for a note because the diff came back empty is padding wearing a work ethic, and waving a diff through because the last few were noisy is the same error with the sign flipped.
 
 **On a `DOCS_ONLY` run the default inverts: notes are expected.** A document is the baseline the next PRs are built on, so a direction set wrongly there propagates into all of them, and a human should normally look. Segment by section rather than by block: keep the sections that **set direction for future work** — a new decision, a constraint, an interface, a scope boundary, a sequencing choice — and say what each is for and which merged document it extends.
 
-**The one docs-only case that earns silence is faithful slicing.** The architecture and PRD are already merged, this PR only adds slices on top of them, and every slice follows those documents exactly. The discriminator, and it is checkable from the diff: **does this document introduce anything a reader could not have derived from the already-merged architecture or PRD?** A new decision, an unexplained interface, complexity the architecture never implied — anything of that kind means it is not slicing, and it gets notes. Expect faithful slicing to be well under a third of docs-only PRs.
+**The one docs-only case that earns silence is faithful slicing.** The architecture and PRD are already merged, this PR only adds slices on top of them, and every slice follows those documents exactly. The discriminator, and it is checkable from the diff: **does this document introduce anything a reader could not have derived from the already-merged architecture or PRD?** A new decision, an unexplained interface, complexity the architecture never implied — anything of that kind means it is not slicing, and it gets notes. It is the exception rather than the rule, and a document that merely looks routine is not evidence of it.
 
 ### Discipline
 
@@ -227,8 +236,6 @@ Each note: `{path, start_line, end_line, what_it_does (≤140 chars), spec_ref (
 **A doubt you cannot name is not a reason to withhold approval.** Name it as a finding at the finding bar, or let it go.
 
 `review_effort` 1–5: how much judgement this diff needed (1 = mechanical, 5 = subtle/high-blast-radius). Straightforward business logic where a mistake is unlikely is a 2 or a 3, not a 4 — reserve the top of the scale for diffs whose blast radius or subtlety genuinely earns it.
-
-`review_effort` 1–5: how much judgement this diff needed (1 = mechanical, 5 = subtle/high-blast-radius).
 
 ## Functional results are NOT yours to read
 

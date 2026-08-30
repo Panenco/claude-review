@@ -1384,9 +1384,13 @@ for dead in '\.resolve_threads' '\.bot_replies' resolveReviewThread functional-m
 done
 
 # ── (k) human-review checks are inline comments ─────────────────────────────
-# A check is a question, not a defect: it goes inline so a human can walk the
-# review comment by comment, it carries no severity, and one that cannot be
+# A check is an orientation note, not a defect: it goes inline so a human can
+# walk the diff note by note, it carries no severity, and one that cannot be
 # anchored comes back under its own heading rather than "Also flagged".
+# The `meta.human_review` fixtures carry the LIVE item shape
+# (start_line/end_line/what_it_does/spec_ref) — the step summary reads
+# `.end_line // .line` and `.what_it_does`, so a fixture on the dead
+# what_to_check shape would render an empty description and pass silently.
 echo ""
 echo "── (k) checks as inline comments ──"
 
@@ -1397,19 +1401,27 @@ cat > "$W/review.json" <<'EOF'
   "verdict": "COMMENT",
   "body": "## Claude review — COMMENT\n\nOne finding.\n\n### Findings (1)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one",
   "comments": [
-    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**check** confirm the tenant guard covers admins\n\nneeds a product decision"}
+    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**check** `assertTenant` scopes the query to the caller tenant before the admin override runs\n\n- Implements AC3 of `docs/tenancy-prd.md`"}
   ],
   "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11}],
-           "human_review": [{"path": "src/foo.ts", "line": 12, "what_to_check": "confirm the tenant guard covers admins", "why_unresolved": "needs a product decision"}]}
+           "human_review": [{"path": "src/foo.ts", "start_line": 11, "end_line": 12, "what_it_does": "assertTenant scopes the query to the caller tenant before the admin override runs", "spec_ref": "AC3 of docs/tenancy-prd.md"}]}
 }
 EOF
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "the check posts inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_contains "it keeps its **check** prefix" "**check** confirm the tenant guard" \
+assert_contains "it keeps its **check** prefix" "**check** \`assertTenant\` scopes the query" \
   "$(echo "$PAYLOAD" | jq -r '.comments[0].body')"
 assert_not_contains "an anchored check writes no body heading" "What a human should review" "$BODY"
 assert_contains "the unrelated finding bullet survives" "off-by-one" "$BODY"
+# The step summary reads the LIVE item shape. An empty `what_it_does` — which is
+# what the dead what_to_check fixture rendered — fails this outright.
+assert_contains "the step summary lists the note" "### For a human to review (1)" \
+  "$(cat "$W/summary.md")"
+assert_contains "…with what the block does, not an empty description" \
+  "assertTenant scopes the query to the caller tenant" "$(cat "$W/summary.md")"
+assert_contains "…anchored at the block end_line, not a missing line field" \
+  "\`src/foo.ts:12\`" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
 # (k2) an unanchorable check returns under its own heading, never "Also flagged"
@@ -1419,20 +1431,22 @@ cat > "$W/review.json" <<'EOF'
   "verdict": "COMMENT",
   "body": "## Claude review — COMMENT\n\nNothing is provably broken.",
   "comments": [
-    {"path": "src/foo.ts", "line": 99, "side": "RIGHT", "body": "**check** confirm the migration is reversible\n\nneeds production data"}
+    {"path": "src/foo.ts", "line": 99, "side": "RIGHT", "body": "**check** the migration backfills `tenant_id` on existing rows before the NOT NULL constraint lands\n\n- Implements AC1 of `docs/tenancy-prd.md`"}
   ],
   "meta": {"findings": [],
-           "human_review": [{"path": "src/foo.ts", "line": 99, "what_to_check": "confirm the migration is reversible", "why_unresolved": "needs production data"}]}
+           "human_review": [{"path": "src/foo.ts", "start_line": 95, "end_line": 99, "what_it_does": "the migration backfills tenant_id on existing rows before the NOT NULL constraint lands", "spec_ref": "AC1 of docs/tenancy-prd.md"}]}
 }
 EOF
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "nothing posts inline" "0" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_contains "it comes back under the human heading" "### What a human should review" "$BODY"
-assert_contains "rendered as a checkbox with its question" \
+assert_contains "rendered as a checkbox with its note" \
   "- [ ] [src/foo.ts:99](" "$BODY"
-assert_contains "the question survives the round trip" "confirm the migration is reversible" "$BODY"
-assert_not_contains "a question is never 'Also flagged'" "Also flagged" "$BODY"
+assert_contains "the note survives the round trip" "the migration backfills" "$BODY"
+assert_not_contains "a note is never 'Also flagged'" "Also flagged" "$BODY"
+assert_contains "the step summary carries it too" \
+  "backfills tenant_id on existing rows" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
 # (k3) a check must not strip a body bullet at the same path:line
@@ -1446,11 +1460,11 @@ cat > "$W/review.json" <<'EOF'
   "body": "## Claude review — COMMENT\n\nOne finding.\n\n### Findings (2)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one\n- **minor** {{LINK:src/foo.ts:12}} — other",
   "comments": [
     {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**minor** other"},
-    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**check** is this loop bound intentional\n\nthe intent is ambiguous"}
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**check** `collectPage` walks the batch once per tenant and stops at the page ceiling\n\n- Implements AC5 of `docs/tenancy-prd.md`"}
   ],
   "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11},
                         {"title": "other", "severity": "minor", "path": "src/foo.ts", "line": 12}],
-           "human_review": [{"path": "src/foo.ts", "line": 11, "what_to_check": "is this loop bound intentional", "why_unresolved": "the intent is ambiguous"}]}
+           "human_review": [{"path": "src/foo.ts", "start_line": 10, "end_line": 11, "what_it_does": "collectPage walks the batch once per tenant and stops at the page ceiling", "spec_ref": "AC5 of docs/tenancy-prd.md"}]}
 }
 EOF
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
