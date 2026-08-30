@@ -8,6 +8,8 @@
 # Output — GITHUB_OUTPUT-shaped lines on stdout, appendable verbatim:
 #   proceed=true|false · gate=ok|label|unchanged|oversized|empty · reason=<one line>
 #   docs_only=true|false — proceed path only; nothing but documents changed.
+#   depth_scale=3..8 + comment_limit=6..16 — proceed path only; how deep the
+#   review is allowed to go, derived from diff size. See section 5.
 #   verdict=REQUEST_CHANGES + body<<GUARD_BODY…GUARD_BODY — oversized only; that
 #   split request is posted as-is, with no model call.
 #
@@ -107,6 +109,27 @@ if [ "$ng_files" -eq 0 ]; then
   exit 0
 fi
 
+# 5) Depth scale — how many judgement calls this diff is worth. Full rationale
+#    and the band table: docs/adr/0004, Amendment 3. In one sentence: every 250
+#    units of diff weight buys one more judgement slot, from 3 up to 8, and the
+#    inline-comment cap is twice that.
+#
+#      weight = ng_lines + 25*ng_files (a file costs about what 25 lines cost)
+#      depth_scale   = min(3 + weight/250, 8)  → the human_review / check ceiling
+#      comment_limit = 2 * depth_scale         → post-review.sh REVIEW_COMMENT_LIMIT
+#
+#    Not a tier ladder: one continuous step function with two clamps, replacing
+#    three flat constants (0-5 items, carry 5, cap 10) that gave a typo fix and a
+#    2500-line refactor identical depth. A 400-line PR (the team limit) lands on
+#    5/10 — exactly the old constants — so the common case does not move.
+#    review_effort is unknown until scan has run; review-verify moves this by one
+#    on it. Emitted on the proceed path only, so a short-circuited run sets no
+#    step output and post-review.sh falls back to its own default.
+weight=$(( ng_lines + 25 * ng_files ))
+depth_scale=$(( 3 + weight / 250 ))
+[ "$depth_scale" -gt 8 ] && depth_scale=8
+printf 'depth_scale=%s\ncomment_limit=%s\n' "$depth_scale" "$(( depth_scale * 2 ))"
+
 # No code to break, so review-scan's failure_scenario bar alone would silence it.
 printf 'docs_only=%s\n' "$docs_only"
-emit true ok "" "Reviewing ${ng_files} files / ${ng_lines} non-generated lines."
+emit true ok "" "Reviewing ${ng_files} files / ${ng_lines} non-generated lines (depth ${depth_scale})."

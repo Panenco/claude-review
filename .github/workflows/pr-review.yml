@@ -986,6 +986,11 @@ jobs:
           # never land in an unbuilt environment.
           RUN_FUNCTIONAL: ${{ steps.guard.outputs.functional }}
           DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
+          # How many human-review items this diff is worth (3–8, from diff size).
+          # review-scan caps itself at it; review-verify moves it ±1 on the
+          # review_effort scan reported. Empty on any short-circuited path, where
+          # both skills fall back to 5 — the old flat constant.
+          REVIEW_DEPTH_SCALE: ${{ steps.guard.outputs.depth_scale }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
@@ -1078,6 +1083,11 @@ jobs:
           # So the poster can say, in the review itself, that a requested
           # functional pass never ran because the dev-env did not come up.
           FUNCTIONAL_REQUESTED: ${{ steps.guard.outputs.functional }}
+          # The inline-comment cap, scaled with the diff (twice depth_scale, so
+          # 6–16). Computed in guard.sh so post-review.sh keeps reading one env
+          # var with one default; empty on a short-circuited run, where the
+          # poster's own `:-10` applies and nothing is capped away.
+          REVIEW_COMMENT_LIMIT: ${{ steps.guard.outputs.comment_limit }}
         run: |
           set -uo pipefail
           if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then

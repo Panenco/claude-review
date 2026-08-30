@@ -229,7 +229,11 @@ export ROUND PRIOR_HEAD_SHA PRIOR_VERDICT
 export MODEL_HIGH="$MODEL" MODEL_FUNCTIONAL=claude-sonnet-5
 export RUN_FUNCTIONAL=false FUNCTIONAL_BUDGET_SECONDS=480 DEV_ENV_TIMEOUT_SECONDS=360
 DOCS_ONLY=$(sed -n 's/^docs_only=//p' <<<"$DECISION")
-export DOCS_ONLY PR_AUTHOR_IS_BOT=false
+# Both halves of the depth scale come off the SAME guard run the review used, so
+# a local eval measures the caps production would have applied, not defaults.
+REVIEW_DEPTH_SCALE=$(sed -n 's/^depth_scale=//p' <<<"$DECISION")
+REVIEW_COMMENT_LIMIT=$(sed -n 's/^comment_limit=//p' <<<"$DECISION")
+export DOCS_ONLY REVIEW_DEPTH_SCALE PR_AUTHOR_IS_BOT=false
 
 # `effort` is NOT optional here. In CI the subagents are installed from
 # agents/*.md, whose frontmatter carries `effort: medium` (scan) and
@@ -299,6 +303,7 @@ JOB_START="$RUNDIR/job-start" \
 SPEC_STATUS="$RUNDIR/spec-status" \
 PRIOR_FINDINGS_JSON="$RUNDIR/prior-findings.json" \
 HEAD_SHA="$SHA" ROUND="$ROUND" \
+REVIEW_COMMENT_LIMIT="$REVIEW_COMMENT_LIMIT" \
   "$SCRIPTS"/post-review.sh > "$OUT/post-review.out" 2>&1
 RC=$?
 cat "$OUT/post-review.out"

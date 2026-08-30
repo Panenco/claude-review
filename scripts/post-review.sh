@@ -103,6 +103,10 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 SERVER="${GITHUB_SERVER_URL:-https://github.com}"
 BODY_MAX="${REVIEW_BODY_MAX:-1800}"
 COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
+# Scaled with the diff by guard.sh (comment_limit = 2 x depth_scale, so 6..16)
+# and passed in by the workflow. Computed upstream on purpose: this stays one
+# env read with one default, and 10 is what a short-circuited run — which sets
+# no guard outputs — still gets.
 COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-10}"
 ROUND="${ROUND:-1}"
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"

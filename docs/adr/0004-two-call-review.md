@@ -187,3 +187,71 @@ the external-tracker section is third-party hook output and the PR body
 summarises the diff under test; neither is a test plan, and neither should be
 steering a browser. The tester still reads no spec artifact itself — the
 orchestrator pastes the criteria into its prompt, exactly as before.
+
+## Amendment 3, 2026-08-30 — review depth scales with the diff
+
+The evidence behind the finding bar was that humans write **2–5 judgement
+comments per defect**. That got flattened into three global constants: `0–5
+items` in review-scan, `up to 5` carried in review-verify, and
+`REVIEW_COMMENT_LIMIT:-10` in post-review.sh. A 20-line typo fix and a 2500-line
+refactor were allowed exactly the same depth.
+
+`scripts/guard.sh` already counts non-generated lines and files and is a pure,
+unit-tested function of its env, so it is where the scale is computed — once,
+deterministically, before any model runs:
+
+```
+weight        = ng_lines + 25 * ng_files
+depth_scale   = min(3 + weight/250, 8)     # 3..8   human_review / check ceiling
+comment_limit = 2 * depth_scale            # 6..16  post-review.sh inline cap
+```
+
+**Every 250 units of diff weight buys one more judgement slot, starting at 3 and
+stopping at 8; the inline cap is twice that.** No tiers — ADR 0004 killed the
+seven-tier classifier and this does not bring it back by another name. It is one
+continuous step function with two clamps.
+
+Why those numbers:
+
+| | weight | `depth_scale` / `comment_limit` |
+|---|---|---|
+| 25-line one-file fix | 50 | 3 / 6 — **tighter than the old flat 5** |
+| 400-line, 4-file PR (the team's stated limit) | 500 | 5 / 10 — **exactly today's caps** |
+| 1000-line, 20-file change | 1500 | 8 / 16 |
+| at the guard's own 3000-line ceiling | 3000+ | 8 / 16 |
+
+- **25 per file** — opening an unfamiliar file costs about what reading 25 lines
+  of an open one costs. It also keeps the 60-file ceiling worth 1500: enough to
+  reach the top band on files alone, not enough to dwarf the line count.
+- **250 per step** — chosen so the common case does not move. The team's 400-line
+  PR limit lands on 5, which is what shipped before this amendment.
+- **floor 3** — most small PRs never had five honest questions in them; the flat
+  ceiling was inviting padding at the bottom of the range.
+- **cap 8** — past ~1000 lines of real change, the constraint is the reader's
+  attention, not the diff. A review nobody finishes is not deeper.
+- **2× for the inline cap** — that is today's 10-comments-for-5-checks ratio,
+  held constant rather than re-derived.
+
+`review_effort` (1–5) is only known after scan has run, so the guard cannot use
+it. **review-verify** applies it, once, as the single modulation: −1 at
+`review_effort` ≤ 2, +1 at 5, unchanged at 3–4, clamped to 2..8. The guard sizes
+the diff; scan rates the judgement it needed; verify is the one place they meet.
+
+**A wider ceiling is not a weaker bar,** and the prompts say so explicitly.
+`### Never an item` is unchanged and now carries a lead-in stating that nothing
+in it relaxes as the scale rises, and `Do not pad` was strengthened: a list of
+eight where two were honest gets skimmed harder than a list of five, so filling
+a wide ceiling costs more, not less. Emitting fewer items than the scale allows
+is never a failure. The failure mode this amendment must not create is a model
+filling new slots with "double check this logic"; that shape is still banned
+outright.
+
+Wiring, end to end: `guard.sh` emits `depth_scale` and `comment_limit` on the
+proceed path only → the workflow's guard step already appends its stdout to
+`GITHUB_OUTPUT`, so both become step outputs for free →
+`REVIEW_DEPTH_SCALE` goes to the orchestrator env (scan and verify read it) and
+`REVIEW_COMMENT_LIMIT` to the poster step. **post-review.sh is untouched** apart
+from a comment: it still reads `REVIEW_COMMENT_LIMIT` with its `:-10` default,
+which is exactly what a short-circuited run (empty outputs) falls back to.
+`scripts/review-local.sh` threads both off the same guard run so an eval
+measures the caps production would have applied.
