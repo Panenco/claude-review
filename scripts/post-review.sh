@@ -13,9 +13,9 @@ set -uo pipefail
 #     "meta":     { "findings": [...], "human_review": [...], ... } }
 # Thread resolution and replies to other bots are gone: the 2-call pipeline
 # produces neither, and their absence is normal. Multi-line ranges came BACK for
-# check comments — `start_line` anchors a question to the whole block it is
-# about, so the reviewer sees the code being questioned rather than one line of
-# it. Findings stay single-line: a suggestion fence has to replace exact lines.
+# check comments — `start_line` anchors an orientation note to the block it is
+# about, so the reviewer sees the whole block the note describes rather than one
+# line of it. Findings stay single-line: a suggestion fence has to replace exact lines.
 #
 # THIS SCRIPT OWNS THE BUDGETS. The models are told to hold them; historically they
 # did not, so they are enforced here as a safety net:
@@ -593,9 +593,9 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
       elif ((.body // "") | test("^\\s*\\*\\*minor\\*\\*"; "i")) then "minor"
       else "" end;
   def rank: if . == "critical" then 0 elif . == "major" then 1 elif . == "minor" then 2 else 3 end;
-  # A `**check**` comment is a human-review question, not a defect. It carries no
+  # A `**check**` comment is an orientation note for a human, not a defect. It has no
   # severity, so it already sorts behind every finding — under pressure the slots
-  # go to defects and the questions fall back, which is the right way round. A
+  # go to defects and the notes fall back, which is the right way round. A
   # dropped one returns under the human-review heading, never under "Also flagged".
   def kind: if ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) then "check" else "finding" end;
   # A CHECK NEVER CARRIES A COMMITTABLE FENCE — STRUCTURALLY, not by prompt rule.
@@ -694,7 +694,13 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # only a check may span a block.
   | map(if kind == "check" then . else .start_line = 0 end)
   | map(if kind == "check" then .body = ((.body // "") | unfence) else . end)
-  | map(if (.start_line > 0) and (.start_line < .line) and ((.line - .start_line) <= 30)
+  # 120 LINES, NOT 30. A check is orientation across a whole changed block, so the
+  # span is the feature: 30 cut it off on more than one contiguous changed run in
+  # ten. Measured over this repo history: 89% of runs fit in 30, 96% in 120, and
+  # what sits above 120 is a whole-file rewrite, which is not a block. The cap
+  # still matters because a run whose hunks could not be derived skips the in-hunk
+  # range check below, and a 422 on a malformed range kills the ATOMIC post.
+  | map(if (.start_line > 0) and (.start_line < .line) and ((.line - .start_line) <= 120)
         then . else .start_line = 0 end)
   | to_entries
   | map(.value + {_i: .key, _r: (.value | sev | rank)})
@@ -1849,7 +1855,7 @@ CARRY_COUNT=$(jq 'length' "$WORK/carried.json" 2>/dev/null || echo 0)
   if [ "$HUMAN_COUNT" -gt 0 ]; then
     echo ""
     echo "### For a human to review ($HUMAN_COUNT)"
-    jq -r '(.meta.human_review // [])[] | "- `\(.path // "?"):\(.line // "?")` — \(.what_to_check // "")"' "$REVIEW_JSON"
+    jq -r '(.meta.human_review // [])[] | "- `\(.path // "?"):\(.end_line // .line // "?")` — \(.what_it_does // "")"' "$REVIEW_JSON"
   fi
   if [ "$RESOLVED_COUNT" -gt 0 ]; then
     echo ""
