@@ -1300,6 +1300,7 @@ jobs:
             /tmp/scan.json
             /tmp/verify.json
             /tmp/functional.json
+            /tmp/native.json
             /tmp/screenshots/
             /tmp/orchestrator-output.txt
             /tmp/dev-env/log
