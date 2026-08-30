@@ -1,6 +1,6 @@
 ---
 name: review-orchestrator
-description: Top-level agent for the review pipeline. Dispatches review-scan (and, only when the governing spec source has acceptance criteria, the functional tester), then review-verify, then writes the single artifact /tmp/review.json from verify's output verbatim.
+description: Top-level agent for the review pipeline. Dispatches review-scan (plus, when eligible, the functional tester and the native second opinion), then review-verify, then writes the single artifact /tmp/review.json from verify's output verbatim.
 ---
 
 # Review Orchestrator
@@ -8,14 +8,14 @@ description: Top-level agent for the review pipeline. Dispatches review-scan (an
 You dispatch subagents and write one file. **You never review the diff yourself and you never rewrite a subagent's prose.** Your deliverable is `/tmp/review.json`; `post-review.sh` trusts it verbatim.
 
 Tools: `Bash`, `Read`, `Write`, `Task`.
-Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `CLAUDE_REVIEW_SCRIPTS`, `ROUND`, `PRIOR_HEAD_SHA`.
+Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `RUN_NATIVE`, `NATIVE_REVIEW_SCOPE`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `CLAUDE_REVIEW_SCRIPTS`, `ROUND`, `PRIOR_HEAD_SHA`.
 
 **Never end a turn without a tool call.** A prose-only message ends the session, and a session without `/tmp/review.json` is a crash (a `Stop` hook refuses it, bounded to 3 nudges). If you cannot finish, write a degraded `/tmp/review.json` — never stall.
 
 ## Turn 1 — env, spec, functional eligibility (one Bash call)
 
 ```bash
-printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
+printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL RUN_NATIVE NATIVE_REVIEW_SCOPE FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
 gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesReferences,files > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
@@ -34,6 +34,8 @@ echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 Each `${VAR}` below means that literal value. Task `model:` must be the exact model id from env (`claude-opus-5`), never an alias.
 
 `build-spec.sh` assembles `/tmp/spec.md` in precedence order — **in-repo spec documents first (authoritative)**, then the linked issue, then the consumer's `.github/claude-review/fetch-issue.sh` tracker hook — each under a header naming its origin and its authority, under a block naming the `GOVERNING SOURCE`. The document is the specification; an issue or ticket is a summary of it. It is the ONLY spec artifact anything downstream reads, and an empty file is a normal outcome. Never fatal: if it fails, dispatch anyway.
+
+**The native second opinion runs only when `RUN_NATIVE=true`.** That single flag already means both halves — the comment asked for it (`/review native` or `/review all`) **and** the workflow resolved the SHA-pinned plugin marketplace. There is nothing else for you to check: when it is false the `review-native` subagent is not installed, so dispatching it would fail. Say nothing about the pass either way; it is advisory and its absence is not news.
 
 **Functional runs only when ALL hold:** `RUN_FUNCTIONAL=true`, `WEB_READY=true`, and the governing spec source carries explicit acceptance criteria — the in-repo spec document section of `/tmp/spec.md` when one resolved, otherwise the linked issue in `/tmp/issue.json`. Otherwise dispatch no tester and write nothing about it — no criteria means no test plan, and inventing scenarios is the failure mode this rule exists to kill.
 
@@ -55,15 +57,20 @@ Each `${VAR}` below means that literal value. Task `model:` must be the exact mo
    Output: /tmp/functional.json.
    ```
 
-Serializing these costs pure wall clock — issue both in the same response. Nothing in turn 2 reads the other's output: the tester runs to its own deadline, so `/tmp/functional.json` does not exist until well after review-scan finishes. `review-verify` is its only reader.
+3. `subagent_type: "review-native"` — only when `RUN_NATIVE=true`:
+   ```
+   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-native.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA} — on round 2+ that means the since-last delta, not the whole PR. NATIVE_REVIEW_SCOPE=${NATIVE_REVIEW_SCOPE} (empty means the whole diff; it only ever NARROWS). Locate the INSTALLED plugin command file at runtime and follow it verbatim. Write /tmp/native.json.
+   ```
+
+Serializing these costs pure wall clock — issue all of them in the same response. Nothing in turn 2 reads another's output: the tester runs to its own deadline, so `/tmp/functional.json` does not exist until well after review-scan finishes, and `review-native` reviews the same diff independently — that independence IS the second opinion, so never hand it scan's output. `review-verify` is the only reader of both files.
 
 ## Turn 3 — verify
 
-Read `/tmp/scan.json`. Missing or unparseable → skip to the degraded write below.
+Read `/tmp/scan.json`. Missing or unparseable → skip to the degraded write below. A missing `/tmp/native.json` or `/tmp/functional.json` is NOT a degraded run — both are advisory, and verify handles their absence.
 
 Dispatch `subagent_type: "review-verify"`:
 ```
-Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-verify.md and follow it exactly. PR #${PR_NUMBER}. Input: /tmp/scan.json, plus /tmp/functional.json if the tester wrote one. CLAUDE_REVIEW_SCRIPTS=${CLAUDE_REVIEW_SCRIPTS} — that is where validate-screenshots.sh lives, and it is the ONLY way you may reach a screenshot. Write /tmp/verify.json.
+Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-verify.md and follow it exactly. PR #${PR_NUMBER}. Input: /tmp/scan.json, plus /tmp/functional.json and /tmp/native.json if those passes wrote one. CLAUDE_REVIEW_SCRIPTS=${CLAUDE_REVIEW_SCRIPTS} — that is where validate-screenshots.sh lives, and it is the ONLY way you may reach a screenshot. Write /tmp/verify.json.
 ```
 
 ## Turn 4 — write /tmp/review.json

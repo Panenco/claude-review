@@ -11,14 +11,14 @@ runs:
 
         # Verify the action download is complete — catch a broken release here
         # instead of a cryptic "skill not found" mid-review.
-        EXPECTED_SKILLS="review-orchestrator review-scan review-verify review-functional-tester"
+        EXPECTED_SKILLS="review-orchestrator review-scan review-verify review-functional-tester review-native"
         MISSING=""
         for s in $EXPECTED_SKILLS; do
           if [ ! -f "$PIPELINE_DIR/skills/${s}.md" ]; then
             MISSING="$MISSING skills/${s}.md"
           fi
         done
-        for a in review-scan review-verify review-functional-tester; do
+        for a in review-scan review-verify review-functional-tester review-native; do
           if [ ! -f "$PIPELINE_DIR/agents/${a}.md" ]; then
             MISSING="$MISSING agents/${a}.md"
           fi

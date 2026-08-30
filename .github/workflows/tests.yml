@@ -27,8 +27,8 @@ on:
       - 'broker/**'
       - 'infra/**'
       # pipeline_contract_test.sh asserts the ONBOARDING prompt still names
-      # assets that exist — the seam that shipped a reference to a deleted
-      # agents/review-native.md.
+      # assets that exist — the seam that shipped a reference to an
+      # agents/review-native.md that had been deleted.
       - 'prompts/**'
 
 jobs:

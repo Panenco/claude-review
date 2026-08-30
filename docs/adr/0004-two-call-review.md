@@ -2,6 +2,7 @@
 status: accepted
 date: 2026-08-27
 supersedes: 0001
+amended-by: 0005
 ---
 
 # 0003 — A two-call review: guard, scan, verify
@@ -91,6 +92,11 @@ wrong.
   and the unpinnable marketplace ref they installed. `native_review_scope` and
   `model_standard` survive as deprecated inputs for the same reason;
   `/review native` still parses and runs a normal code review, saying so.
+  **REVERSED by ADR 0005** — the marketplace turned out to be pinnable after
+  all, as a local-path source vendored by a SHA-pinned `actions/checkout`, so
+  the pass, both inputs and both deprecated inputs are live again. The
+  reasoning below about the URL form was correct; it was simply never the only
+  form available. Everything else in this ADR stands.
 - `skills/review-context-builder.md`, `skills/review-judge.md`,
   `skills/review-native.md` and `scripts/fetch-pr-threads.sh` are deleted. The
   scan reads the PR itself with `gh pr view/diff`; there is no separate context

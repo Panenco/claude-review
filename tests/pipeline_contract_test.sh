@@ -13,9 +13,10 @@ set -uo pipefail
 #   * review-verify tells the model to count `{{LINK:path:line}}` as `path:line`
 #     while post-review.sh measured the EXPANDED text, silently truncating away
 #     whole findings from a body that was within budget as written.
-#   * review-command.sh renders the `native` removal notice on a run that
+#   * review-command.sh rendered the `native` removal notice on a run that
 #     proceeds, and the only step that posted `message` was gated on the run NOT
-#     proceeding, so the notice was unreachable.
+#     proceeding, so the notice was unreachable. (That notice is gone — ADR 0005
+#     turned the pass back on — but the CHANNEL is still asserted below.)
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCAN="$ROOT/skills/review-scan.md"
@@ -245,13 +246,67 @@ want "the workflow sets it from the triggering event" "$WORKFLOW" \
 
 echo ""
 echo "── a message on a PROCEEDING run is actually posted ──"
-# review-command.sh emits `message` on action=run for the removed `native` pass.
-NATIVE_MSG=$(CMD_BODY="/review native" bash "$CMD" | sed -n 's/^message=//p')
+# No token emits one today, but the channel must stay reachable: the menu step is
+# gated on `proceed != true`, so a notice attached to a proceeding run has no
+# other way out. This is the seam the removal notice fell through.
 PLAIN_MSG=$(CMD_BODY="/review code" bash "$CMD" | sed -n 's/^message=//p')
-if [ -n "$NATIVE_MSG" ]; then ok "/review native still renders a notice"; else bad "/review native renders no notice"; fi
 if [ -z "$PLAIN_MSG" ]; then ok "/review code renders none (so the poster step cannot fire spuriously)"; else bad "/review code rendered a message: '$PLAIN_MSG'"; fi
 want "the workflow posts a message on a run that proceeds" "$WORKFLOW" \
   "proceed == 'true' && steps\.cmd\.outputs\.message != ''"
+
+echo ""
+echo "── the native second opinion: pinned, opt-in, and consumed (ADR 0005) ──"
+NATIVE_SKILL="$ROOT/skills/review-native.md"
+NATIVE_AGENT="$ROOT/agents/review-native.md"
+for f in "$NATIVE_SKILL" "$NATIVE_AGENT"; do
+  [ -f "$f" ] || bad "missing ${f#"$ROOT"/} — the native pass is wired but its file is absent"
+done
+
+# THE PIN. This is the whole reason the pass could come back (ADR 0004 deleted it
+# over exactly this). The marketplace must be a LOCAL PATH built from a checkout
+# pinned to a 40-hex SHA — never the live URL, in any form.
+want "the marketplace is vendored by a SHA-pinned checkout" "$WORKFLOW" \
+  'repository: anthropics/claude-plugins-public'
+want "…and its ref is a full commit SHA" "$WORKFLOW" \
+  'ref: [0-9a-f]{40}'
+want "…and the action is handed a local path, not a URL" "$WORKFLOW" \
+  "plugin_marketplaces: .*github\.workspace"
+# Prose ABOUT the old URL is fine and deliberate (the comment explains the
+# history); the input VALUE must never be one again.
+never "…and never the live marketplace URL as the input value" "$WORKFLOW" \
+  'plugin_marketplaces:.*https://'
+
+# OPT-IN, both halves. `run_native` is the comment asking; `native_plugin.ready`
+# is the vendoring having worked. RUN_NATIVE must require BOTH — dispatching a
+# subagent that was never installed is a crashed review, not a missing opinion.
+want "the workflow reads run_native from the parser" "$WORKFLOW" 'steps\.cmd\.outputs\.run_native'
+want "RUN_NATIVE requires the pinned plugin to have resolved" "$WORKFLOW" \
+  "RUN_NATIVE: .*native_plugin\.outputs\.ready == 'true' && steps\.cmd\.outputs\.run_native == 'true'"
+want "the subagent is installed only when it resolved" "$WORKFLOW" 'NATIVE_READY.*native_plugin\.outputs\.ready'
+want "…from agents/review-native.md" "$WORKFLOW" 'agents/review-native\.md'
+if [ "$(CMD_BODY='/review code' bash "$CMD" | sed -n 's/^run_native=//p')" = "false" ]; then
+  ok "a plain /review code does not switch the pass on"
+else
+  bad "/review code sets run_native — the second opinion must be opt-in"
+fi
+
+# THE SEAM that made this worth a contract test: three files have to agree on
+# ONE filename, and nothing else reads it.
+want "the skill writes /tmp/native.json" "$NATIVE_SKILL" '/tmp/native\.json'
+never "…and not v3's /tmp/native-findings.json" "$NATIVE_SKILL" 'native-findings\.json'
+want "review-verify is its consumer" "$VERIFY" '/tmp/native\.json'
+want "the orchestrator dispatches review-native on RUN_NATIVE" "$ORCH" 'review-native'
+want "…and names the file verify will read" "$ORCH" '/tmp/native\.json'
+# Runners are reused and /tmp survives between jobs: a previous PR's file would
+# be read as this one's. Every other stage artifact is cleared; this one too.
+want "the stale-artifact sweep clears it" "$WORKFLOW" '/tmp/functional\.json /tmp/native\.json'
+want "the skill guards on pr_number for exactly that reason" "$NATIVE_SKILL" 'pr_number'
+want "…and verify discards a file from another PR" "$VERIFY" 'pr_number'
+
+# The pass is advisory. It may never post, and it may never be the last word.
+want "the skill forbids posting to the PR" "$NATIVE_SKILL" 'Do not run .gh pr comment'
+want "…it says step 8 is overridden" "$NATIVE_SKILL" 'step 8 is OVERRIDDEN|Step 8 is OVERRIDDEN'
+want "verify holds native findings to the same bar" "$VERIFY" 'no deference|same bar|exactly the bar'
 
 echo ""
 echo "── repo conventions reach BOTH stages, and cannot escalate a verdict ──"
@@ -1059,9 +1114,10 @@ never "require-review-json.sh does not name v3 artifacts" "$ROOT/scripts/require
   'judge-\*\.json|functional-\*\.json'
 want "…it names the v4 ones" "$ROOT/scripts/require-review-json.sh" \
   '/tmp/scan\.json .*/tmp/verify\.json .*/tmp/functional\.json'
-never "the onboarding prompt does not install a deleted subagent" \
-  "$ROOT/prompts/setup-review.md" 'agents/review-native\.md'
-for a in review-scan review-verify review-functional-tester; do
+# The seam that shipped a reference to a deleted agents/review-native.md. The
+# invariant is not "never name that file" — it is back (ADR 0005) — it is that
+# every subagent the onboarding prompt names must EXIST.
+for a in review-scan review-verify review-functional-tester review-native; do
   if grep -q "agents/$a.md" "$ROOT/prompts/setup-review.md" && [ -f "$ROOT/agents/$a.md" ]; then
     ok "onboarding names agents/$a.md, and it exists"
   else

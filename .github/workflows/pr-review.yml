@@ -23,7 +23,7 @@ on:
         type: string
         default: "claude-opus-5"
       model_standard:
-        description: "DEPRECATED and ignored — the `/review native` pass it drove has been removed. Kept so callers passing it do not break."
+        description: "Model for the `/review native` second-opinion pass (Anthropic's official `code-review` plugin, run in-session). LIVE AGAIN as of ADR 0005 — it was a deprecated no-op while that pass was deleted. Deliberately not `model_high`: the plugin's own prompt fans out to ~10 short-lived subagents and picks their models itself."
         type: string
         default: "claude-sonnet-5"
       model_fast:
@@ -51,7 +51,7 @@ on:
         type: string
         default: "safe"
       native_review_scope:
-        description: "DEPRECATED and ignored — the `/review native` pass (Anthropic's `code-review` plugin, run in-session) has been removed, so there is no second reviewer left to scope. Kept so callers passing it do not break: a reusable workflow errors on an undefined input, which would break every consumer's caller workflow."
+        description: "Optional path scope for the `/review native` second-opinion pass, as free text (e.g. `only review changes under apps/api/ and apps/web/`). LIVE AGAIN as of ADR 0005. It only ever NARROWS that pass; it never widens it and never touches the main review. Empty means the whole diff."
         type: string
         default: ""
       gate_skip_label:
@@ -338,7 +338,7 @@ jobs:
             exit 1
           fi
           {
-            grep -E '^(action|run_functional|force_deep|passes)=' <<< "$DECISION"
+            grep -E '^(action|run_functional|run_native|force_deep|passes)=' <<< "$DECISION"
             echo "message<<__CMD_EOF__"
             grep '^message=' <<< "$DECISION" | cut -d= -f2-
             echo "__CMD_EOF__"
@@ -364,11 +364,13 @@ jobs:
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
             -f content=eyes --silent || echo "::warning::Could not react to the triggering comment."
 
-      # A run that PROCEEDS can still carry a message — today only the `native`
-      # removal notice. The menu step below is gated on `proceed != 'true'`, so
-      # without this the notice was rendered and never posted: `/review native`
-      # looked like it ran a pass that no longer exists.
-      - name: Note a removed pass
+      # A run that PROCEEDS can still carry a message. No token emits one today
+      # (the `native` removal notice this was built for is gone — ADR 0005 turned
+      # that pass back on), but the CHANNEL stays wired: the menu step below is
+      # gated on `proceed != 'true'`, so a notice attached to a proceeding run has
+      # no other way out. Deleting this is how `/review native` once rendered a
+      # notice that was never posted. The step self-gates on a non-empty message.
+      - name: Note a run-time notice
         if: steps.cmd.outputs.proceed == 'true' && steps.cmd.outputs.message != '' && github.event_name == 'issue_comment'
         continue-on-error: true
         shell: bash
@@ -862,6 +864,108 @@ jobs:
           echo "$PID" > /tmp/dev-env/pid
           echo "Background dev-env launched: PID=$PID (process group leader)"
 
+      # ── THE SECOND OPINION, NOW PINNED. (`/review native`, opt-in.) ──
+      #
+      # Installs Anthropic's OFFICIAL `code-review` plugin so the `review-native`
+      # subagent can read their rubric at runtime and follow it verbatim. We still
+      # do not vendor a paraphrase of that prompt: we vendor the REPOSITORY it
+      # lives in, at ONE COMMIT, and read the installed file from there.
+      #
+      # WHY THIS BLOCK EXISTS. `plugin_marketplaces` used to be handed the live URL
+      # `https://github.com/anthropics/claude-plugins-public.git` — the only
+      # third-party reference in this file that was not SHA-pinned, and the reason
+      # the pass was deleted outright rather than kept (ADR 0004, bugbot.md). It is
+      # pinned now. The mechanism is a LOCAL-PATH marketplace, which sidesteps every
+      # limit the old comment correctly documented about the URL form:
+      #
+      #   * `actions/checkout` takes `repository:` + `ref:`, and `ref:` accepts a
+      #     full commit SHA. THAT is the pin — the same mechanism as every other
+      #     third-party pin in this file, not a weaker substitute for one.
+      #   * claude-code-action accepts a PATH here, not only a URL. Verified in its
+      #     `base-action/src/install-plugins.ts` at the SHA this workflow already
+      #     pins (ac7e24bf): `isLocalPath()` returns true for `/`, `./` and `../`,
+      #     and `validateMarketplaceInput()` then returns EARLY — "Local paths are
+      #     passed directly to Claude Code which handles them" — skipping the
+      #     `MARKETPLACE_URL_REGEX` that rejected `...public.git#<ref>`.
+      #   * `claude plugin marketplace add --help` (CLI 2.1.251): "Add a marketplace
+      #     from a URL, path, or GitHub repo". A directory source is first-class and
+      #     is recorded in settings.json as `{"source":"directory","path":…}`.
+      #
+      # NOTHING IS FETCHED FROM A MOVING REF AT REVIEW TIME. The sparse checkout is
+      # the only network call, and `code-review`'s catalog entry is
+      # `"source": "./plugins/code-review"` — a path INSIDE the repo we just pinned
+      # — so the prompt that runs is exactly the prompt at that SHA. No sibling
+      # plugin's third-party `git-subdir` source is ever resolved: the rewritten
+      # catalog below lists this one plugin and nothing else.
+      #
+      # ADVISORY, AND IT FAILS SOFT. Both steps are `continue-on-error` and the
+      # action inputs below are gated on `native_plugin.outputs.ready`. A second
+      # opinion that cannot be obtained must never cost the PR its review.
+      #
+      # BUMPING THE PIN is an ordinary dependency bump: change the SHA, re-run.
+      - name: "Native pass: vendor the plugin marketplace at a pinned SHA"
+        id: native_checkout
+        if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true' && steps.cmd.outputs.run_native == 'true'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: anthropics/claude-plugins-public
+          # THE PIN. That repo publishes no tags and no releases, so a full commit
+          # SHA is the only fixed point available — and it is the strongest one.
+          ref: ed404106fcd80ba98ecb7c851e531dcb626d13b7
+          path: __claude-plugins-marketplace
+          # This tree is third-party code we are about to feed to a model. It has
+          # no business carrying a credential that can write to this repo.
+          persist-credentials: false
+          # The repo is ~10 MB of other vendors' plugins. Take the catalog and the
+          # one plugin; leave the rest on the server.
+          sparse-checkout: |
+            .claude-plugin
+            plugins/code-review
+
+      # The upstream catalog cannot be used as-is from a directory source: the CLI
+      # RESERVES its name. Verified against CLI 2.1.251 — keeping `name:
+      # "claude-plugins-official"` fails with "The name ... is reserved for official
+      # Anthropic marketplaces and can only be used with GitHub sources from the
+      # 'anthropics' organization", and any lookalike name fails with "Marketplace
+      # name impersonates an official Anthropic/Claude marketplace". So the CATALOG
+      # is renamed and cut to one entry. The PLUGIN's own files are never touched —
+      # only the index that points at them.
+      - name: "Native pass: rewrite the vendored catalog to the one pinned plugin"
+        id: native_plugin
+        if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true' && steps.cmd.outputs.run_native == 'true' && steps.native_checkout.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          MKT: ${{ github.workspace }}/__claude-plugins-marketplace
+        run: |
+          set -uo pipefail
+          CMD="$MKT/plugins/code-review/commands/code-review.md"
+          if [ ! -s "$CMD" ]; then
+            echo "::warning::native pass: $CMD is missing at the pinned SHA — skipping the second opinion."
+            exit 0
+          fi
+          SRC="$MKT/.claude-plugin/marketplace.json"
+          # Single-quoted so the shell leaves `$schema` alone; jq reads it as a
+          # plain string key, not a variable.
+          if ! jq '{
+                 "$schema": .["$schema"],
+                 name: "pinned-upstream-review",
+                 description: "Vendored copy of anthropics/claude-plugins-public, pinned by checkout SHA and cut down to the single plugin this pipeline installs.",
+                 owner: { name: "anthropics/claude-plugins-public, vendored at a pinned commit" },
+                 plugins: [ .plugins[] | select(.name == "code-review") ]
+               }' "$SRC" > "$SRC.tmp"; then
+            echo "::warning::native pass: could not rewrite the vendored catalog — skipping the second opinion."
+            exit 0
+          fi
+          if [ "$(jq '.plugins | length' "$SRC.tmp" 2>/dev/null)" != "1" ]; then
+            echo "::warning::native pass: the pinned catalog has no code-review entry — skipping the second opinion."
+            exit 0
+          fi
+          mv "$SRC.tmp" "$SRC"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "Native pass ready at $(git -C "$MKT" rev-parse HEAD) ($(wc -c < "$CMD") bytes of upstream prompt)"
+
       # User scope is REQUIRED for BOTH files: claude-code-action's restore-config
       # wipes the workspace .claude/ on PR-head jobs; $HOME survives. Each file only
       # pins its subagent's model and points at its skill. The tester needs no MCP
@@ -872,6 +976,8 @@ jobs:
         env:
           MODEL_HIGH: ${{ inputs.model_high }}
           MODEL_FUNCTIONAL: ${{ inputs.model_functional }}
+          MODEL_STANDARD: ${{ inputs.model_standard }}
+          NATIVE_READY: ${{ steps.native_plugin.outputs.ready }}
         run: |
           mkdir -p "$HOME/.claude/agents"
           # The two stages of the review itself. Their depth is frontmatter, not a
@@ -887,6 +993,18 @@ jobs:
             < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-functional-tester.md" \
             > "$HOME/.claude/agents/review-functional-tester.md"
           echo "Installed review-functional-tester subagent (model=$MODEL_FUNCTIONAL)"
+          # Only when the pinned marketplace actually resolved. Installing the
+          # subagent without the plugin behind it would give the orchestrator a
+          # dispatch target that can only ever report `unavailable`.
+          if [ "${NATIVE_READY:-}" = "true" ]; then
+            envsubst '$MODEL_STANDARD $CLAUDE_REVIEW_PIPELINE_DIR' \
+              < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/review-native.md" \
+              > "$HOME/.claude/agents/review-native.md"
+            echo "Installed review-native subagent (model=$MODEL_STANDARD)"
+          else
+            rm -f "$HOME/.claude/agents/review-native.md"
+            echo "Native pass not enabled for this run — review-native subagent not installed"
+          fi
 
       # Single top-level agent; all subagents dispatch via Task inside this
       # one invocation. continue-on-error: a max-turns exit may still have
@@ -926,7 +1044,7 @@ jobs:
           # between jobs, so a leftover scan/verify from a previous PR would be read
           # as this one's.
           rm -f /tmp/review-stop-blocks /tmp/review.json \
-                /tmp/scan.json /tmp/verify.json /tmp/functional.json 2>/dev/null || true
+                /tmp/scan.json /tmp/verify.json /tmp/functional.json /tmp/native.json 2>/dev/null || true
           mkdir -p "$HOME/.claude"
           S="$HOME/.claude/settings.json"
           [ -s "$S" ] || echo '{}' > "$S"
@@ -991,16 +1109,30 @@ jobs:
           # review_effort scan reported. Empty on any short-circuited path, where
           # both skills fall back to 5 — the old flat constant.
           REVIEW_DEPTH_SCALE: ${{ steps.guard.outputs.depth_scale }}
+          # The orchestrator's gate for the second opinion. TRUE only when the
+          # comment asked for it AND the pinned marketplace resolved, so the
+          # orchestrator never dispatches a subagent that was not installed.
+          RUN_NATIVE: ${{ steps.native_plugin.outputs.ready == 'true' && steps.cmd.outputs.run_native == 'true' }}
+          NATIVE_REVIEW_SCOPE: ${{ inputs.native_review_scope }}
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.review_identity.outputs.token }}
+          # The SHA-PINNED second opinion — see the two "Native pass:" steps above
+          # for the full rationale and the verification behind every claim in it.
+          # A LOCAL PATH, never a URL: that is what makes it pinnable at all, and
+          # it is why re-adding this input does not re-open the exposure that got
+          # the pass deleted. Both are empty unless `/review native` (or `all`) was
+          # asked for and the vendoring succeeded — and empty restores the action's
+          # stock behaviour of installing nothing.
+          plugin_marketplaces: ${{ steps.native_plugin.outputs.ready == 'true' && format('{0}/__claude-plugins-marketplace', github.workspace) || '' }}
+          plugins: ${{ steps.native_plugin.outputs.ready == 'true' && 'code-review@pinned-upstream-review' || '' }}
           # Reuse the CLI the step above already guaranteed instead of letting the
           # action download its own pinned copy — see that step for the measurement.
           # Empty when that step was skipped, which restores the action's stock
           # behaviour rather than breaking it.
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
-            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ env.PR_NUMBER }}. You are the single top-level agent for this review and you do NOT review the diff yourself. Dispatch `review-scan` (Task tool, pre-installed subagent type) and then `review-verify`; both are pre-installed and carry their own model and effort. The functional tester is pre-installed as `review-functional-tester` and is ADVISORY ONLY — dispatch it in the same response as review-scan, and only when RUN_FUNCTIONAL=true, the dev-env is up, and a linked issue supplies real acceptance criteria. Copy review-verify's verdict, body and comments into /tmp/review.json VERBATIM — its `{{LINK:path:line}}` placeholders and its wording are deliberate and post-review.sh finishes them; do not rewrite, re-summarise or add sections. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
+            Read ${{ env.CLAUDE_REVIEW_PIPELINE_DIR }}/skills/review-orchestrator.md and follow it exactly. PR number: ${{ env.PR_NUMBER }}. You are the single top-level agent for this review and you do NOT review the diff yourself. Dispatch `review-scan` (Task tool, pre-installed subagent type) and then `review-verify`; both are pre-installed and carry their own model and effort. The functional tester is pre-installed as `review-functional-tester` and is ADVISORY ONLY — dispatch it in the same response as review-scan, and only when RUN_FUNCTIONAL=true, the dev-env is up, and a linked issue supplies real acceptance criteria. The second opinion is pre-installed as `review-native` (Anthropic's official `code-review` plugin, run in-session) and is likewise ADVISORY — dispatch it in that SAME response, and ONLY when RUN_NATIVE=true; it writes /tmp/native.json, which review-verify reads as extra candidates to refute, and it never posts anything. Copy review-verify's verdict, body and comments into /tmp/review.json VERBATIM — its `{{LINK:path:line}}` placeholders and its wording are deliberate and post-review.sh finishes them; do not rewrite, re-summarise or add sections. Your final artifact is /tmp/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written.
           # ── THE SANDBOX. `--disallowedTools` is the ONLY thing standing between
           # this job's write scopes and an untrusted prompt. ──
           #
