@@ -57,7 +57,7 @@ Use the auth recipe from your prompt as given — the orchestrator lifts it from
 
 First app navigation within ~60s of start. Verify criteria in order, most important first. Per scenario, target ≤4 turns: one batched navigate+snapshot+screenshot+console, verify against the criterion, interact only if the criterion requires it, one batched post-state capture.
 
-**Never `Read` anything under `/tmp/screenshots/`.** A truncated capture returns `400 Could not process image`, which ends your turn before you write any output and loses the whole run. If a tool result says that, stop that scenario and go write the file.
+**Never `Read` anything under `/tmp/screenshots/`.** A truncated capture returns `400 Could not process image`, which ends your turn before you write any output and loses the whole run. If a tool result says that, stop that scenario and go write the file. The ban stays absolute *for you* even though `review-verify` may now look at validated shots: it writes its review before it opens anything, and you have no such fallback — you are racing a wall clock, and a turn lost here is the whole functional pass.
 
 ## What counts as an observation
 
@@ -68,6 +68,8 @@ Each observation needs: the criterion it came from, what you did, what you obser
 Not observations: pre-existing failures on surfaces the diff never touched, known dev-env quirks named in your prompt, anything that passed. **A pass is never an observation** — passes belong in `summary` and the screenshot gallery.
 
 ## Screenshot integrity
+
+**Your captions are checked against the images.** `review-verify` looks at the validated shots and discards an observation whose own screenshot contradicts it, so a caption that oversells what is on screen costs you the observation it was meant to support.
 
 A screenshot is a capture of the live app you actually drove, or a rendered HTTP exchange you actually made. Never render prose or logs as an image. Check each caption against the latest snapshot — if the page is a login wall, a 404, or an error boundary, the caption must say so, or drop the shot. If you could not drive the app, report `CRASH` with no screenshots; never PASS from reading source.
 

@@ -72,6 +72,9 @@ jobs:
       - name: Run upload_screenshots_test.sh
         run: bash tests/upload_screenshots_test.sh
 
+      - name: Run validate_screenshots_test.sh
+        run: bash tests/validate_screenshots_test.sh
+
       - name: Run build_spec_test.sh
         run: bash tests/build_spec_test.sh
 
