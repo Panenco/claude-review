@@ -276,5 +276,20 @@ else
 fi
 
 echo ""
+echo "── the eval harness measures the caps production would have applied ──"
+# Both halves of the depth scale come off the ONE guard run the eval already
+# made. Re-deriving either, or letting it default, would silently measure recall
+# against a different ceiling than CI uses — the exact class of bias this harness
+# exists to avoid.
+assert_file_has "review-local.sh reads depth_scale off the guard decision" \
+  "REVIEW_DEPTH_SCALE=\$(sed -n 's/^depth_scale=//p' <<<\"\$DECISION\")" "$LOCAL"
+assert_file_has "…and comment_limit off the same decision" \
+  "REVIEW_COMMENT_LIMIT=\$(sed -n 's/^comment_limit=//p' <<<\"\$DECISION\")" "$LOCAL"
+assert_file_has "…exports the item ceiling to the orchestrator session" \
+  "export DOCS_ONLY REVIEW_DEPTH_SCALE" "$LOCAL"
+assert_file_has "…and passes the inline cap to the poster" \
+  "REVIEW_COMMENT_LIMIT=\"\$REVIEW_COMMENT_LIMIT\"" "$LOCAL"
+
+echo ""
 if [ "$fail" -eq 0 ]; then echo "All review-local tests passed."; exit 0; fi
 echo "$fail review-local test(s) failed."; exit 1

@@ -31,6 +31,14 @@ docs_only_of() {
   local v; v=$(env "$@" bash "$SCRIPT" | sed -n 's/^docs_only=//p' | head -1)
   printf '%s' "${v:--}"
 }
+# scale_of KEY=VAL... → "<depth_scale> <comment_limit>", "- -" when neither emitted
+scale_of() {
+  local out d c
+  out=$(env "$@" bash "$SCRIPT")
+  d=$(sed -n 's/^depth_scale=//p' <<< "$out" | head -1)
+  c=$(sed -n 's/^comment_limit=//p' <<< "$out" | head -1)
+  printf '%s %s' "${d:--}" "${c:--}"
+}
 
 assert_gate() {
   local label="$1" want="$2"; shift 2
@@ -49,6 +57,16 @@ assert_docs_only() {
     echo "OK:   $label → docs_only=$got"
   else
     echo "FAIL: $label — want docs_only='$want' got '$got'"
+    fail=$((fail + 1))
+  fi
+}
+assert_scale() {
+  local label="$1" want="$2"; shift 2
+  local got; got=$(scale_of "$@")
+  if [ "$got" = "$want" ]; then
+    echo "OK:   $label → depth_scale/comment_limit = $got"
+  else
+    echo "FAIL: $label — want '$want' got '$got'"
     fail=$((fail + 1))
   fi
 }
@@ -264,12 +282,16 @@ if grep -q 'gh \|curl \|wget ' "$SCRIPT"; then
 else
   echo "OK:   guard.sh makes no network calls"
 fi
-# 115: 100 → 110 when `deep-review` was added, → 115 for the docs_only
-# classification (one loop branch and one printf). NOT raised for `/review deep`.
-# The ceiling guards against the tier ladder creeping back in, not against a
-# comment, a single override, or one more line of output.
+# 135: 100 → 110 when `deep-review` was added, → 115 for the docs_only
+# classification (one loop branch and one printf), → 135 for the depth scale
+# (FOUR lines of code — a weight, a divide, a clamp, a printf — plus the comment
+# that justifies the constants and the two extra lines in the output contract).
+# NOT raised for `/review deep`. The ceiling guards against the tier ladder
+# creeping back in, not against a comment, a single override, or one more line of
+# output — and the depth scale is deliberately a continuous function rather than
+# the tiers, which is why it cost four lines and not forty.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 115 ]; then
+if [ "$LINES" -le 135 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"
@@ -327,6 +349,71 @@ else
   echo "FAIL: split body is ${#OVER} chars, over the 1200 budget"
   fail=$((fail + 1))
 fi
+
+
+# --- depth scale: review depth is a function of diff size --------------------
+# weight = ng_lines + 25*ng_files; depth_scale = min(3 + weight/250, 8);
+# comment_limit = 2*depth_scale. The old pipeline used a flat 5 items / 10
+# inline comments whether the PR was 20 lines or 2500 — the constant this
+# replaces. Each case below pins one band edge, so a retuned divisor cannot slip
+# through as "still roughly the same".
+echo ""
+echo "── depth scales with the diff, and only on the review path ──"
+# weight 50 → 3. The floor is deliberately BELOW the old flat 5: a 25-line fix
+# almost never had five honest human-review questions in it.
+assert_scale "a 25-line one-file fix sits on the floor" "3 6" \
+  GATE_FILES_TSV=$'src/util.ts\t20\t5'
+# weight 249 is the last value in the bottom band, 250 the first in the next.
+assert_scale "last weight in the bottom band" "3 6" \
+  GATE_FILES_TSV=$'src/a.ts\t224\t0'
+assert_scale "one unit more moves the band" "4 8" \
+  GATE_FILES_TSV=$'src/a.ts\t225\t0'
+# The team-limit PR: 400 lines over 4 files → weight 500 → 5 / 10, byte-for-byte
+# the caps that shipped before the scale existed. The common case must not move.
+assert_scale "a 400-line 4-file PR reproduces the old flat caps" "5 10" \
+  GATE_FILES_TSV=$'a.ts\t100\t0\nb.ts\t100\t0\nc.ts\t100\t0\nd.ts\t100\t0'
+# weight 1500 → 3+6=9, clamped. Attention is the constraint past ~1000 lines.
+assert_scale "a 1000-line 20-file change is clamped at the top" "8 16" \
+  GATE_FILES_TSV="$(for i in $(seq 1 20); do printf 'src/f%d.ts\t50\t0\n' "$i"; done)"
+# Forced through by the label, so the scale still has to be emitted — and still
+# clamped, not extrapolated off a 9000-line diff.
+assert_scale "an oversized PR forced through still clamps at 8" "8 16" \
+  "GATE_FILES_TSV=$big" "GATE_LABELS=deep-review"
+# Files carry weight of their own: 60 one-line files is a real review even
+# though the line count is trivial.
+assert_scale "many tiny files still buy depth" "8 16" \
+  GATE_FILES_TSV="$(for i in $(seq 1 60); do printf 'src/f%d.ts\t1\t0\n' "$i"; done)"
+# Generated files are excluded from the counts, so they must not buy depth either.
+assert_scale "a lockfile does not inflate the scale" "3 6" \
+  GATE_FILES_TSV=$'src/a.ts\t10\t0\npackage-lock.json\t9000\t9000'
+# comment_limit is exactly twice depth_scale — the ratio the old constants had
+# (10 inline for 5 checks), held rather than re-derived.
+for tsv in $'a.ts\t20\t5' $'a.ts\t400\t0' $'a.ts\t5000\t0'; do
+  read -r D C <<< "$(scale_of "GATE_FILES_TSV=$tsv" GATE_FORCE_DEEP=true)"
+  if [ "$C" = "$(( D * 2 ))" ]; then
+    echo "OK:   comment_limit is 2x depth_scale ($D → $C)"
+  else
+    echo "FAIL: comment_limit $C is not 2x depth_scale $D"; fail=$((fail + 1))
+  fi
+done
+# Short-circuited paths emit no scale at all: nothing downstream runs, and an
+# empty step output is what makes post-review.sh fall back to its own default.
+assert_scale "skip-review emits no scale" "- -" \
+  GATE_FILES_TSV=$'src/a.ts\t10\t0' GATE_LABELS=skip-review
+assert_scale "the oversized gate emits no scale" "- -" \
+  "GATE_FILES_TSV=$big"
+assert_scale "an empty diff emits no scale" "- -" \
+  GATE_FILES_TSV=$'package-lock.json\t10\t0'
+# Monotonic: more diff never buys less depth. A divisor typo that inverted the
+# relation would still pass every single-point assertion above.
+prev=0
+for n in 10 100 300 600 900 1500 3000; do
+  cur=$(scale_of "GATE_FILES_TSV=$(printf 'a.ts\t%d\t0' "$n")" GATE_FORCE_DEEP=true | cut -d" " -f1)
+  if [ "$cur" -ge "$prev" ]; then prev=$cur; else
+    echo "FAIL: depth_scale fell from $prev to $cur at ${n} lines"; fail=$((fail + 1)); prev=$cur
+  fi
+done
+echo "OK:   depth_scale never decreases as the diff grows (ends at $prev)"
 
 if [ "$fail" -eq 0 ]; then
   echo "All guard tests passed."

@@ -98,14 +98,65 @@ want "post-review.sh renders a body bullet for dropped comments" "$POSTER" \
 never "no code comment still claims the body already names every finding" "$POSTER" \
   'body already names every finding|remain listed in the review body'
 # review-verify describes the poster's inline cap to the model. It said "5-cap"
-# long after the default moved to 10, which understates how many findings can
-# post inline and invites pre-emptive dropping. Pin the number to the source.
+# long after the default moved to 10; it then said "10-cap" after the cap started
+# scaling with the diff. Both understate what can post inline and invite
+# pre-emptive dropping, so the contract is now on the MECHANISM, not on a
+# literal: guard.sh computes the cap, the workflow hands it to the poster, and
+# post-review.sh keeps exactly one env read with one fallback.
 CAP=$(sed -n 's/^COMMENT_LIMIT="\${REVIEW_COMMENT_LIMIT:-\([0-9]*\)}".*/\1/p' "$POSTER" | head -1)
-if [ -n "$CAP" ] && grep -qF "within the ${CAP}-cap" "$VERIFY"; then
-  ok "review-verify names the poster's real inline cap ($CAP)"
+if [ -n "$CAP" ]; then
+  ok "post-review.sh still reads REVIEW_COMMENT_LIMIT with a numeric fallback ($CAP)"
 else
-  bad "review-verify must say 'within the ${CAP:-?}-cap' — post-review.sh defaults COMMENT_LIMIT to ${CAP:-?}"
+  bad "post-review.sh must keep COMMENT_LIMIT=\${REVIEW_COMMENT_LIMIT:-<n>} — the scale is computed upstream and passed in"
 fi
+want "guard.sh emits the scaled inline cap" "$GUARD" \
+  "printf 'depth_scale=%s.ncomment_limit=%s"
+want "…and the workflow hands it to the poster" "$WORKFLOW" \
+  'REVIEW_COMMENT_LIMIT: \$\{\{ steps\.guard\.outputs\.comment_limit \}\}'
+want "…and hands the item ceiling to the review agent" "$WORKFLOW" \
+  'REVIEW_DEPTH_SCALE: \$\{\{ steps\.guard\.outputs\.depth_scale \}\}'
+# The two halves must agree on the same env var name, or the poster silently
+# keeps its fallback on every PR and the whole scale is dead code.
+want "review-verify names the env var the poster actually reads" "$VERIFY" \
+  'REVIEW_COMMENT_LIMIT'
+want "review-scan is capped by the guard's number, not a literal" "$SCAN" \
+  'REVIEW_DEPTH_SCALE'
+never "review-verify no longer hardcodes a stale numeric cap" "$VERIFY" \
+  'within the [0-9]+-cap'
+# A real cross-file assertion: run the guard at both ends of the scale and check
+# the poster's fallback lies inside the range it can emit. A retuned divisor that
+# put the whole band above or below 10 would leave a short-circuited run posting
+# a review at a cap the pipeline never actually uses.
+SMALL=$(GATE_FILES_TSV=$'src/a.ts\t5\t1' bash "$GUARD" | sed -n 's/^comment_limit=//p')
+LARGE=$(GATE_FILES_TSV=$'src/a.ts\t2000\t500' bash "$GUARD" | sed -n 's/^comment_limit=//p')
+if [ -n "$SMALL" ] && [ -n "$LARGE" ] && [ "$SMALL" -le "$CAP" ] && [ "$CAP" -le "$LARGE" ]; then
+  ok "the poster's fallback ($CAP) sits inside the guard's emitted range ($SMALL..$LARGE)"
+else
+  bad "post-review.sh falls back to $CAP, outside the guard's range ($SMALL..$LARGE)"
+fi
+# The item ceiling and the comment cap are one number and its double. Verify is
+# told that; assert the guard really does it, so the prompt cannot go stale.
+DS=$(GATE_FILES_TSV=$'src/a.ts\t400\t100' bash "$GUARD" | sed -n 's/^depth_scale=//p')
+CL=$(GATE_FILES_TSV=$'src/a.ts\t400\t100' bash "$GUARD" | sed -n 's/^comment_limit=//p')
+if [ -n "$DS" ] && [ "$CL" = "$(( DS * 2 ))" ]; then
+  ok "guard.sh emits comment_limit as twice depth_scale ($DS → $CL), as review-verify states"
+else
+  bad "guard.sh emitted depth_scale=$DS comment_limit=$CL — review-verify says the cap is twice the scale"
+fi
+# The anti-padding rules are what stop a wider ceiling being filled with noise.
+# They are load-bearing precisely BECAUSE the ceiling now moves, so pin them.
+want "review-scan still bans suspicion with no object" "$SCAN" \
+  'Suspicion with no object'
+want "…still names the un-actionable shapes verbatim" "$SCAN" \
+  'Double check this logic'
+want "…and still says a made-up item costs more than a missing one" "$SCAN" \
+  'made-up item costs more than a missing one'
+want "…and says explicitly that the ceiling is not a target" "$SCAN" \
+  'ceiling is a limit, not a quota|ceiling, not a target'
+want "…and that a wider ceiling is not a weaker bar" "$SCAN" \
+  'wider ceiling is not an easier one|relaxes as .REVIEW_DEPTH_SCALE. rises'
+want "review-verify refuses to spend a free slot on a weak item" "$VERIFY" \
+  'buys room, never licence'
 
 echo ""
 echo "── an explicit /review is never answered with silence ──"

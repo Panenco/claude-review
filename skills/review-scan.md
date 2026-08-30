@@ -58,7 +58,7 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 - **If you cannot tell, it is unresolved.** A carried finding already survived a full scan and a full refutation pass once. That is not true of anything you raise fresh, so it does not get the fresh claim's benefit of the doubt.
 - Never re-file a carried finding as a new one. Carry it under its own `id`. If your wording differs from the carried title, set `"carried_from": "<id>"` on the finding so the two are not counted twice.
 
-**Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. Record which you chose in `depth_used` with one clause saying why. Whichever you pick, enumerate — do not stop at the first valid finding. Target ≤15 turns; write the file by turn 25 whatever you have.
+**Self-scale your depth.** A small, low-risk diff gets a light pass; a diff touching auth, money, migrations, concurrency, or data deletion gets a full pass with callers traced. `REVIEW_DEPTH_SCALE` in your env is the guard's size-derived budget for that (3–8, 5 when unset) — it bounds how many `human_review` items you may emit, and it is a reasonable read on how many paths are worth tracing. Record which you chose in `depth_used` with one clause saying why. Whichever you pick, enumerate — do not stop at the first valid finding. Target ≤15 turns; write the file by turn 25 whatever you have.
 
 ## Repo conventions — the two config files, plus the rules the team wrote
 
@@ -147,7 +147,8 @@ A finding says the code is **wrong**. A `human_review` item says **your answer i
 
 These are `approve_argument` inverted. If you cannot honestly write *"a human pass over this diff changes nothing"*, then **the reasons you cannot are exactly this list**. A PR with no findings and no items is one you are asserting nobody needs to read.
 
-**0–5 items.**
+**0–N items, where N is `REVIEW_DEPTH_SCALE` from your env — 5 when it is unset or empty.**
+The guard derives it from diff size alone (3 for a small change, up to 8 for a large one), because the number of things a human can usefully be asked scales with how much code there is, not with a constant. **A wider ceiling is not an easier one.** More diff means more places a real question can live; it never means the bar for a question drops. Every rule below applies unchanged at N=8 and at N=3, and an item that would not have earned one of five slots does not earn one of eight.
 
 ### The test
 
@@ -175,6 +176,8 @@ Emit an item when your answer, however confident, is **not authoritative**:
 
 ### Never an item
 
+**Nothing in this section relaxes as `REVIEW_DEPTH_SCALE` rises.** It is the list of shapes that are not items at any ceiling; an empty slot is the correct outcome when none of them is a real question.
+
 - Something you can settle from the checkout **where your answer is the whole answer**. That is a finding, or it is nothing.
 - **Suspicion with no object.** "Double check this logic", "verify this works", "check that no N+1s are introduced", "consider adding tests". Humans do write these; it is the one habit of theirs worth not copying, because a reader cannot act on it and it is indistinguishable from padding. If something smells, go look: what you find is a finding, and what you cannot settle gets named specifically — *which* logic, *which* caller, *which* untested path and why that one matters.
 - Anything a config file, or a rule in `.claude/rules/`, calls intentional. Suppression comes first and kills an item exactly as it kills a finding.
@@ -185,7 +188,7 @@ Emit an item when your answer, however confident, is **not authoritative**:
 
 **Every item names a specific construct and the specific judgement wanted.** "Review the business logic" is not an item. "`applyDiscount` compounds the loyalty rate before tax rather than after — is that the intended order?" is.
 
-**Do not pad.** Five is a ceiling, not a target. A made-up item costs more than a missing one, because it teaches the reader to skim the list. Zero is right for a mechanical diff — and if you write zero, `human_review_adds_nothing` should probably be true.
+**Do not pad. The ceiling is a limit, not a quota — and the wider it is, the more expensive filling it is.** A made-up item costs more than a missing one, because it teaches the reader to skim the list, and a list of eight where two were honest gets skimmed harder than a list of five. Emitting fewer items than `REVIEW_DEPTH_SCALE` allows is never a failure and is never remarked on; emitting one you could not defend line by line is. Zero is right for a mechanical diff whatever the scale says — and if you write zero, `human_review_adds_nothing` should probably be true.
 
 Each item: `{path, line, what_to_check (≤140 chars), why_unresolved (≤120 chars)}`. `why_unresolved` names the real blocker — **what makes your answer non-authoritative**: needs product intent, needs a decision on precedent, needs domain or regulatory knowledge, two sources disagree, dense logic wants a second reader, needs production data, needs runtime access, the source is not in the checkout. "I did not check" is not a blocker — go check, then decide whether the answer is yours to give.
 
