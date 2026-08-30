@@ -32,7 +32,7 @@ Never invent a new finding. You only kill, keep, merge or re-anchor — with the
 
 A finding carrying `"convention": true` is judged on a different bar: keep it only if its `evidence` quotes the rule **verbatim** from one of the files above (that quote replaces `failure_scenario`); refute it if you cannot find that text there — including when scan quoted a rule file you did not need to read, in which case read that one file and check.
 
-**A comment-noise finding** (`"comment_noise": true`, filed against comments in code rather than a document) is judged on its own bar, not the docs-only prose bar: keep it only if you can see the comments yourself at the cited line and they restate the code, narrate the change or its origin with no reasoning, or are commented-out code. Its `failure_scenario` may be `""` — the quoted comments stand in for it — but refute it when the comments carry a real *why*: a constraint, an invariant, a workaround, a warning, or a pointer to where the reasoning lives. That override outranks every criterion, and length never triggers this class. Deleting those is the harm this class exists to avoid causing. At most **2**, `minor`, advisory, and one per file: a finding naming a single comment is refuted. Force `severity` to `minor` and keep at most **2**. Ordinary findings keep the full `failure_scenario` bar — nothing here relaxes it.
+**A comment-noise finding** (`"comment_noise": true`, filed against comments in code rather than a document) is judged on its own bar, not the docs-only prose bar: keep it only if you can see the comments yourself at the cited line and they restate the code, narrate the change or its origin with no reasoning, or are commented-out code. Its `failure_scenario` may be `""` — the quoted comments stand in for it — but refute it when the comments carry a real *why*: a constraint, an invariant, a workaround, a warning, or a pointer to where the reasoning lives. That override outranks every criterion, and length never triggers this class. Deleting those is the harm this class exists to avoid causing. Force `severity` to `minor`, keep at most **2**, advisory, one per file: a finding naming a single comment is refuted. Ordinary findings keep the full `failure_scenario` bar — nothing here relaxes it.
 
 **This class never carries a ```suggestion``` fence.** A committable patch that deletes comments is dangerous and nothing downstream checks it, so strip the fence and state the removal in one prose sentence. That is a verdict on the patch only; the comment-noise item itself stands or falls on the bar above.
 
@@ -112,7 +112,7 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 **The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
 
-**Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote. The verdict is still computed from surviving findings alone, every round, from scratch.
+**Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote.
 
 Carry through up to N `human_review` notes from scan unchanged, where **N is `REVIEW_DEPTH_SCALE` from your env (5 when unset or empty), moved once by scan's `review_effort`: −1 at `review_effort` ≤ 2, +1 at `review_effort` 5, unchanged at 3–4 — never below 2, never above 8.** The guard sized the diff, scan rated the judgement it actually needed, and this is the only place the two are combined; there is no other modulation. **A raised N buys room, never licence** — carrying a weak note because a slot is free is the padding scan was told not to do, done one stage later. Drop any whose block you could not confirm. Never add your own. Each survivor becomes a **check comment** (see Inline comments), anchored across the whole changed block so the reviewer's eye covers that part of the diff; they stay in `meta.human_review` either way.
 
@@ -160,13 +160,13 @@ Render exactly this, omitting any section that would be empty:
 
 Two kinds go inline: **findings** and **checks**. Each ≤700 chars total. Each finding appears **exactly once** — an inline comment OR a `### Findings` bullet, never both.
 
-The poster caps the total and orders it for you: findings first by severity, checks last. So under pressure the slots go to defects and the notes fall back — the right way round, and not something you should pre-empt by dropping either. Nothing is lost: whatever does not fit, or does not land in a diff hunk, comes back as a body bullet.
+The poster caps the total and orders it for you: findings first by severity, checks last. So under pressure the slots go to defects and the notes fall back — the right way round, and not something you should pre-empt by dropping either.
 
 **Do not hand-maintain that invariant — `post-review.sh` enforces it.** After it has worked out which comments really go inline (in-hunk, deduped, within the inline cap — `REVIEW_COMMENT_LIMIT`, which the guard sets to twice `REVIEW_DEPTH_SCALE`, so 6–16 by diff size, and 10 when nothing set it), it deletes any `### Findings` bullet matching one of them — same path and line, or same path and title (so re-anchoring a comment to a different line still de-duplicates) — renumbers `### Findings (<n>)` to what survives, and drops the header if nothing does. So:
 
 - Write each finding in ONE place. If you slip and write both, the body copy is removed, not the comment.
 - Do NOT pre-emptively omit a body bullet for a comment you fear may not post. A comment that lands outside a diff hunk or past the cap is put back into the body by the poster under `### Also flagged` — nothing is lost.
-- `### What a human should review` is not yours to write. The poster adds it only for checks that could not be anchored, after this strip has run, and an item there may point at the same `path:line` as a finding.
+- `### What a human should review` is still not yours to write (see the body section). The poster adds it after this strip has run, and an item there may point at the same `path:line` as a finding.
 
 ````
 **<severity>** <title>
@@ -180,7 +180,7 @@ The poster caps the total and orders it for you: findings first by severity, che
 
 The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
 
-A **check** comment is the other shape — one per surviving `human_review` note. It is **orientation**: it tells the reviewer what the block below it is for *before* they read it, so they arrive with the intent already in hand. It is not a question and it asks them to decide nothing.
+A **check** comment is the other shape — one per surviving `human_review` note. It is **orientation**: it tells the reviewer what the block below it is for *before* they read it, so they arrive with the intent already in hand.
 
 ````
 **check** <what this block is for — one line, a statement>
@@ -201,13 +201,13 @@ Hard rules, because a note nobody finishes is worse than no note:
 
 `line` is the hard one: GitHub only accepts a comment on a changed line, so an anchor past the diff does not degrade to a range — the whole comment falls back to `### What a human should review`, and a check in the body is a check nobody reads. Observed on seaters#2134, where an anchor at 253 lost a note that had posted inline the round before at 196.
 
-`start_line` is forgiving, so **ask for the whole block**. The poster keeps a range of up to **120 lines** that lies wholly inside the diff hunks, and drops one it cannot use — a range crossing a gap between hunks, or longer than that — keeping the comment at `line`. **The range degrades; the placement never does.** So a range that is wrong costs nothing, and a range that is right is the whole point: the reviewer reads the note against the entire block it describes. 120 is a block rather than a fragment — measured over this repo's own history it covers 96% of contiguous changed runs where the old 30-line cap covered 89%, and what sits above it is a whole-file rewrite, which no single note orients anyone through.
+`start_line` is forgiving, so **ask for the whole block**. The poster keeps a range of up to **120 lines** that lies wholly inside the diff hunks, and drops one it cannot use — a range crossing a gap between hunks, or longer than that — keeping the comment at `line`. **The range degrades; the placement never does.** So a range that is wrong costs nothing, and a range that is right is the whole point: the reviewer reads the note against the entire block it describes. 120 is a block rather than a fragment (measured: it covers 96% of this repo's contiguous changed runs, against 89% for the old 30-line cap); what sits above it is a whole-file rewrite, which no single note orients anyone through.
 
 Findings stay single-line — a ```suggestion``` fence must replace exact lines.
 
 The `**check**` prefix is load-bearing — the poster reads it to route a check it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a note would read as an accusation.
 
-**A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead. A finding with a prose fix is fine; a finding with a wrong patch is not.
+**A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead.
 
 ## Output — `/tmp/verify.json`
 

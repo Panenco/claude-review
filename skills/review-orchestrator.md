@@ -47,11 +47,9 @@ gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesR
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
 awk '/^(##|###) /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
-# DEADLINE_EPOCH IS EMITTED HERE, IN THE BLOCK THAT CANNOT BLOCK. It is the
-# clock plus FUNCTIONAL_BUDGET_SECONDS and depends on the dev-env not at all,
-# yet it used to be printed last, after the wait — so the kill that took the
-# wait took the tester's only real deadline with it. Nothing above this line
-# sleeps or polls, so this value reaches you on every run there is.
+# DEADLINE_EPOCH IS EMITTED HERE, IN THE BLOCK THAT CANNOT BLOCK: the clock plus
+# FUNCTIONAL_BUDGET_SECONDS, depending on the dev-env not at all. Nothing above
+# this line blocks, so the value reaches you on every run there is.
 echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 ```
 
@@ -74,13 +72,10 @@ echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 # coming" signal; w=0 means do not wait at all, and this call then returns in
 # milliseconds — which is why issuing it unconditionally costs nothing.
 #
-# THIS BLOCK BEING ITS OWN TOOL CALL IS THE GUARANTEE. The clamp below is only a
-# courtesy: the ceiling is per-call and variable (120s by default, 600s at most
-# — see the section head), so no single number can promise the block survives.
-# What CAN be promised is the blast radius, and it is now this call alone.
-# Never clamp BELOW a real bring-up either: measured bring-up on seaters is
-# 291-305s, so anything under ~360 would re-create the original bug — the tester
-# ruled ineligible on every consumer — while pretending to be a safety margin.
+# The clamp below is only a courtesy; this block being its own tool call is the
+# guarantee (see the section head). Never clamp BELOW a real bring-up either:
+# measured bring-up on seaters is 291-305s, so anything under ~360 would
+# re-create the original bug while pretending to be a safety margin.
 w=${DEV_ENV_TIMEOUT_SECONDS:-360}
 case "$w" in ''|*[!0-9]*) w=360 ;; esac
 [ "$w" -gt 540 ] && w=540
