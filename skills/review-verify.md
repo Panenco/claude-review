@@ -1,11 +1,11 @@
 ---
 name: review-verify
-description: Stage 2 and final stage. Tries to REFUTE every candidate finding from /tmp/scan.json against the source at HEAD, then decides the verdict and renders the posted body and inline comments into /tmp/verify.json. Its prose is final — nothing downstream rewrites it.
+description: Stage 2 and final stage. Tries to REFUTE every candidate finding from /tmp/scan.json (and /tmp/native.json when the second opinion ran) against the source at HEAD, then decides the verdict and renders the posted body and inline comments into /tmp/verify.json. Its prose is final — nothing downstream rewrites it.
 ---
 
 # Review Verify
 
-Your mandate is to **refute**, not to confirm. You read `/tmp/scan.json`, attack each finding, and produce the review that gets posted.
+Your mandate is to **refute**, not to confirm. You read `/tmp/scan.json` — plus `/tmp/native.json` when the second opinion ran — attack each finding, and produce the review that gets posted.
 
 ## Refute each finding
 
@@ -20,7 +20,7 @@ For every candidate, in ONE pass over all of them:
 
 **That test is about the defect, and only the defect.** `fix` is not under test here. A patch you judge wrong, unsafe or unconfirmable is settled separately under Inline comments, where its only two outcomes are keep the fence or replace it with prose. **Refuting a finding because its suggested fix is wrong is an error** — a confirmed defect with no safe patch is still a finding, and still gets posted.
 
-Never invent a new finding. You only kill, keep, or re-anchor — with the single exception below.
+Never invent a new finding. You only kill, keep, merge or re-anchor — with the single exception of a reproduced functional failure, below.
 
 ## Repo conventions — the two config files, plus the rules the team wrote
 
@@ -38,11 +38,26 @@ A finding carrying `"convention": true` is judged on a different bar: keep it on
 
 A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2**.
 
-## Functional results — the one exception
+## The native second opinion — `/tmp/native.json`
+
+`Read` it **only if it exists**. It is written by `review-native`, which runs Anthropic's official `code-review` plugin over the same diff, independently of scan. Missing is the normal case: the pass is opt-in (`/review native`, `/review all`).
+
+**Discard the whole file** — silently, it is advisory — when any of these hold:
+
+- `pr_number` is absent or is not the PR under review. Runners are reused and `/tmp` survives between jobs, so a stale file from a previous PR looks exactly like a real one.
+- `status` is `"skipped"` or `"unavailable"`, or it will not parse. Those are no-ops, not signals; say nothing about them.
+
+Otherwise treat `findings` as **additional candidates, at exactly the bar scan's get** — every test in this file applies to them unchanged: refute what you cannot reproduce against the source at HEAD, check the anchor is in a hunk, and check absence claims against the base. Suppression included — it is unconditional and it is one rule, applied once, over every candidate you hold, whatever pass produced it; do not re-read the two config files for these. **The plugin's authorship earns it no deference.** Its own `confidence` score is an input to nothing here: it already did its filtering upstream (everything below 80 was dropped before you saw it), and a survivor still has to hold up under your read.
+
+**Deduplicate against scan, keeping scan's wording.** The same defect found twice is one finding, not two — merge on same `path` + overlapping cause, not on identical `line`, and keep scan's `title`, `failure_scenario` and `fix`. Two independent reviewers agreeing is a reason for *you* to be more confident, never a reason to post the finding twice or to raise its severity.
+
+A native finding that survives is an ordinary finding and counts toward the verdict like any other. Nothing marks it as native in the posted body: the review speaks with one voice, and where a finding came from is not the author's problem. Record the merge and the refutations in `meta` as usual.
+
+## Functional results — the one place YOU may author a finding
 
 You are the only consumer of `/tmp/functional.json`. The tester is dispatched alongside `review-scan` and finishes after it, so scan never sees this file; you run after both.
 
-If the file exists, `Read` it. **This is the ONE case where you may add something scan did not raise**, and only under all of these:
+If the file exists, `Read` it. Everywhere else in this skill you only kill, keep, merge or re-anchor findings some other pass already wrote — the native file above included. **This is the ONE case where you may write a finding of your own**, and only under all of these:
 
 - The tester **reproduced** the failure against the running app — it names the steps it ran and the output it observed. A crash, a timeout, a bring-up failure, an unreached scenario or a "looks wrong" is NOT a reproduction.
 - The scenario came from the linked issue's acceptance criteria (that is the tester's only permitted source).

@@ -4,7 +4,8 @@ set -uo pipefail
 # review_command_test.sh — fixture test for scripts/review-command.sh.
 #
 # A comment body → a run decision, asserted as
-# "<action> <run_functional> <force_deep>".
+# "<action> <run_functional> <force_deep>", with run_native asserted separately
+# by assert_native (it is opt-in and must never ride along with another token).
 # action: run | help | unknown | ignore
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -20,6 +21,7 @@ decision_of() {
     END {print a, f, d}'
 }
 passes_of() { env "$@" bash "$SCRIPT" | sed -n 's/^passes=//p'; }
+native_of() { env "$@" bash "$SCRIPT" | sed -n 's/^run_native=//p'; }
 message_of() { env "$@" bash "$SCRIPT" | sed -n 's/^message=//p'; }
 
 assert_cmd() {
@@ -29,6 +31,16 @@ assert_cmd() {
     echo "OK:   $label → $got"
   else
     echo "FAIL: $label — want '$want' got '$got'"
+    fail=$((fail + 1))
+  fi
+}
+assert_native() {
+  local label="$1" want="$2"; shift 2
+  local got; got=$(native_of "$@")
+  if [ "$got" = "$want" ]; then
+    echo "OK:   $label run_native → $got"
+  else
+    echo "FAIL: $label run_native — want '$want' got '$got'"
     fail=$((fail + 1))
   fi
 }
@@ -57,7 +69,7 @@ assert_cmd "every token spelled" "run true true"    CMD_BODY="/review code funct
 
 assert_passes "functional implies code" "code functional" CMD_BODY="/review functional"
 assert_passes "no duplicate code"       "code functional" CMD_BODY="/review code functional"
-assert_passes "all expands"             "code functional" CMD_BODY="/review all"
+assert_passes "all expands"             "code functional native" CMD_BODY="/review all"
 assert_passes "deep is a modifier"      "code deep"       CMD_BODY="/review deep"
 
 # ── `deep` lifts guard.sh's oversized ceiling for THIS run (GATE_FORCE_DEEP).
@@ -77,7 +89,7 @@ assert_passes "full and deep dedupe" "code deep"           CMD_BODY="/review ful
 # split is the part that is NOT guessable — a comment covers the run it starts,
 # the label survives every push.
 HELP=$(message_of CMD_BODY="/review")
-for needle in '`deep`' 'deep-review' 'size ceiling'; do
+for needle in '`deep`' 'deep-review' 'size ceiling' 'native' 'code-review'; do
   case "$HELP" in
     *"$needle"*) echo "OK:   help menu mentions $needle" ;;
     *) echo "FAIL: help menu never mentions $needle"; fail=$((fail + 1)) ;;
@@ -88,26 +100,52 @@ case "$HELP" in
     echo "FAIL: help menu still calls deep inert"; fail=$((fail + 1)) ;;
   *) echo "OK:   help menu no longer calls deep inert" ;;
 esac
+# The menu is where `native` is discovered; advertising it as inert would keep
+# the restored pass unreachable in practice.
+case "$HELP" in
+  *'accepted but does nothing'*|*'accepted but do nothing'*)
+    echo "FAIL: help menu still calls a live token inert"; fail=$((fail + 1)) ;;
+  *) echo "OK:   help menu calls no live token inert" ;;
+esac
 
-# ── The `native` pass is DELETED (ADR 0003). The token must still parse — a
-#    reviewer who types the documented old command deserves a review, not the
-#    unknown-option menu — but it must run nothing extra and say so. ──
-assert_cmd "native is a no-op"        "run false false" CMD_BODY="/review native"
-assert_cmd "alias plugin is a no-op"  "run false false" CMD_BODY="/review plugin"
-assert_passes "native adds no pass"   "code"            CMD_BODY="/review native"
-assert_passes "all no longer expands to native" "code functional" CMD_BODY="/review all"
+# ── The `native` pass is LIVE again (ADR 0005): Anthropic's official
+#    `code-review` plugin, installed from a marketplace vendored at a pinned
+#    SHA. It is OPT-IN, so the thing worth testing is that it stays off unless
+#    it was actually asked for — `run_native` gates a checkout step and a
+#    second-opinion model call, and neither may ride along with a bare
+#    `/review code`. ──
+assert_cmd "native runs"              "run false false" CMD_BODY="/review native"
+assert_cmd "alias plugin runs"        "run false false" CMD_BODY="/review plugin"
+assert_passes "native is its own pass" "code native"    CMD_BODY="/review native"
+assert_passes "all expands to native"  "code functional native" CMD_BODY="/review all"
+
+assert_native "native"                "true"  CMD_BODY="/review native"
+assert_native "alias anthropic"       "true"  CMD_BODY="/review anthropic"
+assert_native "alias plugin"          "true"  CMD_BODY="/review plugin"
+assert_native "all"                   "true"  CMD_BODY="/review all"
+assert_native "everything"            "true"  CMD_BODY="/review everything"
+assert_native "code alone"            "false" CMD_BODY="/review code"
+assert_native "functional alone"      "false" CMD_BODY="/review functional"
+assert_native "deep alone"            "false" CMD_BODY="/review deep"
+assert_native "bare dispatch"         "false" CMD_EVENT=workflow_dispatch CMD_BODY=""
+assert_native "help"                  "false" CMD_BODY="/review help"
+assert_native "unknown token"         "false" CMD_BODY="/review deploy"
+assert_native "not our comment"       "false" CMD_BODY="looks good to me"
+
+# The pass no longer announces its own removal — a stale notice would tell the
+# author the second opinion did not run when it did.
 if message_of CMD_BODY="/review native" | grep -q 'has been removed'; then
-  echo "OK:   native says the pass was removed"
-else
-  echo "FAIL: /review native runs silently — it must say the pass was removed"
+  echo "FAIL: /review native still says the pass was removed — it runs again (ADR 0005)"
   fail=$((fail + 1))
+else
+  echo "OK:   native no longer claims to be removed"
 fi
-# Structural: nothing may re-grow a native_review output the workflow would read.
+# Structural: the workflow reads `run_native`, never v3's `native_review`.
 if CMD_BODY="/review native" bash "$SCRIPT" | grep -q '^native_review='; then
-  echo "FAIL: review-command.sh still emits native_review — the pass is gone"
+  echo "FAIL: review-command.sh emits v3's native_review key — the workflow reads run_native"
   fail=$((fail + 1))
 else
-  echo "OK:   no native_review key is emitted"
+  echo "OK:   no v3 native_review key is emitted"
 fi
 
 # ── Aliases and sloppy typing — this is typed by hand in a PR comment. ──
@@ -156,8 +194,8 @@ fi
 #    after it. ──
 for body in "/review" "/review deploy" "/review help"; do
   lines=$(CMD_BODY="$body" bash "$SCRIPT" | wc -l | tr -d ' ')
-  if [ "$lines" = "5" ]; then
-    echo "OK:   '$body' emits 5 single-line keys"
+  if [ "$lines" = "6" ]; then
+    echo "OK:   '$body' emits 6 single-line keys"
   else
     echo "FAIL: '$body' emitted $lines lines — a multi-line value breaks \$GITHUB_OUTPUT"
     fail=$((fail + 1))

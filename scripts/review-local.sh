@@ -44,6 +44,8 @@ set -uo pipefail
 #
 # ── known deviations from CI, so results are read honestly ──
 #   * no dev-env, so RUN_FUNCTIONAL=false and the functional tester never runs
+#   * no vendored plugin marketplace, so RUN_NATIVE=false and the second
+#     opinion never runs
 #   * `--setting-sources project`, not `user`
 #   * no Stop hook (require-review-json.sh), so a stalled session is not nudged
 #   * ROUND is derived from the PR's real review list, which on an already-merged
@@ -228,6 +230,11 @@ fi
 export ROUND PRIOR_HEAD_SHA PRIOR_VERDICT
 export MODEL_HIGH="$MODEL" MODEL_FUNCTIONAL=claude-sonnet-5
 export RUN_FUNCTIONAL=false FUNCTIONAL_BUDGET_SECONDS=480 DEV_ENV_TIMEOUT_SECONDS=360
+# The second opinion needs the plugin marketplace the WORKFLOW vendors at a
+# pinned SHA (ADR 0005); a local sweep installs no plugin, so the pass cannot
+# run here. Exported explicitly rather than left unset: the orchestrator
+# `printenv`s it in turn 1, and an absent var reads as "not decided yet".
+export RUN_NATIVE=false NATIVE_REVIEW_SCOPE=""
 DOCS_ONLY=$(sed -n 's/^docs_only=//p' <<<"$DECISION")
 # Both halves of the depth scale come off the SAME guard run the review used, so
 # a local eval measures the caps production would have applied, not defaults.
