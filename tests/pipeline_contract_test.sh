@@ -570,6 +570,53 @@ want "the workflow hands the poster the same wait the orchestrator uses" "$WORKF
 want "post-review keys the skip notice on whether the TESTER ran, not the rc" "$POSTER" \
   'THE QUESTION IS "DID THE TESTER RUN\?", NOT "DID THE BRING-UP FAIL\?"'
 
+# ── the omission pass: what the copy left out ───────────────────────────────
+# WHY THIS IS PINNED. qiv#1510 was APPROVED, with a nine-screenshot functional
+# pass, on a body that said "I verified every acceptance criterion against HEAD
+# and found nothing objectively wrong". A human then filed three findings, all
+# the same shape and all in code the review had already named: the panel was not
+# wrapped in `<Prototype>` the way `documents-content.tsx` wraps its own, the
+# page carried no `isDirty`/`pendingSubtab` guard where `configuration-content
+# .tsx` does (switching tabs mid-edit dropped the edit — the author confirmed
+# the data loss), and one NL category read "Agenda" where the dashboard says
+# "Planning" for the same key. Every counterpart predated the PR.
+# The review even made the comparison and got it wrong, on the strength of a
+# matching FILENAME: `documents-tabs.ts` really was mirrored, and it concluded
+# the pair was. Tracing values, counts and callers cannot reach this class —
+# every line in the diff is correct, and the defect is the absent one.
+want "review-scan runs an omission pass against the counterpart" "$SCAN" \
+  'open what the new code was copied from'
+want "…and says why tracing the new lines cannot find it" "$SCAN" \
+  'the defect is the line that is not there'
+want "…that naming a sibling is not reading it" "$SCAN" \
+  'Naming a sibling is not the same as reading it'
+want "…that a match claim must be earned by listing" "$SCAN" \
+  'is a finding-sized claim'
+# The bound matters as much as the pass: this must not become "be more like the
+# neighbour", which has no failure scenario and is the redesign shape ADR 0004
+# already refuses.
+want "…bounded to what this code's own job needs" "$SCAN" \
+  'only what this code'"'"'s own job also needs'
+want "…and refusing the bare resemblance argument" "$SCAN" \
+  'be more like the neighbour'
+
+# ── premises the review never read ──────────────────────────────────────────
+# WHY THIS IS PINNED. Both "your premise is inverted" rebuttals on 31 Aug were
+# findings resting on an unread source. One asserted `actions/create-github-app
+# -token` narrows a token when `owner:` is set; the action's own action.yml says
+# unset already means this repository only, so setting it widens. The other
+# assumed shared CI runners on a repo whose runners are ephemeral per-job pods.
+# Both authors refuted by reading the thing the review had only assumed. The
+# "ground it in the checkout" rule existed, but only for human_review notes.
+want "review-scan holds findings to the checkout too" "$SCAN" \
+  'A premise you did not read is not evidence'
+want "…naming the out-of-diff sources it covers" "$SCAN" \
+  'a marketplace action, the CI runner model, a library default'
+want "review-verify refutes an unreadable premise rather than passing it" "$VERIFY" \
+  'Out-of-checkout premises'
+want "…and does not go fetch it either" "$VERIFY" \
+  'you must not go fetch it'
+
 # ── the cardinality pass ────────────────────────────────────────────────────
 # WHY THIS IS PINNED. spendfuse#351 (5572 non-generated lines, depth `full`,
 # effort 4) produced ONE minor finding, and Anthropic's own plugin over the same
