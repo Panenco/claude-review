@@ -551,6 +551,17 @@ want "the workflow hands the poster the same wait the orchestrator uses" "$WORKF
 want "post-review keys the skip notice on whether the TESTER ran, not the rc" "$POSTER" \
   'THE QUESTION IS "DID THE TESTER RUN\?", NOT "DID THE BRING-UP FAIL\?"'
 
+# ── the cardinality pass ────────────────────────────────────────────────────
+# WHY THIS IS PINNED. spendfuse#351 (5572 non-generated lines, depth `full`,
+# effort 4) produced ONE minor finding, and Anthropic's own plugin over the same
+# 100 files produced none. Both were defensible on every value-shaped question —
+# and both walked straight past `usePerOrgAlertRulePerformance`, an unbounded
+# `Promise.allSettled` firing one full-table `GROUP BY` aggregate per
+# organisation on mount. It is invisible when you trace values, because the seed
+# has four organisations and the count is the input that has to change. The
+# prompt had no lens for it at all: its only mention of N+1 was as an example of
+# a note that is FORBIDDEN, which is not the same as a finding shape being real.
+# Both halves are asserted — the pass, and the bar it must not lower.
 # Blast radius, measured rather than guessed: size is necessary but not
 # sufficient (0 of 14 PRs over 100 added lines were simple; only 4 of 14 under
 # it were), and three path/vocabulary signals decided the rest.
