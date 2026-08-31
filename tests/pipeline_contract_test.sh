@@ -469,6 +469,16 @@ want "…and a note is short because it has one thing to say, not because it was
   'Short because there is little to say, not because it was squeezed'
 want "…with the read-aloud test replacing the character budget" "$SCAN" \
   'say it back to yourself|would actually talk like that'
+# The two style rules that produced the #351 noun-piles, pinned in both files so
+# neither drifts back: an em dash is how a second clause gets bolted on, and a
+# clever sentence is how a reader loses the thread.
+for f in "$SCAN" "$VERIFY"; do
+  n=${f##*/}
+  want "$n bans the em dash in a note" "$f" \
+    'No em dashes, and no semicolons'
+  want "$n asks for simple words and short sentences" "$f" \
+    'Simple words, short sentences'
+done
 # The DISCOVERY method, not just the output shape: a doubt detector cannot
 # produce orientation however the output is worded, so the traversal itself is
 # segment -> say what it is for -> triage on worth-the-time.

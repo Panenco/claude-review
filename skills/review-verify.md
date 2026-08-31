@@ -114,7 +114,7 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 **Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote.
 
-Carry through up to N `human_review` notes from scan unchanged, where **N is `REVIEW_DEPTH_SCALE` from your env (5 when unset or empty), moved once by scan's `review_effort`: −1 at `review_effort` ≤ 2, +1 at `review_effort` 5, unchanged at 3–4 — never below 2, never above 8.** The guard sized the diff, scan rated the judgement it actually needed, and this is the only place the two are combined; there is no other modulation. **A raised N buys room, never licence** — carrying a weak note because a slot is free is the padding scan was told not to do, done one stage later. Drop any whose block you could not confirm. Never add your own. Each survivor becomes a **worth-a-look comment** (see Inline comments), anchored on the changed block it is about; they stay in `meta.human_review` either way.
+Carry through up to N `human_review` notes from scan unchanged, where **N is `REVIEW_DEPTH_SCALE` from your env (5 when unset or empty), moved once by scan's `review_effort`: −1 at `review_effort` ≤ 2, +1 at `review_effort` 5, unchanged at 3–4 — never below 2, never above 8.** The guard sized the diff, scan rated the judgement it actually needed, and this is the only place the two are combined; there is no other modulation. **A raised N buys room, never licence** — carrying a weak note because a slot is free is the padding scan was told not to do, done one stage later. Drop any whose block you could not confirm. Never add your own. Each survivor becomes a **check comment** (see Inline comments), anchored on the changed block it is about; they stay in `meta.human_review` either way.
 
 **Refute each note on the same test scan used — does the reader gain anything the block does not already give them?** A note carries what the code cannot: an invariant it depends on but does not state, a consequence landing outside it, a contract other code relies on, or the constraint that made the obvious shape wrong. Drop one when any of these holds:
 
@@ -181,10 +181,10 @@ The poster caps the total and orders it for you: findings first by severity, che
 
 The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
 
-A **worth a look** comment is the other shape — one per surviving `human_review` note. It gives the reviewer the one thing they **cannot get from the lines below it**, before they read them.
+A **check** comment is the other shape — one per surviving `human_review` note. It gives the reviewer the one thing they **cannot get from the lines below it**, before they read them.
 
 ````
-**worth a look** <the thing they cannot see — plain sentences>
+**check** <the thing they cannot see — plain sentences>
 
 {{DOC:<spec path>:<line>}}
 ````
@@ -193,7 +193,9 @@ Hard rules, because a note nobody finishes is worse than no note:
 
 - **Say the thing they cannot see, not what the block is.** A label — "the five threshold functions that are the screen's content", "staff-only org list" — describes what the reader is already looking at, and they learn it faster by reading the code than by reading you. Say the invariant, the consequence, the contract, or the constraint that made the obvious version wrong. Test: if the sentence would still be true above any similar block, it is a label — cut it.
 - **Never a question.** No "should", no "consider", no "verify", no "is this intended", and **no question mark anywhere in the comment**. A note that asks the reviewer to settle something is the design this replaced.
-- **Full sentences, said out loud.** Subject, verb, consequence — the way you would say it to a colleague at their desk. Articles and full stops are not waste. "Staff-only org list that is the quiet-customer finding's source of organisations" is four nouns stacked to fit a budget; "Returns every org, unpaginated, to operators and observers — the widest read in this PR." is the same fact, said. If you would not say it out loud, do not post it.
+- **Full sentences, said out loud.** Subject, verb, consequence, the way you would say it to a colleague at their desk. Articles and full stops are not waste. "Staff-only org list that is the quiet-customer source of organisations" is four nouns stacked to fit a budget. "Returns every org, unpaginated, to operators and observers. It is the widest read in this PR." is the same fact, said. If you would not say it out loud, do not post it.
+- **No em dashes, and no semicolons.** Two short sentences instead. An em dash is how a second thought gets bolted onto a first one, and the reader pays for the join. If the clause after it matters, give it a full stop and its own sentence. If it does not, cut it.
+- **Simple words, short sentences.** Write for someone reading fast, at the end of the day, on a PR that is not theirs. Prefer the plain word over the precise-sounding one, and keep sentences to one idea each. Two easy sentences beat one clever sentence every time.
 - **Cite the spec as a link, never as a sentence.** One trailing `{{DOC:path:line}}` on its own line when `spec_ref` carries a `path:line`, and **nothing at all** when it is empty. A citation written out in prose — "`tasks/04-issue-log.md` step 3 defines the five finding types" — is a pointer that costs a line and teaches the reader nothing; on spendfuse#351 every note spent half its length on one. The poster resolves the link; you never write a URL.
 - **Length is a guide, not a gate.** Aim under ~300 characters and expect most to be one sentence, but nothing truncates you here — brevity comes from having one thing to say, not from compressing two things until they fit. Padding a thin note with a second clause is the failure this section is about; so is dropping the consequence to save characters.
 - No ```suggestion``` fence. The poster strips one and warns, because an applied fence replaces every line of the block the note spans — and that gets worse as the span grows, not better.
@@ -210,7 +212,7 @@ Hard rules, because a note nobody finishes is worse than no note:
 
 Findings stay single-line — a ```suggestion``` fence must replace exact lines.
 
-The `**worth a look**` prefix is load-bearing — the poster reads it to route a note it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a note would read as an accusation.
+The `**check**` prefix is load-bearing — the poster reads it to route a note it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a note would read as an accusation.
 
 **A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead.
 
@@ -222,7 +224,7 @@ The `**worth a look**` prefix is load-bearing — the poster reads it to route a
   "body": "<the rendered markdown above, with {{LINK:...}} placeholders>",
   "comments": [
     {"path": "src/foo.ts", "line": 42, "side": "RIGHT", "body": "<=700 chars"},
-    {"path": "src/foo.ts", "start_line": 30, "line": 42, "side": "RIGHT", "body": "**worth a look** ... (start_line = block-anchored, notes only)"}
+    {"path": "src/foo.ts", "start_line": 30, "line": 42, "side": "RIGHT", "body": "**check** ... (start_line = block-anchored, notes only)"}
   ],
   "meta": {
     "findings": [

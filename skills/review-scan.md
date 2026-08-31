@@ -224,7 +224,11 @@ It fails in two ways, and both are common. Either the note tells the reader what
 
 **Short because there is little to say, not because it was squeezed.** The lengths below are guides, not gates — nothing truncates at 200. What keeps a note short is having one thing to say and saying it once, and the failure mode here is the opposite of terseness: reaching for a second clause because the first looked thin.
 
-**Write it as you would say it to a colleague at their desk** — full sentences, ordinary words, subject and verb. Then say it back to yourself and ask whether anyone would actually talk like that. "Staff-only org list that is the quiet-customer source of organisations" is not something a person says. It is four nouns stacked until they fit. "Returns every org, unpaginated, to operators and observers — the widest read in this PR." is the same fact, said.
+**Write it as you would say it to a colleague at their desk.** Full sentences, ordinary words, subject and verb. Then say it back to yourself and ask whether anyone would actually talk like that. "Staff-only org list that is the quiet-customer source of organisations" is not something a person says. It is four nouns stacked until they fit. "Returns every org, unpaginated, to operators and observers. It is the widest read in this PR." is the same fact, said.
+
+**No em dashes, and no semicolons.** Two short sentences instead. An em dash is how a second thought gets bolted onto a first one, and the reader pays for the join.
+
+**Simple words, short sentences.** Write for someone reading fast, at the end of the day, on a PR that is not theirs. One idea per sentence. Two easy sentences beat one clever sentence every time.
 
 **Do not pad. The ceiling is a limit, not a quota — and the wider it is, the more expensive filling it is.** A made-up item costs more than a missing one, because it teaches the reader to skim the list, and a list of eight where two were honest gets skimmed harder than a list of five. Emitting fewer notes than `REVIEW_DEPTH_SCALE` allows is never a failure and is never remarked on; emitting one you could not defend line by line is. Zero is right for a mechanical diff whatever the scale says.
 

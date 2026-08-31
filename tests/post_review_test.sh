@@ -1408,7 +1408,7 @@ cat > "$W/review.json" <<'EOF'
   "verdict": "COMMENT",
   "body": "## Claude review — COMMENT\n\nOne finding.\n\n### Findings (1)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one",
   "comments": [
-    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**worth a look** `assertTenant` scopes the query to the caller tenant before the admin override runs\n\n- Implements AC3 of `docs/tenancy-prd.md`"}
+    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**check** `assertTenant` scopes the query to the caller tenant before the admin override runs\n\n- Implements AC3 of `docs/tenancy-prd.md`"}
   ],
   "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11}],
            "human_review": [{"path": "src/foo.ts", "start_line": 11, "end_line": 12, "what_to_know": "assertTenant scopes the query to the caller tenant before the admin override runs", "spec_ref": "AC3 of docs/tenancy-prd.md"}]}
@@ -1417,7 +1417,7 @@ EOF
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "the check posts inline" "1" "$(echo "$PAYLOAD" | jq '.comments | length')"
-assert_contains "it keeps its **worth a look** prefix" "**worth a look** \`assertTenant\` scopes the query" \
+assert_contains "it keeps its **check** prefix" "**check** \`assertTenant\` scopes the query" \
   "$(echo "$PAYLOAD" | jq -r '.comments[0].body')"
 assert_not_contains "an anchored check writes no body heading" "What a human should review" "$BODY"
 assert_contains "the unrelated finding bullet survives" "off-by-one" "$BODY"
@@ -1438,7 +1438,7 @@ cat > "$W/review.json" <<'EOF'
   "verdict": "COMMENT",
   "body": "## Claude review — COMMENT\n\nNothing is provably broken.",
   "comments": [
-    {"path": "src/foo.ts", "line": 99, "side": "RIGHT", "body": "**worth a look** the migration backfills `tenant_id` on existing rows before the NOT NULL constraint lands\n\n- Implements AC1 of `docs/tenancy-prd.md`"}
+    {"path": "src/foo.ts", "line": 99, "side": "RIGHT", "body": "**check** the migration backfills `tenant_id` on existing rows before the NOT NULL constraint lands\n\n- Implements AC1 of `docs/tenancy-prd.md`"}
   ],
   "meta": {"findings": [],
            "human_review": [{"path": "src/foo.ts", "start_line": 95, "end_line": 99, "what_to_know": "the migration backfills tenant_id on existing rows before the NOT NULL constraint lands", "spec_ref": "AC1 of docs/tenancy-prd.md"}]}
@@ -1467,7 +1467,7 @@ cat > "$W/review.json" <<'EOF'
   "body": "## Claude review — COMMENT\n\nOne finding.\n\n### Findings (2)\n- **major** {{LINK:src/foo.ts:11}} — off-by-one\n- **minor** {{LINK:src/foo.ts:12}} — other",
   "comments": [
     {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**minor** other"},
-    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**worth a look** `collectPage` walks the batch once per tenant and stops at the page ceiling\n\n- Implements AC5 of `docs/tenancy-prd.md`"}
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**check** `collectPage` walks the batch once per tenant and stops at the page ceiling\n\n- Implements AC5 of `docs/tenancy-prd.md`"}
   ],
   "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11},
                         {"title": "other", "severity": "minor", "path": "src/foo.ts", "line": 12}],
@@ -1502,7 +1502,7 @@ jq -n --arg shot "$SHOT" '
      {path: "src/foo.ts", line: 11, side: "RIGHT",
       body: ("**major** checkout total renders 0,00 after applying a voucher\n\nReproduced against the running app.\n\n![step 3](" + $shot + ")")},
      {path: "src/foo.ts", line: 12, side: "RIGHT",
-      body: "**worth a look** confirm the voucher rounding rule with finance\n\nneeds a product decision"}
+      body: "**check** confirm the voucher rounding rule with finance\n\nneeds a product decision"}
    ],
    meta: {findings: [], human_review: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
@@ -1526,7 +1526,7 @@ jq -n --arg shot "$SHOT" '
      {path: "src/foo.ts", line: 99, side: "RIGHT",
       body: ("**major** checkout total renders 0,00 after applying a voucher\n\n![step 3](" + $shot + ")")},
      {path: "src/foo.ts", line: 98, side: "RIGHT",
-      body: "**worth a look** confirm the voucher rounding rule with finance\n\nneeds a product decision"}
+      body: "**check** confirm the voucher rounding rule with finance\n\nneeds a product decision"}
    ],
    meta: {findings: [], human_review: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
@@ -1663,7 +1663,7 @@ check_review() { # check_review <start_line> <line>
   jq -n --argjson s "$1" --argjson l "$2" \
     '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
       comments: [{path: "src/foo.ts", start_line: $s, line: $l, side: "RIGHT",
-                  body: "**worth a look** `onRefuse` shows the refusal and skips the claim before navigating the fan\n\n- Implements AC3 of `docs/prds/fan-claim.md`\n- Refusal path and claim path share `navigate()`"}],
+                  body: "**check** `onRefuse` shows the refusal and skips the claim before navigating the fan\n\n- Implements AC3 of `docs/prds/fan-claim.md`\n- Refusal path and claim path share `navigate()`"}],
       meta: {findings: [], human_review: []}}'
 }
 
@@ -1760,7 +1760,7 @@ assert_eq "a finding posts without a range" "null" \
   "$(payload_of "$W" | jq -r '.comments[0].start_line // "null"')"
 rm -rf "$W"
 
-# ── (r6) the spec link in a worth-a-look comment ─────────────────────────────
+# ── (r6) the spec link in a check comment ─────────────────────────────
 # {{DOC:}} EXISTS BECAUSE {{LINK:}} CANNOT DO THIS. {{LINK:}} builds a
 # `/pull/N/files#diff-<sha>` anchor, which only resolves for a file THIS PR
 # changed. A governing spec is normally already merged and absent from the diff,
@@ -1777,7 +1777,7 @@ doc_review() { # doc_review <placeholder>
   jq -n --arg ph "$1" \
     '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne note.",
       comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
-                  body: ("**worth a look** `collectPage` stops at the page ceiling, so a tenant past it is silently truncated.\n\n" + $ph)}],
+                  body: ("**check** `collectPage` stops at the page ceiling, so a tenant past it is silently truncated.\n\n" + $ph)}],
       meta: {findings: [], human_review: []}}'
 }
 
@@ -2021,7 +2021,7 @@ done
 # other half of the rule: fixing (s1) by deleting ranges outright would undo
 # fix/check-anchor-stays-in-diff.
 W=$(mktemp -d)
-ranged_comment "**worth a look** Should a refused code still navigate the fan?" "detail" > "$W/review.json"
+ranged_comment "**check** Should a refused code still navigate the fan?" "detail" > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 C=$(payload_of "$W" | jq -c '.comments[0]')
 assert_eq "a check keeps its range" "10" "$(echo "$C" | jq -r '.start_line')"
@@ -2232,7 +2232,7 @@ rm -rf "$W"
 
 # ── (w) a CHECK never becomes an immortal round-2 finding ────────────────────
 # The state block was built from split.json's `dropped` array with no `kind`
-# filter, so a **worth a look** that overflowed the cap was persisted as a finding with
+# filter, so a **check** that overflowed the cap was persisted as a finding with
 # `sev: ""`. Round 2 can never "resolve" a question, so it was carried forever
 # and rendered as `(, src/foo.ts)`. kept-keys.txt and fallback.md both already
 # excluded checks; this arm was the one that missed it.
@@ -2247,7 +2247,7 @@ for i in range(1, 11):
     comments.append({"path": "src/foo.ts", "line": 1 + (i % 20), "side": "RIGHT",
                      "body": "**major** finding %02d title\n\ndetail" % i})
 comments.append({"path": "src/foo.ts", "line": 7, "side": "RIGHT",
-                 "body": "**worth a look** Is the fan refund path intentional?\n\ndetail"})
+                 "body": "**check** Is the fan refund path intentional?\n\ndetail"})
 json.dump({"verdict": "REQUEST_CHANGES", "body": "## Claude review — REQUEST_CHANGES\n\nIntro.",
            "comments": comments, "meta": {"findings": [], "human_review": []}},
           open(sys.argv[1], "w"))
@@ -2407,7 +2407,7 @@ rm -rf "$W"
 
 # ── (y2) a CHECK MUST NOT CARRY A COMMITTABLE FENCE ──────────────────────────
 # #131 kept ranges for checks on the strength of a prompt rule — "a check never
-# carries a fence". Nothing enforced it, so a `**worth a look**` with a ```suggestion```
+# carries a fence". Nothing enforced it, so a `**check**` with a ```suggestion```
 # fence posted with start_line:10 line:13 AND the fence, and one click replaced
 # four lines of real code with one. The range is the feature; the fence is the
 # hazard, so the fence goes.
@@ -2417,7 +2417,7 @@ echo "── (y2) a check keeps its range and loses its suggestion fence ──"
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
         comments: [{path: "src/foo.ts", start_line: 10, line: 13, side: "RIGHT",
-                    body: "**worth a look** Should an expired token still refresh the session?\n\nThe block below assumes it may.\n\n```suggestion\n  if (token.expired) return null;\n```\n\nThat is the shape I would expect."}],
+                    body: "**check** Should an expired token still refresh the session?\n\nThe block below assumes it may.\n\n```suggestion\n  if (token.expired) return null;\n```\n\nThat is the shape I would expect."}],
         meta: {findings: [], human_review: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 C=$(payload_of "$W" | jq -c '.comments[0]')
@@ -2547,7 +2547,7 @@ echo "── (y5) an inline check stays out of the state block ──"
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question, one finding.",
         comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
-                    body: "**worth a look** Should an expired token still refresh the session?\n\ndetail"},
+                    body: "**check** Should an expired token still refresh the session?\n\ndetail"},
                    {path: "src/foo.ts", line: 12, side: "RIGHT",
                     body: "**major** the retry loop never caps\n\nit backs off forever"}],
         meta: {findings: []}}' > "$W/review.json"
@@ -2777,7 +2777,7 @@ rm -rf "$W"
 
 # ── (z3) a FOUR-backtick fence bypassed both the stripper and its warning ────
 # GitHub accepts three OR MORE backticks for a suggestion fence, and both
-# regexes hardcoded exactly three. So a `**worth a look**` carrying ````suggestion kept
+# regexes hardcoded exactly three. So a `**check**` carrying ````suggestion kept
 # its range AND a committable fence, with nothing warned anywhere — the exact
 # code-deleting shape (y2) was written to eliminate.
 echo ""
@@ -2786,7 +2786,7 @@ echo "── (z3) a 3-or-more backtick suggestion fence is stripped from a check
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
         comments: [{path: "src/foo.ts", start_line: 10, line: 13, side: "RIGHT",
-                    body: "**worth a look** Should an expired token still refresh the session?\n\n````suggestion\n  if (token.expired) return null;\n````\n\nThat is the shape I would expect."}],
+                    body: "**check** Should an expired token still refresh the session?\n\n````suggestion\n  if (token.expired) return null;\n````\n\nThat is the shape I would expect."}],
         meta: {findings: [], human_review: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 C=$(payload_of "$W" | jq -c '.comments[0]')
@@ -2814,7 +2814,7 @@ echo "── (z4) an unterminated fence loses the fence, never the question ─�
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne question.",
         comments: [{path: "src/foo.ts", line: 11, side: "RIGHT",
-                    body: "**worth a look** Should an expired token still refresh the session?\n\n```suggestion\n  if (token.expired) return null;\n\nThat matters because the admin console shares this helper."}],
+                    body: "**check** Should an expired token still refresh the session?\n\n```suggestion\n  if (token.expired) return null;\n\nThat matters because the admin console shares this helper."}],
         meta: {findings: [], human_review: []}}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 CBODY=$(payload_of "$W" | jq -r '.comments[0].body')

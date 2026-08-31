@@ -635,7 +635,7 @@ awk '
 # fenced block on any run of three or more, so ````suggestion is as committable
 # as ```suggestion — and a regex pinned to exactly three let that shape through
 # with its range intact AND no warning anywhere.
-FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i"))
+FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
                                   and ((.body // "") | test("(^|\n)[ \t]*`{3,}[ \t]*suggestion"; "i")))] | length' \
                   "$WORK/comments.json" 2>/dev/null || echo 0)
 if [ "${FENCED_CHECKS:-0}" -gt 0 ]; then
@@ -651,14 +651,14 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
       elif ((.body // "") | test("^\\s*\\*\\*minor\\*\\*"; "i")) then "minor"
       else "" end;
   def rank: if . == "critical" then 0 elif . == "major" then 1 elif . == "minor" then 2 else 3 end;
-  # A `**worth a look**` comment is an orientation note for a human, not a defect. It has no
+  # A `**check**` comment is an orientation note for a human, not a defect. It has no
   # severity, so it already sorts behind every finding — under pressure the slots
   # go to defects and the notes fall back, which is the right way round. A
   # dropped one returns under the human-review heading, never under "Also flagged".
-  def kind: if ((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i")) then "check" else "finding" end;
+  def kind: if ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) then "check" else "finding" end;
   # A CHECK NEVER CARRIES A COMMITTABLE FENCE — STRUCTURALLY, not by prompt rule.
   # The range below is granted to checks alone on the strength of a line in
-  # review-verify.md; nothing enforced it, so a `**worth a look**` with start_line:10
+  # review-verify.md; nothing enforced it, so a `**check**` with start_line:10
   # line:13 AND a ```suggestion``` fence was the code-deleting shape all over
   # again: Apply-suggestion replaces all four lines with the single line in the
   # fence. The RANGE is the feature (a check points at the block it asks about),
@@ -820,7 +820,7 @@ jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
 # finding, and verify writes no body bullet for a check — so a check in this index
 # could only ever strip a `### Findings` bullet belonging to a finding that is not
 # posted inline, deleting it from the review entirely.
-jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i")) | not)
+jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)
              | .path + ":" + (.line | tostring) + "\t"
              + ((.body // "") | split("\n") | (.[0] // ""))' \
   "$WORK/comments.json" > "$WORK/kept-keys.txt"
@@ -1650,7 +1650,7 @@ echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expa
 
 # INLINE COMMENTS GET THE SAME EXPANSION. Until the spec link existed, every
 # placeholder lived in the body and this step did not need to exist; a
-# `{{DOC:...}}` in a worth-a-look comment would have posted to GitHub as literal
+# `{{DOC:...}}` in a check comment would have posted to GitHub as literal
 # braces. Body-only expansion is the kind of gap that reads fine in review and
 # ships a broken link, so both surfaces run through one function.
 #
@@ -1727,10 +1727,10 @@ else
        # Checks are EXCLUDED HERE TOO, and inline is where a check NORMALLY lives — the
        # `dropped` arm below only ever saw the ones that overflowed the cap. The
        # tell is right there in `csev`: this arm derives the severity from the
-       # body text, and a `**worth a look**` has none, so a question was persisted as a
+       # body text, and a `**check**` has none, so a question was persisted as a
        # finding with `sev: ""`, warned about as `(, src/foo.ts)`, and — since
        # round 2 can never "resolve" a question — carried forever.
-       | map(select(((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i")) | not))
+       | map(select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not))
        | map({p: (.path // ""), l: (.line | num), sev: csev,
               t: ((.body // "") | split("\n") | (.[0] // "")
                   | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "")),
