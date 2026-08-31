@@ -140,7 +140,19 @@ if [ "$C2_OK" = "1" ]; then
             | until((($s[:.i]) | utf8bytelength) <= $max; .i = (.i - 1))
             | $s[:.i]) end;
     (add // [])
-    | [ .[] | select(((.user.login? // "") == $bot) and ((.in_reply_to_id // null) == null)) ]
+    # CHECKS ARE EXCLUDED, the same rule post-review.sh applies when it builds the
+    # state block and kept-keys.txt. A `**check**` is orientation for a human, not
+    # a defect: it has no severity, so it lands here as `sev: ""`, and review-scan
+    # is told to put every prior finding in `prior_findings` or `resolved_prior`.
+    # Neither bucket fits a note — round 2 cannot "resolve" one — so it gets
+    # re-emitted on a neighbouring line and the author answers it twice.
+    # Measured on spendfuse#373: two of the four round-2 comments were round-1
+    # notes reworded, both already answered "correct and intended" that morning.
+    # NO APOSTROPHES BELOW OR IN THIS COMMENT. The jq program is one single-quoted
+    # shell string, so one apostrophe ends it and the rest compiles as garbage.
+    | [ .[] | select(((.user.login? // "") == $bot)
+                     and ((.in_reply_to_id // null) == null)
+                     and (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)) ]
     | map(((.body // "") | split("\n")) as $lines
           | ($lines[0] // "") as $first
           | (($first | ascii_downcase)
