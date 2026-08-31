@@ -114,11 +114,12 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 **Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote.
 
-Carry through up to N `human_review` notes from scan unchanged, where **N is `REVIEW_DEPTH_SCALE` from your env (5 when unset or empty), moved once by scan's `review_effort`: −1 at `review_effort` ≤ 2, +1 at `review_effort` 5, unchanged at 3–4 — never below 2, never above 8.** The guard sized the diff, scan rated the judgement it actually needed, and this is the only place the two are combined; there is no other modulation. **A raised N buys room, never licence** — carrying a weak note because a slot is free is the padding scan was told not to do, done one stage later. Drop any whose block you could not confirm. Never add your own. Each survivor becomes a **check comment** (see Inline comments), anchored across the whole changed block so the reviewer's eye covers that part of the diff; they stay in `meta.human_review` either way.
+Carry through up to N `human_review` notes from scan unchanged, where **N is `REVIEW_DEPTH_SCALE` from your env (5 when unset or empty), moved once by scan's `review_effort`: −1 at `review_effort` ≤ 2, +1 at `review_effort` 5, unchanged at 3–4 — never below 2, never above 8.** The guard sized the diff, scan rated the judgement it actually needed, and this is the only place the two are combined; there is no other modulation. **A raised N buys room, never licence** — carrying a weak note because a slot is free is the padding scan was told not to do, done one stage later. Drop any whose block you could not confirm. Never add your own. Each survivor becomes a **worth-a-look comment** (see Inline comments), anchored on the changed block it is about; they stay in `meta.human_review` either way.
 
-**Refute each note on the same test scan used — does the reader gain anything the block does not already give them?** A note is orientation: what the block is for, and how it serves the spec. Drop one when any of these holds:
+**Refute each note on the same test scan used — does the reader gain anything the block does not already give them?** A note carries what the code cannot: an invariant it depends on but does not state, a consequence landing outside it, a contract other code relies on, or the constraint that made the obvious shape wrong. Drop one when any of these holds:
 
-- **It narrates the block.** `Read` the cited lines. If `what_it_does` says what those lines plainly say — the name restated, the render described, the calls listed — it is padding, and padding is what teaches a reader to skip the note that mattered.
+- **It labels or narrates the block.** `Read` the cited lines. If `what_to_know` says what those lines plainly say — the name restated, the render described, the calls listed, the block's own identity handed back — it is padding, and padding is what teaches a reader to skip the note that mattered. The sharpest form of this test: would the sentence still be true above any similar block? Then it says nothing about this one.
+- **A finding already covers the block.** The finding names what is wrong there; a note beside it restates that vaguely and makes both read worse. Keep the finding, drop the note.
 - **It is a question.** A question mark, "should", "consider", "verify", "is this intended" — that is the interrogation model this channel no longer runs. Drop it; if it is a defect you can restate from the code, raise it as a finding under the rules above instead.
 - **You cannot confirm the block.** `path` must be in the diff and `start_line`/`end_line` must both be lines this PR changed, covering the construct the note names. Re-anchor from your `Read` where you can; drop it where you cannot.
 - **The block is boilerplate.** Presentational markup, prop plumbing, a rename, a straight passthrough. A plain React component earns no note however well the note is written.
@@ -126,7 +127,7 @@ Carry through up to N `human_review` notes from scan unchanged, where **N is `RE
 
 **Do not drop a note because the block looks obvious to YOU.** You have read the whole diff and the source at HEAD; the reviewer meets the block cold. The test is redundancy with **the block as it stands on the page** — a note supplying intent, a job or a spec tie the code does not itself carry survives, however easily you worked it out.
 
-**`spec_ref` is scan's and you do not re-derive it.** You never load the spec file at all, and pulling in thousands of lines here to second-guess a call scan already made is not worth the tokens. Strip a `spec_ref` only when it is not a citation at all — a verdict, a judgement or a question wearing a citation's clothes — and never rewrite one so a linked issue reads as the source of truth when a spec document governs.
+**`spec_ref` is scan's and you do not re-derive it.** You never load the spec file at all, and pulling in thousands of lines here to second-guess a call scan already made is not worth the tokens. It is a `path:line` into an in-repo document, and it becomes the note's one `{{DOC:path:line}}` link. Strip it only when it is not a citation at all — a verdict, a judgement or a question wearing a citation's clothes — or when it carries no line number, since a link that cannot land on the criterion is the prose pointer this replaced. An empty `spec_ref` means the note posts with no link and loses nothing.
 
 **Nothing outside the checkout is reachable**, so a note you could only ground by fetching something stands refuted, and you must not go fetch it.
 
@@ -180,32 +181,36 @@ The poster caps the total and orders it for you: findings first by severity, che
 
 The suggestion block must be a valid, committable replacement for the commented lines — that is what makes the comment worth posting.
 
-A **check** comment is the other shape — one per surviving `human_review` note. It is **orientation**: it tells the reviewer what the block below it is for *before* they read it, so they arrive with the intent already in hand.
+A **worth a look** comment is the other shape — one per surviving `human_review` note. It gives the reviewer the one thing they **cannot get from the lines below it**, before they read them.
 
 ````
-**check** <what this block is for — one line, a statement>
+**worth a look** <the thing they cannot see — plain sentences>
 
-- <the criterion it implements, cited from the governing document — only when there is a real one>
-- <the one thing worth knowing before reading it: the ordering, the invariant, the caller it serves>
+{{DOC:<spec path>:<line>}}
 ````
 
 Hard rules, because a note nobody finishes is worse than no note:
 
-- **The first line states what the code is for, in ≤100 chars.** Never a question: no "should", no "consider", no "verify", no "is this intended", and **no question mark anywhere in the comment**. A check that asks the reviewer to settle something is the design this replaced.
-- **At most two bullets — often one, sometimes none.** Each ≤90 chars, a phrase — no leading "The", no trailing period. Name the symbol or file inline in backticks instead of describing where it is.
-- **Cite the spec by document.** The in-repo spec document IS the specification: cite it by path and criterion. A linked GitHub issue is a *summary* of that document — name it only when no document governs, and say it is a summary. Never word it so the issue reads as the source of truth.
-- **≤400 characters in total.** It is context, not analysis: it must be faster to read than the block it introduces.
-- No ```suggestion``` fence. The poster strips one and warns, because an applied fence replaces every line of the block the check spans — and that gets worse as the span grows, not better.
+- **Say the thing they cannot see, not what the block is.** A label — "the five threshold functions that are the screen's content", "staff-only org list" — describes what the reader is already looking at, and they learn it faster by reading the code than by reading you. Say the invariant, the consequence, the contract, or the constraint that made the obvious version wrong. Test: if the sentence would still be true above any similar block, it is a label — cut it.
+- **Never a question.** No "should", no "consider", no "verify", no "is this intended", and **no question mark anywhere in the comment**. A note that asks the reviewer to settle something is the design this replaced.
+- **Full sentences, said out loud.** Subject, verb, consequence — the way you would say it to a colleague at their desk. Articles and full stops are not waste. "Staff-only org list that is the quiet-customer finding's source of organisations" is four nouns stacked to fit a budget; "Returns every org, unpaginated, to operators and observers — the widest read in this PR." is the same fact, said. If you would not say it out loud, do not post it.
+- **Cite the spec as a link, never as a sentence.** One trailing `{{DOC:path:line}}` on its own line when `spec_ref` carries a `path:line`, and **nothing at all** when it is empty. A citation written out in prose — "`tasks/04-issue-log.md` step 3 defines the five finding types" — is a pointer that costs a line and teaches the reader nothing; on spendfuse#351 every note spent half its length on one. The poster resolves the link; you never write a URL.
+- **Length is a guide, not a gate.** Aim under ~300 characters and expect most to be one sentence, but nothing truncates you here — brevity comes from having one thing to say, not from compressing two things until they fit. Padding a thin note with a second clause is the failure this section is about; so is dropping the consequence to save characters.
+- No ```suggestion``` fence. The poster strips one and warns, because an applied fence replaces every line of the block the note spans — and that gets worse as the span grows, not better.
 
-**Anchor it across the WHOLE changed block — inside the diff.** The line numbers a check sits on are meant to be the entire piece of diff the reviewer has to read, so `start_line` is the first line of the block this PR changed and `line` is its last. Both come from **lines this PR changed**, not from the construct's true extent in the file: a handler running to 253 whose diff stops at 202 is anchored at 202.
+**Anchor it across the changed block — inside the diff.** `start_line` is the first line of the block this PR changed and `line` is its last. Both come from **lines this PR changed**, not from the construct's true extent in the file: a handler running to 253 whose diff stops at 202 is anchored at 202.
 
 `line` is the hard one: GitHub only accepts a comment on a changed line, so an anchor past the diff does not degrade to a range — the whole comment falls back to `### What a human should review`, and a check in the body is a check nobody reads. Observed on seaters#2134, where an anchor at 253 lost a note that had posted inline the round before at 196.
 
-`start_line` is forgiving, so **ask for the whole block**. The poster keeps a range of up to **120 lines** that lies wholly inside the diff hunks, and drops one it cannot use — a range crossing a gap between hunks, or longer than that — keeping the comment at `line`. **The range degrades; the placement never does.** So a range that is wrong costs nothing, and a range that is right is the whole point: the reviewer reads the note against the entire block it describes. 120 is a block rather than a fragment (measured: it covers 96% of this repo's contiguous changed runs, against 89% for the old 30-line cap); what sits above it is a whole-file rewrite, which no single note orients anyone through.
+`start_line` is forgiving, so **ask for the block you mean and let the poster size it**. It keeps a range of up to **50 lines** lying wholly inside the diff hunks. Past 50, or across a gap between hunks, the range is dropped and the comment anchors on a **single line at the block's first changed line** — the definition for a new function, the first touched line for an edit inside one.
+
+**50, not 120.** A range renders as a grey band down the diff, and past roughly fifty lines nobody reads the band: spendfuse#351 shipped a 119-line one and it read as noise. The old cap was set to cover 96% of contiguous changed runs, which optimised the wrong thing — a span nobody takes in covers nothing.
+
+**The range degrades; the placement never does.** A range that is wrong costs nothing, so ask for the real block rather than a safe fragment.
 
 Findings stay single-line — a ```suggestion``` fence must replace exact lines.
 
-The `**check**` prefix is load-bearing — the poster reads it to route a check it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a note would read as an accusation.
+The `**worth a look**` prefix is load-bearing — the poster reads it to route a note it could not anchor back under `### What a human should review` rather than `### Also flagged`, where a note would read as an accusation.
 
 **A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead.
 
@@ -217,7 +222,7 @@ The `**check**` prefix is load-bearing — the poster reads it to route a check 
   "body": "<the rendered markdown above, with {{LINK:...}} placeholders>",
   "comments": [
     {"path": "src/foo.ts", "line": 42, "side": "RIGHT", "body": "<=700 chars"},
-    {"path": "src/foo.ts", "start_line": 30, "line": 42, "side": "RIGHT", "body": "**check** ... (start_line = block-anchored, checks only)"}
+    {"path": "src/foo.ts", "start_line": 30, "line": 42, "side": "RIGHT", "body": "**worth a look** ... (start_line = block-anchored, notes only)"}
   ],
   "meta": {
     "findings": [
@@ -228,10 +233,10 @@ The `**check**` prefix is load-bearing — the poster reads it to route a check 
     ],
     "resolved_prior": [{"id": "1a2b3c4d", "evidence": "what at HEAD now prevents it"}],
     "human_review": [
-      {"path": "...", "start_line": 30, "end_line": 42, "what_it_does": "...", "spec_ref": ""}
+      {"path": "...", "start_line": 30, "end_line": 42, "what_to_know": "...", "spec_ref": ""}
     ],
     "refuted": [{"kind": "finding|human_review|screenshot|functional", "id": "<carried id, when refuting a carried finding>",
-                 "path": "...", "line": 12, "title": "<title, or the what_it_does that was written>",
+                 "path": "...", "line": 12, "title": "<title, or the what_to_know that was written>",
                  "reason": "suppressed by <file> | already mitigated at the cited line | narrates the block | asks a question | <one line>"}],
     "depth_used": "light|full",
     "review_effort": 3,

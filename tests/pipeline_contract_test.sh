@@ -175,7 +175,7 @@ want "post-review.sh truncates before it expands" "$POSTER" \
 # The order is the whole fix: expansion must be the LAST thing that touches the
 # body, so it can never be what pushes a finding out of the review.
 TRUNC_LINE=$(grep -n 'mode=fit' "$POSTER" | head -1 | cut -d: -f1)
-EXPAND_LINE=$(grep -n 'render_link "\${BASH_REMATCH\[1\]}"' "$POSTER" | head -1 | cut -d: -f1)
+EXPAND_LINE=$(grep -n 'expand_placeholders "\$line"' "$POSTER" | head -1 | cut -d: -f1)
 if [ -n "$TRUNC_LINE" ] && [ -n "$EXPAND_LINE" ] && [ "$TRUNC_LINE" -lt "$EXPAND_LINE" ]; then
   ok "truncation (line $TRUNC_LINE) runs before link expansion (line $EXPAND_LINE)"
 else
@@ -465,8 +465,10 @@ want "…and narrating the obvious is named the cardinal sin" "$SCAN" \
   'Narrating the obvious'
 want "…with the plain React component called out by name as the canonical never" "$SCAN" \
   'plain React component'
-want "…and the note must be faster to read than the code it introduces" "$SCAN" \
-  'faster to read than the code it introduces'
+want "…and a note is short because it has one thing to say, not because it was squeezed" "$SCAN" \
+  'Short because there is little to say, not because it was squeezed'
+want "…with the read-aloud test replacing the character budget" "$SCAN" \
+  'say it back to yourself|would actually talk like that'
 # The DISCOVERY method, not just the output shape: a doubt detector cannot
 # produce orientation however the output is worded, so the traversal itself is
 # segment -> say what it is for -> triage on worth-the-time.
@@ -474,8 +476,10 @@ want "review-scan segments the diff into blocks first" "$SCAN" \
   'Segment the changed code into blocks'
 want "…then asks what each block is FOR" "$SCAN" \
   'Say what each block is for'
-want "…then triages on whether it is worth a reviewer's attention" "$SCAN" \
-  'is this block worth a reviewer'
+want "…then triages on what the reader cannot see for themselves" "$SCAN" \
+  'is there anything here the reader cannot see'
+want "…and says outright that being important is not a reason to write" "$SCAN" \
+  'is a reason to \*\*read\*\* the block, not a reason to \*\*write about\*\* it'
 want "…and says outright not to go hunting for doubts" "$SCAN" \
   'that traversal finds doubts, and a doubt is not a note'
 never "…so the old doubt taxonomy is gone from review-scan" "$SCAN" \
@@ -484,9 +488,10 @@ never "…so the old doubt taxonomy is gone from review-scan" "$SCAN" \
 # dropped one for a nameable reason — the same "name a checkable artifact"
 # discipline the old category list carried.
 for pair in \
-  'It is where the feature actually lives:decision, the rule, the state transition' \
-  'Its intent is not recoverable from the block itself:other files, or from the spec, or from scratch' \
-  'It is load-bearing:contract that callers outside the diff rely on'
+  'an invariant it depends on but does not state:ordering, a precondition' \
+  'a consequence that lands outside the block:breaks, or silently shows nothing' \
+  'a contract other code relies on:callers outside the diff' \
+  'a reason the shape is unusual:constraint that made the obvious version wrong'
 do
   keep=${pair%%:*}; obl=${pair#*:}
   if grep -F "$keep" "$SCAN" | grep -qiE "$obl"; then
@@ -498,7 +503,7 @@ done
 # The new item shape. why_unresolved existed only to justify a question, so it
 # must not survive in any form, in either file.
 want "review-scan emits the orientation shape" "$SCAN" \
-  'what_it_does.*spec_ref|start_line.*end_line'
+  'what_to_know.*spec_ref|start_line.*end_line'
 for f in "$SCAN" "$VERIFY"; do
   n=${f##*/}
   never "$n carries no trace of the interrogation shape" "$f" \
@@ -507,12 +512,16 @@ done
 # The spec reference: the in-repo document is the specification, the linked
 # issue is a summary of it. build-spec.sh already orders them that way; a check
 # that cites the issue as the source of truth undoes that.
-want "review-scan prefers the in-repo spec document in a citation" "$SCAN" \
-  'Prefer the in-repo spec document'
-want "…and refuses to let the issue read as the source of truth" "$SCAN" \
-  'never word a citation so the issue reads as the source of truth'
-want "review-verify keeps that precedence when it renders a check" "$VERIFY" \
-  'Never word it so the issue reads as the source of truth'
+want "review-scan cites the spec as a path:line into an in-repo document" "$SCAN" \
+  '`path:line` of the section in the in-repo spec'
+want "…by line number, never a heading anchor that rots when the heading is edited" "$SCAN" \
+  'A line number, never a `#heading` anchor'
+want "…and emits nothing at all when only an issue or ticket governs" "$SCAN" \
+  'In-repo documents only'
+want "review-verify renders that citation as a link, never as a sentence" "$VERIFY" \
+  'Cite the spec as a link, never as a sentence'
+want "…so a prose pointer cannot come back as a bullet" "$VERIFY" \
+  'is a pointer that costs a line and teaches the reader nothing'
 want "…and never re-derives spec_ref, because it never loads the spec" "$VERIFY" \
   'spec_ref.{0,20}is scan|do not re-derive'
 # Anti-padding: at least as strong as before (the shapes above are pinned with
@@ -619,7 +628,7 @@ want "a check can never reach REQUEST_CHANGES" "$VERIFY" \
 want "review-verify re-attacks carried notes" "$VERIFY" \
   'Refute each note'
 want "…dropping one that narrates the block" "$VERIFY" \
-  'It narrates the block'
+  'It labels or narrates the block'
 want "…and one that asks a question" "$VERIFY" \
   'It is a question'
 want "…but not one that merely looks obvious to the reviewer of the reviewer" "$VERIFY" \
@@ -683,7 +692,7 @@ want "review-verify records every dropped human_review note" "$VERIFY" \
 want "…tagged so the kinds are distinguishable in meta.refuted" "$VERIFY" \
   '"kind": "finding\|human_review\|screenshot\|functional"'
 want "…carrying what was written" "$VERIFY" \
-  'what_it_does that was written'
+  'what_to_know that was written'
 want "…and why it was dropped" "$VERIFY" \
   'suppressed by <file> \| already mitigated'
 want "…and refuted stays diagnostics-only" "$VERIFY" \

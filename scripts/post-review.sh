@@ -635,7 +635,7 @@ awk '
 # fenced block on any run of three or more, so ````suggestion is as committable
 # as ```suggestion — and a regex pinned to exactly three let that shape through
 # with its range intact AND no warning anywhere.
-FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i"))
                                   and ((.body // "") | test("(^|\n)[ \t]*`{3,}[ \t]*suggestion"; "i")))] | length' \
                   "$WORK/comments.json" 2>/dev/null || echo 0)
 if [ "${FENCED_CHECKS:-0}" -gt 0 ]; then
@@ -651,14 +651,14 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
       elif ((.body // "") | test("^\\s*\\*\\*minor\\*\\*"; "i")) then "minor"
       else "" end;
   def rank: if . == "critical" then 0 elif . == "major" then 1 elif . == "minor" then 2 else 3 end;
-  # A `**check**` comment is an orientation note for a human, not a defect. It has no
+  # A `**worth a look**` comment is an orientation note for a human, not a defect. It has no
   # severity, so it already sorts behind every finding — under pressure the slots
   # go to defects and the notes fall back, which is the right way round. A
   # dropped one returns under the human-review heading, never under "Also flagged".
-  def kind: if ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) then "check" else "finding" end;
+  def kind: if ((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i")) then "check" else "finding" end;
   # A CHECK NEVER CARRIES A COMMITTABLE FENCE — STRUCTURALLY, not by prompt rule.
   # The range below is granted to checks alone on the strength of a line in
-  # review-verify.md; nothing enforced it, so a `**check**` with start_line:10
+  # review-verify.md; nothing enforced it, so a `**worth a look**` with start_line:10
   # line:13 AND a ```suggestion``` fence was the code-deleting shape all over
   # again: Apply-suggestion replaces all four lines with the single line in the
   # fence. The RANGE is the feature (a check points at the block it asks about),
@@ -752,14 +752,28 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # only a check may span a block.
   | map(if kind == "check" then . else .start_line = 0 end)
   | map(if kind == "check" then .body = ((.body // "") | unfence) else . end)
-  # 120 LINES, NOT 30. A check is orientation across a whole changed block, so the
-  # span is the feature: 30 cut it off on more than one contiguous changed run in
-  # ten. Measured over this repo history: 89% of runs fit in 30, 96% in 120, and
-  # what sits above 120 is a whole-file rewrite, which is not a block. The cap
-  # still matters because a run whose hunks could not be derived skips the in-hunk
-  # range check below, and a 422 on a malformed range kills the ATOMIC post.
-  | map(if (.start_line > 0) and (.start_line < .line) and ((.line - .start_line) <= 120)
-        then . else .start_line = 0 end)
+  # 50 LINES, NOT 120. A range is a grey band down the side of the diff, and past
+  # roughly fifty lines nobody reads the band — spendfuse#351 shipped a 119-line
+  # one over `compute-issue-log-findings.ts` and it read as noise, which is the
+  # complaint that produced this cap. 120 was chosen to cover 96% of contiguous
+  # changed runs; coverage was the wrong thing to optimise, because a span nobody
+  # takes in covers nothing. Below the cap the span still earns its keep: the
+  # reader sees exactly which lines the note is about.
+  #
+  # COLLAPSE TO THE START, NOT THE END. Dropping `start_line` on its own leaves
+  # the comment sitting on `line`, which review-verify.md defines as the LAST
+  # changed line of the block — so the old fallback pinned the note to the foot
+  # of the very block it introduced (#351: anchored at 239 for a block opening at
+  # 120, i.e. the reader met the orientation note after the code it oriented).
+  # The anchor moves with the range: a collapsed check lands on the FIRST
+  # changed line, which for a new function is its definition and for an edit
+  # inside one is the first line this PR touched. Both are in a hunk by
+  # construction, so this never costs the comment its inline placement.
+  | map(if (.start_line > 0) and (.start_line < .line) and ((.line - .start_line) <= 50)
+        then .
+        elif (.start_line > 0) and (.start_line < .line)
+        then (.line = .start_line) | (.start_line = 0)
+        else .start_line = 0 end)
   | to_entries
   | map(.value + {_i: .key, _r: (.value | sev | rank)})
   | unique_by([.path, .line, .body])
@@ -806,7 +820,7 @@ jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
 # finding, and verify writes no body bullet for a check — so a check in this index
 # could only ever strip a `### Findings` bullet belonging to a finding that is not
 # posted inline, deleting it from the review entirely.
-jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)
+jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i")) | not)
              | .path + ":" + (.line | tostring) + "\t"
              + ((.body // "") | split("\n") | (.[0] // ""))' \
   "$WORK/comments.json" > "$WORK/kept-keys.txt"
@@ -1563,15 +1577,48 @@ render_link() {
   if [ -n "$lineno" ]; then printf '[%s:%s](%s)' "$path" "$lineno" "$url"
   else printf '[%s](%s)' "$path" "$url"; fi
 }
-: > "$WORK/body.md"
-while IFS= read -r line || [ -n "$line" ]; do
-  out=""
-  while [[ "$line" =~ \{\{LINK:([^{}]*)\}\} ]]; do
+
+# {{DOC:path[:line]}} — a link to a SPEC DOCUMENT, which is a different animal
+# from {{LINK:}} above. {{LINK:}} points into this PR's diff (`/pull/N/files#diff-<sha>`),
+# which only resolves for a file the PR actually changed. A governing spec is
+# normally already merged and NOT in the diff, so a {{LINK:}} to it lands on the
+# Files tab and scrolls nowhere. This one points at the blob instead.
+#
+# NO HEAD_SHA, NO LINK. The blob URL needs a ref, and the only correct one is the
+# commit under review — a spec's line numbers move, so `blob/HEAD` would silently
+# point at whatever the default branch says today. review-scan.md tells the model
+# a stale link is worse than none, and this is that rule in the poster: with no
+# ref to pin, the path is rendered as plain code and nothing is lost but the href.
+render_doc() {
+  local spec="$1" path lineno="" url
+  path="${spec%:}"
+  if [[ "$path" =~ ^(.+):([0-9]+)$ ]]; then
+    path="${BASH_REMATCH[1]}"; lineno="${BASH_REMATCH[2]}"
+  fi
+  if [ -z "${HEAD_SHA:-}" ]; then printf '`%s`' "$path"; return; fi
+  url="${SERVER}/${REPO}/blob/${HEAD_SHA}/${path}"
+  [ -n "$lineno" ] && url="${url}#L${lineno}"
+  printf '[%s](%s)' "$path" "$url"
+}
+
+# Both placeholder families, over one string. Used for the body (line by line)
+# and for inline comment bodies, which the {{LINK:}} loop below never covered.
+expand_placeholders() {
+  local line="$1" out="" ph
+  while [[ "$line" =~ \{\{(LINK|DOC):([^{}]*)\}\} ]]; do
     ph="${BASH_REMATCH[0]}"
-    out+="${line%%"$ph"*}$(render_link "${BASH_REMATCH[1]}")"
+    if [ "${BASH_REMATCH[1]}" = "DOC" ]; then
+      out+="${line%%"$ph"*}$(render_doc "${BASH_REMATCH[2]}")"
+    else
+      out+="${line%%"$ph"*}$(render_link "${BASH_REMATCH[2]}")"
+    fi
     line="${line#*"$ph"}"
   done
-  printf '%s%s\n' "$out" "$line" >> "$WORK/body.md"
+  printf '%s%s' "$out" "$line"
+}
+: > "$WORK/body.md"
+while IFS= read -r line || [ -n "$line" ]; do
+  printf '%s\n' "$(expand_placeholders "$line")" >> "$WORK/body.md"
   # THE BANNER GOES DIRECTLY UNDER THE VERDICT HEADING, not in the footer's
   # small print. A requested pass that never ran is the first thing the reader
   # needs, not a `<sub>` line they scroll past — that placement is exactly how
@@ -1600,6 +1647,35 @@ printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
 printf '%s' "$DEV_ENV_NOTICE" >> "$WORK/body.md"
 printf '%s' "$FOOTER" >> "$WORK/body.md"
 echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"
+
+# INLINE COMMENTS GET THE SAME EXPANSION. Until the spec link existed, every
+# placeholder lived in the body and this step did not need to exist; a
+# `{{DOC:...}}` in a worth-a-look comment would have posted to GitHub as literal
+# braces. Body-only expansion is the kind of gap that reads fine in review and
+# ships a broken link, so both surfaces run through one function.
+#
+# ONE COMMENT AT A TIME, BY INDEX. A comment body is multi-line, so streaming the
+# bodies through `while read` splits one comment across several iterations and
+# re-pairs the halves with the wrong comments. Indexing is the only safe read.
+if grep -q '{{\(LINK\|DOC\):' "$WORK/comments.json" 2>/dev/null; then
+  EXPAND_N=$(jq 'length' "$WORK/comments.json" 2>/dev/null || echo 0)
+  EXPAND_OK=1
+  : > "$WORK/comment-bodies.json"
+  for ((ci = 0; ci < EXPAND_N; ci++)); do
+    cbody=$(jq -r --argjson i "$ci" '.[$i].body // ""' "$WORK/comments.json") \
+      || { EXPAND_OK=0; break; }
+    expand_placeholders "$cbody" | jq -Rs . >> "$WORK/comment-bodies.json" \
+      || { EXPAND_OK=0; break; }
+  done
+  if [ "$EXPAND_OK" = 1 ] \
+     && jq -s --slurpfile src "$WORK/comments.json" \
+          '. as $b | $src[0] | to_entries | map(.value + {body: $b[.key]})' \
+          "$WORK/comment-bodies.json" > "$WORK/comments-expanded.json"; then
+    mv "$WORK/comments-expanded.json" "$WORK/comments.json"
+  else
+    echo "::warning::Could not expand links in inline comments — posting them unexpanded."
+  fi
+fi
 echo "::endgroup::"
 
 # ── 4c. The round-2 state block ─────────────────────────────────────────────
@@ -1651,10 +1727,10 @@ else
        # Checks are EXCLUDED HERE TOO, and inline is where a check NORMALLY lives — the
        # `dropped` arm below only ever saw the ones that overflowed the cap. The
        # tell is right there in `csev`: this arm derives the severity from the
-       # body text, and a `**check**` has none, so a question was persisted as a
+       # body text, and a `**worth a look**` has none, so a question was persisted as a
        # finding with `sev: ""`, warned about as `(, src/foo.ts)`, and — since
        # round 2 can never "resolve" a question — carried forever.
-       | map(select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not))
+       | map(select(((.body // "") | test("^\\s*\\*\\*worth a look\\*\\*"; "i")) | not))
        | map({p: (.path // ""), l: (.line | num), sev: csev,
               t: ((.body // "") | split("\n") | (.[0] // "")
                   | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "")),
@@ -1928,7 +2004,7 @@ CARRY_COUNT=$(jq 'length' "$WORK/carried.json" 2>/dev/null || echo 0)
   if [ "$HUMAN_COUNT" -gt 0 ]; then
     echo ""
     echo "### For a human to review ($HUMAN_COUNT)"
-    jq -r '(.meta.human_review // [])[] | "- `\(.path // "?"):\(.end_line // .line // "?")` — \(.what_it_does // "")"' "$REVIEW_JSON"
+    jq -r '(.meta.human_review // [])[] | "- `\(.path // "?"):\(.end_line // .line // "?")` — \(.what_to_know // "")"' "$REVIEW_JSON"
   fi
   if [ "$RESOLVED_COUNT" -gt 0 ]; then
     echo ""

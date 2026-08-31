@@ -59,7 +59,7 @@ set -uo pipefail
 # Counts come from `meta`, never from the comment list, whenever `meta` has
 # them: an unanchored check falls back into the body under "### What a human
 # should review" and would vanish from a comments-only count. When `meta` is
-# absent (a degraded run), the comment list is counted instead — `**check**`
+# absent (a degraded run), the comment list is counted instead — `**worth a look**`
 # prefix for checks, everything else a finding — and `source` gains `+approx`.
 #
 # ── COST, so a sweep is chosen and never stumbled into ───────────────────────
@@ -303,8 +303,8 @@ read_outcome() {
     if [ "${findings:--1}" -lt 0 ] && [ -f "$d/posted/comments.json" ]; then
       IFS=$'\t' read -r findings checks < <(jq -r '
         (if type == "array" then . else (.comments // []) end) as $c
-        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) | not) ] | length),
-            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) ] | length)
+        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*worth a look\\*\\*"; "i")) | not) ] | length),
+            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*worth a look\\*\\*"; "i")) ] | length)
           ] | @tsv' "$d/posted/comments.json" 2>/dev/null) || { findings=-1; checks=-1; }
       approx="+approx"
     fi
@@ -318,8 +318,8 @@ read_outcome() {
     if [ "${findings:--1}" -lt 0 ]; then
       IFS=$'\t' read -r findings checks < <(jq -r '
         (.comments // []) as $c
-        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) | not) ] | length),
-            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) ] | length)
+        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*worth a look\\*\\*"; "i")) | not) ] | length),
+            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*worth a look\\*\\*"; "i")) ] | length)
           ] | @tsv' "$json" 2>/dev/null) || { findings=-1; checks=-1; }
       approx="+approx"
     fi

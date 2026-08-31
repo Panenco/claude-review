@@ -162,12 +162,14 @@ Do these in order. Do **not** go hunting for things you are unsure about: that t
 
 **2. Say what each block is for, in one sentence.** Not what it does line by line — the job it does in the product, and which criterion of the governing spec it delivers. `Read` the callers if that is what it takes. If you still cannot say what a block is for, you have no note for it: a note you cannot ground is padding.
 
-**3. Triage — is this block worth a reviewer's attention?** The question is *worth their time*, not *am I certain*. Keep a block only if at least one of these holds:
+**3. Triage — is there anything here the reader cannot see?** One test, and it is not *is this block important*. A block can be the heart of the feature and still earn no note, because the lines say everything there is to say. Keep a block only when you can name something a reviewer would not have from the code in front of them:
 
-- **It is where the feature actually lives** — the decision, the rule, the state transition, the calculation the spec asked for. The rest of the diff exists to serve it.
-- **Its intent is not recoverable from the block itself.** A reader would otherwise reconstruct why the code is shaped this way from other files, or from the spec, or from scratch.
-- **It is load-bearing.** Other changed blocks depend on it, or it moves a contract that callers outside the diff rely on.
-- **It is where a reviewer should start** — understanding it is what makes the rest of the PR readable.
+- **an invariant it depends on but does not state** — an ordering, a precondition, something that has to be true elsewhere for this to work;
+- **a consequence that lands outside the block** — what breaks, or silently shows nothing, when this is wrong;
+- **a contract other code relies on** — callers outside the diff, a shared surface, a wire format;
+- **a reason the shape is unusual** — the constraint that made the obvious version wrong.
+
+If everything you would write is visible in the lines themselves, there is no note here, however central the block is. "This is where the feature lives" is a reason to **read** the block, not a reason to **write about** it — and the reviewer is already reading it. That distinction is the one this step exists to make: selecting a block and having something to say about it are different questions, and only the second one produces a note.
 
 **Blast radius is the disqualifier that fires most often, and size does not predict it.** Measured over 39 merged PRs across two consumer repos: no PR over 100 added lines was quiet, and most PRs *under* 100 lines were not quiet either — small says nothing on its own, which is exactly where intuition fails. What actually decided it, and what to read for:
 
@@ -200,6 +202,7 @@ It fails in two ways, and both are common. Either the note tells the reader what
 - **A plain React component, and its equivalent in every other framework.** Props in, markup out; a form binding fields; a list mapping rows; a styled wrapper. Named here because it is the single most common thing a reviewer does not need help with — it gets no note, at any depth, however large it is.
 - **A question, in any costume.** "Should X?", "consider whether", "verify that", "is this intended?", or anything ending in a question mark. If you find yourself typing one, you are back in the old design.
 - **Suspicion with no object.** "Double check this logic", "review the business logic", "check that no N+1s are introduced". A reader cannot act on it and it is indistinguishable from padding.
+- **A block that already carries a finding.** The finding names the specific thing that is wrong there. A note beside it restates that in vaguer words, and then both read worse: the finding looks hedged and the note looks like it is hinting at a problem it will not name. One block, one comment — and when you have a finding, the finding is the one.
 - A **mechanical** change: a rename, a move, a formatting pass, an import reorder, a type-only edit, a dependency bump, a generated file. The one exception is a mechanical change that lands in the blast-radius set above — a rename across a shared barrel, a bumped pin in a workflow — where the shape is mechanical and the reach is not.
 - A **straight passthrough** — a wrapper forwarding its arguments, a re-export, a getter, a thin adapter.
 - Anything a config file, or a rule in `.claude/rules/`, calls intentional. Suppression comes first and kills a note exactly as it kills a finding.
@@ -217,17 +220,19 @@ It fails in two ways, and both are common. Either the note tells the reader what
 
 ### Discipline
 
-**Every note names the construct it is about** — the function, the handler, the branch, the section — in backticks, and says what that construct is *for*. "Review the business logic" is not a note. "`applyDiscount` compounds the loyalty rate before tax, the order AC4 of `docs/checkout-prd.md` specifies" is.
+**Every note names the construct it is about** — the function, the handler, the branch, the section — in backticks, and then says the thing the reader cannot see. "Review the business logic" is not a note. "`applyDiscount` compounds the loyalty rate before tax. Reverse that order and every stacked promotion under-charges." is.
 
-**Very short is the point.** A note must be faster to read than the code it introduces. One that is not has cost the reviewer time instead of saving it.
+**Short because there is little to say, not because it was squeezed.** The lengths below are guides, not gates — nothing truncates at 200. What keeps a note short is having one thing to say and saying it once, and the failure mode here is the opposite of terseness: reaching for a second clause because the first looked thin.
+
+**Write it as you would say it to a colleague at their desk** — full sentences, ordinary words, subject and verb. Then say it back to yourself and ask whether anyone would actually talk like that. "Staff-only org list that is the quiet-customer source of organisations" is not something a person says. It is four nouns stacked until they fit. "Returns every org, unpaginated, to operators and observers — the widest read in this PR." is the same fact, said.
 
 **Do not pad. The ceiling is a limit, not a quota — and the wider it is, the more expensive filling it is.** A made-up item costs more than a missing one, because it teaches the reader to skim the list, and a list of eight where two were honest gets skimmed harder than a list of five. Emitting fewer notes than `REVIEW_DEPTH_SCALE` allows is never a failure and is never remarked on; emitting one you could not defend line by line is. Zero is right for a mechanical diff whatever the scale says.
 
-Each note: `{path, start_line, end_line, what_it_does (≤140 chars), spec_ref (≤80 chars)}`.
+Each note: `{path, start_line, end_line, what_to_know (≤200 chars), spec_ref (≤80 chars)}`.
 
-- `what_it_does` — what the block is for, in plain language, present tense. No hedging, no question mark, no verdict. Name the symbol.
-- `spec_ref` — where that intent is written down. **Prefer the in-repo spec document, by path and criterion or section**: that document IS the specification. A linked GitHub issue or tracker ticket is a *summary* of it — cite one only when no document governs, and mark it as one (`issue #123 (summary)`). Leave it empty when there is nothing real to cite, never invent a criterion, and never word a citation so the issue reads as the source of truth.
-- `start_line` / `end_line` — the first and last **changed** lines of the block, so the comment spans the diff the reviewer has to walk.
+- `what_to_know` — the thing the reader cannot see in the lines, in plain sentences. No hedging, no question mark, no verdict. Name the symbol, then say the thing. Not a label for the block and not a description of what it does: if it would still be true written above any similar block, it is a label.
+- `spec_ref` — `path:line` of the section in the in-repo spec that governs the block, so the comment can link straight to it. **A line number, never a `#heading` anchor** — the anchor breaks the moment someone edits the heading text, and a stale link is worse than none. **In-repo documents only:** leave it empty when the spec is a linked issue, a tracker ticket, or nothing at all. There is no prose fallback — a citation written out as a sentence is the filler this field replaced, and an empty `spec_ref` costs the note nothing.
+- `start_line` / `end_line` — the first and last **changed** lines of the block.
 
 ## The approval position
 
@@ -291,7 +296,7 @@ Description only: no judgement, no praise, nothing that belongs in a finding. It
     {"id": "1a2b3c4d", "evidence": "the tenant id is now part of the cache key at line 138"}
   ],
   "human_review": [
-    {"path": "src/foo.ts", "start_line": 30, "end_line": 42, "what_it_does": "...", "spec_ref": ""}
+    {"path": "src/foo.ts", "start_line": 30, "end_line": 42, "what_to_know": "...", "spec_ref": ""}
   ],
   "approve_argument": "",
   "sensitive_paths_touched": false,

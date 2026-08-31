@@ -192,7 +192,7 @@ cat > "$R/repo-a-1/review.json" <<'EOF'
 {"verdict": "APPROVE", "body": "b",
  "comments": [
    {"path": "src/a.ts", "line": 3, "body": "**minor** a real finding"},
-   {"path": "src/a.ts", "line": 9, "body": "**check** Should this refuse a stale id?"}
+   {"path": "src/a.ts", "line": 9, "body": "**worth a look** Should this refuse a stale id?"}
  ]}
 EOF
 OUT=$(bash "$SCORE" score --corpus "$C" --results "$R" 2>&1); RC=$?
