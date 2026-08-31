@@ -82,6 +82,10 @@ on:
         description: "Changed (non-generated) files over which the PR is blocked with a split request instead of reviewed."
         type: number
         default: 60
+      gate_generated_globs:
+        description: "Extra globs for THIS repo's committed build output, on top of the built-in list (lockfiles, dist/, build/, openapi*/swagger* specs, schema.graphql, *.gen.*). Space-separated. They are excluded from the size count only — the reviewer still receives the whole diff."
+        type: string
+        default: ""
       gate_sensitive_globs:
         description: "DEPRECATED and ignored by the guard — review-verify applies the sensitive-path rule to the APPROVE bar instead. Kept so callers passing it do not break."
         type: string
@@ -482,6 +486,7 @@ jobs:
           GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
           GATE_SIZE_CEILING: ${{ inputs.gate_size_ceiling }}
           GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
+          GATE_GENERATED_GLOBS: ${{ inputs.gate_generated_globs }}
           GATE_PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
           # A person typed this. The `unchanged` gate suppresses automatic
           # re-runs of identical code; it must never answer an explicit request
