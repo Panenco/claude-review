@@ -377,45 +377,103 @@ fi
 TESTER_RAN=false
 [ -n "$FN_OVERALL" ] && TESTER_RAN=true
 
-# A dev-env that never came up is invisible otherwise: the reviewer asked for a
-# functional pass, got a code review, and nothing said why. Deterministic here
-# rather than in a prompt, for the same reason the spec notice is — the model
-# cannot forget to mention it. `setup-dev-env.sh` used to promise this in a
-# "setup-health section" that the v4 body no longer has.
+# A functional pass that did not happen is invisible otherwise: the reviewer
+# asked for a browser test, got a code review, and nothing said why.
+# Deterministic here rather than in a prompt, for the same reason the spec notice
+# is — the model cannot forget to mention it. `setup-dev-env.sh` used to promise
+# this in a "setup-health section" that the v4 body no longer has.
+#
+# THE QUESTION IS "DID THE TESTER RUN?", NOT "DID THE BRING-UP FAIL?" — AND
+# GATING ON THE rc ALONE MADE THE WORST CASE SILENT. Those two are not the same
+# fact, and the gap between them is not hypothetical: on spendfuse#351 the
+# bring-up SUCCEEDED — rc 0, API and web both probed up — but only AFTER the
+# orchestrator's 360s turn-1b wait had already expired. `WEB_READY=false` meant
+# no tester was ever dispatched, yet by the time this script ran the rc file said
+# 0, so the whole block was skipped. A review explicitly asked for screenshots
+# shipped with none, and not one word explaining it. `TESTER_RAN` is the fact
+# that decides whether a notice is OWED; the rc only decides its WORDING.
+#
+# Two surfaces, because the two cases carry different weight:
+#   DEV_ENV_BANNER — the pass was requested and NO tester result exists. A
+#     visible GitHub alert under the verdict heading: the reader is looking at a
+#     review that is missing half of what they asked for.
+#   DEV_ENV_NOTICE — the tester DID run, but the bring-up never reported success.
+#     A `<sub>` caveat on a pass that happened; see the two-wordings note below.
 DEV_ENV_NOTICE=""
+DEV_ENV_BANNER=""
 if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ]; then
-  DEV_ENV_RC=$(cat "${DEV_ENV_RC_FILE:-/tmp/dev-env/rc}" 2>/dev/null || echo "")
-  if [ "$DEV_ENV_RC" != "0" ]; then
-    # html_escape, exactly like `tail` below: the rc is FILE CONTENT, not a
-    # number this script computed, and it lands inside an HTML <sub> block. A
-    # `<b>` in that file reached a public review body raw.
-    why=$([ -z "$DEV_ENV_RC" ] && echo "did not finish starting in time" || echo "exited $(html_escape "$DEV_ENV_RC")")
-    # One line, and the LAST error the bring-up printed — a whole log in a review
-    # body is unreadable and would evict findings under the byte budget.
-    # Prefer the consumer script's OWN `::error::` annotation. setup-dev-env.sh
-    # appends its generic "dev-start.sh exited non-zero" line afterwards, so
-    # taking the last error-ish line quoted that tautology back at the reader
-    # instead of the cause — measured on a real run, which reported
-    # "dev-start.sh exited non-zero" where the log said
-    # "API never became ready at http://localhost:20001/api within 300s".
-    log="${DEV_ENV_LOG_FILE:-/tmp/dev-env/log}"
-    tail=$(grep -a '::error::' "$log" 2>/dev/null | tail -1 | sed 's/^.*::error:://' | cut -c1-300)
-    if [ -z "$tail" ]; then
-      tail=$(grep -aiE '^(error|fatal)|error:' "$log" 2>/dev/null \
-             | grep -av 'dev-start.sh exited non-zero' | tail -1 | cut -c1-300)
-    fi
-    # TWO WORDINGS, ONE FACT. "No browser test ran" is only true when nothing
-    # says otherwise; said over a gallery of the tester's own screenshots it is
-    # simply false. When the tester finished, the bring-up record is still worth
-    # reporting — it is why the run looks odd — but as a caveat on a pass that
-    # DID happen, never as a claim that none did.
-    if [ "$TESTER_RAN" = "true" ]; then
-      DEV_ENV_NOTICE=$'\n<sub>⚠ The dev environment '"$why"' — but the functional tester completed and reported '"$FN_OVERALL"$', so the pass below ran against an environment whose bring-up never reported success. Read it with that in mind.'
+  DEV_ENV_RC_PATH="${DEV_ENV_RC_FILE:-/tmp/dev-env/rc}"
+  DEV_ENV_RC=$(cat "$DEV_ENV_RC_PATH" 2>/dev/null || echo "")
+  DEV_ENV_STARTED_PATH="${DEV_ENV_STARTED_FILE:-/tmp/dev-env/started}"
+  WAIT_S="${DEV_ENV_TIMEOUT_SECONDS:-360}"
+  case "$WAIT_S" in ''|*[!0-9]*) WAIT_S=360 ;; esac
+  [ "$WAIT_S" -gt 540 ] && WAIT_S=540   # the orchestrator's own clamp
+
+  # One line, and the LAST error the bring-up printed — a whole log in a review
+  # body is unreadable and would evict findings under the byte budget.
+  # Prefer the consumer script's OWN `::error::` annotation. setup-dev-env.sh
+  # appends its generic "dev-start.sh exited non-zero" line afterwards, so
+  # taking the last error-ish line quoted that tautology back at the reader
+  # instead of the cause — measured on a real run, which reported
+  # "dev-start.sh exited non-zero" where the log said
+  # "API never became ready at http://localhost:20001/api within 300s".
+  log="${DEV_ENV_LOG_FILE:-/tmp/dev-env/log}"
+  tail=$(grep -a '::error::' "$log" 2>/dev/null | tail -1 | sed 's/^.*::error:://' | cut -c1-300)
+  if [ -z "$tail" ]; then
+    tail=$(grep -aiE '^(error|fatal)|error:' "$log" 2>/dev/null \
+           | grep -av 'dev-start.sh exited non-zero' | tail -1 | cut -c1-300)
+  fi
+
+  # `why` is one clause completing "… because <why>". html_escape on the rc for
+  # the same reason as `tail`: the rc is FILE CONTENT, not a number this script
+  # computed, and it lands inside HTML. A `<b>` in that file reached a public
+  # review body raw once already.
+  #
+  # `date -r FILE +%s` is the mtime on both GNU coreutils (runners) and BSD
+  # (a maintainer running tests on macOS) — `stat` is the one that differs.
+  HINT=""
+  if [ ! -f "$DEV_ENV_STARTED_PATH" ]; then
+    why="no dev environment was started for this run — the diff needed no build, or the repo ships no <code>.github/claude-review/dev-start.sh</code>"
+  elif [ -z "$DEV_ENV_RC" ]; then
+    why="the dev environment did not finish starting in time (waited ${WAIT_S}s)"
+  elif [ "$DEV_ENV_RC" != "0" ]; then
+    why="the dev environment exited $(html_escape "$DEV_ENV_RC")"
+  else
+    # rc 0 — the bring-up SUCCEEDED, so the only way no tester ran is that it
+    # succeeded too late for the wait, or the tester was ineligible for a
+    # reason this script cannot see (most often: no acceptance criteria).
+    started=$(cat "$DEV_ENV_STARTED_PATH" 2>/dev/null || echo "")
+    rc_at=$(date -r "$DEV_ENV_RC_PATH" +%s 2>/dev/null || echo "")
+    case "$started$rc_at" in ''|*[!0-9]*) started=""; rc_at="" ;; esac
+    if [ -n "$started" ] && [ -n "$rc_at" ] && [ "$rc_at" -gt "$(( started + WAIT_S ))" ]; then
+      why="the dev environment came up $(( rc_at - started ))s in, past the ${WAIT_S}s the reviewer waits for it, so no tester was dispatched"
+      HINT=" Raise <code>dev_env_timeout_seconds</code> (max 540) in the caller workflow, and set <code>dev_cache_paths</code>/<code>dev_cache_key_files</code> so the build starts warm."
     else
-      DEV_ENV_NOTICE=$'\n<sub>⚠ Functional pass requested but skipped — the dev environment '"$why"'. No browser test ran; this review is static only.'
+      why="the dev environment was ready, so the pass was skipped for another reason — most often the governing spec carries no acceptance criteria to test against"
     fi
-    [ -n "$tail" ] && DEV_ENV_NOTICE+=" Last error: <code>$(html_escape "$tail")</code>"
-    DEV_ENV_NOTICE+=$' (full log: the run\'s <code>dev-env/log</code> artifact).</sub>\n'
+  fi
+
+  # TWO WORDINGS, ONE FACT. "No browser test ran" is only true when nothing
+  # says otherwise; said over a gallery of the tester's own screenshots it is
+  # simply false. When the tester finished, the bring-up record is still worth
+  # reporting — it is why the run looks odd — but as a caveat on a pass that
+  # DID happen, never as a claim that none did.
+  if [ "$TESTER_RAN" = "true" ]; then
+    if [ "$DEV_ENV_RC" != "0" ]; then
+      # The caveat's own sentence supplies "The dev environment ", so it takes
+      # the short form; `why` above is a full clause the banner completes
+      # "… because <why>" with, and the two must not be interchanged — gluing
+      # the clause in here read "The dev environment the dev environment exited 5".
+      why_short=$([ -z "$DEV_ENV_RC" ] && echo "did not finish starting in time" || echo "exited $(html_escape "$DEV_ENV_RC")")
+      DEV_ENV_NOTICE=$'\n<sub>⚠ The dev environment '"$why_short"' — but the functional tester completed and reported '"$FN_OVERALL"$', so the pass below ran against an environment whose bring-up never reported success. Read it with that in mind.'
+      [ -n "$tail" ] && DEV_ENV_NOTICE+=" Last error: <code>$(html_escape "$tail")</code>"
+      DEV_ENV_NOTICE+=$' (full log: the run\'s <code>dev-env/log</code> artifact).</sub>\n'
+    fi
+  else
+    DEV_ENV_BANNER=$'\n> [!WARNING]\n> **Functional pass requested but skipped** — '"$why"$'. No browser test ran and there are no screenshots, so this review is static only.'
+    [ -n "$tail" ] && DEV_ENV_BANNER+=" Last error: <code>$(html_escape "$tail")</code>"
+    DEV_ENV_BANNER+="$HINT"
+    DEV_ENV_BANNER+=$' Full log: the run\'s <code>dev-env/log</code> artifact.\n'
   fi
 fi
 
@@ -452,7 +510,7 @@ fi
 #   no evidence → no gallery, and 2b says no browser test ran.
 # Neither string can appear beside the other, in either direction.
 SHOT_GALLERY=""
-if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ "$TESTER_RAN" != "true" ] && [ -n "$DEV_ENV_NOTICE" ]; then
+if [ "${FUNCTIONAL_REQUESTED:-false}" = "true" ] && [ "$TESTER_RAN" != "true" ] && [ -n "$DEV_ENV_BANNER" ]; then
   echo "Dev environment never came up and no functional.json records a completed run — no gallery, so the body cannot both claim a functional pass and report that none ran."
 fi
 if [ "$TESTER_RAN" = "true" ]; then
@@ -1448,7 +1506,7 @@ if [ -s "$WORK/fallback.md" ]; then
 fi
 
 TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
-AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$DEV_ENV_NOTICE") ))
+AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$DEV_ENV_NOTICE") - $(blen "$DEV_ENV_BANNER") ))
 MEASURED=$(LC_ALL=C awk -v mode=measure -f "$WORK/budget.awk" "$WORK/body.raw")
 if [ "${MEASURED:-0}" -gt "$AVAIL" ]; then
   echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating by value (severity first, and the sections that have no other surface ahead of ordinary prose)."
@@ -1514,7 +1572,22 @@ while IFS= read -r line || [ -n "$line" ]; do
     line="${line#*"$ph"}"
   done
   printf '%s%s\n' "$out" "$line" >> "$WORK/body.md"
+  # THE BANNER GOES DIRECTLY UNDER THE VERDICT HEADING, not in the footer's
+  # small print. A requested pass that never ran is the first thing the reader
+  # needs, not a `<sub>` line they scroll past — that placement is exactly how
+  # spendfuse#351 read as a clean review of a screen nobody had looked at. Line
+  # 1 of body.raw is `## Claude review — <verdict>`; the banner follows it, and
+  # it is written AFTER truncation so no finding can evict it and it can never
+  # be the thing that gets cut.
+  if [ -n "$DEV_ENV_BANNER" ] && [ "${BANNER_PLACED:-0}" = "0" ]; then
+    printf '%s\n' "$DEV_ENV_BANNER" >> "$WORK/body.md"
+    BANNER_PLACED=1
+  fi
 done < "$WORK/body.raw"
+# An empty body.raw never entered the loop, so the banner still owes its slot.
+if [ -n "$DEV_ENV_BANNER" ] && [ "${BANNER_PLACED:-0}" = "0" ]; then
+  printf '%s\n' "$DEV_ENV_BANNER" >> "$WORK/body.md"
+fi
 
 # Before the footer because it is content, not metadata, and after truncation
 # because it is not measured — see 2c.
