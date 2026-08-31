@@ -128,6 +128,11 @@ run_poster() {
   # missing would make every functional fixture below describe a broken run. The
   # cases that WANT a broken dev-env set DEVENV_RC themselves.
   printf '0' > "$work/healthy-dev-env-rc"
+  # …AND ITS `started` MARKER. The poster now distinguishes "no bring-up was
+  # started" from "one was started and finished", so a fixture with an rc but no
+  # marker would describe an impossible run. Stamped in the past and the rc
+  # touched to match, so the default reads "came up well inside the wait".
+  printf '%s' "$(date +%s)" > "$work/healthy-dev-env-started"
   OUT=$(cd "$work" && \
     PATH="$MOCK_BIN:$PATH" \
     GH_LOG="$work/gh.log" GH_CAPTURE_DIR="$work/capture" \
@@ -145,6 +150,8 @@ run_poster() {
     GH_ASSETS_FAIL="${ASSETS_FAIL:-0}" \
     DEV_ENV_RC_FILE="${DEVENV_RC:-$work/healthy-dev-env-rc}" \
     DEV_ENV_LOG_FILE="${DEVENV_LOG:-$work/no-such-log}" \
+    DEV_ENV_STARTED_FILE="${DEVENV_STARTED:-$work/healthy-dev-env-started}" \
+    DEV_ENV_TIMEOUT_SECONDS="${DEVENV_WAIT:-}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
     REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
     ROUND="${ROUND_N:-}" \
@@ -1580,9 +1587,61 @@ assert_contains "a missing rc reads as a timeout" "did not finish starting in ti
 assert_not_contains "…never as an exit status" "exited " "$BODY"
 rm -rf "$W"
 
-# (n3) requested + dev-env fine → no notice. A healthy run must stay quiet.
+# (n3) THE SILENT CASE, AND THE WHOLE POINT OF THE BLOCK. A healthy rc is NOT
+# evidence a tester ran: on spendfuse#351 the bring-up returned 0 with API and
+# web both up, but only after the orchestrator's wait had expired, so no tester
+# was ever dispatched — and because this block gated on `rc != 0`, the review
+# said nothing at all. Requested + no functional.json = a notice is owed,
+# whatever the rc says.
 run_devenv_case true 0 "all good"
-assert_not_contains "a healthy dev-env says nothing" "Functional pass requested but skipped" "$BODY"
+assert_contains "a healthy rc does NOT buy silence" "Functional pass requested but skipped" "$BODY"
+assert_contains "…and it is a visible alert, not small print" "> [!WARNING]" "$BODY"
+assert_contains "…saying no browser test ran" "No browser test ran" "$BODY"
+assert_not_contains "…and never blaming a bring-up that worked" "did not finish starting" "$BODY"
+rm -rf "$W"
+
+# (n3b) rc 0 but written AFTER the wait expired — the exact spendfuse#351 shape.
+# "Came up 40s late" is a knob to turn; "never came up" is a broken bring-up.
+# Reporting them identically is what made the real run unreadable.
+W=$(mktemp -d); mkdir -p "$W/dev-env"
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+printf '0' > "$W/dev-env/rc"
+printf '%s' "$(( $(date +%s) - 400 ))" > "$W/dev-env/started"
+printf 'all good\n' > "$W/dev-env/log"
+FUNCTIONAL_REQ=true DEVENV_RC="$W/dev-env/rc" DEVENV_LOG="$W/dev-env/log" \
+  DEVENV_STARTED="$W/dev-env/started" DEVENV_WAIT=360 \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_contains "a late bring-up is named as late" "past the 360s the reviewer waits" "$BODY"
+assert_contains "…and the fix is named" "dev_env_timeout_seconds" "$BODY"
+assert_not_contains "…not reported as a failure it was not" "exited" "$BODY"
+rm -rf "$W"
+
+# (n3c) requested, but no bring-up was ever started (docs-only diff, or the repo
+# ships no dev-start.sh). Still disclosed — the reader asked for a browser test —
+# but never as a timeout, which would blame a script that never ran.
+W=$(mktemp -d); mkdir -p "$W/dev-env"
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FUNCTIONAL_REQ=true DEVENV_RC="$W/dev-env/no-rc" DEVENV_STARTED="$W/dev-env/no-started" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_contains "the skip is still disclosed" "Functional pass requested but skipped" "$BODY"
+assert_contains "…as 'nothing was started'" "no dev environment was started" "$BODY"
+assert_not_contains "…never as a timeout" "did not finish starting in time" "$BODY"
+rm -rf "$W"
+
+# (n3d) the tester DID run and the bring-up was clean → total silence. The banner
+# must never appear over a pass that happened.
+W=$(mktemp -d); mkdir -p "$W/dev-env" "$W/shots"
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+printf '0' > "$W/dev-env/rc"; printf '%s' "$(date +%s)" > "$W/dev-env/started"
+printf '{"overall":"PASS","summary":"ok","screenshots":[],"untested":[]}' > "$W/functional.json"
+FUNCTIONAL_REQ=true FUNCTIONAL_FILE="$W/functional.json" \
+  DEVENV_RC="$W/dev-env/rc" DEVENV_STARTED="$W/dev-env/started" \
+  FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_not_contains "a completed pass gets no banner" "> [!WARNING]" "$BODY"
+assert_not_contains "…and no skip claim" "Functional pass requested but skipped" "$BODY"
 rm -rf "$W"
 
 # (n4) NOT requested + dev-env failed → still nothing. A code-only review must

@@ -1246,6 +1246,11 @@ jobs:
           # So the poster can say, in the review itself, that a requested
           # functional pass never ran because the dev-env did not come up.
           FUNCTIONAL_REQUESTED: ${{ steps.guard.outputs.functional }}
+          # The same number the orchestrator waits on, so the poster can tell
+          # "never came up" apart from "came up 40s after we stopped waiting" —
+          # the second is a knob to turn, the first is a broken bring-up, and
+          # before this they were both reported as neither.
+          DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           # The inline-comment cap, scaled with the diff (twice depth_scale, so
           # 6–16). Computed in guard.sh so post-review.sh keeps reading one env
           # var with one default; empty on a short-circuited run, where the

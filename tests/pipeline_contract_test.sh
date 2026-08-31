@@ -541,6 +541,16 @@ for f in "$SCAN" "$VERIFY"; do
 done
 want "review-verify carries no target rate either" "$VERIFY" \
   'no target rate in either direction'
+
+# The poster can only tell "never came up" from "came up 40s after we stopped
+# waiting" if it is handed the same number the orchestrator waits on. On
+# spendfuse#351 it was not, so the one case that mattered — rc 0, arriving late —
+# fell through the rc check and the review said nothing.
+want "the workflow hands the poster the same wait the orchestrator uses" "$WORKFLOW" \
+  'DEV_ENV_TIMEOUT_SECONDS: \$\{\{ inputs\.dev_env_timeout_seconds \}\}'
+want "post-review keys the skip notice on whether the TESTER ran, not the rc" "$POSTER" \
+  'THE QUESTION IS "DID THE TESTER RUN\?", NOT "DID THE BRING-UP FAIL\?"'
+
 # Blast radius, measured rather than guessed: size is necessary but not
 # sufficient (0 of 14 PRs over 100 added lines were simple; only 4 of 14 under
 # it were), and three path/vocabulary signals decided the rest.
