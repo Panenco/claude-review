@@ -41,11 +41,11 @@ So the decision is **not** old architecture vs new. It is `v3` vs **27 commits o
 
 | Change | Live evidence |
 |---|---|
-| Screenshot captions | `seaters#2134` |
-| Check anchoring (#126, #128) | `seaters#2134`; #128 also a replayed real payload |
-| Partial functional run (#127) | live qiv + seaters runs |
-| Native pass artifact (#139) | `/review all` probe on `seaters#2141` |
-| Wall-clock fix (#141, #143) | qiv runs `33298278779`, `33305382018`; seaters `33301435436` |
+| Screenshot captions | a live consumer PR |
+| Check anchoring (#126, #128) | a live consumer PR; #128 also a replayed real payload |
+| Partial functional run (#127) | two live consumer runs |
+| Native pass artifact (#139) | `/review all` probe on a live consumer PR |
+| Wall-clock fix (#141, #143) | three measured consumer runs |
 | Check-authority bar (#129, #130) | 945 human review comments across six products (corpus, not a run) |
 | **Depth scaling (#136)** | **none — 15 guard unit assertions only** |
 | **Screenshots into review-verify (#137)** | **none stated** |
@@ -115,7 +115,7 @@ Before running it:
 | 2 | `warm-cache.yml@v3` referenced in `README.md:175` and `prompts/setup-review.md:122` — needs the same bump. | open |
 | 3 | `@v3` hardcoded in ~15 places: `README.md` (Quick Start L56, L129, tag table L742–745), `prompts/setup-review.md` (L12, L69, L249, L252, L552, L555), `bugbot.md` (L20, L23, L35, L36). | open |
 | 4 | **No CHANGELOG exists.** README's "Migration" sections are the de-facto release notes; they need a v3→v4 entry covering the APPROVE bar, the check shape, and `/review all` cost. | open |
-| 5 | **Stray file: `pr-324-review.md` at repo root** — a 46-line dump of a review of `Panenco/qiv#324`, committed in `4df874b`. It is not pipeline code and should not ship in a tag. | **delete before tagging** |
+| 5 | **Stray file: `pr-324-review.md` at repo root** — a 46-line dump of a review of a consumer PR, committed in `4df874b`. It is not pipeline code and should not ship in a tag. | **delete before tagging** |
 | 6 | Consumers need a migration note: "`/review all` now bills a third pass; use `/review code functional` for the old behaviour." | open |
 | 7 | Optional but high value: run one `probe-score.sh` sweep (or a handful of entries) against real merged PRs before tagging — it is the only evidence that would cover the `post-review.sh` and #140 gaps. | open |
 

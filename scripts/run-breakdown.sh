@@ -44,10 +44,10 @@
 #
 # Usage:
 #   bash scripts/run-breakdown.sh <run-id> <repo>        # downloads the artifacts
-#   bash scripts/run-breakdown.sh 33300467953 Panenco/seaters
+#   bash scripts/run-breakdown.sh 33300467953 my-org/my-repo
 #   bash scripts/run-breakdown.sh --transcript path/to/orchestrator-output.txt
 #   bash scripts/run-breakdown.sh --transcript t.json --jobs jobs.json
-#   bash scripts/run-breakdown.sh 33300467953 Panenco/seaters --json
+#   bash scripts/run-breakdown.sh 33300467953 my-org/my-repo --json
 #
 # Requires: jq. `gh` only when you pass a run id rather than --transcript.
 
