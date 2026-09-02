@@ -3644,6 +3644,55 @@ assert_not_contains "…and the section it would have deleted is not charged for
 rm -rf "$W"
 
 
+echo ""
+echo "── why this is not an approve ──"
+# A COMMENT with no findings and no checks, whose own body says nothing new
+# survived, used to leave the reader guessing at which gate held the approval.
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nRound-2 delta fixes the carried bug; nothing new survives.",
+  "comments": [],
+  "meta": {"findings": [], "human_review": [],
+           "approve_blocked_by": ["sensitive_path", "effort"]}
+}
+EOF
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the reader is told it was not approved" "Not approved because" "$BODY"
+assert_contains "…and BOTH gates are named, not one" "sensitive path" "$BODY"
+assert_contains "…including the second" "more judgement than an unread approval allows" "$BODY"
+assert_contains "…and that nothing was actually wrong" "No defect was found" "$BODY"
+rm -rf "$W"
+
+W=$(mktemp -d)
+printf '%s\n' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "a review with findings does not explain itself twice" "Not approved because" "$BODY"
+rm -rf "$W"
+
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{"verdict": "APPROVE", "body": "## Claude review — APPROVE\n\nClean.", "comments": [],
+ "meta": {"findings": [], "human_review": [], "approve_blocked_by": []}}
+EOF
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "an approve explains nothing" "Not approved" "$BODY"
+rm -rf "$W"
+
+# A review that recorded no gate is not editorialised over.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nfine.", comments: [], meta: {}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "a review with no gate field is not editorialised over" "Not approved" "$BODY"
+rm -rf "$W"
+
+
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 
 echo ""
