@@ -24,6 +24,10 @@
 # GATE_HUMAN_REQUESTED (true when a person typed the command — `unchanged` gate).
 
 set -uo pipefail # No `set -e` (repo rule, bugbot.md).
+# `-f` off globbing script-wide: this guard only compares strings, and the one
+# unquoted split it does — the caller's glob list — was pathname-expanded, so
+# `proto/**` arrived as the real directory `proto/gen` and matched nothing.
+set -f
 
 SKIP_LABEL="${GATE_SKIP_LABEL:-skip-review}"
 FORCE_LABEL="${GATE_FORCE_LABEL:-deep-review}"

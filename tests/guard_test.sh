@@ -219,6 +219,15 @@ assert_gate "a hand-written file named for a spec still counts" "false oversized
   GATE_FILES_TSV=$'src/openapi-client.ts\t2000\t1500'
 assert_gate "an unmatched extra glob changes nothing" "false oversized REQUEST_CHANGES" \
   GATE_GENERATED_GLOBS='*.pot' GATE_FILES_TSV=$'src/big.ts\t2000\t1500'
+# A declared glob is a PATTERN, not a path list. Splitting it unquoted also
+# pathname-expands it against the checkout: `proto/**` became the real directory
+# `proto/gen`, matched nothing, and the declaration did nothing at all.
+GLOBDIR=$(mktemp -d); mkdir -p "$GLOBDIR/proto/gen"
+GOT=$(cd "$GLOBDIR" && env GATE_GENERATED_GLOBS='proto/**' \
+      GATE_FILES_TSV=$'proto/gen/api.pb.ts\t9000\t0\nsrc/a.ts\t5\t5' \
+      bash "$SCRIPT" | sed -n 's/^gate=//p')
+assert_contains "a declared glob is not expanded against the working directory" "ok" "$GOT"
+rm -rf "$GLOBDIR"
 
 BODY=$(body_of GATE_FILES_TSV="$BIG_FILES")
 assert_contains "split body carries the oversized skip marker" "<!-- claude-review-oversized -->" "$BODY"
@@ -307,12 +316,12 @@ fi
 # creeping back in, not against a comment, a single override, or one more line of
 # output — and the depth scale is deliberately a continuous function rather than
 # the tiers, which is why it cost four lines and not forty.
-# → 150 for the generated-file list: THREE case arms for committed codegen
-# output, a three-line loop for the repo-declared globs, and the comment naming
-# the PR that paid for them. Still one flat predicate with no branching on size,
-# which is the property this ceiling actually protects.
+# → 153 for the generated-file list: THREE case arms for committed codegen
+# output, a three-line loop for the repo-declared globs, the `set -f` that keeps
+# those globs literal, and the comments naming what paid for them. Still one flat
+# predicate with no branching on size, which is the property this ceiling protects.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 150 ]; then
+if [ "$LINES" -le 153 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"
