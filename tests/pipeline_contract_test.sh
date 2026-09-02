@@ -1806,6 +1806,12 @@ want "review-verify demotes an unanswered reply rather than dropping it" "$VERIF
   'It is demoted, never deleted'
 want "…and the reply itself reaches the reader" "$VERIFY" \
   'naming the reply in `what_to_know`'
+# …and the demotion must survive the note budget. N and "never add your own"
+# bound the notes SCAN wrote; a finding verify steps down is neither.
+want "…outside the note cap" "$VERIFY" \
+  'outside the N cap'
+want "…and named as the one exception to never adding your own" "$VERIFY" \
+  'the single exception is the demoted replied-to finding'
 
 echo ""
 if [ "$fail" -eq 0 ]; then
