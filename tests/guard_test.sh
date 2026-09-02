@@ -203,6 +203,31 @@ assert_gate "a huge lockfile beside a small diff is not oversized" "true ok -" \
 assert_gate "70 generated files beside one source file is not oversized" "true ok -" \
   GATE_FILES_TSV="$(for i in $(seq 1 70); do printf 'dist/f%d.min.js\t10\t10\n' "$i"; done)"$'\nsrc/a.ts\t5\t5'
 
+# One committed openapi.combined.json put a 143-line reviewable diff over 45000
+# lines, and the PR was refused with no code read. It held three defects.
+assert_gate "a committed OpenAPI spec beside a small diff is not oversized" "true ok -" \
+  GATE_FILES_TSV=$'openapi.combined.json\t22800\t22535\nscripts/openapi/boot-java.sh\t50\t26\n.github/workflows/ci-node.yml\t14\t3'
+assert_gate "…and a nested one too" "true ok -" \
+  GATE_FILES_TSV=$'apps/api/openapi.yaml\t9000\t9000\nsrc/a.ts\t5\t5'
+assert_gate "…swagger, a GraphQL schema and .gen. output the same way" "true ok -" \
+  GATE_FILES_TSV=$'swagger.json\t4000\t0\nschema.graphql\t3000\t0\nsrc/types.gen.ts\t2000\t0\nsrc/a.ts\t5\t5'
+assert_gate "a repo declares its own build output through GATE_GENERATED_GLOBS" "true ok -" \
+  GATE_GENERATED_GLOBS='*.pot proto/**' GATE_FILES_TSV=$'locale/messages.pot\t9000\t0\nsrc/a.ts\t5\t5'
+# The exclusion must not swallow a real source file that merely reads like one.
+assert_gate "a hand-written file named for a spec still counts" "false oversized REQUEST_CHANGES" \
+  GATE_FILES_TSV=$'src/openapi-client.ts\t2000\t1500'
+assert_gate "an unmatched extra glob changes nothing" "false oversized REQUEST_CHANGES" \
+  GATE_GENERATED_GLOBS='*.pot' GATE_FILES_TSV=$'src/big.ts\t2000\t1500'
+# A declared glob is a PATTERN, not a path list. Splitting it unquoted also
+# pathname-expands it against the checkout: `proto/**` became the real directory
+# `proto/gen`, matched nothing, and the declaration did nothing at all.
+GLOBDIR=$(mktemp -d); mkdir -p "$GLOBDIR/proto/gen"
+GOT=$(cd "$GLOBDIR" && env GATE_GENERATED_GLOBS='proto/**' \
+      GATE_FILES_TSV=$'proto/gen/api.pb.ts\t9000\t0\nsrc/a.ts\t5\t5' \
+      bash "$SCRIPT" | sed -n 's/^gate=//p')
+assert_contains "a declared glob is not expanded against the working directory" "ok" "$GOT"
+rm -rf "$GLOBDIR"
+
 BODY=$(body_of GATE_FILES_TSV="$BIG_FILES")
 assert_contains "split body carries the oversized skip marker" "<!-- claude-review-oversized -->" "$BODY"
 assert_contains "split body is stamped REQUEST_CHANGES" "## Claude review — REQUEST_CHANGES" "$BODY"
@@ -290,8 +315,11 @@ fi
 # creeping back in, not against a comment, a single override, or one more line of
 # output — and the depth scale is deliberately a continuous function rather than
 # the tiers, which is why it cost four lines and not forty.
+# → 153 for the generated-file list: three case arms, a loop for the repo-declared
+# globs, and the `set -f` that keeps those globs literal. Still one flat predicate
+# with no branching on size, which is the property this ceiling protects.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 135 ]; then
+if [ "$LINES" -le 153 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"

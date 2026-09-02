@@ -19,9 +19,15 @@
 # — either one overrides the size ceiling, GATE_TRIGGER (/review, for the split
 # request's wording), GATE_SIZE_CEILING (3000), GATE_FILE_CEILING (60),
 # GATE_PRIOR_HEAD_SHA + GATE_DELTA_FILES (round-2 scope, see docs/adr/0003),
+# GATE_GENERATED_GLOBS (extra committed-build-output globs, on top of the
+# built-in list in is_generated below),
 # GATE_HUMAN_REQUESTED (true when a person typed the command — `unchanged` gate).
 
 set -uo pipefail # No `set -e` (repo rule, bugbot.md).
+# `-f` off globbing script-wide: this guard only compares strings, and the one
+# unquoted split it does — the caller's glob list — was pathname-expanded, so
+# `proto/**` arrived as the real directory `proto/gen` and matched nothing.
+set -f
 
 SKIP_LABEL="${GATE_SKIP_LABEL:-skip-review}"
 FORCE_LABEL="${GATE_FORCE_LABEL:-deep-review}"
@@ -31,13 +37,23 @@ FILE_CEILING="${GATE_FILE_CEILING:-60}"
 
 emit() { printf 'proceed=%s\ngate=%s\nverdict=%s\nreason=%s\n' "$1" "$2" "$3" "$4"; }
 
-# Excluded from the size count: their presence never makes a PR "big".
+GENERATED_GLOBS="${GATE_GENERATED_GLOBS:-}" # extra, repo-declared build output.
+
+# Excluded from the size count: their presence never makes a PR "big". Only the
+# ACCOUNTING moves — the model still gets the whole diff — so a false positive
+# here costs nothing while a false negative refuses the PR unread.
 is_generated() {
   case "$1" in
     *.lock|package-lock.json|pnpm-lock.yaml|*.snap) return 0 ;;
     dist/*|*/dist/*|build/*|*/build/*|*.min.js|*.min.css|*.generated.*|*.pb.go|*_pb2.py) return 0 ;;
-    *) return 1 ;;
+    openapi*.json|openapi*.yaml|openapi*.yml|*/openapi*.json|*/openapi*.yaml|*/openapi*.yml) return 0 ;;
+    swagger*.json|swagger*.yaml|swagger*.yml|*/swagger*.json|*/swagger*.yaml|*/swagger*.yml) return 0 ;;
+    schema.graphql|*/schema.graphql|*.gen.*|__generated__/*|*/__generated__/*) return 0 ;;
   esac
+  for glob in $GENERATED_GLOBS; do
+    case "$1" in $glob) return 0 ;; esac
+  done
+  return 1
 }
 
 # 1) Human opted out.
