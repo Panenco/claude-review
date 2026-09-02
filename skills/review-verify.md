@@ -114,6 +114,8 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 **The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
 
+**An unanswered author reply is not a surviving finding.** A carried finding whose author replied, arriving with no `reply_rebuttal`, was not re-checked: drop it to a note and let the verdict follow.
+
 **Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote.
 
 Carry through up to N `human_review` notes from scan unchanged, where **N is `REVIEW_DEPTH_SCALE` from your env (5 when unset or empty), moved once by scan's `review_effort`: −1 at `review_effort` ≤ 2, +1 at `review_effort` 5, unchanged at 3–4 — never below 2, never above 8.** The guard sized the diff, scan rated the judgement it actually needed, and this is the only place the two are combined; there is no other modulation. **A raised N buys room, never licence** — carrying a weak note because a slot is free is the padding scan was told not to do, done one stage later. Drop any whose block you could not confirm. Never add your own. Each survivor becomes a **check comment** (see Inline comments), anchored on the changed block it is about; they stay in `meta.human_review` either way.
@@ -170,6 +172,7 @@ The poster caps the total and orders it for you: findings first by severity, che
 - Write each finding in ONE place. If you slip and write both, the body copy is removed, not the comment.
 - Do NOT pre-emptively omit a body bullet for a comment you fear may not post. A comment that lands outside a diff hunk or past the cap is put back into the body by the poster under `### Also flagged` — nothing is lost.
 - `### What a human should review` is still not yours to write (see the body section). The poster adds it after this strip has run, and an item there may point at the same `path:line` as a finding.
+- **Append `reply_rebuttal` as a final `> ` line** when the finding has one, so the author sees in their own thread what their reply did not close.
 
 ````
 **<severity>** <title>
