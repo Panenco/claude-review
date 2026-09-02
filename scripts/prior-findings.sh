@@ -180,8 +180,14 @@ if [ "$C2_OK" = "1" ]; then
                     t: ((((.body // "") | split("\n"))[0] // "")
                         | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; ""))}} ]
        | from_entries) as $roots
+    # WHO MAY REPLY. A reply can send scan to `resolved_prior`, or drop a finding
+    # to a note, so it is a privileged input: a drive-by comment under a critical
+    # must not be able to move the verdict with no code change. `NONE` is exactly
+    # that stranger; the PR author is at least `CONTRIBUTOR` on their own PR.
     | [ $all[]
         | select(((.in_reply_to_id // null) != null) and ((.user.login? // "") != $bot))
+        | select((.author_association // "NONE") as $a
+                 | ["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"] | index($a))
         | ($roots[(.in_reply_to_id | tostring)]) as $root
         | select($root != null and $root.p != "" and $root.t != "")
         | {p: $root.p, t: $root.t, _c: 9,
