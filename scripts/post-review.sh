@@ -361,6 +361,12 @@ esac
 # four gates (review-verify.md), so the model lists every one that failed and
 # the poster renders them — a disclosure a model cannot forget or truncate away.
 # Silent when findings are present: they are already the answer.
+#
+# ACCEPTS A STRING OR AN ARRAY, and that is not defensive padding: the field
+# shipped as a single string, so a model on an older skill — or one that names
+# only the first gate it hit — still renders. `map` over a string is a jq ERROR,
+# which this stage swallows into an empty notice, so a type mismatch here does
+# not misrender, it disappears. That is the failure this arm exists to prevent.
 APPROVE_NOTICE=""
 if [ "$VERDICT" != "APPROVE" ] && [ "$(jq '(.meta.findings // []) | length' "$REVIEW_JSON" 2>/dev/null)" = "0" ]; then
   GATES=$(jq -r '
@@ -369,9 +375,10 @@ if [ "$VERDICT" != "APPROVE" ] && [ "$(jq '(.meta.findings // []) | length' "$RE
       elif . == "sensitive_path" then "it touches a sensitive path (auth, payments, migrations, CI or infra), always read by a human"
       elif . == "effort"         then "the diff needed more judgement than an unread approval allows"
       elif . == "docs_only_note" then "a docs-only diff carrying a note sets direction someone should confirm"
-      else . end;
+      else empty end;
     (.meta.approve_blocked_by // [])
-    | map(select(type == "string" and . != "none" and . != "findings") | say)
+    | (if type == "string" then [.] elif type == "array" then . else [] end)
+    | map(select(type == "string") | say)
     | unique | join("; ")' "$REVIEW_JSON" 2>/dev/null)
   [ -n "$GATES" ] && APPROVE_NOTICE=$'\n<sub>Not approved because '"$GATES"$'. No defect was found.</sub>\n'
 fi
