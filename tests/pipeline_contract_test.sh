@@ -1831,6 +1831,22 @@ want "…defaulting to Sonnet, like the workflow" "$LOCAL" \
 want "…while the subagents keep EVAL_MODEL" "$LOCAL" \
   'MODEL_HIGH="\$MODEL"'
 
+# ── a replied-to finding is demoted, never deleted ──────────────────────────
+# WHY THIS IS PINNED. `reply_rebuttal` is written in one of scan's three buckets,
+# so a finding scan walked past arrives with the field absent, indistinguishable
+# from one it checked. A round-1 critical must not vanish because a model omitted
+# one string: it stops blocking, it still gets read.
+want "review-verify demotes an unanswered reply rather than dropping it" "$VERIFY" \
+  'It is demoted, never deleted'
+want "…and the reply itself reaches the reader" "$VERIFY" \
+  'naming the reply in `what_to_know`'
+# N and "never add your own" bound the notes SCAN wrote; a stepped-down finding
+# is neither, and must not fall off the end of that budget.
+want "…outside the note cap" "$VERIFY" \
+  'outside the N cap'
+want "…and named as the one exception to never adding your own" "$VERIFY" \
+  'the single exception is the demoted replied-to finding'
+
 echo ""
 if [ "$fail" -eq 0 ]; then
   echo "All pipeline contract tests passed."

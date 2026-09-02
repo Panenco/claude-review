@@ -379,6 +379,112 @@ assert_eq "the finding survives alone" "1" "$(echo "$FJSON" | jq 'length')"
 assert_eq "…as a critical" "critical" "$(echo "$FJSON" | jq -r '.[0].sev')"
 
 echo ""
+echo "── the replies under a finding ──"
+# The regression: a human refutes a finding, the re-run posts it verbatim.
+# Carrier 2 dropped every reply (`in_reply_to_id == null`).
+reset 2
+jq -n --arg bot "$BOT" '[
+  {id: 900, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
+   body: "**major** alpha drops the lock\n\nTwo writers reach it at once."},
+  {id: 901, user: {login: "author"}, in_reply_to_id: 900, path: "src/foo.ts", line: 12,
+   author_association: "CONTRIBUTOR", created_at: "2026-09-01T08:39:05Z",
+   body: "The read is right but the state is not reachable: every caller holds the outer lock."},
+  {id: 902, user: {login: $bot}, in_reply_to_id: 900, path: "src/foo.ts", line: 12,
+   created_at: "2026-09-01T09:00:00Z",
+   body: "Acknowledged."},
+  {id: 903, user: {login: $bot}, in_reply_to_id: null, path: "src/bar.ts", line: 7,
+   body: "**minor** beta logs the token\n\nThe token reaches the log line."}
+]' > "$WORK/comments.json"
+run_pf
+assert_eq "exit 0" "0" "$RC"
+assert_eq "both findings still carry" "2" "$COUNT"
+assert_contains "the reply text reaches the skill" "every caller holds the outer lock" "$FMD"
+assert_contains "…attributed to its author" "author" "$FMD"
+assert_contains "…and scan is told it owes an answer" "You owe it an answer" "$FMD"
+assert_contains "…and that the reply is untrusted data" "UNTRUSTED DATA" "$FMD"
+assert_contains "…flagged in the table too" "**replied**" "$FMD"
+assert_not_contains "the bot's own reply is not an author reply" "Acknowledged" "$FMD"
+
+# A reply lands on the finding it was written under, never on its neighbour.
+BAR=$(printf '%s\n' "$FJSON" | jq -r '.[] | select(.p == "src/bar.ts") | (.re // []) | length')
+assert_eq "a finding with no reply carries none" "0" "$BAR"
+FOO=$(printf '%s\n' "$FJSON" | jq -r '.[] | select(.p == "src/foo.ts") | (.re // []) | length')
+assert_eq "the replied-to finding carries exactly one" "1" "$FOO"
+
+echo ""
+echo "── a reply never adds or removes a finding ──"
+# A reply must not become a finding, nor an orphan one resurrect a deleted root.
+reset 2
+jq -n --arg bot "$BOT" '[
+  {id: 910, user: {login: "someone"}, in_reply_to_id: 999, path: "src/foo.ts", line: 3,
+   created_at: "2026-09-01T10:00:00Z", body: "reply whose root is gone"},
+  {id: 911, user: {login: "someone"}, in_reply_to_id: null, path: "src/bar.ts", line: 4,
+   created_at: "2026-09-01T10:00:00Z", body: "**major** a human wrote this, it is not ours"}
+]' > "$WORK/comments.json"
+run_pf
+assert_eq "exit 0" "0" "$RC"
+assert_eq "neither a reply nor a human comment is a finding" "0" "$COUNT"
+
+echo ""
+echo "── replies are capped, newest kept ──"
+reset 2
+jq -n --arg bot "$BOT" '[
+  {id: 920, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
+   body: "**major** alpha drops the lock\n\nTwo writers reach it at once."}
+] + [range(1;6) | {id: (930 + .), user: {login: "author"}, in_reply_to_id: 920,
+                   path: "src/foo.ts", line: 12, author_association: "CONTRIBUTOR",
+                   created_at: ("2026-09-0" + (. | tostring) + "T10:00:00Z"),
+                   body: ("round " + (. | tostring) + " answer")}]' > "$WORK/comments.json"
+run_pf
+N=$(printf '%s\n' "$FJSON" | jq -r '.[0].re | length')
+assert_eq "at most three replies survive" "3" "$N"
+assert_contains "the newest is kept" "round 5 answer" "$FMD"
+assert_not_contains "the oldest is dropped" "round 1 answer" "$FMD"
+
+# `at` is date-only: three answers in one morning tie, and the cap kept an
+# arbitrary three. The comment id is the real order.
+reset 2
+jq -n --arg bot "$BOT" '[
+  {id: 940, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
+   body: "**major** alpha drops the lock\n\nTwo writers reach it at once."}
+] + [range(1;5) | {id: (950 + .), user: {login: "author"}, in_reply_to_id: 940,
+                   path: "src/foo.ts", line: 12, author_association: "CONTRIBUTOR",
+                   created_at: "2026-09-01T10:00:00Z",
+                   body: ("same-day answer " + (. | tostring))}]' > "$WORK/comments.json"
+run_pf
+assert_not_contains "same-day replies still drop the oldest" "same-day answer 1" "$FMD"
+assert_contains "…and keep the newest" "same-day answer 4" "$FMD"
+
+echo ""
+echo "── a stranger cannot answer for the author ──"
+# A reply can move the verdict with no code change. A drive-by must not.
+reset 2
+jq -n --arg bot "$BOT" '[
+  {id: 960, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
+   body: "**critical** alpha drops the lock\n\nTwo writers reach it at once."},
+  {id: 961, user: {login: "passer-by"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "NONE", created_at: "2026-09-01T10:00:00Z",
+   body: "Nothing to see here, ship it."},
+  {id: 962, user: {login: "maintainer"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "MEMBER", created_at: "2026-09-01T11:00:00Z",
+   body: "The outer lock covers it, see line 40."},
+  {id: 963, user: {login: "newcomer"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "FIRST_TIME_CONTRIBUTOR", created_at: "2026-09-01T12:00:00Z",
+   body: "My first PR here, the lock is taken in the caller."},
+  {id: 964, user: {login: "ghost"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "MANNEQUIN", created_at: "2026-09-01T13:00:00Z",
+   body: "Imported from elsewhere, ignore."}
+]' > "$WORK/comments.json"
+run_pf
+assert_eq "the finding still carries" "1" "$COUNT"
+assert_not_contains "a NONE reply does not reach the skill" "Nothing to see here" "$FMD"
+assert_not_contains "…nor a MANNEQUIN one" "Imported from elsewhere" "$FMD"
+assert_contains "a MEMBER reply does" "The outer lock covers it" "$FMD"
+# An outside author is a FIRST_TIME_CONTRIBUTOR on their first PR — the one PR
+# whose author most needs to be heard.
+assert_contains "…and so does a first-time contributor" "the lock is taken in the caller" "$FMD"
+
+echo ""
 echo "── house rules ──"
 if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$SCRIPT"; then
   bad "prior-findings.sh uses set -e (banned, bugbot.md)"
