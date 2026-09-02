@@ -3714,6 +3714,30 @@ assert_eq "only the gate we know is named" \
   "$NOTICE"
 rm -rf "$W"
 
+# `meta` is model-written and can be empty while criticals post inline. "No
+# defect was found" printed under those criticals is the review contradicting
+# itself, so a REQUEST_CHANGES never reaches the notice and a severity-marked
+# comment suppresses it even when meta.findings is empty.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nBroken.",
+        comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
+                    body: "**critical** the lock is dropped\n\nTwo writers reach it."}],
+        meta: {findings: [], human_review: [], approve_blocked_by: ["sensitive_path"]}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "a REQUEST_CHANGES never says no defect was found" "No defect was found" "$BODY"
+rm -rf "$W"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne minor.",
+        comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
+                    body: "**minor** the log line carries the token\n\nIt reaches the log."}],
+        meta: {findings: [], human_review: [], approve_blocked_by: ["effort"]}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "…nor does a COMMENT whose finding lives only in a comment" "No defect was found" "$BODY"
+rm -rf "$W"
+
 # The skill says the field is an array. If that schema line ever goes back to a
 # bare string the poster still works, but the instruction must stay honest.
 if grep -q '"approve_blocked_by": \[' skills/review-verify.md; then

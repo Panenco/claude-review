@@ -363,8 +363,18 @@ esac
 # A STRING IS ACCEPTED TOO. `map` over one is a jq ERROR, which this stage
 # swallows into an empty notice — a type mismatch here does not misrender, it
 # disappears. The field shipped as a string once, and silence is expensive.
+#
+# COMMENT ONLY, AND NOT ON meta.findings ALONE. `meta` is model-written and can
+# be empty while three criticals post inline (section 4 says the same, and says
+# why). "No defect was found" printed under those criticals is the review
+# contradicting itself, so the severity-marked comments are counted too, and a
+# REQUEST_CHANGES never reaches here whatever meta says.
 APPROVE_NOTICE=""
-if [ "$VERDICT" != "APPROVE" ] && [ "$(jq '(.meta.findings // []) | length' "$REVIEW_JSON" 2>/dev/null)" = "0" ]; then
+if [ "$VERDICT" = "COMMENT" ] \
+   && [ "$(jq '((.meta.findings // []) | length)
+               + ([(.comments // [])[] | select(((.body // "")
+                   | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i")))] | length)' \
+          "$REVIEW_JSON" 2>/dev/null)" = "0" ]; then
   GATES=$(jq -r '
     def say:
       if   . == "no_argument"    then "the scan produced no approve argument"
