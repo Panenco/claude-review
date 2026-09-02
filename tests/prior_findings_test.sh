@@ -336,6 +336,49 @@ assert_contains "a corrupt block still warns" \
   "state block is present but unreadable" "$OUT"
 
 echo ""
+echo "── a check comment is orientation, never a carried finding ──"
+# Round 1's checks came back as prior findings with an empty severity, and with
+# no bucket for a note they were re-emitted every round. Carrier 2 is the last
+# arm that missed the exclusion post-review.sh already applies.
+reset 2
+printf '[%s,%s]\n' \
+  "$(comment src/foo.ts 81 '**check** The basis rides on the opportunity detail, not the evidence response.
+
+[spec](https://example.test/doc)')" \
+  "$(comment src/bar.ts 10 '**major** delta drops the tenant filter
+
+a staff read returns every tenants rows')" > "$WORK/comments.json"
+run_pf
+assert_eq "exit 0" "0" "$RC"
+assert_eq "only the finding is carried" "1" "$(echo "$FJSON" | jq 'length')"
+assert_eq "…and it is the major" "major" "$(echo "$FJSON" | jq -r '.[0].sev')"
+assert_not_contains "the check does not reach the model" "basis rides on" "$FMD"
+assert_not_contains "…nor does its spec link land in the scenario slot" "example.test" "$FMD"
+assert_contains "the real finding still does" "drops the tenant filter" "$FMD"
+
+echo ""
+echo "── …whatever case the marker is written in ──"
+reset 2
+printf '[%s]\n' "$(comment src/foo.ts 81 '**Check** Mixed-case marker, still a note.')" \
+  > "$WORK/comments.json"
+run_pf
+assert_eq "count is 0" "0" "$COUNT"
+assert_not_contains "no sev-less row is rendered" "Mixed-case marker" "$FMD"
+
+echo ""
+echo "── a check sitting on a finding's own lines suppresses neither ──"
+# A check may share path:line with a finding; dropping it must not drop that.
+reset 2
+printf '[%s,%s]\n' \
+  "$(comment src/foo.ts 11 '**check** What this block is for.')" \
+  "$(comment src/foo.ts 11 '**critical** alpha loops forever
+
+a 401 spins the refresh forever')" > "$WORK/comments.json"
+run_pf
+assert_eq "the finding survives alone" "1" "$(echo "$FJSON" | jq 'length')"
+assert_eq "…as a critical" "critical" "$(echo "$FJSON" | jq -r '.[0].sev')"
+
+echo ""
 echo "── house rules ──"
 if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$SCRIPT"; then
   bad "prior-findings.sh uses set -e (banned, bugbot.md)"

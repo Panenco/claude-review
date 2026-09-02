@@ -140,7 +140,13 @@ if [ "$C2_OK" = "1" ]; then
             | until((($s[:.i]) | utf8bytelength) <= $max; .i = (.i - 1))
             | $s[:.i]) end;
     (add // [])
-    | [ .[] | select(((.user.login? // "") == $bot) and ((.in_reply_to_id // null) == null)) ]
+    # Checks excluded, as in post-review.sh. A check has no severity, and scan
+    # must file every prior finding as carried or resolved — neither fits a note,
+    # so it came back reworded every round. NO APOSTROPHES: this jq program is
+    # one single-quoted shell string and an apostrophe ends it.
+    | [ .[] | select(((.user.login? // "") == $bot)
+                     and ((.in_reply_to_id // null) == null)
+                     and (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)) ]
     | map(((.body // "") | split("\n")) as $lines
           | ($lines[0] // "") as $first
           | (($first | ascii_downcase)
