@@ -337,11 +337,9 @@ assert_contains "a corrupt block still warns" \
 
 echo ""
 echo "── a check comment is orientation, never a carried finding ──"
-# spendfuse#373: round 1's checks came back to the model as prior findings with an
-# empty severity. There is no bucket for a note — round 2 cannot resolve one — so
-# it was re-emitted a line away and the author answered it twice in one morning.
-# post-review.sh already excludes checks from the state block and kept-keys.txt;
-# carrier 2 is the arm that reads the comments straight back off the API.
+# Round 1's checks came back as prior findings with an empty severity, and with
+# no bucket for a note they were re-emitted every round. Carrier 2 is the last
+# arm that missed the exclusion post-review.sh already applies.
 reset 2
 printf '[%s,%s]\n' \
   "$(comment src/foo.ts 81 '**check** The basis rides on the opportunity detail, not the evidence response.
@@ -369,8 +367,7 @@ assert_not_contains "no sev-less row is rendered" "Mixed-case marker" "$FMD"
 
 echo ""
 echo "── a check sitting on a finding's own lines suppresses neither ──"
-# A check may legitimately share path:line with a finding. Dropping the check must
-# not drop the finding that happens to live there.
+# A check may share path:line with a finding; dropping it must not drop that.
 reset 2
 printf '[%s,%s]\n' \
   "$(comment src/foo.ts 11 '**check** What this block is for.')" \
