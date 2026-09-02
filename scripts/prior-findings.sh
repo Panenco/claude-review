@@ -163,12 +163,11 @@ fi
   || echo "::warning::Could not read prior inline comments — carrying findings from the review bodies alone."
 
 # ── the replies under a finding ──
-# Carrier 2 keeps only top-level bot comments, so the replies under them never
-# reached the skill and a re-run re-posted findings a human had already refuted.
-# Any non-bot replier counts — the author is the usual one, not the only one, so
-# the login is rendered rather than assumed.
-# Replies ride the same union and the same natural id as the findings; the merge
-# below hangs them on theirs. They add no finding and remove none.
+# Carrier 2 keeps only top-level bot comments, so a re-run re-posted findings a
+# human had already refuted. Replies ride the same union and the same natural id
+# as the findings; the merge below hangs them on theirs, adding none and
+# removing none. The replier is usually but not always the author, so the login
+# is rendered rather than assumed.
 echo '[]' > "$WORK/replies.json"
 if [ "$C2_OK" = "1" ]; then
   jq -s --arg bot "$BOT" '
@@ -180,15 +179,10 @@ if [ "$C2_OK" = "1" ]; then
                     t: ((((.body // "") | split("\n"))[0] // "")
                         | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; ""))}} ]
        | from_entries) as $roots
-    # WHO MAY REPLY. A reply can send scan to `resolved_prior`, or drop a finding
-    # to a note, so it is a privileged input: a drive-by comment under a critical
-    # must not be able to move the verdict with no code change.
-    # A DENYLIST, NOT AN ALLOWLIST, and that is the whole point. The allowlist
-    # this replaced named OWNER/MEMBER/COLLABORATOR/CONTRIBUTOR and silently
-    # dropped `FIRST_TIME_CONTRIBUTOR` — an outside author is a first-timer on
-    # their FIRST PR, which is precisely the PR whose author most needs to be
-    # heard, and the drop is invisible. GitHub gives a stranger `NONE`, and a
-    # deleted or imported account `MANNEQUIN`. Those two, and nothing else.
+    # A reply can send scan to `resolved_prior` or drop a finding to a note, so a
+    # drive-by must not have one. A DENYLIST: an allowlist of the contributor
+    # tiers silently drops FIRST_TIME_CONTRIBUTOR, which is an outside author on
+    # their first PR. `NONE` is the stranger, `MANNEQUIN` an imported account.
     | [ $all[]
         | select(((.in_reply_to_id // null) != null) and ((.user.login? // "") != $bot))
         | select((.author_association // "NONE") as $a
