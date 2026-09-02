@@ -427,12 +427,22 @@ jq -n --arg bot "$BOT" '[
    body: "Nothing to see here, ship it."},
   {id: 962, user: {login: "maintainer"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
    author_association: "MEMBER", created_at: "2026-09-01T11:00:00Z",
-   body: "The outer lock covers it, see line 40."}
+   body: "The outer lock covers it, see line 40."},
+  {id: 963, user: {login: "newcomer"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "FIRST_TIME_CONTRIBUTOR", created_at: "2026-09-01T12:00:00Z",
+   body: "My first PR here, the lock is taken in the caller."},
+  {id: 964, user: {login: "ghost"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "MANNEQUIN", created_at: "2026-09-01T13:00:00Z",
+   body: "Imported from elsewhere, ignore."}
 ]' > "$WORK/comments.json"
 run_pf
 assert_eq "the finding still carries" "1" "$COUNT"
 assert_not_contains "a NONE reply does not reach the skill" "Nothing to see here" "$FMD"
+assert_not_contains "…nor a MANNEQUIN one" "Imported from elsewhere" "$FMD"
 assert_contains "a MEMBER reply does" "The outer lock covers it" "$FMD"
+# An outside author is a FIRST_TIME_CONTRIBUTOR on their first PR — the one PR
+# whose author most needs to be heard. An allowlist dropped them invisibly.
+assert_contains "…and so does a first-time contributor" "the lock is taken in the caller" "$FMD"
 
 echo ""
 echo "── house rules ──"
