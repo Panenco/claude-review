@@ -3646,8 +3646,7 @@ rm -rf "$W"
 
 echo ""
 echo "── why this is not an approve ──"
-# A COMMENT with no findings and no checks, whose own body says nothing new
-# survived, used to leave the reader guessing at which gate held the approval.
+# A COMMENT with no findings left the reader guessing at which gate held it.
 W=$(mktemp -d)
 cat > "$W/review.json" <<'EOF'
 {
@@ -3692,10 +3691,8 @@ BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_not_contains "a review with no gate field is not editorialised over" "Not approved" "$BODY"
 rm -rf "$W"
 
-# THE REGRESSION THIS PINS. `approve_blocked_by` shipped in the schema as a
-# single STRING. `map` over a string is a jq error, the stage swallows it, and
-# the notice vanished with no trace — the disclosure was dead on the contract it
-# was written against. The schema is an array now; a string must still render.
+# THE REGRESSION THIS PINS. The field shipped as a STRING; `map` over one is a
+# jq error the stage swallows, so the disclosure was dead on its own contract.
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
         meta: {findings: [], human_review: [], approve_blocked_by: "sensitive_path"}}' > "$W/review.json"
@@ -3704,8 +3701,8 @@ BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_contains "a single string still renders the gate" "sensitive path" "$BODY"
 rm -rf "$W"
 
-# `none` and `findings` name no gate the author can act on, and a token we do
-# not know is model noise — none of them reach the body as raw jargon.
+# `none`, `findings` and anything unrecognised name no gate the author can act
+# on, so none of them reach the body as raw jargon.
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
         meta: {findings: [], human_review: [], approve_blocked_by: ["none", "vibes", "effort"]}}' > "$W/review.json"

@@ -356,17 +356,13 @@ case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
 esac
 
 # ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────
-# A verdict that withholds the approval while finding nothing used to say
-# nothing about why, leaving the author to guess. APPROVE is a conjunction of
-# four gates (review-verify.md), so the model lists every one that failed and
-# the poster renders them — a disclosure a model cannot forget or truncate away.
-# Silent when findings are present: they are already the answer.
-#
-# ACCEPTS A STRING OR AN ARRAY, and that is not defensive padding: the field
-# shipped as a single string, so a model on an older skill — or one that names
-# only the first gate it hit — still renders. `map` over a string is a jq ERROR,
-# which this stage swallows into an empty notice, so a type mismatch here does
-# not misrender, it disappears. That is the failure this arm exists to prevent.
+# APPROVE is a conjunction of four gates (review-verify.md); the model names
+# every one that failed and the poster renders them, so a verdict that finds
+# nothing and still withholds the approval says why. Silent when there are
+# findings: they are already the answer.
+# A STRING IS ACCEPTED TOO. `map` over one is a jq ERROR, which this stage
+# swallows into an empty notice — a type mismatch here does not misrender, it
+# disappears. The field shipped as a string once, and silence is expensive.
 APPROVE_NOTICE=""
 if [ "$VERDICT" != "APPROVE" ] && [ "$(jq '(.meta.findings // []) | length' "$REVIEW_JSON" 2>/dev/null)" = "0" ]; then
   GATES=$(jq -r '
