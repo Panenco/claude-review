@@ -40,10 +40,8 @@ emit() { printf 'proceed=%s\ngate=%s\nverdict=%s\nreason=%s\n' "$1" "$2" "$3" "$
 GENERATED_GLOBS="${GATE_GENERATED_GLOBS:-}" # extra, repo-declared build output.
 
 # Excluded from the size count: their presence never makes a PR "big". Only the
-# ACCOUNTING moves — the model still receives the whole diff — so a false
-# positive here costs nothing while a false negative refuses the PR unread.
-# seaters#2103 was refused at "45478 non-generated lines"; 45335 of them were one
-# committed openapi.combined.json, and the 143 lines it hid held three defects.
+# ACCOUNTING moves — the model still gets the whole diff — so a false positive
+# here costs nothing while a false negative refuses the PR unread.
 is_generated() {
   case "$1" in
     *.lock|package-lock.json|pnpm-lock.yaml|*.snap) return 0 ;;

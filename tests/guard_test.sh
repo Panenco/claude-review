@@ -203,9 +203,8 @@ assert_gate "a huge lockfile beside a small diff is not oversized" "true ok -" \
 assert_gate "70 generated files beside one source file is not oversized" "true ok -" \
   GATE_FILES_TSV="$(for i in $(seq 1 70); do printf 'dist/f%d.min.js\t10\t10\n' "$i"; done)"$'\nsrc/a.ts\t5\t5'
 
-# seaters#2103: refused at "8 files, 45478 non-generated lines, no code was read".
-# 45335 of them were one committed openapi.combined.json. The reviewable diff was
-# 143 lines, and a human found three defects in it, one blocking.
+# One committed openapi.combined.json put a 143-line reviewable diff over 45000
+# lines, and the PR was refused with no code read. It held three defects.
 assert_gate "a committed OpenAPI spec beside a small diff is not oversized" "true ok -" \
   GATE_FILES_TSV=$'openapi.combined.json\t22800\t22535\nscripts/openapi/boot-java.sh\t50\t26\n.github/workflows/ci-node.yml\t14\t3'
 assert_gate "…and a nested one too" "true ok -" \
@@ -316,10 +315,9 @@ fi
 # creeping back in, not against a comment, a single override, or one more line of
 # output — and the depth scale is deliberately a continuous function rather than
 # the tiers, which is why it cost four lines and not forty.
-# → 153 for the generated-file list: THREE case arms for committed codegen
-# output, a three-line loop for the repo-declared globs, the `set -f` that keeps
-# those globs literal, and the comments naming what paid for them. Still one flat
-# predicate with no branching on size, which is the property this ceiling protects.
+# → 153 for the generated-file list: three case arms, a loop for the repo-declared
+# globs, and the `set -f` that keeps those globs literal. Still one flat predicate
+# with no branching on size, which is the property this ceiling protects.
 LINES=$(grep -c '' "$SCRIPT")
 if [ "$LINES" -le 153 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
