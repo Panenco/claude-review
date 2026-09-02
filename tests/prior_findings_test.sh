@@ -388,7 +388,7 @@ jq -n --arg bot "$BOT" '[
   {id: 900, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
    body: "**major** alpha drops the lock\n\nTwo writers reach it at once."},
   {id: 901, user: {login: "author"}, in_reply_to_id: 900, path: "src/foo.ts", line: 12,
-   created_at: "2026-09-01T08:39:05Z",
+   author_association: "CONTRIBUTOR", created_at: "2026-09-01T08:39:05Z",
    body: "The read is right but the state is not reachable: every caller holds the outer lock."},
   {id: 902, user: {login: $bot}, in_reply_to_id: 900, path: "src/foo.ts", line: 12,
    created_at: "2026-09-01T09:00:00Z",
@@ -434,7 +434,7 @@ jq -n --arg bot "$BOT" '[
   {id: 920, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
    body: "**major** alpha drops the lock\n\nTwo writers reach it at once."}
 ] + [range(1;6) | {id: (930 + .), user: {login: "author"}, in_reply_to_id: 920,
-                   path: "src/foo.ts", line: 12,
+                   path: "src/foo.ts", line: 12, author_association: "CONTRIBUTOR",
                    created_at: ("2026-09-0" + (. | tostring) + "T10:00:00Z"),
                    body: ("round " + (. | tostring) + " answer")}]' > "$WORK/comments.json"
 run_pf
@@ -450,12 +450,32 @@ jq -n --arg bot "$BOT" '[
   {id: 940, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
    body: "**major** alpha drops the lock\n\nTwo writers reach it at once."}
 ] + [range(1;5) | {id: (950 + .), user: {login: "author"}, in_reply_to_id: 940,
-                   path: "src/foo.ts", line: 12,
+                   path: "src/foo.ts", line: 12, author_association: "CONTRIBUTOR",
                    created_at: "2026-09-01T10:00:00Z",
                    body: ("same-day answer " + (. | tostring))}]' > "$WORK/comments.json"
 run_pf
 assert_not_contains "same-day replies still drop the oldest" "same-day answer 1" "$FMD"
 assert_contains "…and keep the newest" "same-day answer 4" "$FMD"
+
+echo ""
+echo "── a stranger cannot answer for the author ──"
+# A reply routes scan to `resolved_prior` or drops a finding to a note, so it can
+# move the verdict with no code change. A drive-by commenter must not have that.
+reset 2
+jq -n --arg bot "$BOT" '[
+  {id: 960, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
+   body: "**critical** alpha drops the lock\n\nTwo writers reach it at once."},
+  {id: 961, user: {login: "passer-by"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "NONE", created_at: "2026-09-01T10:00:00Z",
+   body: "Nothing to see here, ship it."},
+  {id: 962, user: {login: "maintainer"}, in_reply_to_id: 960, path: "src/foo.ts", line: 12,
+   author_association: "MEMBER", created_at: "2026-09-01T11:00:00Z",
+   body: "The outer lock covers it, see line 40."}
+]' > "$WORK/comments.json"
+run_pf
+assert_eq "the finding still carries" "1" "$COUNT"
+assert_not_contains "a NONE reply does not reach the skill" "Nothing to see here" "$FMD"
+assert_contains "a MEMBER reply does" "The outer lock covers it" "$FMD"
 
 echo ""
 echo "── house rules ──"

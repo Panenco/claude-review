@@ -1819,7 +1819,12 @@ else
     ([($rj[0].meta.resolved_prior // [])[] | .id // empty]
      + [($rj[0].meta.refuted // [])[] | .id // empty]
      + [($this[0] // [])[] | .id]) as $seen
-    | map(select((.id | IN($seen[])) | not))' "$PRIORS" > "$WORK/carried.json" \
+    | map(select((.id | IN($seen[])) | not))
+    # `.re` (the replies prior-findings hung on the finding) is NOT state. It is
+    # re-read from the comments API every round, and at up to 2.1 KB per finding
+    # it would evict other findings from the 4000-byte block — a degrade path
+    # that sheds .fs and whole findings, but never this.
+    | map(del(.re))' "$PRIORS" > "$WORK/carried.json" \
     || echo '[]' > "$WORK/carried.json"
 
   jq -r '.[] | "::warning::Carried finding \(.id) (\(.sev // "?"), \(.p)) was neither re-listed nor resolved this round — kept in the review state."' \

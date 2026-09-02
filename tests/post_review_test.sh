@@ -1279,6 +1279,28 @@ assert_contains "the run log names it" "::warning::Carried finding 7f3a1c2b" "$O
 assert_contains "the step summary lists it" "### Carried from earlier rounds (1)" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
+# p6b: the replies prior-findings hangs on a finding are NOT state. They are
+# re-read from the comments API every round, and at up to 2.1 KB per finding
+# they would evict other findings from the 4000-byte block — a degrade path
+# that sheds .fs and whole findings, but has no idea .re exists.
+W=$(mktemp -d)
+P_RE=$(mktemp)
+jq -n --arg big "$(head -c 700 /dev/zero | tr '\0' 'x')" '
+  [{id: "7f3a1c2b", p: "src/foo.ts", l: 42, sev: "critical",
+    t: "cache key omits the tenant", fs: "tenant B sees A rows", r: 1,
+    re: [{who: "author", at: "2026-09-01", body: $big},
+         {who: "author", at: "2026-09-02", body: $big},
+         {who: "author", at: "2026-09-02", body: $big}]}]' > "$P_RE"
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nThe delta is clean.",
+        comments: [], meta: {findings: [], resolved_prior: []}}' > "$W/review.json"
+PRIOR_FINDINGS="$P_RE" ROUND_N=2 FIXTURE_REVIEWS="" FIXTURE_FILES="$P_WIDE" run_poster "$W"
+STATE=$(state_block "$(payload_of "$W" | jq -r '.body')")
+assert_eq "the finding is still carried" "1" "$(echo "$STATE" | jq '.findings | length')"
+assert_eq "…with no reply payload in the state" "null" "$(echo "$STATE" | jq -r '.findings[0].re // "null"')"
+assert_eq "…and its scenario intact, not degraded away" "tenant B sees A rows" \
+  "$(echo "$STATE" | jq -r '.findings[0].fs')"
+rm -rf "$W" "$P_RE"
+
 # p7: the same carry, resolved with evidence — gone from the state, no warning.
 W=$(mktemp -d)
 jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nThe delta is clean.",
