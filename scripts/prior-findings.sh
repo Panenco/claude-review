@@ -188,12 +188,17 @@ if [ "$C2_OK" = "1" ]; then
        | from_entries) as $roots
     # WHO MAY REPLY. A reply can send scan to `resolved_prior`, or drop a finding
     # to a note, so it is a privileged input: a drive-by comment under a critical
-    # must not be able to move the verdict with no code change. `NONE` is exactly
-    # that stranger; the PR author is at least `CONTRIBUTOR` on their own PR.
+    # must not be able to move the verdict with no code change.
+    # A DENYLIST, NOT AN ALLOWLIST, and that is the whole point. The allowlist
+    # this replaced named OWNER/MEMBER/COLLABORATOR/CONTRIBUTOR and silently
+    # dropped `FIRST_TIME_CONTRIBUTOR` — an outside author is a first-timer on
+    # their FIRST PR, which is precisely the PR whose author most needs to be
+    # heard, and the drop is invisible. GitHub gives a stranger `NONE`, and a
+    # deleted or imported account `MANNEQUIN`. Those two, and nothing else.
     | [ $all[]
         | select(((.in_reply_to_id // null) != null) and ((.user.login? // "") != $bot))
         | select((.author_association // "NONE") as $a
-                 | ["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"] | index($a))
+                 | ["NONE","MANNEQUIN"] | index($a) | not)
         | ($roots[(.in_reply_to_id | tostring)]) as $root
         | select($root != null and $root.p != "" and $root.t != "")
         | {p: $root.p, t: $root.t, _c: 9,

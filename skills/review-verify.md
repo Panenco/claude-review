@@ -114,7 +114,7 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 **The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
 
-**An unanswered author reply is not a surviving finding.** A carried finding whose author replied, arriving with no `reply_rebuttal`, was not re-checked: drop it to a note and let the verdict follow.
+**A reply scan never answered is not a surviving finding.** A carried finding with a reply, arriving with no `reply_rebuttal`, was not re-checked against that reply — so it has not earned a blocking severity this round. Drop it to a note, naming the reply in `what_to_know`, and let the verdict follow. **It is demoted, never deleted**: the reader still gets it, and a human still decides. Scan writing a rebuttal you then refute is the ordinary path and settles under the refutation test above; this line is only for the finding scan walked past.
 
 **Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote.
 
