@@ -570,6 +570,41 @@ want "the workflow hands the poster the same wait the orchestrator uses" "$WORKF
 want "post-review keys the skip notice on whether the TESTER ran, not the rc" "$POSTER" \
   'THE QUESTION IS "DID THE TESTER RUN\?", NOT "DID THE BRING-UP FAIL\?"'
 
+# ── the omission pass: what the copy left out ───────────────────────────────
+# WHY THIS IS PINNED. A PR was APPROVED with a full functional pass; a human then
+# filed three findings, all in code the review had already named as a matching
+# sibling. It had compared FILENAMES. Tracing values, counts and callers cannot
+# reach this class: every line in the diff is correct, and the defect is the
+# absent one.
+want "review-scan runs an omission pass against the counterpart" "$SCAN" \
+  'open what the new code was copied from'
+want "…and says why tracing the new lines cannot find it" "$SCAN" \
+  'the defect is the line that is not there'
+want "…that naming a sibling is not reading it" "$SCAN" \
+  'Naming a sibling is not the same as reading it'
+want "…that a match claim must be earned by listing" "$SCAN" \
+  'is a finding-sized claim'
+# The bound matters as much as the pass: "be more like the neighbour" has no
+# failure scenario and is the redesign shape ADR 0004 already refuses.
+want "…bounded to what this code's own job needs" "$SCAN" \
+  'only what this code'"'"'s own job also needs'
+want "…and refusing the bare resemblance argument" "$SCAN" \
+  'be more like the neighbour'
+
+# ── premises the review never read ──────────────────────────────────────────
+# WHY THIS IS PINNED. Every "your premise is inverted" rebuttal we have measured
+# was a finding resting on an unread source — a third-party action's inputs, the
+# runner model — refuted by an author who read it. The "ground it in the
+# checkout" rule existed, but only for human_review notes.
+want "review-scan holds findings to the checkout too" "$SCAN" \
+  'A premise you did not read is not evidence'
+want "…naming the out-of-diff sources it covers" "$SCAN" \
+  'a marketplace action, the CI runner model, a library default'
+want "review-verify refutes an unreadable premise rather than passing it" "$VERIFY" \
+  'Out-of-checkout premises'
+want "…and does not go fetch it either" "$VERIFY" \
+  'you must not go fetch it'
+
 # ── the cardinality pass ────────────────────────────────────────────────────
 # WHY THIS IS PINNED. spendfuse#351 (5572 non-generated lines, depth `full`,
 # effort 4) produced ONE minor finding, and Anthropic's own plugin over the same
