@@ -380,9 +380,8 @@ assert_eq "…as a critical" "critical" "$(echo "$FJSON" | jq -r '.[0].sev')"
 
 echo ""
 echo "── the replies under a finding ──"
-# The regression: the author replies refuting a finding, the re-run posts the
-# same finding verbatim. Carrier 2 dropped every reply (`in_reply_to_id == null`),
-# so round 2 never knew one existed.
+# The regression: a human refutes a finding, the re-run posts it verbatim.
+# Carrier 2 dropped every reply (`in_reply_to_id == null`).
 reset 2
 jq -n --arg bot "$BOT" '[
   {id: 900, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
@@ -414,8 +413,7 @@ assert_eq "the replied-to finding carries exactly one" "1" "$FOO"
 
 echo ""
 echo "── a reply never adds or removes a finding ──"
-# The failure to avoid is a reply becoming a finding of its own, or an orphan
-# reply (its root deleted) resurrecting one.
+# A reply must not become a finding, nor an orphan one resurrect a deleted root.
 reset 2
 jq -n --arg bot "$BOT" '[
   {id: 910, user: {login: "someone"}, in_reply_to_id: 999, path: "src/foo.ts", line: 3,
@@ -443,8 +441,8 @@ assert_eq "at most three replies survive" "3" "$N"
 assert_contains "the newest is kept" "round 5 answer" "$FMD"
 assert_not_contains "the oldest is dropped" "round 1 answer" "$FMD"
 
-# `at` is date-only, so a thread answered three times in one morning ties on it
-# and the cap would keep an arbitrary three. The comment id is the real order.
+# `at` is date-only: three answers in one morning tie, and the cap kept an
+# arbitrary three. The comment id is the real order.
 reset 2
 jq -n --arg bot "$BOT" '[
   {id: 940, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
@@ -459,8 +457,7 @@ assert_contains "…and keep the newest" "same-day answer 4" "$FMD"
 
 echo ""
 echo "── a stranger cannot answer for the author ──"
-# A reply routes scan to `resolved_prior` or drops a finding to a note, so it can
-# move the verdict with no code change. A drive-by commenter must not have that.
+# A reply can move the verdict with no code change. A drive-by must not.
 reset 2
 jq -n --arg bot "$BOT" '[
   {id: 960, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
@@ -484,7 +481,7 @@ assert_not_contains "a NONE reply does not reach the skill" "Nothing to see here
 assert_not_contains "…nor a MANNEQUIN one" "Imported from elsewhere" "$FMD"
 assert_contains "a MEMBER reply does" "The outer lock covers it" "$FMD"
 # An outside author is a FIRST_TIME_CONTRIBUTOR on their first PR — the one PR
-# whose author most needs to be heard. An allowlist dropped them invisibly.
+# whose author most needs to be heard.
 assert_contains "…and so does a first-time contributor" "the lock is taken in the caller" "$FMD"
 
 echo ""

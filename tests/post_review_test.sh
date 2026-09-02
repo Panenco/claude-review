@@ -1279,10 +1279,9 @@ assert_contains "the run log names it" "::warning::Carried finding 7f3a1c2b" "$O
 assert_contains "the step summary lists it" "### Carried from earlier rounds (1)" "$(cat "$W/summary.md")"
 rm -rf "$W"
 
-# p6b: the replies prior-findings hangs on a finding are NOT state. They are
-# re-read from the comments API every round, and at up to 2.1 KB per finding
-# they would evict other findings from the 4000-byte block — a degrade path
-# that sheds .fs and whole findings, but has no idea .re exists.
+# p6b: replies are not state — re-read from the API every round, and at 2.1 KB
+# per finding they would evict findings from the 4000-byte block, via a degrade
+# path that sheds .fs and whole findings but has no idea .re exists.
 W=$(mktemp -d)
 P_RE=$(mktemp)
 jq -n --arg big "$(head -c 700 /dev/zero | tr '\0' 'x')" '
