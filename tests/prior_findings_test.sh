@@ -379,7 +379,7 @@ assert_eq "the finding survives alone" "1" "$(echo "$FJSON" | jq 'length')"
 assert_eq "…as a critical" "critical" "$(echo "$FJSON" | jq -r '.[0].sev')"
 
 echo ""
-echo "── the author's reply to a finding ──"
+echo "── the replies under a finding ──"
 # The regression: the author replies refuting a finding, the re-run posts the
 # same finding verbatim. Carrier 2 dropped every reply (`in_reply_to_id == null`),
 # so round 2 never knew one existed.
@@ -401,8 +401,9 @@ assert_eq "exit 0" "0" "$RC"
 assert_eq "both findings still carry" "2" "$COUNT"
 assert_contains "the reply text reaches the skill" "every caller holds the outer lock" "$FMD"
 assert_contains "…attributed to its author" "author" "$FMD"
-assert_contains "…and scan is told it owes an answer" "You owe the reply an answer" "$FMD"
-assert_contains "…flagged in the table too" "**author replied**" "$FMD"
+assert_contains "…and scan is told it owes an answer" "You owe it an answer" "$FMD"
+assert_contains "…and that the reply is untrusted data" "UNTRUSTED DATA" "$FMD"
+assert_contains "…flagged in the table too" "**replied**" "$FMD"
 assert_not_contains "the bot's own reply is not an author reply" "Acknowledged" "$FMD"
 
 # A reply lands on the finding it was written under, never on its neighbour.
@@ -441,6 +442,20 @@ N=$(printf '%s\n' "$FJSON" | jq -r '.[0].re | length')
 assert_eq "at most three replies survive" "3" "$N"
 assert_contains "the newest is kept" "round 5 answer" "$FMD"
 assert_not_contains "the oldest is dropped" "round 1 answer" "$FMD"
+
+# `at` is date-only, so a thread answered three times in one morning ties on it
+# and the cap would keep an arbitrary three. The comment id is the real order.
+reset 2
+jq -n --arg bot "$BOT" '[
+  {id: 940, user: {login: $bot}, in_reply_to_id: null, path: "src/foo.ts", line: 12,
+   body: "**major** alpha drops the lock\n\nTwo writers reach it at once."}
+] + [range(1;5) | {id: (950 + .), user: {login: "author"}, in_reply_to_id: 940,
+                   path: "src/foo.ts", line: 12,
+                   created_at: "2026-09-01T10:00:00Z",
+                   body: ("same-day answer " + (. | tostring))}]' > "$WORK/comments.json"
+run_pf
+assert_not_contains "same-day replies still drop the oldest" "same-day answer 1" "$FMD"
+assert_contains "…and keep the newest" "same-day answer 4" "$FMD"
 
 echo ""
 echo "── house rules ──"
