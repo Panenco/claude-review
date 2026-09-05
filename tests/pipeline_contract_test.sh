@@ -431,6 +431,19 @@ if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE '(nor|not) a 
 else
   bad "review-verify's REQUEST_CHANGES rule must exclude comment-noise findings on line ${RC_LINE:-?}"
 fi
+# A note that names who-hits-what is a finding mislabelled. replay of one client PR at the head a human reviewed:
+# scan wrote "an API on a machine with an older poppler now refuses to boot"
+# as a note, exactly the shape the human filed as a defect. Scan is told the
+# shape is never a note; verify relabels one that arrives anyway.
+want "review-scan refuses a note that names who now hits what" "$SCAN" \
+  'A sentence that names who now hits what'
+want "review-verify does not refute a dropped test by the guard still being there" "$VERIFY" \
+  'A dropped test is not refuted by the code it guarded being correct'
+want "review-verify relabels such a note as a minor finding" "$VERIFY" \
+  'names who now hits what is a finding wearing the wrong label'
+want "…never above minor" "$VERIFY" 'relabel.*`severity: "minor"` \(never higher'
+want "…and leaves a trace in meta.refuted" "$VERIFY" 'relabelled as a finding'
+
 # Cost guard: the whole point is TWO Reads, not a config subsystem. Each file
 # may name each config path exactly once — a second mention is a second read
 # site, which is how "read the config" grows back into one.

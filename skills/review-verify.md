@@ -18,6 +18,8 @@ For every candidate, in ONE pass over all of them:
 
 5. **Out-of-checkout premises** — when the scenario turns on how something outside the diff behaves (a marketplace action, the runner model, a library default, another repo's config), the finding needs that source quoted from a file in this checkout. Vendored or pinned on disk → read it and check the quote. Not on disk → refuted, because neither of you can check it and you must not go fetch it. This is where authors answer "your premise is inverted", and they answer it by reading the source the review only assumed.
 
+**A dropped test is not refuted by the code it guarded being correct at HEAD.** When the finding says a move or copy left a test behind, "the guard is still there" is the finding's premise, not its rebuttal — the defect is that nothing checks it any more. Refute it only by finding the assertion elsewhere in the checkout (the same input, the same expected outcome, under another name), or by showing the guarded code did not come across either. Measured: a shard found the three path-containment blocks a move dropped and verify killed it because `resolveWithin` still proved the path.
+
 **Keep a finding only if you can restate its failure_scenario yourself from the code you just read. Uncertain → refuted. Cannot reproduce the scenario on paper → refuted.** Dropping a real bug costs one missed comment; keeping a fake one costs the author's trust in every future review.
 
 **That test is about the defect, and only the defect.** `fix` is not under test here. A patch you judge wrong, unsafe or unconfirmable is settled separately under Inline comments, where its only two outcomes are keep the fence or replace it with prose. **Refuting a finding because its suggested fix is wrong is an error** — a confirmed defect with no safe patch is still a finding, and still gets posted.
@@ -129,6 +131,10 @@ Carry through up to N `human_review` notes from scan unchanged, where **N is `RE
 - **You cannot confirm the block.** `path` must be in the diff and `start_line`/`end_line` must both be lines this PR changed, covering the construct the note names. Re-anchor from your `Read` where you can; drop it where you cannot.
 - **The block is boilerplate.** Presentational markup, prop plumbing, a rename, a straight passthrough. A plain React component earns no note however well the note is written.
 - **A config file or a rule in `.claude/rules/` calls it intentional.** Suppression comes first, exactly as for a finding.
+
+**A note that names who now hits what is a finding wearing the wrong label, and you relabel it.** Scan is told not to write "an API on a machine with an older poppler now refuses to boot" or "a local POST now calls the live Google API" as a note, and still does: the sentence carries a person and a failure, so it is a `failure_scenario` already. This is not inventing a finding — the text is scan's — so move it: `severity: "minor"` (never higher; you did not trace it further than scan did), `path` and `line` from the note's `start_line`, `title` the note's first sentence, `failure_scenario` the note's text, the fix one prose sentence. Record the move under `meta.refuted` with `"kind": "human_review"` and reason `"relabelled as a finding"`. Then it is an ordinary finding and every test above applies to it. A note that merely describes a consequence with no one on the receiving end ("the boot check now enforces it") stays a note.
+
+A relabelled finding never carries a ```suggestion``` fence: its `fix` is the one prose sentence you wrote.
 
 **Do not drop a note because the block looks obvious to YOU.** You have read the whole diff and the source at HEAD; the reviewer meets the block cold. The test is redundancy with **the block as it stands on the page** — a note supplying intent, a job or a spec tie the code does not itself carry survives, however easily you worked it out.
 
