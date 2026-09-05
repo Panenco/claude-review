@@ -122,6 +122,15 @@ if grep -q '<!-- claude-review-state' "$WORK/state-body.txt" 2>/dev/null; then
   fi
 fi
 
+# ── the files the last round's shards never reviewed ──
+# Stamped by post-review.sh from merge-scans.sh; shard-plan.sh folds them into
+# the next plan so a lost shard costs one round, not the files.
+: > "$OUT_DIR/unreviewed-files.txt"
+if [ -s "$WORK/state.json" ]; then
+  jq -r '.unreviewed[]? // empty' "$WORK/state.json" > "$OUT_DIR/unreviewed-files.txt" 2>/dev/null \
+    || : > "$OUT_DIR/unreviewed-files.txt"
+fi
+
 # ── carrier 2: the inline comments, which the XOR rule deleted from the body ──
 echo '[]' > "$WORK/c2.json"
 C2_OK=1

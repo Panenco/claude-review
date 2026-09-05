@@ -61,7 +61,10 @@ run
 assert_eq "the surviving shards still merge" "merged=2" "$(grep -o 'merged=2' <<<"$OUT")"
 case "$OUT" in *"::warning::"*"3 shard(s) were planned and 2 reported"*) ok "a missing shard is warned about, by count" ;; *) bad "no missing-shard warning: $OUT" ;; esac
 assert_eq "…and the files nobody read withhold the approval" "" "$(q .approve_argument)"
-rm -f "$W/shard-count"
+printf 'src/lost-a.ts\nsrc/lost-b.ts\n' > "$W/shard-3.txt"
+run
+assert_eq "…and the missing shard's files are named for the next round" "src/lost-a.ts src/lost-b.ts" "$(paste -sd' ' "$W/unreviewed-files.txt")"
+rm -f "$W/shard-count" "$W/shard-3.txt"
 
 rm -f "$W"/scan*.json
 shard 1 'not json'

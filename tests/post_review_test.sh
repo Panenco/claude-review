@@ -156,6 +156,7 @@ run_poster() {
     REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
     ROUND="${ROUND_N:-}" \
     PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS:-$work/no-such-priors.json}" \
+    UNREVIEWED_FILE="${UNREVIEWED:-$work/no-such-unreviewed.txt}" \
     bash "$POSTER" 2>&1)
   RC=$?
 }
@@ -1500,6 +1501,28 @@ PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "both comments post inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_contains "the finding under the check keeps its bullet" "off-by-one" "$BODY"
 assert_not_contains "the inline finding's own bullet is still stripped" "— other" "$BODY"
+rm -rf "$W"
+
+# ── (u) files a scan shard never reviewed are named, and carried in the state ──
+# merge-scans.sh lists them; the poster must tell the reader and stamp them into
+# the state block, or the next delta round never reads them.
+echo ""
+echo "── (u) unreviewed files reach the reader and the next round ──"
+W=$(mktemp -d)
+printf 'src/lost-a.ts\nsrc/lost-b.ts\n' > "$W/unreviewed.txt"
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+UNREVIEWED="$W/unreviewed.txt" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_contains "the reader is told which files no shard reviewed" "2 file(s) were not reviewed this round" "$(visible_body "$BODY")"
+assert_contains "…by name" '`src/lost-a.ts`' "$(visible_body "$BODY")"
+assert_eq "…and the state block carries them for the next round" "src/lost-a.ts src/lost-b.ts" "$(state_block "$BODY" | jq -r '.unreviewed | join(" ")')"
+rm -rf "$W"
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_not_contains "no unreviewed files → no notice" "not reviewed this round" "$BODY"
+assert_eq "…and no key in the state block" "null" "$(state_block "$BODY" | jq -r '.unreviewed')"
 rm -rf "$W"
 
 # ── (m) a functional finding carries a screenshot through the poster ─────────

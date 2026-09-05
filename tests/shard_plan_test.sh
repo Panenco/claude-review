@@ -57,6 +57,10 @@ assert_eq "a prior finding's untouched file is placed in exactly one shard" "1" 
 run SHARD_FILES_TSV=$'src/a.ts\t900\t300\nsrc/b.ts\t200\t50' PRIOR_FINDINGS_JSON="$W/pf.json"
 assert_eq "…without duplicating a file the push did touch" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/a.ts')"
 
+printf 'src/lost.ts\n' > "$W/unreviewed.txt"
+run SHARD_FILES_TSV="$big" UNREVIEWED_FILE="$W/unreviewed.txt"
+assert_eq "a file no shard reviewed last round is placed in exactly one shard" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/lost.ts')"
+
 run SHARD_FILES_TSV=$'locale/big.pot\t5000\t5000\nsrc/a.ts\t10\t0' GATE_GENERATED_GLOBS='*.pot'
 assert_eq "the consumer's declared build-output globs are excluded like the guard's" "1" "$N"
 run SHARD_FILES_TSV=$'src/a.ts\t300\t100' 

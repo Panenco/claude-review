@@ -18,6 +18,9 @@
 #            the file list holds only what this push touched, but every carried
 #            finding must still be owned by SOME shard — its path is added at
 #            zero weight so the shard that gets it accounts for it.
+#            UNREVIEWED_FILE (OUT_DIR/unreviewed-files.txt): files a shard of the
+#            LAST round never reported on (prior-findings.sh reads them back out
+#            of the review state); folded in the same way, so they get read.
 #            OUT_DIR (/tmp): where shard-<i>.txt land (one path per line), plus
 #            shard-count, which merge-scans.sh reads to notice a missing shard.
 # Out (stdout): shards=<n>, then shard_<i>=<files>/<lines> per shard.
@@ -58,13 +61,16 @@ if [ -z "$TSV" ]; then
   TSV=$(jq -r '.files[]? | "\(.path)\t\(.additions // 0)\t\(.deletions // 0)"' "${PR_JSON:-/tmp/pr.json}" 2>/dev/null)
 fi
 
-# Carried findings whose file this push did not touch still need an owner.
+# Carried findings whose file this push did not touch still need an owner, and
+# so do the files a shard of the last round never reported on.
 PF="${PRIOR_FINDINGS_JSON:-$OUT_DIR/prior-findings.json}"
-if [ -n "$TSV" ] && jq -e 'type == "array" and length > 0' "$PF" >/dev/null 2>&1; then
+UF="${UNREVIEWED_FILE:-$OUT_DIR/unreviewed-files.txt}"
+if [ -n "$TSV" ]; then
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     grep -qxF -- "$p" <(cut -f1 <<< "$TSV") || TSV+=$'\n'"$p"$'\t0\t0'
-  done < <(jq -r '.[] | .p // empty' "$PF" 2>/dev/null | sort -u)
+  done < <( { jq -e 'type == "array"' "$PF" >/dev/null 2>&1 && jq -r '.[] | .p // empty' "$PF" 2>/dev/null
+              [ -s "$UF" ] && grep . "$UF"; } | sort -u)
 fi
 
 rm -f "$OUT_DIR"/shard-[0-9]*.txt "$OUT_DIR/shard-count" 2>/dev/null

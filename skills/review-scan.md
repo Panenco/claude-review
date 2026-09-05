@@ -20,6 +20,7 @@ The orchestrator's Task prompt may name a shard: `SHARD i of N`, a file list at 
 
 - **Hunt findings and notes only in the files listed.** Every pass in this skill runs unchanged, over those files. Read anything else you need — callers, siblings, the file a copy came from, the spec — and cite it in `evidence`, but a finding or note is *anchored* in your shard's files only.
 - **Account for the prior findings whose `path` is in your shard, and no others.** Another shard owns the rest; `merge-scans.sh` unions the two lists.
+- **A file in your list that is outside the since-last delta is there because no round has covered it yet** — a prior finding's file this push did not touch, or a file whose shard produced nothing last round. Review its whole diff against `origin/<base>`, not the empty delta.
 - **`context.area` and `summary` describe the whole PR** from its title and body, which you have. `context.changes` describes what *your* files do; the merge interleaves them.
 - **Write `/tmp/scan-i.json`, exactly the file the Task prompt named, never `/tmp/scan.json`** — that one is assembled from all the shards, and writing it yourself would overwrite theirs.
 

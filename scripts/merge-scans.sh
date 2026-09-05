@@ -32,9 +32,17 @@ if [ "${#parts[@]}" -eq 0 ]; then echo "merged=0"; exit 0; fi
 PLANNED=$(cat "$OUT_DIR/shard-count" 2>/dev/null || echo "${#parts[@]}")
 case "$PLANNED" in ''|*[!0-9]*) PLANNED=${#parts[@]} ;; esac
 COMPLETE=true
+# The files of a shard that never reported are written out by name: the poster
+# tells the reader, stamps them into the review state, and the next round's
+# shard plan folds them back in — so a lost shard costs one round, not the files.
+: > "$OUT_DIR/unreviewed-files.txt"
 if [ "${#parts[@]}" -lt "$PLANNED" ]; then
   COMPLETE=false
-  echo "::warning::merge-scans: $PLANNED shard(s) were planned and ${#parts[@]} reported — the files of the missing shard(s) were not reviewed, so this round cannot approve."
+  for i in $(seq 1 "$PLANNED"); do
+    [ -f "$OUT_DIR/scan-$i.json" ] && jq -e 'type == "object"' "$OUT_DIR/scan-$i.json" >/dev/null 2>&1 && continue
+    [ -f "$OUT_DIR/shard-$i.txt" ] && cat "$OUT_DIR/shard-$i.txt" >> "$OUT_DIR/unreviewed-files.txt"
+  done
+  echo "::warning::merge-scans: $PLANNED shard(s) were planned and ${#parts[@]} reported — $(grep -c . "$OUT_DIR/unreviewed-files.txt") file(s) were not reviewed this round (listed in unreviewed-files.txt), so this round cannot approve."
 fi
 
 JQ_NORM='def norm: gsub("[\r\n]+"; " ") | sub("^[ \t]*\\*\\*(critical|major|minor)\\*\\*[ \t]*"; ""; "i") | gsub("[`*]"; "") | gsub("[ \t]+"; " ") | sub("^ "; "") | sub(" $"; "") | ascii_downcase | sub("[.!?]+$"; "");'

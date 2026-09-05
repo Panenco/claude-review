@@ -110,6 +110,9 @@ COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
 COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-10}"
 ROUND="${ROUND:-1}"
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
+# Files a planned scan shard never reported on (merge-scans.sh). Named to the
+# reader and stamped into the state block, so the next round reads them.
+UNREVIEWED_FILE="${UNREVIEWED_FILE:-/tmp/unreviewed-files.txt}"
 STATE_MAX="${REVIEW_STATE_MAX:-4000}"
 FUNCTIONAL_JSON="${FUNCTIONAL_JSON:-/tmp/functional.json}"
 # Sibling of this script, because both are installed together into
@@ -354,6 +357,20 @@ case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
   context-only|none)
     SPEC_NOTICE=$'\n<sub>No spec resolved — reviewed on the diff alone. Link an issue, or commit the intent doc, to have the next review check against what was asked.</sub>\n' ;;
 esac
+
+# ── 2b1. Files no shard reviewed ─────────────────────────────────────────────
+# A statement of fact after the verdict, never an input to it: merge-scans.sh
+# already withheld the approval. Silence here would let those files fall out of
+# scope for good, because the next round reviews only the since-last delta.
+UNREVIEWED_NOTICE=""
+UNREVIEWED_JSON='[]'
+if [ -s "$UNREVIEWED_FILE" ]; then
+  UNREVIEWED_JSON=$(grep . "$UNREVIEWED_FILE" | head -40 | jq -R . | jq -sc .) || UNREVIEWED_JSON='[]'
+  UNREVIEWED_N=$(grep -c . "$UNREVIEWED_FILE")
+  UNREVIEWED_LIST=$(grep . "$UNREVIEWED_FILE" | head -5 | sed 's/^/`/;s/$/`/' | paste -sd, - | sed 's/,/, /g')
+  [ "$UNREVIEWED_N" -gt 5 ] && UNREVIEWED_LIST="$UNREVIEWED_LIST (+$(( UNREVIEWED_N - 5 )) more)"
+  UNREVIEWED_NOTICE=$'\n<sub>⚠ '"$UNREVIEWED_N file(s) were not reviewed this round — a scan shard produced no output: $UNREVIEWED_LIST. They are carried into the next round."$'</sub>\n'
+fi
 
 # ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────
 # APPROVE is a conjunction of four gates (review-verify.md); the model names
@@ -1554,7 +1571,7 @@ if [ -s "$WORK/fallback.md" ]; then
 fi
 
 TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
-AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$DEV_ENV_NOTICE") - $(blen "$DEV_ENV_BANNER") ))
+AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$UNREVIEWED_NOTICE") - $(blen "$DEV_ENV_NOTICE") - $(blen "$DEV_ENV_BANNER") ))
 MEASURED=$(LC_ALL=C awk -v mode=measure -f "$WORK/budget.awk" "$WORK/body.raw")
 if [ "${MEASURED:-0}" -gt "$AVAIL" ]; then
   echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating by value (severity first, and the sections that have no other surface ahead of ordinary prose)."
@@ -1595,8 +1612,9 @@ finding_id() {
   fi
 }
 emit_state() {
-  jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" \
-    '{v: 1, round: $round, truncated: ($trunc == 1), findings: .}' \
+  jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" --argjson unreviewed "$UNREVIEWED_JSON" \
+    '{v: 1, round: $round, truncated: ($trunc == 1), findings: .}
+     + (if ($unreviewed | length) > 0 then {unreviewed: $unreviewed} else {} end)' \
     "$WORK/state-findings.json" > "$WORK/state.json"
 }
 state_bytes() { wc -c < "$WORK/state.json" | tr -d ' '; }
@@ -1679,6 +1697,7 @@ fi
 printf '%s' "$SHOT_GALLERY" >> "$WORK/body.md"
 printf '%s' "$APPROVE_NOTICE" >> "$WORK/body.md"
 printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
+printf '%s' "$UNREVIEWED_NOTICE" >> "$WORK/body.md"
 printf '%s' "$DEV_ENV_NOTICE" >> "$WORK/body.md"
 printf '%s' "$FOOTER" >> "$WORK/body.md"
 echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"
