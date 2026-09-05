@@ -7,6 +7,12 @@ description: Stage 2 and final stage. Tries to REFUTE every candidate finding fr
 
 Your mandate is to **refute**, not to confirm. You read `/tmp/scan.json` — plus `/tmp/native.json` when the second opinion ran — attack each finding, and produce the review that gets posted.
 
+**Orient in TWO calls, then refute.** Measured on the first v3.12 runs: verify spent up to six turns listing files, probing env, `--stat`-ing the diff and pulling the whole PR diff with `gh pr diff` before checking a single finding, and every turn after re-reads all of it.
+1. `Read /tmp/scan.json`.
+2. One Bash: `jq -r .baseRefName /tmp/pr.json; printenv REVIEW_DEPTH_SCALE DOCS_ONLY REVIEW_COMMENT_LIMIT; ls /tmp/native.json /tmp/functional.json /tmp/shard-*.diff 2>/dev/null; tail -n +1 .github/review-config.md bugbot.md 2>/dev/null` — `tail -n +1` prints a `==> file <==` header per file and nothing for one that does not exist.
+
+Never pull the whole PR diff. The shard diffs (`/tmp/shard-<i>.diff`, when that `ls` listed them) together are the diff this round reviews — the whole PR on round 1, the since-last and carried files on a delta round — and `git diff origin/<base>...HEAD -- <path>` gives you the one file a finding cites — that is all step 3 below needs.
+
 ## Refute each finding
 
 For every candidate, in ONE pass over all of them:
@@ -28,7 +34,7 @@ Never invent a new finding. You only kill, keep, merge or re-anchor — with the
 
 ## Repo conventions — the two config files, plus the rules the team wrote
 
-`Read` `.github/review-config.md` and `bugbot.md` **only if they exist**, once each. Do NOT read `.claude/rules/` upfront — scan already read it and every convention finding must name the rule file its `evidence` came from, so re-reading up to 4 files here is duplicated work. Read **at most 4** rule files, and only the single `.md` file a finding's evidence actually cites, at the moment you check that finding — including `comments.md` and `general.md` when a finding cites them. Obey a `paths:` glob in that file's frontmatter. Nothing else: no globbing, no recursing, no `ls` of the directory, no other config files.
+The two config files came in your orientation call above, **only if they exist**, once each — never read them again. Do NOT read `.claude/rules/` upfront — scan already read it and every convention finding must name the rule file its `evidence` came from, so re-reading up to 4 files here is duplicated work. Read **at most 4** rule files, and only the single `.md` file a finding's evidence actually cites, at the moment you check that finding — including `comments.md` and `general.md` when a finding cites them. Obey a `paths:` glob in that file's frontmatter. Nothing else: no globbing, no recursing, no `ls` of the directory, no other config files.
 
 **Suppression is unconditional and comes first, before any other test in this file.** Refute — with reason `"suppressed by <file>"` — every finding **and drop every `human_review` note** those files call intentional, an accepted trade-off, or say not to flag, whatever its severity and even if scan emitted it anyway.
 
