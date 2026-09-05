@@ -22,7 +22,7 @@ The orchestrator's Task prompt may name a shard: `SHARD i of N`, a file list at 
   1. `Read /tmp/shard-${i}.diff` — the Read tool, never `cat`: a `cat` overflows the Bash result and you pay for the diff twice.
   2. One Bash: `cat /tmp/shard-${i}.txt /tmp/prior-findings.md 2>/dev/null; printenv REVIEW_DEPTH_SCALE DOCS_ONLY REVIEW_SCOPE; gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences`
   If `/tmp/shard-i.diff` is missing (HEAD already merged into the base leaves that diff empty), cut it yourself in that same call: `gh pr diff ${PR_NUMBER}`, kept to your files.
-  Then `Read /tmp/spec.md` — one call, whatever its length — and the repo conventions in the two calls that section allows. Five calls in, you are hunting.
+  Then the spec — one `Read` of `/tmp/spec.md` when it is short, the section-targeted read the spec section describes once it runs past ~300 lines — and the repo conventions in the two calls that section allows. Five calls in, you are hunting.
 - **Batch your reads.** Every turn re-reads everything before it. When you know the next three files you need, fetch them in one call.
 - **Hunt findings and notes only in the files listed.** Every pass in this skill runs unchanged, over those files. Read anything else you need — callers, siblings, the file a copy came from, the spec — and cite it in `evidence`, but a finding or note is *anchored* in your shard's files only.
 - **Account for the prior findings whose `path` is in your shard, and no others.** Another shard owns the rest; `merge-scans.sh` unions the two lists.
