@@ -431,7 +431,7 @@ if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE '(nor|not) a 
 else
   bad "review-verify's REQUEST_CHANGES rule must exclude comment-noise findings on line ${RC_LINE:-?}"
 fi
-# A note that names who-hits-what is a finding mislabelled. qiv#1498 replay:
+# A note that names who-hits-what is a finding mislabelled. replay of one client PR at the head a human reviewed:
 # scan wrote "an API on a machine with an older poppler now refuses to boot"
 # as a note, exactly the shape the human filed as a defect. Scan is told the
 # shape is never a note; verify relabels one that arrives anyway.
