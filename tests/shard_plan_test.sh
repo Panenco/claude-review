@@ -32,6 +32,12 @@ assert_eq "a small diff is one shard" "1" "$N"
 run SHARD_FILES_TSV=$'src/a.ts\t900\t300\nsrc/b.ts\t200\t50'
 assert_eq "1200 non-generated lines is the line threshold" "2" "$N"
 
+# qiv#1721's shape: 35 files / 930 lines went to three ~300-line shards of 35-52
+# turns each; a shard's turn count barely tracks its size, so two is cheaper.
+mid=$(for i in $(seq -w 1 35); do printf 'src/f%s.ts\t20\t6\n' "$i"; done)
+run SHARD_FILES_TSV="$mid"
+assert_eq "a 35-file / ~900-line diff is two shards, not three" "2" "$N"
+
 many=$(for i in $(seq -w 1 30); do printf 'src/f%s.ts\t2\t1\n' "$i"; done)
 run SHARD_FILES_TSV="$many"
 [ "$N" -ge 1 ] && ok "30 files reach the file threshold (shards=$N, weight decides how many)" || bad "30 files: shards=$N"
