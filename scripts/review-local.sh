@@ -59,6 +59,9 @@ set -uo pipefail
 #   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-sonnet-5)
 #   EVAL_SCOPE       "full" reads the whole PR on a round-2+ run (GATE_FORCE_FULL),
 #                    otherwise the guard decides full-or-delta exactly as CI does
+#   EVAL_HEAD_SHA    review the PR as it stood at this commit instead of its
+#                    current head — the way to replay the head a human reviewed
+#                    before the fixes landed, which is the only recall test there is
 
 usage() { echo "usage: ${0##*/} <pr-number> [--spec-only]" >&2; }
 
@@ -145,6 +148,7 @@ chmod +x "$SCRIPTS"/*.sh 2>/dev/null
 PR_META=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,baseRefName) \
   || { echo "gh pr view $PR failed" >&2; exit 1; }
 SHA=$(jq -r '.headRefOid // empty' <<<"$PR_META")
+[ -n "${EVAL_HEAD_SHA:-}" ] && SHA="$EVAL_HEAD_SHA"
 BASE=$(jq -r '.baseRefName // empty' <<<"$PR_META")
 [ -n "$SHA" ] && [ -n "$BASE" ] || { echo "could not resolve head sha / base ref for PR $PR" >&2; exit 1; }
 FORK_POINT=$(gh api "repos/$REPO/compare/$BASE...$SHA" --jq '.merge_base_commit.sha' 2>/dev/null)
