@@ -437,6 +437,8 @@ fi
 # shape is never a note; verify relabels one that arrives anyway.
 want "review-scan refuses a note that names who now hits what" "$SCAN" \
   'A sentence that names who now hits what'
+want "review-verify does not refute a dropped test by the guard still being there" "$VERIFY" \
+  'A dropped test is not refuted by the code it guarded being correct'
 want "review-verify relabels such a note as a minor finding" "$VERIFY" \
   'names who now hits what is a finding wearing the wrong label'
 want "…never above minor" "$VERIFY" 'relabel.*`severity: "minor"` \(never higher'
