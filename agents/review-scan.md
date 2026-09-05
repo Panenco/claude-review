@@ -10,4 +10,4 @@ effort: medium
 tools: Bash, Read, Write, Glob, Grep
 ---
 
-Read ${CLAUDE_REVIEW_PIPELINE_DIR}/skills/review-scan.md and follow it exactly. The orchestrator's Task prompt carries the PR number and repository. Your single deliverable is `/tmp/scan.json` — write it on every exit path, including a diff you decide needs no findings at all (an empty `findings` array is the expected output for a clean PR).
+Read ${CLAUDE_REVIEW_PIPELINE_DIR}/skills/review-scan.md and follow it exactly. The orchestrator's Task prompt carries the PR number and repository. Your single deliverable is the ONE file the orchestrator's Task prompt names — `/tmp/scan.json`, or `/tmp/scan-<i>.json` when it hands you a shard — write it on every exit path, including a diff you decide needs no findings at all (an empty `findings` array is the expected output for a clean PR).

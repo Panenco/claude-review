@@ -1848,6 +1848,30 @@ want "…and named as the one exception to never adding your own" "$VERIFY" \
   'the single exception is the demoted replied-to finding'
 
 echo ""
+echo "── a large diff is scanned in shards, merged before verify ──"
+# One scan over sixty files did the work and ran out of room to file it (qiv#1498
+# replayed twice: 3 then 1 of 19). shard-plan.sh cuts the diff, the orchestrator
+# dispatches one scan per shard in ONE response, merge-scans.sh assembles the one
+# scan.json verify reads. Verify itself is untouched.
+want "orchestrator runs shard-plan.sh in turn 1" "$ORCH" 'shard-plan\.sh'
+want "…dispatches one scan per shard, all in the same response" "$ORCH" 'one Task per shard.*same response'
+want "…tells a shard its file list and its own output file" "$ORCH" 'SHARD \$\{i\} of \$\{N\}.*/tmp/shard-\$\{i\}\.txt.*/tmp/scan-\$\{i\}\.json'
+want "…and merges before verify" "$ORCH" 'merge-scans\.sh'
+want "review-scan knows its shard" "$SCAN" '^### Your shard'
+want "…anchors findings in its files only" "$SCAN" 'anchored\* in your shard'
+want "…and never writes the merged file itself" "$SCAN" 'never `/tmp/scan\.json`'
+want "the agent definition names the shard file as a deliverable" "$ROOT/agents/review-scan.md" 'scan-<i>\.json'
+want "…and so does the local harness" "$ROOT/scripts/review-local.sh" 'scan-<i>\.json'
+for f in "$ROOT/action.yml" "$WORKFLOW"; do
+  want "${f##*/} verifies shard-plan.sh and merge-scans.sh are installed" "$f" 'shard-plan\.sh merge-scans\.sh'
+done
+# The generated-file list is shared with guard.sh by copy; the two must not drift.
+G=$(awk '/^is_generated\(\)/,/^}/' "$GUARD" | grep -E '^\s+\*|^\s+dist|^\s+openapi|^\s+swagger|^\s+schema')
+S=$(awk '/^is_generated\(\)/,/^}/' "$ROOT/scripts/shard-plan.sh" | grep -E '^\s+\*|^\s+dist|^\s+openapi|^\s+swagger|^\s+schema')
+if [ -n "$G" ] && [ "$G" = "$S" ]; then ok "shard-plan.sh's generated-file list is byte-identical to guard.sh's"
+else bad "shard-plan.sh's generated-file list drifted from guard.sh's"; fi
+
+echo ""
 if [ "$fail" -eq 0 ]; then
   echo "All pipeline contract tests passed."
   exit 0
