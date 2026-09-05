@@ -47,6 +47,17 @@ gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesR
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
 awk '/^(##|###) /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config.md 2>/dev/null > /tmp/auth-recipe.md
+# SHARDS. One scan over a 60-file diff runs out of room to file what it read;
+# shard-plan.sh cuts a large diff into up to 4 path-sorted chunks, one scan each.
+# On a delta round the plan covers only the since-last files, as scan does.
+if [ -n "${PRIOR_HEAD_SHA:-}" ] && [ "${REVIEW_SCOPE:-delta}" != "full" ]; then
+  # --no-renames: a rename+edit would otherwise arrive as one `dir/{old => new}`
+  # pseudo-path, which no shard could open, and the renamed file went unreviewed.
+  # --diff-filter=d: the rename's deleted old path is not a file a shard can read.
+  SHARD_FILES_TSV=$(git diff --numstat --no-renames --diff-filter=d "$PRIOR_HEAD_SHA"..HEAD 2>/dev/null | awk -F'\t' '{print $3 "\t" $1 "\t" $2}')
+  export SHARD_FILES_TSV
+fi
+"$CLAUDE_REVIEW_SCRIPTS"/shard-plan.sh
 # DEADLINE_EPOCH IS EMITTED HERE, IN THE BLOCK THAT CANNOT BLOCK: the clock plus
 # FUNCTIONAL_BUDGET_SECONDS, depending on the dev-env not at all. Nothing above
 # this line blocks, so the value reaches you on every run there is.
@@ -111,10 +122,15 @@ Each `${VAR}` below means that literal value.
 
 ## Turn 2 — dispatch (ONE response, both Task calls together)
 
-1. `subagent_type: "review-scan"`:
+1. `subagent_type: "review-scan"` — **one Task per shard**, all in this same response. Turn 1 printed `shards=N`. When N is 1:
    ```
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}, REVIEW_SCOPE=${REVIEW_SCOPE} — on round 2+ with REVIEW_SCOPE=delta that means the since-last scope and the prior-findings carry-over in that skill, not a full re-read; with REVIEW_SCOPE=full the PR has outgrown its last whole read, so read the whole diff again and still do the carry-over. Write /tmp/scan.json.
    ```
+   When N is 2 or more, dispatch N of these, for i = 1..N, each with its own file list and its own output file — never `/tmp/scan.json`, which `merge-scans.sh` writes in turn 3:
+   ```
+   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}. SHARD ${i} of ${N}: the files you hunt findings and notes in are listed one per line in /tmp/shard-${i}.txt (see "Your shard" in the skill) — read anything else you need for context. Write /tmp/scan-${i}.json.
+   ```
+   The shards are independent; issuing them one per turn costs pure wall clock and buys nothing.
 2. `subagent_type: "review-functional-tester"` — only when eligible:
    ```
    Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-functional-tester.md and follow it exactly. PR #${PR_NUMBER}.
@@ -135,6 +151,8 @@ Each `${VAR}` below means that literal value.
 Serializing these costs pure wall clock — issue all of them in the same response. Nothing in turn 2 reads another's output: the tester runs to its own deadline, so `/tmp/functional.json` does not exist until well after review-scan finishes, and `review-native` reviews the same diff independently — that independence IS the second opinion, so never hand it scan's output. `review-verify` is the only reader of both files.
 
 ## Turn 3 — verify
+
+When turn 1 printed `shards=N` with N ≥ 2, first run `"$CLAUDE_REVIEW_SCRIPTS"/merge-scans.sh` — it unions `/tmp/scan-<i>.json` into `/tmp/scan.json` (deduped on the finding identity the poster uses, notes capped) and prints `merged=<k>`. A shard that produced nothing contributes nothing; `merged=0` means no shard wrote a usable file, which is the degraded case below.
 
 Read `/tmp/scan.json`. Missing or unparseable → skip to the degraded write below. A missing `/tmp/native.json` or `/tmp/functional.json` is NOT a degraded run — both are advisory, and verify handles their absence.
 

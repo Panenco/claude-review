@@ -289,6 +289,8 @@ assert_file_has "…exports the item ceiling to the orchestrator session" \
   "export DOCS_ONLY REVIEW_DEPTH_SCALE" "$LOCAL"
 assert_file_has "…and passes the inline cap to the poster" \
   "REVIEW_COMMENT_LIMIT=\"\$REVIEW_COMMENT_LIMIT\"" "$LOCAL"
+assert_file_has "per-shard scans are copied out of the run dir by a glob on that dir" '"$RUNDIR"/scan-[0-9]*.json' "$LOCAL"
+assert_file_has "the poster is told where this run's unreviewed list is" 'UNREVIEWED_FILE="$RUNDIR/unreviewed-files.txt"' "$LOCAL"
 # Full-or-delta is the guard's call from the numstat since the last full pass,
 # locally exactly as in CI, and the stamp reaches the poster so the NEXT run
 # can find this one.

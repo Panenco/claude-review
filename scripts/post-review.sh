@@ -116,6 +116,9 @@ ROUND="${ROUND:-1}"
 REVIEW_SCOPE="${REVIEW_SCOPE:-full}"
 case "$REVIEW_SCOPE" in full|delta) ;; *) REVIEW_SCOPE=full ;; esac
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
+# Files a planned scan shard never reported on (merge-scans.sh). Named to the
+# reader and stamped into the state block, so the next round reads them.
+UNREVIEWED_FILE="${UNREVIEWED_FILE:-/tmp/unreviewed-files.txt}"
 PRIOR_CHECKS_JSON="${PRIOR_CHECKS_JSON:-/tmp/prior-checks.json}"
 STATE_MAX="${REVIEW_STATE_MAX:-4000}"
 FUNCTIONAL_JSON="${FUNCTIONAL_JSON:-/tmp/functional.json}"
@@ -361,6 +364,37 @@ case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
   context-only|none)
     SPEC_NOTICE=$'\n<sub>No spec resolved — reviewed on the diff alone. Link an issue, or commit the intent doc, to have the next review check against what was asked.</sub>\n' ;;
 esac
+
+# ── 2b1. Files no shard reviewed ─────────────────────────────────────────────
+# A statement of fact after the verdict, never an input to it: merge-scans.sh
+# already withheld the approval. Silence here would let those files fall out of
+# scope for good, because the next round reviews only the since-last delta.
+UNREVIEWED_NOTICE=""
+UNREVIEWED_JSON='[]'
+# The stamped list IS the carried list, so the count and the promise are taken
+# from it, never from the raw file: a cap that silently dropped paths while the
+# notice said "all carried" is exactly the lie this notice exists to prevent.
+# Capped by BYTES to half the state budget, here, before the notice is
+# rendered: the degrade ladder below sheds scenarios and then findings, never
+# this list, so an uncapped list would evict exactly the carried findings the
+# state exists to preserve. Half the block is above any real shard (the guard
+# refuses PRs over 60 files), and the raw count is reported when exceeded.
+if [ -s "$UNREVIEWED_FILE" ]; then
+  UNREVIEWED_JSON=$(grep . "$UNREVIEWED_FILE" | sort -u | jq -R . | jq -sc .) || UNREVIEWED_JSON='[]'
+  while [ "$(printf '%s' "$UNREVIEWED_JSON" | wc -c)" -gt $(( STATE_MAX / 2 )) ] && [ "$(jq 'length' <<<"$UNREVIEWED_JSON")" -gt 0 ]; do
+    UNREVIEWED_JSON=$(jq -c '.[:-1]' <<<"$UNREVIEWED_JSON")
+  done
+  UNREVIEWED_N=$(jq 'length' <<<"$UNREVIEWED_JSON")
+  UNREVIEWED_RAW=$(grep . "$UNREVIEWED_FILE" | sort -u | wc -l | tr -d ' ')
+  # The sentence opens with how many files nobody read (the raw count) and
+  # closes with how many are carried (the stamped count); the two differ only
+  # past the cap, and then the sentence says so instead of contradicting itself.
+  UNREVIEWED_LIST=$(jq -r '.[:5][]' <<<"$UNREVIEWED_JSON" | sed 's/^/`/;s/$/`/' | paste -sd, - | sed 's/,/, /g')
+  [ "$UNREVIEWED_RAW" -gt 5 ] && UNREVIEWED_LIST="$UNREVIEWED_LIST (+$(( UNREVIEWED_RAW - 5 )) more)"
+  UNREVIEWED_TAIL="They are carried into the next round."
+  [ "$UNREVIEWED_RAW" -gt "$UNREVIEWED_N" ] && UNREVIEWED_TAIL="$UNREVIEWED_N of them are carried into the next round; the rest need a human."
+  UNREVIEWED_NOTICE=$'\n<sub>⚠ '"$UNREVIEWED_RAW file(s) were not reviewed this round — a scan shard produced no output: $UNREVIEWED_LIST. $UNREVIEWED_TAIL"$'</sub>\n'
+fi
 
 # ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────
 # APPROVE is a conjunction of four gates (review-verify.md); the model names
@@ -1586,7 +1620,7 @@ if [ -s "$WORK/fallback.md" ]; then
 fi
 
 TRUNC_MARKER=$'\n_…truncated to fit the review budget._\n'
-AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$DEV_ENV_NOTICE") - $(blen "$DEV_ENV_BANNER") ))
+AVAIL=$(( BODY_MAX - $(blen "$FOOTER") - $(blen "$SPEC_NOTICE") - $(blen "$UNREVIEWED_NOTICE") - $(blen "$DEV_ENV_NOTICE") - $(blen "$DEV_ENV_BANNER") ))
 MEASURED=$(LC_ALL=C awk -v mode=measure -f "$WORK/budget.awk" "$WORK/body.raw")
 if [ "${MEASURED:-0}" -gt "$AVAIL" ]; then
   echo "Body measures $MEASURED bytes pre-expansion, over the ${BODY_MAX}-byte budget — truncating by value (severity first, and the sections that have no other surface ahead of ordinary prose)."
@@ -1628,7 +1662,9 @@ finding_id() {
 }
 emit_state() {
   jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" --arg scope "$REVIEW_SCOPE" \
-    '{v: 1, round: $round, scope: $scope, truncated: ($trunc == 1), findings: .}' \
+     --argjson unreviewed "$UNREVIEWED_JSON" \
+    '{v: 1, round: $round, scope: $scope, truncated: ($trunc == 1), findings: .}
+     + (if ($unreviewed | length) > 0 then {unreviewed: $unreviewed} else {} end)' \
     "$WORK/state-findings.json" > "$WORK/state.json"
 }
 state_bytes() { wc -c < "$WORK/state.json" | tr -d ' '; }
@@ -1711,6 +1747,7 @@ fi
 printf '%s' "$SHOT_GALLERY" >> "$WORK/body.md"
 printf '%s' "$APPROVE_NOTICE" >> "$WORK/body.md"
 printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
+printf '%s' "$UNREVIEWED_NOTICE" >> "$WORK/body.md"
 printf '%s' "$DEV_ENV_NOTICE" >> "$WORK/body.md"
 printf '%s' "$FOOTER" >> "$WORK/body.md"
 echo "Body: $(wc -c < "$WORK/body.md") bytes expanded (budget $BODY_MAX pre-expansion)"

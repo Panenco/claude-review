@@ -51,6 +51,12 @@ jobs:
       - name: Run guard_test.sh
         run: bash tests/guard_test.sh
 
+      - name: Run shard_plan_test.sh
+        run: bash tests/shard_plan_test.sh
+
+      - name: Run merge_scans_test.sh
+        run: bash tests/merge_scans_test.sh
+
       - name: Run warm_cache_wiring_test.sh
         run: bash tests/warm_cache_wiring_test.sh
 

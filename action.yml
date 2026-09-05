@@ -54,7 +54,7 @@ runs:
         # prior-findings.sh is the round-2 carry-over. Missing, round 2 sees a body
         # the inline-XOR rule already stripped its criticals out of, reads a clean
         # delta, and approves a PR whose blocking finding nobody fixed.
-        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh require-review-json.sh upload-screenshots.sh validate-screenshots.sh build-spec.sh kv-secrets.sh; do
+        for s in post-review.sh setup-dev-env.sh pick-oauth-token.sh guard.sh review-command.sh prior-review-state.sh prior-findings.sh require-review-json.sh upload-screenshots.sh validate-screenshots.sh build-spec.sh kv-secrets.sh shard-plan.sh merge-scans.sh; do
           if [ ! -f "$PIPELINE_DIR/scripts/${s}" ]; then
             echo "::error::panenco/claude-review install is incomplete — missing script: ${s}"
             exit 1

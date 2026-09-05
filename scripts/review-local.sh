@@ -300,7 +300,7 @@ AGENTS=$(jq -n --arg pd "$PIPE" --arg m "$MODEL" \
   --arg se "$SCAN_EFFORT" --arg ve "$VERIFY_EFFORT" '{
   "review-scan": {
     description: "Stage 1 of the review. Reads the PR diff itself, self-scales its depth, and writes /tmp/scan.json with candidate findings, model-chosen human-review items, and an argued approve position. Never posts anything.",
-    prompt: "Read \($pd)/skills/review-scan.md and follow it exactly. The orchestrator'"'"'s Task prompt carries the PR number and repository. Your single deliverable is `/tmp/scan.json` — write it on every exit path, including a diff you decide needs no findings at all (an empty `findings` array is the expected output for a clean PR).",
+    prompt: "Read \($pd)/skills/review-scan.md and follow it exactly. The orchestrator'"'"'s Task prompt carries the PR number and repository. Your single deliverable is the ONE file the orchestrator'"'"'s Task prompt names — `/tmp/scan.json`, or `/tmp/scan-<i>.json` when it hands you a shard — write it on every exit path, including a diff you decide needs no findings at all (an empty `findings` array is the expected output for a clean PR).",
     model: $m, effort: $se, tools: ["Bash","Read","Write","Glob","Grep"]},
   "review-verify": {
     description: "Stage 2 and final stage. Refutes every candidate finding in /tmp/scan.json against the source at HEAD, then decides the verdict and renders the posted body and inline comments into /tmp/verify.json.",
@@ -336,6 +336,11 @@ echo "Orchestrator exited $SESSION_RC after $(( $(date +%s) - $(cat "$RUNDIR/job
 for f in scan.json verify.json review.json spec.md prior-findings.json; do
   [ -f "$RUNDIR/$f" ] && cp "$RUNDIR/$f" "$OUT/$f"
 done
+# Globbed against $RUNDIR itself: a pattern in the bare list expanded against
+# the invocation directory, matched nothing, and the per-shard evidence stayed behind.
+for f in "$RUNDIR"/scan-[0-9]*.json "$RUNDIR"/shard-[0-9]*.txt; do
+  [ -f "$f" ] && cp "$f" "$OUT/"
+done
 
 # ── the poster, with the seam set: artifacts, not GitHub writes ──────────────
 REVIEW_OUT_DIR="$OUT/posted" \
@@ -344,6 +349,7 @@ ORCH_LOG="$OUT/session.json" \
 JOB_START="$RUNDIR/job-start" \
 SPEC_STATUS="$RUNDIR/spec-status" \
 PRIOR_FINDINGS_JSON="$RUNDIR/prior-findings.json" \
+UNREVIEWED_FILE="$RUNDIR/unreviewed-files.txt" \
 HEAD_SHA="$SHA" ROUND="$ROUND" REVIEW_SCOPE="$REVIEW_SCOPE" \
 REVIEW_COMMENT_LIMIT="$REVIEW_COMMENT_LIMIT" \
   "$SCRIPTS"/post-review.sh > "$OUT/post-review.out" 2>&1

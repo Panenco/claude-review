@@ -1894,6 +1894,42 @@ want "…and named as the one exception to never adding your own" "$VERIFY" \
   'the single exception is the demoted replied-to finding'
 
 echo ""
+echo "── a large diff is scanned in shards, merged before verify ──"
+# One scan over sixty files did the work and ran out of room to file it (one client PR
+# replayed twice: 3 then 1 of 19). shard-plan.sh cuts the diff, the orchestrator
+# dispatches one scan per shard in ONE response, merge-scans.sh assembles the one
+# scan.json verify reads. Verify itself is untouched.
+want "orchestrator runs shard-plan.sh in turn 1" "$ORCH" 'shard-plan\.sh'
+want "…dispatches one scan per shard, all in the same response" "$ORCH" 'one Task per shard.*same response'
+want "…tells a shard its file list and its own output file" "$ORCH" 'SHARD \$\{i\} of \$\{N\}.*/tmp/shard-\$\{i\}\.txt.*/tmp/scan-\$\{i\}\.json'
+want "…and merges before verify" "$ORCH" 'merge-scans\.sh'
+want "…the delta plan lists real paths, not rename pseudo-paths or deleted ones" "$ORCH" 'git diff --numstat --no-renames --diff-filter=d'
+want "review-scan knows its shard" "$SCAN" '^### Your shard'
+want "…anchors findings in its files only" "$SCAN" 'anchored\* in your shard'
+want "…and never writes the merged file itself" "$SCAN" 'never `/tmp/scan\.json`'
+want "…and reviews an out-of-delta file in its list against the base" "$SCAN" 'outside the since-last delta is there because no round has covered it yet'
+want "merge-scans names the files of a shard that never reported" "$ROOT/scripts/merge-scans.sh" 'unreviewed-files\.txt'
+want "the poster stamps them into the review state" "$POSTER" 'unreviewed: \$unreviewed'
+want "prior-findings reads them back for the next plan, into their own file" "$ROOT/scripts/prior-findings.sh" 'carried-unreviewed\.txt'
+want "shard-plan folds them in" "$ROOT/scripts/shard-plan.sh" 'CARRIED_UNREVIEWED'
+want "…and truncates this round's output list first" "$ROOT/scripts/shard-plan.sh" ': > "\$OUT_DIR/unreviewed-files\.txt"'
+# merge-scans dedupes on the cross-round finding identity; its copy of the
+# normaliser must be the poster's, byte for byte, or the same finding gets two ids.
+MN=$(sed -n "s/^JQ_NORM='\(.*\)'$/\1/p" "$ROOT/scripts/merge-scans.sh")
+PN=$(sed -n "s/^JQ_NORM='\(.*\)'$/\1/p" "$POSTER")
+if [ -n "$MN" ] && [ "$MN" = "$PN" ]; then ok "merge-scans.sh's JQ_NORM is byte-identical to post-review.sh's"; else bad "merge-scans.sh's JQ_NORM drifted from post-review.sh's"; fi
+want "the agent definition names the shard file as a deliverable" "$ROOT/agents/review-scan.md" 'scan-<i>\.json'
+want "…and so does the local harness" "$ROOT/scripts/review-local.sh" 'scan-<i>\.json'
+for f in "$ROOT/action.yml" "$WORKFLOW"; do
+  want "${f##*/} verifies shard-plan.sh and merge-scans.sh are installed" "$f" 'shard-plan\.sh merge-scans\.sh'
+done
+c=$(grep -c 'GATE_GENERATED_GLOBS: \${{ inputs.gate_generated_globs }}' "$WORKFLOW")
+if [ "$c" -ge 2 ]; then ok "the consumer's generated globs reach the orchestrator step, not only the guard"; else bad "GATE_GENERATED_GLOBS must reach the orchestrator step too (found $c)"; fi
+# The generated-file list is shared with guard.sh by copy; the two must not drift.
+G=$(awk '/^is_generated\(\)/,/^}/' "$GUARD" | grep -E '^\s+\*|^\s+dist|^\s+openapi|^\s+swagger|^\s+schema')
+S=$(awk '/^is_generated\(\)/,/^}/' "$ROOT/scripts/shard-plan.sh" | grep -E '^\s+\*|^\s+dist|^\s+openapi|^\s+swagger|^\s+schema')
+if [ -n "$G" ] && [ "$G" = "$S" ]; then ok "shard-plan.sh's generated-file list is byte-identical to guard.sh's"
+else bad "shard-plan.sh's generated-file list drifted from guard.sh's"; fi
 echo "── the whole PR is read again once the delta rounds outgrow the last full pass ──"
 # Three stages, one variable. The guard decides, the orchestrator hands it to
 # scan, the poster stamps it so the next round can find this one.
