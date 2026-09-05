@@ -1652,11 +1652,10 @@ finding_id() {
   fi
 }
 emit_state() {
-  jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" --argjson unreviewed "$UNREVIEWED_JSON" \
-    '{v: 1, round: $round, truncated: ($trunc == 1), findings: .}
-     + (if ($unreviewed | length) > 0 then {unreviewed: $unreviewed} else {} end)' \
   jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" --arg scope "$REVIEW_SCOPE" \
-    '{v: 1, round: $round, scope: $scope, truncated: ($trunc == 1), findings: .}' \
+     --argjson unreviewed "$UNREVIEWED_JSON" \
+    '{v: 1, round: $round, scope: $scope, truncated: ($trunc == 1), findings: .}
+     + (if ($unreviewed | length) > 0 then {unreviewed: $unreviewed} else {} end)' \
     "$WORK/state-findings.json" > "$WORK/state.json"
 }
 state_bytes() { wc -c < "$WORK/state.json" | tr -d ' '; }
