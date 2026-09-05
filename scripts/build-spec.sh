@@ -315,7 +315,7 @@ written_by_pr() { case " $CHANGED_DOCS " in *" $1 "*) return 0 ;; esac; return 1
 # governing slot is just the first ranked document, so before this the tiebreak
 # between two equally-ranked PRDs was FILE SIZE — and a PR touching two epics
 # was governed by whichever epic's PRD happened to be shorter. Measured on
-# qiv #1453 ("docs(notifications): PRD and architecture for the in-app
+# A measured PR ("docs(notifications): PRD and architecture for the in-app
 # notifications epic"): it changed 7 documents under docs/planned/notifications
 # and 2 under docs/planned/surgery-fulfillment, and the 151-line
 # surgery-fulfillment PRD governed over the 209-line notifications one.

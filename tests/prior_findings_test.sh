@@ -88,6 +88,7 @@ assert_eq "exit 0" "0" "$RC"
 assert_eq "count is 0" "0" "$COUNT"
 assert_eq "the array is empty" "0" "$(echo "$FJSON" | jq 'length')"
 assert_contains "the file is written anyway" "# Prior findings on this PR" "$FMD"
+assert_eq "prior-checks.json is written empty, not absent" "[]" "$(jq -c . "$WORK/out/prior-checks.json")"
 assert_contains "…and says the carry-over is unproven, not clean" "None recovered" "$FMD"
 assert_contains "…and says what that means for the review" "unvetted rather than as" "$FMD"
 
@@ -367,6 +368,8 @@ assert_eq "…and it is the major" "major" "$(echo "$FJSON" | jq -r '.[0].sev')"
 assert_not_contains "the check does not reach the model" "basis rides on" "$FMD"
 assert_not_contains "…nor does its spec link land in the scenario slot" "example.test" "$FMD"
 assert_contains "the real finding still does" "drops the tenant filter" "$FMD"
+assert_eq "…but the check is remembered for the poster, by path:line" \
+  '[{"l":81,"p":"src/foo.ts"}]' "$(jq -cS . "$WORK/out/prior-checks.json")"
 
 echo ""
 echo "── …whatever case the marker is written in ──"

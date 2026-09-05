@@ -10,6 +10,8 @@
 #   docs_only=true|false — proceed path only; nothing but documents changed.
 #   depth_scale=3..8 + comment_limit=6..16 — proceed path only; how deep the
 #   review is allowed to go, derived from diff size. See section 5.
+#   scope=full|delta — proceed path only; whether review-scan reads the whole
+#   PR again or only the since-last delta. See section 6.
 #   verdict=REQUEST_CHANGES + body<<GUARD_BODY…GUARD_BODY — oversized only; that
 #   split request is posted as-is, with no model call.
 #
@@ -19,6 +21,9 @@
 # — either one overrides the size ceiling, GATE_TRIGGER (/review, for the split
 # request's wording), GATE_SIZE_CEILING (3000), GATE_FILE_CEILING (60),
 # GATE_PRIOR_HEAD_SHA + GATE_DELTA_FILES (round-2 scope, see docs/adr/0003),
+# GATE_FULL_HEAD_SHA + GATE_SINCE_FULL_TSV (the last full pass and the numstat
+# since it, same TSV shape as GATE_FILES_TSV — section 6), GATE_RESCAN_PERCENT
+# (default 50) and GATE_FORCE_FULL ("true" reads the whole PR this run),
 # GATE_GENERATED_GLOBS (extra committed-build-output globs, on top of the
 # built-in list in is_generated below),
 # GATE_HUMAN_REQUESTED (true when a person typed the command — `unchanged` gate).
@@ -145,6 +150,22 @@ weight=$(( ng_lines + 25 * ng_files ))
 depth_scale=$(( 3 + weight / 250 ))
 [ "$depth_scale" -gt 8 ] && depth_scale=8
 printf 'depth_scale=%s\ncomment_limit=%s\n' "$depth_scale" "$(( depth_scale * 2 ))"
+
+# 6) Scope. Round 2+ reads only the since-last delta (ADR 0003), so the whole
+#    PR was read exactly once however much it grew: one client PR got one full read
+#    on day one, four delta rounds, and then twenty human findings. When the
+#    non-generated lines changed since the last FULL pass reach
+#    GATE_RESCAN_PERCENT of the PR, read it all again. Unknown → full (fail open).
+scope="delta"; since_full=0
+while IFS=$'\t' read -r path adds dels; do
+  [ -z "$path" ] || is_generated "$path" && continue
+  [[ "${adds:-}" =~ ^[0-9]+$ ]] && since_full=$(( since_full + adds ))
+  [[ "${dels:-}" =~ ^[0-9]+$ ]] && since_full=$(( since_full + dels ))
+done <<< "${GATE_SINCE_FULL_TSV:-}"
+pct="${GATE_RESCAN_PERCENT:-50}"; case "$pct" in ''|*[!0-9]*) pct=50 ;; esac
+if [ -z "${GATE_PRIOR_HEAD_SHA:-}" ] || [ -z "${GATE_FULL_HEAD_SHA:-}" ] || [ "${GATE_FORCE_FULL:-}" = "true" ] \
+   || [ $(( since_full * 100 )) -ge $(( ng_lines * pct )) ]; then scope="full"; fi
+printf 'scope=%s\n' "$scope"
 
 # No code to break, so review-scan's failure_scenario bar alone would silence it.
 printf 'docs_only=%s\n' "$docs_only"

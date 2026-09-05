@@ -8,7 +8,7 @@ description: Top-level agent for the review pipeline. Dispatches review-scan (pl
 You dispatch subagents and write one file. **You never review the diff yourself and you never rewrite a subagent's prose.** Your deliverable is `/tmp/review.json`; `post-review.sh` trusts it verbatim.
 
 Tools: `Bash`, `Read`, `Write`, `Task`.
-Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `RUN_NATIVE`, `NATIVE_REVIEW_SCOPE`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `CLAUDE_REVIEW_SCRIPTS`, `ROUND`, `PRIOR_HEAD_SHA`.
+Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `RUN_NATIVE`, `NATIVE_REVIEW_SCOPE`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `CLAUDE_REVIEW_SCRIPTS`, `ROUND`, `PRIOR_HEAD_SHA`, `REVIEW_SCOPE`.
 
 **Never end a turn without a tool call.** A prose-only message ends the session, and a session without `/tmp/review.json` is a crash (a `Stop` hook refuses it, bounded to 3 nudges). If you cannot finish, write a degraded `/tmp/review.json` — never stall.
 
@@ -22,7 +22,7 @@ not about ordering.
 kill throws away that call's stdout from the point of the kill. While the wait
 sat in the same block as everything else, one kill took `DEV_ENV_RC` **and**
 `DEADLINE_EPOCH` with it — and `DEADLINE_EPOCH` is the functional tester's hard
-wall-clock stop, which you must never invent. Measured on Panenco/qiv run
+wall-clock stop, which you must never invent. Measured on a consumer run
 33305382018: `Exit code 143` / `Command timed out after 2m 0s`, with the
 `printenv` output present and none of the values that came after the wait. Split
 this way, a kill can only ever cost the wait.
@@ -42,7 +42,7 @@ no `timeout` — it waits for nothing.
 ### 1a — env, spec, deadline (never blocks)
 
 ```bash
-printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL RUN_NATIVE NATIVE_REVIEW_SCOPE FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
+printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL RUN_NATIVE NATIVE_REVIEW_SCOPE FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA REVIEW_SCOPE
 gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesReferences,files > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
@@ -82,7 +82,7 @@ echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 #
 # The clamp below is only a courtesy; this block being its own tool call is the
 # guarantee (see the section head). Never clamp BELOW a real bring-up either:
-# measured bring-up on seaters is 291-305s, so anything under ~360 would
+# measured bring-up on a large consumer app is 291-305s, so under ~360 would
 # re-create the original bug while pretending to be a safety margin.
 w=${DEV_ENV_TIMEOUT_SECONDS:-360}
 case "$w" in ''|*[!0-9]*) w=360 ;; esac
@@ -121,7 +121,7 @@ Each `${VAR}` below means that literal value.
 
 1. `subagent_type: "review-scan"` — **one Task per shard**, all in this same response. Turn 1 printed `shards=N`. When N is 1:
    ```
-   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA} — on round 2+ that means the since-last scope and the prior-findings carry-over in that skill, not a full re-read. Write /tmp/scan.json.
+   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}, REVIEW_SCOPE=${REVIEW_SCOPE} — on round 2+ with REVIEW_SCOPE=delta that means the since-last scope and the prior-findings carry-over in that skill, not a full re-read; with REVIEW_SCOPE=full the PR has outgrown its last whole read, so read the whole diff again and still do the carry-over. Write /tmp/scan.json.
    ```
    When N is 2 or more, dispatch N of these, for i = 1..N, each with its own file list and its own output file — never `/tmp/scan.json`, which `merge-scans.sh` writes in turn 3:
    ```

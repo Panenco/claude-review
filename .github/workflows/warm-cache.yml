@@ -104,7 +104,7 @@ jobs:
       # `Widen checkout` and `pnpm fetch` both run in between, and `pnpm fetch`
       # leaves lockfiles under node_modules/ that `**/package-lock.json` then
       # matches — so the save hashed a different set than the probe and wrote a
-      # key nothing ever read. Measured on Panenco/seaters: read
+      # key nothing ever read. Measured on a consumer repo: read
       # `pkg-store-442ffe65…`, wrote `pkg-store-8af17f91…`. The review job hashes
       # a CLEAN tree, so it computed 442ffe65 too and missed every time — the
       # store cache had never hit for anyone.

@@ -245,6 +245,56 @@ else
   echo "OK:   post-review.sh leaves standing reviews alone on skip-marked posts"
 fi
 
+echo ""
+echo "── the last full pass ──"
+# guard.sh diffs against the last review that read the WHOLE PR. A round stamped
+# "scope":"full" is the anchor; a review from before the stamp is the oldest
+# judged one, which was the only full read then.
+assert_full() {
+  local label="$1" fixture="$2" want="$3"
+  printf '%s' "$fixture" > "$WORK/reviews.json"
+  local got
+  got=$(env REVIEWS_JSON="$WORK/reviews.json" REVIEW_BOT_USER="$BOT" OUT_DIR="$WORK/out" bash "$SCRIPT" \
+        | sed -n 's/^full_head_sha=//p'); got="${got:--}"
+  if [ "$got" = "$want" ]; then echo "OK:   $label → $got"
+  else echo "FAIL: $label — want '$want' got '$got'"; fail=$((fail + 1)); fi
+}
+FULL_BODY="$JUDGED_BODY
+
+<!-- claude-review-state
+{\"v\":1,\"round\":2,\"scope\":\"full\",\"truncated\":false,\"findings\":[]}
+-->"
+DELTA_BODY="$JUDGED_BODY
+
+<!-- claude-review-state
+{\"v\":1,\"round\":3,\"scope\":\"delta\",\"truncated\":false,\"findings\":[]}
+-->"
+assert_full "round 1 has no full pass to anchor on" "[]" "-"
+assert_full "one judged review from before the stamp → it was the full read" \
+  "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_OLD" "$JUDGED_BODY")]" "$SHA_OLD"
+assert_full "two unstamped reviews → the OLDEST, which was round 1" \
+  "[$(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$JUDGED_BODY"),
+    $(review COMMENTED 2026-08-07T07:00:00Z "$SHA_OLD" "$JUDGED_BODY")]" "$SHA_OLD"
+assert_full "a stamped full round beats an older unstamped one" \
+  "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_OLD" "$JUDGED_BODY"),
+    $(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$FULL_BODY")]" "$SHA_NEW"
+assert_full "a delta round after a full one keeps the full one as anchor" \
+  "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_OLD" "$FULL_BODY"),
+    $(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$DELTA_BODY")]" "$SHA_OLD"
+QUOTING_FULL_BODY="$JUDGED_BODY
+
+- **major** \`tests/x_test.sh:12\` — the fixture reads <!-- claude-review-state {\"scope\":\"full\"} --> and asserts on it.
+
+<!-- claude-review-state
+{\"v\":1,\"round\":3,\"scope\":\"delta\",\"truncated\":false,\"findings\":[]}
+-->"
+assert_full "a delta review that only QUOTES a full stamp is not the anchor" \
+  "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_OLD" "$FULL_BODY"),
+    $(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$QUOTING_FULL_BODY")]" "$SHA_OLD"
+assert_full "an unresolvable full-pass head is empty, never a guess" \
+  "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_GONE" "$FULL_BODY"),
+    $(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$DELTA_BODY")]" "-"
+
 if [ "$fail" -eq 0 ]; then
   echo
   echo "All prior-review-state tests passed."

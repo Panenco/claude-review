@@ -109,10 +109,17 @@ COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
 # no guard outputs — still gets.
 COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-10}"
 ROUND="${ROUND:-1}"
+# What this round read: "full" (the whole PR) or "delta" (since the last
+# review). Stamped into the state block so prior-review-state.sh can find the
+# last full pass and guard.sh can decide when the PR has outgrown it. A round
+# with no scope set is treated as full, which is what every round was before.
+REVIEW_SCOPE="${REVIEW_SCOPE:-full}"
+case "$REVIEW_SCOPE" in full|delta) ;; *) REVIEW_SCOPE=full ;; esac
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
 # Files a planned scan shard never reported on (merge-scans.sh). Named to the
 # reader and stamped into the state block, so the next round reads them.
 UNREVIEWED_FILE="${UNREVIEWED_FILE:-/tmp/unreviewed-files.txt}"
+PRIOR_CHECKS_JSON="${PRIOR_CHECKS_JSON:-/tmp/prior-checks.json}"
 STATE_MAX="${REVIEW_STATE_MAX:-4000}"
 FUNCTIONAL_JSON="${FUNCTIONAL_JSON:-/tmp/functional.json}"
 # Sibling of this script, because both are installed together into
@@ -444,7 +451,7 @@ TESTER_RAN=false
 #
 # THE QUESTION IS "DID THE TESTER RUN?", NOT "DID THE BRING-UP FAIL?" — AND
 # GATING ON THE rc ALONE MADE THE WORST CASE SILENT. Those two are not the same
-# fact, and the gap between them is not hypothetical: on spendfuse#351 the
+# fact, and the gap between them is not hypothetical: on one measured run the
 # bring-up SUCCEEDED — rc 0, API and web both probed up — but only AFTER the
 # orchestrator's 360s turn-1b wait had already expired. `WEB_READY=false` meant
 # no tester was ever dispatched, yet by the time this script ran the rc file said
@@ -577,7 +584,7 @@ if [ "$TESTER_RAN" = "true" ]; then
   NAMED=$(jq '[(.screenshots // [])[] | select((.file // "") | test("\\.png$"; "i"))] | length' \
             "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
   # WHY `untested` IS PART OF THIS BLOCK AND NOT AN AFTERTHOUGHT. On a live
-  # qiv run the tester verified 3 of 7 acceptance criteria, listed the other
+  # measured run the tester verified 3 of 7 acceptance criteria, listed the other
   # 4 in `untested` with real reasons, and reported PASS — which is correct
   # per its own contract, PASS means "everything you exercised held". The
   # review body then said `Functional pass: PASS — 2 screenshots` and nothing
@@ -694,6 +701,31 @@ awk '
 # fenced block on any run of three or more, so ````suggestion is as committable
 # as ```suggestion — and a regex pinned to exactly three let that shape through
 # with its range intact AND no warning anywhere.
+# A CHECK A PRIOR ROUND ALREADY POSTED ON THIS path:line IS NOT POSTED AGAIN.
+# Checks carry no cross-round memory (prior-findings.sh excludes them from the
+# carry-over on purpose), so every round re-derived its notes and could land a
+# second one on a line that already had one — the same file, rounds 2 and 4 of one
+# client PR. The reader already has that orientation; a second copy teaches them
+# to skip both. NOT SILENT: it is dropped entirely, not moved to the body, so it
+# is announced. A finding on that line is untouched — this is checks only.
+# MATCH ON THE ANCHOR OR THE RANGE START. The collapse below moves a check whose
+# range exceeds 50 lines onto its start_line, and that is the line the API then
+# reports — so a key on the raw .line alone misses exactly those (self-review of
+# #160). Either line matching a remembered check is the same block again.
+if jq -e 'type == "array" and length > 0' "$PRIOR_CHECKS_JSON" >/dev/null 2>&1; then
+  jq --slurpfile pc "$PRIOR_CHECKS_JSON" '
+    ($pc[0] | map({key: (.p + ":" + (.l | tostring)), value: true}) | from_entries) as $seen
+    | map(select(
+        (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+         and (($seen[((.path // "") + ":" + ((.line // 0) | tostring))] // false)
+              or ((((.start_line // 0) | tostring | tonumber?) // 0) > 0
+                  and ($seen[((.path // "") + ":" + ((.start_line // 0) | tostring))] // false)))) | not))' \
+    "$WORK/comments.json" > "$WORK/comments.dedup" 2>/dev/null \
+    && { REPEAT_CHECKS=$(( $(jq 'length' "$WORK/comments.json") - $(jq 'length' "$WORK/comments.dedup") ))
+         mv "$WORK/comments.dedup" "$WORK/comments.json"
+         [ "$REPEAT_CHECKS" -gt 0 ] \
+           && echo "::notice::$REPEAT_CHECKS check comment(s) not re-posted — an earlier round already posted a check on that line."; }
+fi
 FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
                                   and ((.body // "") | test("(^|\n)[ \t]*`{3,}[ \t]*suggestion"; "i")))] | length' \
                   "$WORK/comments.json" 2>/dev/null || echo 0)
@@ -812,7 +844,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   | map(if kind == "check" then . else .start_line = 0 end)
   | map(if kind == "check" then .body = ((.body // "") | unfence) else . end)
   # 50 LINES, NOT 120. A range is a grey band down the side of the diff, and past
-  # roughly fifty lines nobody reads the band — spendfuse#351 shipped a 119-line
+  # roughly fifty lines nobody reads the band — one review shipped a 119-line
   # one over `compute-issue-log-findings.ts` and it read as noise, which is the
   # complaint that produced this cap. 120 was chosen to cover 96% of contiguous
   # changed runs; coverage was the wrong thing to optimise, because a span nobody
@@ -838,7 +870,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   | unique_by([.path, .line, .body])
   | sort_by(._r, ._i)
   # DEGRADE THE RANGE, NEVER THE PLACEMENT. A block a check wants to wrap is
-  # usually only partly in the diff — seaters#2134 asked for 226-253 across a
+  # usually only partly in the diff — one note asked for 226-253 across a
   # sparse diff. Rejecting the comment for that put the question in the body,
   # which is exactly where a check must never go: it is inline or it is unread.
   # So an unusable range is dropped and the comment anchors at `line`, and only
@@ -1623,6 +1655,8 @@ emit_state() {
   jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" --argjson unreviewed "$UNREVIEWED_JSON" \
     '{v: 1, round: $round, truncated: ($trunc == 1), findings: .}
      + (if ($unreviewed | length) > 0 then {unreviewed: $unreviewed} else {} end)' \
+  jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" --arg scope "$REVIEW_SCOPE" \
+    '{v: 1, round: $round, scope: $scope, truncated: ($trunc == 1), findings: .}' \
     "$WORK/state-findings.json" > "$WORK/state.json"
 }
 state_bytes() { wc -c < "$WORK/state.json" | tr -d ' '; }
@@ -1682,7 +1716,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   # THE BANNER GOES DIRECTLY UNDER THE VERDICT HEADING, not in the footer's
   # small print. A requested pass that never ran is the first thing the reader
   # needs, not a `<sub>` line they scroll past — that placement is exactly how
-  # spendfuse#351 read as a clean review of a screen nobody had looked at. Line
+  # one run read as a clean review of a screen nobody had looked at. Line
   # 1 of body.raw is `## Claude review — <verdict>`; the banner follows it, and
   # it is written AFTER truncation so no finding can evict it and it can never
   # be the thing that gets cut.

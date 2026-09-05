@@ -416,6 +416,34 @@ want "review-verify keys the class on comment_noise, not prose" "$VERIFY" \
   '\*\*A comment-noise finding\*\* \(`"comment_noise": true`'
 want "…and exposes the flag in meta.findings" "$VERIFY" '"comment_noise": false'
 
+# Inert code — a branch nothing reaches, a value nothing reads, config a code
+# path makes dead. A human files these as questions; this pipeline asks none,
+# so it is a finding class at the same bar shape as comment noise: its own
+# flag, exempt from failure_scenario, capped, minor, advisory, no fence.
+IN_SCAN=$(mktemp)
+awk '/^## Inert code/{f=1;next} f&&/^## /{f=0} f' "$SCAN" > "$IN_SCAN"
+if [ -s "$IN_SCAN" ]; then
+  want "review-scan can flag inert code on its own flag" "$IN_SCAN" '"inert": true'
+  want "…and demands the reason, not the claim" "$IN_SCAN" 'quote the reason, not the claim'
+  want "…exempt from failure_scenario like a convention finding" "$IN_SCAN" \
+    'exempt from `failure_scenario`'
+  want "…capped at 2 per review" "$IN_SCAN" '(max|most) \*{0,2}2\*{0,2} per review'
+  want "…always minor" "$IN_SCAN" 'severity.{0,4}minor'
+  want "…and never able to reach REQUEST_CHANGES" "$IN_SCAN" 'NEVER produce REQUEST_CHANGES'
+  want "…and never ships a committable deletion" "$IN_SCAN" \
+    'Never a ```suggestion``` fence on this class'
+else
+  bad "review-scan has no '## Inert code' section"
+fi
+rm -f "$IN_SCAN"
+want "review-scan exposes the inert flag in its findings table" "$SCAN" '^\| `inert` \|'
+want "…and in its output schema" "$SCAN" '"inert": false'
+want "review-verify judges the class by reproducing the unreachability" "$VERIFY" \
+  '\*\*An inert-code finding\*\* \(`"inert": true`'
+want "…refutes it on one reader or one reaching caller" "$VERIFY" \
+  'One reader outside the tests, or one caller that reaches the branch, refutes it'
+want "…and exposes the flag in meta.findings" "$VERIFY" '"inert": false'
+
 # The verdict rule is the one that must name the exclusion, not just imply it.
 RC_LINE=$(grep -n 'REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
 if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE 'not a convention finding|convention.*NEVER produce'; then
@@ -431,6 +459,24 @@ if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE '(nor|not) a 
 else
   bad "review-verify's REQUEST_CHANGES rule must exclude comment-noise findings on line ${RC_LINE:-?}"
 fi
+if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE 'not an inert-code finding|"inert": true'; then
+  ok "review-verify's REQUEST_CHANGES rule excludes inert-code findings on the rule line itself"
+else
+  bad "review-verify's REQUEST_CHANGES rule must exclude inert-code findings on line ${RC_LINE:-?}"
+fi
+# A note that names who-hits-what is a finding mislabelled. replay of one client PR at the head a human reviewed:
+# scan wrote "an API on a machine with an older poppler now refuses to boot"
+# as a note, exactly the shape the human filed as a defect. Scan is told the
+# shape is never a note; verify relabels one that arrives anyway.
+want "review-scan refuses a note that names who now hits what" "$SCAN" \
+  'A sentence that names who now hits what'
+want "review-verify does not refute a dropped test by the guard still being there" "$VERIFY" \
+  'A dropped test is not refuted by the code it guarded being correct'
+want "review-verify relabels such a note as a minor finding" "$VERIFY" \
+  'names who now hits what is a finding wearing the wrong label'
+want "…never above minor" "$VERIFY" 'relabel.*`severity: "minor"` \(never higher'
+want "…and leaves a trace in meta.refuted" "$VERIFY" 'relabelled as a finding'
+
 # Cost guard: the whole point is TWO Reads, not a config subsystem. Each file
 # may name each config path exactly once — a second mention is a second read
 # site, which is how "read the config" grows back into one.
@@ -563,7 +609,7 @@ want "review-verify carries no target rate either" "$VERIFY" \
 
 # The poster can only tell "never came up" from "came up 40s after we stopped
 # waiting" if it is handed the same number the orchestrator waits on. On
-# spendfuse#351 it was not, so the one case that mattered — rc 0, arriving late —
+# in production it was not, so the one case that mattered — rc 0, arriving late —
 # fell through the rc check and the review said nothing.
 want "the workflow hands the poster the same wait the orchestrator uses" "$WORKFLOW" \
   'DEV_ENV_TIMEOUT_SECONDS: \$\{\{ inputs\.dev_env_timeout_seconds \}\}'
@@ -606,7 +652,7 @@ want "…and does not go fetch it either" "$VERIFY" \
   'you must not go fetch it'
 
 # ── the cardinality pass ────────────────────────────────────────────────────
-# WHY THIS IS PINNED. spendfuse#351 (5572 non-generated lines, depth `full`,
+# WHY THIS IS PINNED. A measured PR (5572 non-generated lines, depth `full`,
 # effort 4) produced ONE minor finding, and Anthropic's own plugin over the same
 # 100 files produced none. Both were defensible on every value-shaped question —
 # and both walked straight past `usePerOrgAlertRulePerformance`, an unbounded
@@ -1459,7 +1505,7 @@ want "build-spec still excludes .claude/** from spec assembly" "$BUILDSPEC" \
 # `/^#{2,3} /` matched NOTHING and /tmp/auth-recipe.md came out 0 bytes — the
 # functional tester never received the auth recipe on that fleet, and reported
 # "AUTH_READY=false and /tmp/auth-recipe.md is empty" instead. Measured on
-# seaters run 33257534059 against a config that really did have `### Auth`:
+# A run against a config that really did have `### Auth`:
 # 2901 bytes extracted with interval support, 0 without.
 echo ""
 echo "── the auth-recipe extractor is portable ──"
@@ -1508,13 +1554,13 @@ rm -f "$CFG"
 #   * The wait was UNCONDITIONAL, but the workflow step that creates
 #     /tmp/dev-env/rc is not. On a code-only review that step is skipped, so the
 #     loop spun to its full timeout waiting for a file nothing would write —
-#     Panenco/qiv run 33298278779: ~600s of a 1185s job, 49% of the wall clock.
-#   * The timeout came straight from the caller, and qiv passes 900. The tool
+#     A measured run: ~600s of a 1185s job, 49% of the wall clock.
+#   * The timeout came straight from the caller, and one caller passes 900. The tool
 #     killed the call (exit 143) and the WHOLE block's stdout was lost: no
 #     DEV_ENV_RC, no DEADLINE_EPOCH.
 #   * The clamp that answered that assumed a fixed 600s ceiling. It is not
 #     fixed: the Bash tool's timeout is a PER-CALL argument, 120000ms by
-#     default and 600000ms at most, and Panenco/qiv run 33305382018 was killed
+#     default and 600000ms at most, and a measured run was killed
 #     at "2m 0s" with exactly the same loss. No clamp can promise survival, so
 #     the wait is now its own tool call and DEADLINE_EPOCH is emitted by the
 #     block that never blocks — see "turn 1 survives a killed wait" below.
@@ -1617,7 +1663,7 @@ else
 fi
 
 # ── turn 1 survives a killed wait ──────────────────────────────────────────
-# THE BUG THIS PINS. Panenco/qiv run 33305382018 ended the turn-1 tool result
+# THE BUG THIS PINS. A measured run ended the turn-1 tool result
 # with "Exit code 143 / Command timed out after 2m 0s". The kill threw away the
 # block's stdout from the point of the kill, so WEB_READY, DEV_ENV_RC and
 # DEADLINE_EPOCH never reached the orchestrator — and DEADLINE_EPOCH is the
@@ -1877,6 +1923,21 @@ G=$(awk '/^is_generated\(\)/,/^}/' "$GUARD" | grep -E '^\s+\*|^\s+dist|^\s+opena
 S=$(awk '/^is_generated\(\)/,/^}/' "$ROOT/scripts/shard-plan.sh" | grep -E '^\s+\*|^\s+dist|^\s+openapi|^\s+swagger|^\s+schema')
 if [ -n "$G" ] && [ "$G" = "$S" ]; then ok "shard-plan.sh's generated-file list is byte-identical to guard.sh's"
 else bad "shard-plan.sh's generated-file list drifted from guard.sh's"; fi
+echo "── the whole PR is read again once the delta rounds outgrow the last full pass ──"
+# Three stages, one variable. The guard decides, the orchestrator hands it to
+# scan, the poster stamps it so the next round can find this one.
+want "prior_state exports the last full-pass head" "$WORKFLOW" 'full_head_sha'
+want "the guard is handed it" "$WORKFLOW" 'GATE_FULL_HEAD_SHA: \$\{\{ steps.prior_state.outputs.full_head_sha'
+want "…and the numstat since it, in GATE_FILES_TSV shape" "$WORKFLOW" 'GATE_SINCE_FULL_TSV=\$\(git diff --numstat'
+want "the orchestrator receives the guard's scope" "$WORKFLOW" 'REVIEW_SCOPE: \$\{\{ steps.guard.outputs.scope'
+c=$(grep -c 'REVIEW_SCOPE: \${{ steps.guard.outputs.scope' "$WORKFLOW")
+if [ "$c" -eq 2 ]; then ok "…and so does the poster (two readers, orchestrator and post-review)"; else bad "REVIEW_SCOPE must reach both the orchestrator and the poster; found $c"; fi
+want "the orchestrator prints it in turn 1" "$ORCH" 'printenv .*REVIEW_SCOPE'
+want "…and hands it to review-scan" "$ORCH" 'REVIEW_SCOPE=\$\{REVIEW_SCOPE\}'
+want "review-scan reads the whole diff on REVIEW_SCOPE=full, carry-over included" "$SCAN" \
+  'Unless `REVIEW_SCOPE=full`'
+want "guard.sh emits scope on the proceed path" "$GUARD" "printf 'scope=%s"
+want "post-review.sh stamps it into the state block" "$POSTER" 'scope: \$scope'
 
 echo ""
 if [ "$fail" -eq 0 ]; then

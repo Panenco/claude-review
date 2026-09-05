@@ -153,10 +153,11 @@ run_poster() {
     DEV_ENV_STARTED_FILE="${DEVENV_STARTED:-$work/healthy-dev-env-started}" \
     DEV_ENV_TIMEOUT_SECONDS="${DEVENV_WAIT:-}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
-    REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
+    REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" REVIEW_SCOPE="${SCOPE:-}" \
     ROUND="${ROUND_N:-}" \
     PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS:-$work/no-such-priors.json}" \
     UNREVIEWED_FILE="${UNREVIEWED:-$work/no-such-unreviewed.txt}" \
+    PRIOR_CHECKS_JSON="${PRIOR_CHECKS:-$work/no-such-prior-checks.json}" \
     bash "$POSTER" 2>&1)
   RC=$?
 }
@@ -219,7 +220,7 @@ rm -rf "$W"
 echo ""
 echo "── (c) invalid review.json ──"
 W=$(mktemp -d)
-# Unescaped quote inside a string — the exact qiv#679 corruption.
+# Unescaped quote inside a string — the exact corruption seen in production.
 printf '%s\n' '{"verdict":"COMMENT","body":"shows a "bad" quote"}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 PAYLOAD=$(payload_of "$W")
@@ -1194,7 +1195,7 @@ assert_contains "with the finding's own words" "eta corrupts the ledger" "$STATE
 rm -rf "$W"
 
 # p4b: ONE finding worded two ways is ONE finding in the state.
-# Observed live on qiv #1442: the model emitted 2 findings, and the state block
+# Observed live: the model emitted 2 findings, and the state block
 # recorded 3. Its meta.findings title ("Failed save fetch leaves the button on
 # X") differed from the title it wrote at the top of the inline comment ("A
 # failed save fetch leaves the button reading X"), and the id is path +
@@ -1533,6 +1534,51 @@ FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(payload_of "$W" | jq -r '.body')
 assert_not_contains "no unreviewed files → no notice" "not reviewed this round" "$BODY"
 assert_eq "…and no key in the state block" "null" "$(state_block "$BODY" | jq -r '.unreviewed')"
+# (k4) a check an earlier round posted on the same path:line is not posted again
+# Checks have no cross-round carry-over, so round 4 posted the same check round 2
+# had on the same line. A finding on that line is untouched, and the drop is
+# announced rather than silent.
+W=$(mktemp -d)
+echo '[{"p": "src/foo.ts", "l": 11}]' > "$W/prior-checks.json"
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nRound two.",
+  "comments": [
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**check** `collectPage` stops at the page ceiling, said again"},
+    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**check** `flushBatch` writes the tenant id before the row"},
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**major** off-by-one"}
+  ],
+  "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11}], "human_review": []}
+}
+EOF
+PRIOR_CHECKS="$W/prior-checks.json" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+assert_eq "the repeated check is dropped, the new check and the finding post" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "the repeated check is gone" "said again" "$PAYLOAD"
+assert_contains "the new check on another line posts" "flushBatch" "$PAYLOAD"
+assert_contains "the finding on the same line is untouched" "off-by-one" "$PAYLOAD"
+assert_contains "the drop is announced" "1 check comment(s) not re-posted" "$OUT"
+assert_not_contains "…and never falls back to the body heading" "What a human should review" "$(echo "$PAYLOAD" | jq -r '.body')"
+rm -rf "$W"
+
+# (k4b) a range check is remembered by the line it was POSTED on. A range over
+# 50 lines collapses onto start_line before posting, so prior-checks.json holds
+# the start; the next round's same check must match on that line too.
+W=$(mktemp -d)
+echo '[{"p": "src/foo.ts", "l": 10}]' > "$W/prior-checks.json"
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nRound three.",
+  "comments": [
+    {"path": "src/foo.ts", "start_line": 10, "line": 13, "side": "RIGHT", "body": "**check** `collectPage` stops at the page ceiling, ranged"}
+  ],
+  "meta": {"findings": [], "human_review": []}
+}
+EOF
+PRIOR_CHECKS="$W/prior-checks.json" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a ranged check whose start a prior round posted is dropped" "0" "$(payload_of "$W" | jq '.comments | length')"
 rm -rf "$W"
 
 # ── (m) a functional finding carries a screenshot through the poster ─────────
@@ -1642,7 +1688,7 @@ assert_not_contains "…never as an exit status" "exited " "$BODY"
 rm -rf "$W"
 
 # (n3) THE SILENT CASE, AND THE WHOLE POINT OF THE BLOCK. A healthy rc is NOT
-# evidence a tester ran: on spendfuse#351 the bring-up returned 0 with API and
+# evidence a tester ran: on one measured run the bring-up returned 0 with API and
 # web both up, but only after the orchestrator's wait had expired, so no tester
 # was ever dispatched — and because this block gated on `rc != 0`, the review
 # said nothing at all. Requested + no functional.json = a notice is owed,
@@ -1654,7 +1700,7 @@ assert_contains "…saying no browser test ran" "No browser test ran" "$BODY"
 assert_not_contains "…and never blaming a bring-up that worked" "did not finish starting" "$BODY"
 rm -rf "$W"
 
-# (n3b) rc 0 but written AFTER the wait expired — the exact spendfuse#351 shape.
+# (n3b) rc 0 but written AFTER the wait expired — the exact production shape.
 # "Came up 40s late" is a knob to turn; "never came up" is a broken bring-up.
 # Reporting them identically is what made the real run unreadable.
 W=$(mktemp -d); mkdir -p "$W/dev-env"
@@ -1732,7 +1778,7 @@ assert_eq "…anchored at the end line" "13" "$(echo "$C" | jq -r '.line')"
 rm -rf "$W"
 
 # (r2) a range only PARTLY in the diff degrades to a single-line comment. It must
-# not take the comment down with it: seaters#2134 asked for 226-253 across a
+# not take the comment down with it: one note asked for 226-253 across a
 # sparse diff, the whole check was rejected, and the question landed in the body
 # — the one place a check must never be, because there nobody reads it.
 W=$(mktemp -d); check_review 4 13 > "$W/review.json"
@@ -1770,7 +1816,7 @@ done
 # it would never reach the size rule at all.
 #
 # THE CAP IS 50, NOT 120. A range renders as a grey band down the diff, and past
-# roughly fifty lines nobody reads the band — spendfuse#351 shipped a 119-line one
+# roughly fifty lines nobody reads the band — one review shipped a 119-line one
 # and it read as noise. 120 was chosen to cover 96% of contiguous changed runs;
 # coverage was the wrong thing to optimise. The cap still has to
 # exist, because a run whose hunks could not be derived skips the in-hunk range
@@ -1796,7 +1842,7 @@ FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W3"
 assert_eq "51 lines is not" "null" \
   "$(payload_of "$W3" | jq -r '.comments[0].start_line // "null"')"
 # THE COLLAPSE LANDS ON THE START, NOT THE END — the regression that produced
-# this cap. spendfuse#351 anchored a 120→239 note at 239, so the orientation
+# this cap. A measured run anchored a 120→239 note at 239, so the orientation
 # arrived under the code it was meant to introduce. A rejected range must move
 # the anchor up to the block opening, never leave it at the foot.
 assert_eq "…and it collapses onto the block opening, not its last line" "20" \
@@ -1930,7 +1976,7 @@ assert_contains "the URL is still intact" "(https://github.com/o/r/raw/review-as
 rm -rf "$W"
 
 # (q2b) a long caption is cut on a word boundary, not mid-word. Observed on
-# seaters #2134: the tester's own descriptions ran past 120 chars and the body
+# Measured: the tester's own descriptions ran past 120 chars and the body
 # rendered "…the app has already la" and "…access code has e".
 W=$(mktemp -d)
 echo "$CLEAN_REVIEW" > "$W/review.json"
@@ -1948,7 +1994,7 @@ assert_not_contains "…and the tail is dropped" "already landed" "$BODY"
 assert_contains "it ends on a whole word" "refusal notification…" "$BODY"
 rm -rf "$W"
 
-# (q2c) untested criteria are surfaced. A live qiv run verified 3 of 7 criteria,
+# (q2c) untested criteria are surfaced. A live run verified 3 of 7 criteria,
 # listed the other 4 in `untested` with real reasons, and correctly reported
 # PASS — "everything you exercised held". The body then said only
 # "Functional pass: PASS — 2 screenshots", so a reader saw a green functional
@@ -3780,6 +3826,28 @@ else
   fail=$((fail + 1))
 fi
 
+
+# ── (s) the state block records what this round read ────────────────────────
+# prior-review-state.sh finds the last FULL pass by this stamp, and guard.sh
+# decides from it when the delta rounds have outgrown that read. Unset is full:
+# that is what every round was before the stamp existed.
+echo ""
+echo "── (s) review state carries the scope ──"
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "unset scope is stamped full" "full" "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq -r '.scope')"
+rm -rf "$W"
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+SCOPE=delta FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a delta round is stamped delta" "delta" "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq -r '.scope')"
+rm -rf "$W"
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+SCOPE=bogus FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "an unknown scope falls back to full, never to a guess" "full" "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq -r '.scope')"
+rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 
