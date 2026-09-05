@@ -1505,7 +1505,7 @@ rm -rf "$W"
 
 # (k4) a check an earlier round posted on the same path:line is not posted again
 # Checks have no cross-round carry-over, so round 4 posted the same check round 2
-# had on preflight.ts:11. A finding on that line is untouched, and the drop is
+# had on the same line. A finding on that line is untouched, and the drop is
 # announced rather than silent.
 W=$(mktemp -d)
 echo '[{"p": "src/foo.ts", "l": 11}]' > "$W/prior-checks.json"

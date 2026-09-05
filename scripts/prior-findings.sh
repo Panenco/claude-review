@@ -175,8 +175,8 @@ fi
 # Checks are excluded from the carry-over above on purpose (a note is not a
 # finding to account for), which left them with no memory at all: every round
 # re-derived its notes fresh and could post one on a line that already had one.
-# Measured on qiv#1498: preflight.ts:11 got the same check in round 2 and round
-# 4. This is the memory — path:line only, because that is the key a reader sees.
+# Measured: one file got the same check in round 2 and round 4 of one
+# client PR. This is the memory — path:line only, because that is the key a reader sees.
 echo '[]' > "$OUT_DIR/prior-checks.json"
 if [ "$C2_OK" = "1" ]; then
   jq -s --arg bot "$BOT" '

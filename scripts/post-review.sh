@@ -673,8 +673,8 @@ awk '
 # A CHECK A PRIOR ROUND ALREADY POSTED ON THIS path:line IS NOT POSTED AGAIN.
 # Checks carry no cross-round memory (prior-findings.sh excludes them from the
 # carry-over on purpose), so every round re-derived its notes and could land a
-# second one on a line that already had one — qiv#1498, preflight.ts:11, rounds
-# 2 and 4. The reader already has that orientation; a second copy teaches them
+# second one on a line that already had one — the same file, rounds 2 and 4 of one
+# client PR. The reader already has that orientation; a second copy teaches them
 # to skip both. NOT SILENT: it is dropped entirely, not moved to the body, so it
 # is announced. A finding on that line is untouched — this is checks only.
 # MATCH ON THE ANCHOR OR THE RANGE START. The collapse below moves a check whose
