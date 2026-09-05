@@ -109,7 +109,7 @@ assert_eq "…its line as of the round that filed it" "11" "$(echo "$FJSON" | jq
 assert_eq "…and its first-seen round" "1" "$(echo "$FJSON" | jq '.[0].r')"
 assert_contains "the failure scenario survives" "pins a core" "$FJSON"
 assert_contains "the markdown names the id" "aaaaaaa1" "$FMD"
-assert_eq "no unreviewed files → the list is written empty" "" "$(cat "$WORK/out/unreviewed-files.txt")"
+assert_eq "no unreviewed files → the carried list is written empty" "" "$(cat "$WORK/out/carried-unreviewed.txt")"
 assert_contains "…tells the model the line may have moved" "re-anchor from your own Read" "$FMD"
 assert_contains "…and renders the scenario in full" "pins a core" "$FMD"
 
@@ -137,7 +137,7 @@ printf '[%s]\n' "$(review 2026-06-01T00:00:00Z "## Claude review — COMMENT
 {\"v\":1,\"round\":1,\"truncated\":false,\"findings\":[],\"unreviewed\":[\"src/lost-a.ts\",\"src/lost-b.ts\"]}
 -->")" > "$WORK/out/prior-reviews.json"
 run_pf
-assert_eq "the unreviewed files are read back out of the state block" "src/lost-a.ts src/lost-b.ts" "$(paste -sd' ' "$WORK/out/unreviewed-files.txt")"
+assert_eq "the unreviewed files are read back out of the state block, into their own file" "src/lost-a.ts src/lost-b.ts" "$(paste -sd' ' "$WORK/out/carried-unreviewed.txt")"
 
 echo ""
 echo "── carrier 2: the inline comments (a PR open before the state block shipped) ──"

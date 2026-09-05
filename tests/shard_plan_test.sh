@@ -58,9 +58,11 @@ run SHARD_FILES_TSV=$'src/a.ts\t900\t300\nsrc/b.ts\t200\t50' PRIOR_FINDINGS_JSON
 assert_eq "…without duplicating a file the push did touch" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/a.ts')"
 
 printf 'src/lost.ts\n' > "$W/unreviewed.txt"
-run SHARD_FILES_TSV="$big" UNREVIEWED_FILE="$W/unreviewed.txt"
+printf 'stale.ts\n' > "$W/unreviewed-files.txt"
+run SHARD_FILES_TSV="$big" CARRIED_UNREVIEWED="$W/unreviewed.txt"
+assert_eq "this round's output list is truncated by the plan, so a non-merging round hands the poster nothing stale" "" "$(cat "$W/unreviewed-files.txt")"
 assert_eq "a file no shard reviewed last round is placed in exactly one shard" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/lost.ts')"
-run SHARD_FILES_TSV=$'src/a.ts\t30\t10' UNREVIEWED_FILE="$W/unreviewed.txt"
+run SHARD_FILES_TSV=$'src/a.ts\t30\t10' CARRIED_UNREVIEWED="$W/unreviewed.txt"
 assert_eq "a small round that carries a file is still sharded, so the file reaches a scan" "2" "$N"
 assert_eq "…and the carried file is in a shard list" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/lost.ts')"
 

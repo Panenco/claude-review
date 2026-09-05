@@ -374,10 +374,16 @@ UNREVIEWED_JSON='[]'
 # The stamped list IS the carried list, so the count and the promise are taken
 # from it, never from the raw file: a cap that silently dropped paths while the
 # notice said "all carried" is exactly the lie this notice exists to prevent.
-# 200 paths is above any real shard (the guard refuses PRs over 60 files), and
-# the raw count is still reported when it is ever exceeded.
+# Capped by BYTES to half the state budget, here, before the notice is
+# rendered: the degrade ladder below sheds scenarios and then findings, never
+# this list, so an uncapped list would evict exactly the carried findings the
+# state exists to preserve. Half the block is above any real shard (the guard
+# refuses PRs over 60 files), and the raw count is reported when exceeded.
 if [ -s "$UNREVIEWED_FILE" ]; then
-  UNREVIEWED_JSON=$(grep . "$UNREVIEWED_FILE" | sort -u | head -200 | jq -R . | jq -sc .) || UNREVIEWED_JSON='[]'
+  UNREVIEWED_JSON=$(grep . "$UNREVIEWED_FILE" | sort -u | jq -R . | jq -sc .) || UNREVIEWED_JSON='[]'
+  while [ "$(printf '%s' "$UNREVIEWED_JSON" | wc -c)" -gt $(( STATE_MAX / 2 )) ] && [ "$(jq 'length' <<<"$UNREVIEWED_JSON")" -gt 0 ]; do
+    UNREVIEWED_JSON=$(jq -c '.[:-1]' <<<"$UNREVIEWED_JSON")
+  done
   UNREVIEWED_N=$(jq 'length' <<<"$UNREVIEWED_JSON")
   UNREVIEWED_RAW=$(grep . "$UNREVIEWED_FILE" | sort -u | wc -l | tr -d ' ')
   UNREVIEWED_LIST=$(jq -r '.[:5][]' <<<"$UNREVIEWED_JSON" | sed 's/^/`/;s/$/`/' | paste -sd, - | sed 's/,/, /g')

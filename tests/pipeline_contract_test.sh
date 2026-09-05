@@ -1909,8 +1909,14 @@ want "…and never writes the merged file itself" "$SCAN" 'never `/tmp/scan\.jso
 want "…and reviews an out-of-delta file in its list against the base" "$SCAN" 'outside the since-last delta is there because no round has covered it yet'
 want "merge-scans names the files of a shard that never reported" "$ROOT/scripts/merge-scans.sh" 'unreviewed-files\.txt'
 want "the poster stamps them into the review state" "$POSTER" 'unreviewed: \$unreviewed'
-want "prior-findings reads them back for the next plan" "$ROOT/scripts/prior-findings.sh" '\.unreviewed\[\]'
-want "shard-plan folds them in" "$ROOT/scripts/shard-plan.sh" 'UNREVIEWED_FILE'
+want "prior-findings reads them back for the next plan, into their own file" "$ROOT/scripts/prior-findings.sh" 'carried-unreviewed\.txt'
+want "shard-plan folds them in" "$ROOT/scripts/shard-plan.sh" 'CARRIED_UNREVIEWED'
+want "…and truncates this round's output list first" "$ROOT/scripts/shard-plan.sh" ': > "\$OUT_DIR/unreviewed-files\.txt"'
+# merge-scans dedupes on the cross-round finding identity; its copy of the
+# normaliser must be the poster's, byte for byte, or the same finding gets two ids.
+MN=$(sed -n "s/^JQ_NORM='\(.*\)'$/\1/p" "$ROOT/scripts/merge-scans.sh")
+PN=$(sed -n "s/^JQ_NORM='\(.*\)'$/\1/p" "$POSTER")
+if [ -n "$MN" ] && [ "$MN" = "$PN" ]; then ok "merge-scans.sh's JQ_NORM is byte-identical to post-review.sh's"; else bad "merge-scans.sh's JQ_NORM drifted from post-review.sh's"; fi
 want "the agent definition names the shard file as a deliverable" "$ROOT/agents/review-scan.md" 'scan-<i>\.json'
 want "…and so does the local harness" "$ROOT/scripts/review-local.sh" 'scan-<i>\.json'
 for f in "$ROOT/action.yml" "$WORKFLOW"; do

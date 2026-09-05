@@ -18,9 +18,12 @@
 #            the file list holds only what this push touched, but every carried
 #            finding must still be owned by SOME shard — its path is added at
 #            zero weight so the shard that gets it accounts for it.
-#            UNREVIEWED_FILE (OUT_DIR/unreviewed-files.txt): files a shard of the
-#            LAST round never reported on (prior-findings.sh reads them back out
-#            of the review state); folded in the same way, so they get read.
+#            CARRIED_UNREVIEWED (OUT_DIR/carried-unreviewed.txt): files a shard of
+#            the LAST round never reported on (prior-findings.sh reads them back
+#            out of the review state); folded in the same way, so they get read.
+#            This step also truncates OUT_DIR/unreviewed-files.txt — THIS round's
+#            output list, written by merge-scans.sh — so a round that never
+#            merges cannot hand the poster a stale one.
 #            OUT_DIR (/tmp): where shard-<i>.txt land (one path per line), plus
 #            shard-count, which merge-scans.sh reads to notice a missing shard.
 # Out (stdout): shards=<n>, then shard_<i>=<files>/<lines> per shard.
@@ -64,7 +67,8 @@ fi
 # Carried findings whose file this push did not touch still need an owner, and
 # so do the files a shard of the last round never reported on.
 PF="${PRIOR_FINDINGS_JSON:-$OUT_DIR/prior-findings.json}"
-UF="${UNREVIEWED_FILE:-$OUT_DIR/unreviewed-files.txt}"
+UF="${CARRIED_UNREVIEWED:-$OUT_DIR/carried-unreviewed.txt}"
+: > "$OUT_DIR/unreviewed-files.txt"
 carried=0
 if [ -n "$TSV" ]; then
   while IFS= read -r p; do

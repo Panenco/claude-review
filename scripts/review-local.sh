@@ -349,6 +349,7 @@ ORCH_LOG="$OUT/session.json" \
 JOB_START="$RUNDIR/job-start" \
 SPEC_STATUS="$RUNDIR/spec-status" \
 PRIOR_FINDINGS_JSON="$RUNDIR/prior-findings.json" \
+UNREVIEWED_FILE="$RUNDIR/unreviewed-files.txt" \
 HEAD_SHA="$SHA" ROUND="$ROUND" REVIEW_SCOPE="$REVIEW_SCOPE" \
 REVIEW_COMMENT_LIMIT="$REVIEW_COMMENT_LIMIT" \
   "$SCRIPTS"/post-review.sh > "$OUT/post-review.out" 2>&1
