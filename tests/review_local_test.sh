@@ -302,6 +302,7 @@ assert_file_has "…exports it to the orchestrator session" "export ROUND PRIOR_
 assert_file_has "…and stamps it through the poster" 'REVIEW_SCOPE="$REVIEW_SCOPE"' "$LOCAL"
 assert_file_has "EVAL_SCOPE=full forces a whole-PR read on a round-2+ run" 'GATE_FORCE_FULL=true' "$LOCAL"
 assert_file_has "EVAL_HEAD_SHA replays the PR at an earlier head" '[ -n "${EVAL_HEAD_SHA:-}" ] && SHA="$EVAL_HEAD_SHA"' "$LOCAL"
+assert_file_has "…and drops any round anchor that is not an ancestor of that head" 'merge-base --is-ancestor "$a" "$SHA"' "$LOCAL"
 
 echo ""
 if [ "$fail" -eq 0 ]; then echo "All review-local tests passed."; exit 0; fi

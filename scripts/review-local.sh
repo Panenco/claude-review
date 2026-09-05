@@ -204,6 +204,18 @@ ROUND=$(sed -n 's/^round=//p' <<<"$STATE")
 PRIOR_HEAD_SHA=$(sed -n 's/^prior_head_sha=//p' <<<"$STATE")
 PRIOR_VERDICT=$(sed -n 's/^prior_verdict=//p' <<<"$STATE")
 FULL_HEAD_SHA=$(sed -n 's/^full_head_sha=//p' <<<"$STATE")
+# A replay at an earlier head (EVAL_HEAD_SHA) still sees the reviews posted
+# AFTER it, and their heads resolve in the clone — so an anchor can be a
+# descendant of the head under review, and `git diff anchor..HEAD` inverts.
+# Only an ancestor is a usable anchor; anything else falls back to round 1 / full.
+for v in PRIOR_HEAD_SHA FULL_HEAD_SHA; do
+  a="${!v}"
+  if [ -n "$a" ] && ! git -C "$WT" merge-base --is-ancestor "$a" "$SHA" 2>/dev/null; then
+    echo "Replay: $v $a is not an ancestor of $SHA — dropped"
+    printf -v "$v" ''
+  fi
+done
+[ -n "$PRIOR_HEAD_SHA" ] || { ROUND=1; PRIOR_VERDICT=""; }
 ROUND="$ROUND" "$SCRIPTS"/prior-findings.sh > "$OUT/prior-findings.out" 2>&1
 echo "Round $ROUND (prior head '${PRIOR_HEAD_SHA:-none}', prior verdict '${PRIOR_VERDICT:-none}')"
 

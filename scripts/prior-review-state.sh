@@ -131,8 +131,13 @@ fi
 #       "cannot tell, read everything" — the same bias as the filters above. ──
 FULL_SHA=""
 if [ "$ROUND" -ge 2 ]; then
-  FULL_SHA=$(jq -r 'sort_by(.submitted_at)
-                    | ([.[] | select((.body // "") | test("<!-- claude-review-state\\s*\\{[^\\n]*\"scope\":\"full\""))] | last | .commit_id)
+  # The stamp is read from the text after the LAST state marker only: that is
+  # the block post-review.sh appended, and a review that merely QUOTES a state
+  # block in a finding (live on this repo, which reviews itself) must not become
+  # the anchor — the same hazard the skip markers guard against above.
+  FULL_SHA=$(jq -r 'def stamped_full: ((.body // "") | split("<!-- claude-review-state")) | (length > 1) and (last | test("\"scope\":\"full\""));
+                    sort_by(.submitted_at)
+                    | ([.[] | select(stamped_full)] | last | .commit_id)
                       // (.[0].commit_id)
                       // empty' "$PRIOR_REVIEWS" 2>/dev/null)
   if [ -n "$FULL_SHA" ] && ! git cat-file -e "${FULL_SHA}^{commit}" 2>/dev/null; then

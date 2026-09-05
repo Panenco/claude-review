@@ -281,6 +281,16 @@ assert_full "a stamped full round beats an older unstamped one" \
 assert_full "a delta round after a full one keeps the full one as anchor" \
   "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_OLD" "$FULL_BODY"),
     $(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$DELTA_BODY")]" "$SHA_OLD"
+QUOTING_FULL_BODY="$JUDGED_BODY
+
+- **major** \`tests/x_test.sh:12\` — the fixture reads <!-- claude-review-state {\"scope\":\"full\"} --> and asserts on it.
+
+<!-- claude-review-state
+{\"v\":1,\"round\":3,\"scope\":\"delta\",\"truncated\":false,\"findings\":[]}
+-->"
+assert_full "a delta review that only QUOTES a full stamp is not the anchor" \
+  "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_OLD" "$FULL_BODY"),
+    $(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$QUOTING_FULL_BODY")]" "$SHA_OLD"
 assert_full "an unresolvable full-pass head is empty, never a guess" \
   "[$(review COMMENTED 2026-08-07T07:00:00Z "$SHA_GONE" "$FULL_BODY"),
     $(review COMMENTED 2026-08-07T08:00:00Z "$SHA_NEW" "$DELTA_BODY")]" "-"

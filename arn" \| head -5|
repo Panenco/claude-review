@@ -1,1 +1,0 @@
-echo GHLOG:; grep -i "reviews|POST" "$W/gh.log" | head -5; echo ERR:; echo "$OUT" | grep -iE "error
