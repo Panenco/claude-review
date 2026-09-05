@@ -66,6 +66,8 @@ BASE=$(jq -r '.baseRefName // "main"' /tmp/pr.json)
 for f in /tmp/shard-[0-9]*.txt; do
   [ -f "$f" ] || continue
   tr '\n' '\0' < "$f" | xargs -0 git diff "origin/$BASE"...HEAD -- > "${f%.txt}.diff" 2>/dev/null
+  # Empty when HEAD is already in the base (a merged PR): no file, and the shard cuts its own.
+  [ -s "${f%.txt}.diff" ] || rm -f "${f%.txt}.diff"
 done
 # DEADLINE_EPOCH IS EMITTED HERE, IN THE BLOCK THAT CANNOT BLOCK: the clock plus
 # FUNCTIONAL_BUDGET_SECONDS, depending on the dev-env not at all. Nothing above
@@ -137,7 +139,7 @@ Each `${VAR}` below means that literal value.
    ```
    When N is 2 or more, dispatch N of these, for i = 1..N, each with its own file list and its own output file — never `/tmp/scan.json`, which `merge-scans.sh` writes in turn 3:
    ```
-   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}. SHARD ${i} of ${N}: the files you hunt findings and notes in are listed one per line in /tmp/shard-${i}.txt and their diff against the base is already at /tmp/shard-${i}.diff (see "Your shard" in the skill) — do not run gh pr diff; read anything else you need for context. Write /tmp/scan-${i}.json.
+   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}. SHARD ${i} of ${N}: the files you hunt findings and notes in are listed one per line in /tmp/shard-${i}.txt and their diff against the base is already at /tmp/shard-${i}.diff (see "Your shard" in the skill) — no gh pr diff unless that file is missing; read anything else you need for context. Write /tmp/scan-${i}.json.
    ```
    The shards are independent; issuing them one per turn costs pure wall clock and buys nothing.
 2. `subagent_type: "review-functional-tester"` — only when eligible:

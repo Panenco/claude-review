@@ -23,6 +23,7 @@ The orchestrator's Task prompt may name a shard: `SHARD i of N`, a file list at 
   cat /tmp/shard-${i}.txt /tmp/shard-${i}.diff; gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences
   cat /tmp/prior-findings.md 2>/dev/null
   ```
+  If `/tmp/shard-i.diff` is missing (HEAD already merged into the base leaves that diff empty), cut it yourself in that same call: `gh pr diff ${PR_NUMBER}`, kept to your files.
   The spec (`/tmp/spec.md`) and the repo conventions come next, one call each, exactly as below. Then hunt.
 - **Batch your reads.** Every turn re-reads everything you have read so far, so twenty one-file turns cost several times what seven three-file turns do. When you know the next three files you need, fetch them in one call.
 - **Hunt findings and notes only in the files listed.** Every pass in this skill runs unchanged, over those files. Read anything else you need — callers, siblings, the file a copy came from, the spec — and cite it in `evidence`, but a finding or note is *anchored* in your shard's files only.
