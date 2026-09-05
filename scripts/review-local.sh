@@ -57,6 +57,8 @@ set -uo pipefail
 #   EVAL_ROOT    working root for clones and results   (default $TMPDIR/claude-review-eval)
 #   EVAL_MODEL   the REVIEWING model, i.e. the subagents  (default claude-opus-5)
 #   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-sonnet-5)
+#   EVAL_SCOPE       "full" reads the whole PR on a round-2+ run (GATE_FORCE_FULL),
+#                    otherwise the guard decides full-or-delta exactly as CI does
 
 usage() { echo "usage: ${0##*/} <pr-number> [--spec-only]" >&2; }
 
@@ -194,6 +196,7 @@ fi
 ROUND=$(sed -n 's/^round=//p' <<<"$STATE")
 PRIOR_HEAD_SHA=$(sed -n 's/^prior_head_sha=//p' <<<"$STATE")
 PRIOR_VERDICT=$(sed -n 's/^prior_verdict=//p' <<<"$STATE")
+FULL_HEAD_SHA=$(sed -n 's/^full_head_sha=//p' <<<"$STATE")
 ROUND="$ROUND" "$SCRIPTS"/prior-findings.sh > "$OUT/prior-findings.out" 2>&1
 echo "Round $ROUND (prior head '${PRIOR_HEAD_SHA:-none}', prior verdict '${PRIOR_VERDICT:-none}')"
 
@@ -207,8 +210,14 @@ GATE_DELTA_FILES=""
 if [ -n "$PRIOR_HEAD_SHA" ]; then
   GATE_DELTA_FILES=$(git -C "$WT" diff --name-only "$PRIOR_HEAD_SHA..HEAD" 2>/dev/null) || PRIOR_HEAD_SHA=""
 fi
-export GATE_FILES_TSV GATE_LABELS GATE_DELTA_FILES
-export GATE_PRIOR_HEAD_SHA="$PRIOR_HEAD_SHA" GATE_HUMAN_REQUESTED=true
+GATE_SINCE_FULL_TSV=""
+if [ -n "$FULL_HEAD_SHA" ]; then
+  GATE_SINCE_FULL_TSV=$(git -C "$WT" diff --numstat "$FULL_HEAD_SHA..HEAD" 2>/dev/null \
+                          | awk -F'\t' '{print $3 "\t" $1 "\t" $2}') || FULL_HEAD_SHA=""
+fi
+export GATE_FILES_TSV GATE_LABELS GATE_DELTA_FILES GATE_SINCE_FULL_TSV
+export GATE_PRIOR_HEAD_SHA="$PRIOR_HEAD_SHA" GATE_FULL_HEAD_SHA="$FULL_HEAD_SHA" GATE_HUMAN_REQUESTED=true
+[ "${EVAL_SCOPE:-}" = "full" ] && export GATE_FORCE_FULL=true
 DECISION=$("$SCRIPTS"/guard.sh) || DECISION=""
 printf '%s\n' "$DECISION" > "$OUT/guard.out"
 if ! grep -qE '^proceed=(true|false)$' <<<"$DECISION"; then
@@ -216,7 +225,8 @@ if ! grep -qE '^proceed=(true|false)$' <<<"$DECISION"; then
   exit 1
 fi
 PROCEED=$(sed -n 's/^proceed=//p' <<<"$DECISION")
-echo "Guard: proceed=$PROCEED"
+REVIEW_SCOPE=$(sed -n 's/^scope=//p' <<<"$DECISION")
+echo "Guard: proceed=$PROCEED scope=${REVIEW_SCOPE:-full}"
 
 # ── spec assembly ────────────────────────────────────────────────────────────
 ( cd "$WT" && "$SCRIPTS"/build-spec.sh ) > "$OUT/build-spec.out" 2>&1
@@ -233,7 +243,7 @@ if [ "$PROCEED" != "true" ]; then
 fi
 
 # ── the orchestrator session ─────────────────────────────────────────────────
-export ROUND PRIOR_HEAD_SHA PRIOR_VERDICT
+export ROUND PRIOR_HEAD_SHA PRIOR_VERDICT REVIEW_SCOPE
 export MODEL_HIGH="$MODEL" MODEL_FUNCTIONAL=claude-sonnet-5
 export RUN_FUNCTIONAL=false FUNCTIONAL_BUDGET_SECONDS=480 DEV_ENV_TIMEOUT_SECONDS=360
 # The second opinion needs the plugin marketplace the WORKFLOW vendors at a
@@ -315,7 +325,7 @@ ORCH_LOG="$OUT/session.json" \
 JOB_START="$RUNDIR/job-start" \
 SPEC_STATUS="$RUNDIR/spec-status" \
 PRIOR_FINDINGS_JSON="$RUNDIR/prior-findings.json" \
-HEAD_SHA="$SHA" ROUND="$ROUND" \
+HEAD_SHA="$SHA" ROUND="$ROUND" REVIEW_SCOPE="$REVIEW_SCOPE" \
 REVIEW_COMMENT_LIMIT="$REVIEW_COMMENT_LIMIT" \
   "$SCRIPTS"/post-review.sh > "$OUT/post-review.out" 2>&1
 RC=$?

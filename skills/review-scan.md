@@ -56,9 +56,10 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 
 ## Round 2+ — review only what changed since last time
 
-`ROUND` and `PRIOR_HEAD_SHA` are in your env. When `PRIOR_HEAD_SHA` is non-empty and is not HEAD, the previous round already read the rest of this PR and charging for it again is pure waste:
+`ROUND`, `PRIOR_HEAD_SHA` and `REVIEW_SCOPE` are in your env. When `PRIOR_HEAD_SHA` is non-empty and is not HEAD, the previous round already read the rest of this PR and charging for it again is pure waste:
 
 - Review **only** `git diff ${PRIOR_HEAD_SHA}..HEAD`. Read the wider file for context, but do not hunt for new findings outside that delta.
+- **Unless `REVIEW_SCOPE=full`.** The guard sets that when the delta rounds since the last whole read add up to half the PR or more: the PR you would be reviewing a slice of is no longer the PR anyone read in full. Then review the whole diff exactly as on round 1 — every pass above, every file — and still do everything below. A whole read once, on day one, was how qiv#1498 reached a human reviewer with twenty defects the bot had had one look at.
 - `Read /tmp/prior-findings.md` — every finding this bot has filed on this PR, with its `id`, severity, `path:line` **as of the round that filed it**, and the failure scenario. Consolidated for you from the review state block, the inline comments and the review bodies; do not go reconstructing it from `/tmp/prior-reviews.json`. Missing or empty on round 2+ means the carry-over could not be read, not that earlier rounds were clean.
 - **Account for every one of them. Silence is not a bucket.** For each, `Read` that code at HEAD — a reply is never by itself the evidence a finding is resolved — and put it in exactly one of:
   - `prior_findings` — still reachable at HEAD. Copy the finding object, keep its `id`, re-anchor `line` from your Read, and add `"carried": true`.

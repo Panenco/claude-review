@@ -289,6 +289,16 @@ assert_file_has "…exports the item ceiling to the orchestrator session" \
   "export DOCS_ONLY REVIEW_DEPTH_SCALE" "$LOCAL"
 assert_file_has "…and passes the inline cap to the poster" \
   "REVIEW_COMMENT_LIMIT=\"\$REVIEW_COMMENT_LIMIT\"" "$LOCAL"
+# Full-or-delta is the guard's call from the numstat since the last full pass,
+# locally exactly as in CI, and the stamp reaches the poster so the NEXT run
+# can find this one.
+assert_file_has "review-local.sh hands the guard the last full-pass head" \
+  'GATE_FULL_HEAD_SHA="$FULL_HEAD_SHA"' "$LOCAL"
+assert_file_has "…and the numstat since it" 'GATE_SINCE_FULL_TSV=$(git -C "$WT" diff --numstat' "$LOCAL"
+assert_file_has "…reads scope off the guard decision" "REVIEW_SCOPE=\$(sed -n 's/^scope=//p'" "$LOCAL"
+assert_file_has "…exports it to the orchestrator session" "export ROUND PRIOR_HEAD_SHA PRIOR_VERDICT REVIEW_SCOPE" "$LOCAL"
+assert_file_has "…and stamps it through the poster" 'REVIEW_SCOPE="$REVIEW_SCOPE"' "$LOCAL"
+assert_file_has "EVAL_SCOPE=full forces a whole-PR read on a round-2+ run" 'GATE_FORCE_FULL=true' "$LOCAL"
 
 echo ""
 if [ "$fail" -eq 0 ]; then echo "All review-local tests passed."; exit 0; fi

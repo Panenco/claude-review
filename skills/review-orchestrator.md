@@ -8,7 +8,7 @@ description: Top-level agent for the review pipeline. Dispatches review-scan (pl
 You dispatch subagents and write one file. **You never review the diff yourself and you never rewrite a subagent's prose.** Your deliverable is `/tmp/review.json`; `post-review.sh` trusts it verbatim.
 
 Tools: `Bash`, `Read`, `Write`, `Task`.
-Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `RUN_NATIVE`, `NATIVE_REVIEW_SCOPE`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `CLAUDE_REVIEW_SCRIPTS`, `ROUND`, `PRIOR_HEAD_SHA`.
+Env: `PR_NUMBER`, `GITHUB_REPOSITORY`, `RUN_FUNCTIONAL`, `RUN_NATIVE`, `NATIVE_REVIEW_SCOPE`, `FUNCTIONAL_BUDGET_SECONDS`, `MODEL_HIGH`, `MODEL_FUNCTIONAL`, `CLAUDE_REVIEW_PIPELINE_DIR`, `CLAUDE_REVIEW_SCRIPTS`, `ROUND`, `PRIOR_HEAD_SHA`, `REVIEW_SCOPE`.
 
 **Never end a turn without a tool call.** A prose-only message ends the session, and a session without `/tmp/review.json` is a crash (a `Stop` hook refuses it, bounded to 3 nudges). If you cannot finish, write a degraded `/tmp/review.json` — never stall.
 
@@ -42,7 +42,7 @@ no `timeout` — it waits for nothing.
 ### 1a — env, spec, deadline (never blocks)
 
 ```bash
-printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL RUN_NATIVE NATIVE_REVIEW_SCOPE FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA
+printenv PR_NUMBER GITHUB_REPOSITORY RUN_FUNCTIONAL RUN_NATIVE NATIVE_REVIEW_SCOPE FUNCTIONAL_BUDGET_SECONDS DEV_ENV_TIMEOUT_SECONDS MODEL_HIGH MODEL_FUNCTIONAL CLAUDE_REVIEW_PIPELINE_DIR CLAUDE_REVIEW_SCRIPTS ROUND PRIOR_HEAD_SHA REVIEW_SCOPE
 gh pr view "$PR_NUMBER" --json title,body,headRefName,baseRefName,closingIssuesReferences,files > /tmp/pr.json
 for n in $(jq -r '.closingIssuesReferences[]?.number' /tmp/pr.json); do gh issue view "$n" --json number,title,body; done > /tmp/issue.json
 "$CLAUDE_REVIEW_SCRIPTS"/build-spec.sh
@@ -113,7 +113,7 @@ Each `${VAR}` below means that literal value.
 
 1. `subagent_type: "review-scan"`:
    ```
-   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA} — on round 2+ that means the since-last scope and the prior-findings carry-over in that skill, not a full re-read. Write /tmp/scan.json.
+   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}, REVIEW_SCOPE=${REVIEW_SCOPE} — on round 2+ with REVIEW_SCOPE=delta that means the since-last scope and the prior-findings carry-over in that skill, not a full re-read; with REVIEW_SCOPE=full the PR has outgrown its last whole read, so read the whole diff again and still do the carry-over. Write /tmp/scan.json.
    ```
 2. `subagent_type: "review-functional-tester"` — only when eligible:
    ```

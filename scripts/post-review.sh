@@ -109,6 +109,12 @@ COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
 # no guard outputs — still gets.
 COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-10}"
 ROUND="${ROUND:-1}"
+# What this round read: "full" (the whole PR) or "delta" (since the last
+# review). Stamped into the state block so prior-review-state.sh can find the
+# last full pass and guard.sh can decide when the PR has outgrown it. A round
+# with no scope set is treated as full, which is what every round was before.
+REVIEW_SCOPE="${REVIEW_SCOPE:-full}"
+case "$REVIEW_SCOPE" in full|delta) ;; *) REVIEW_SCOPE=full ;; esac
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
 STATE_MAX="${REVIEW_STATE_MAX:-4000}"
 FUNCTIONAL_JSON="${FUNCTIONAL_JSON:-/tmp/functional.json}"
@@ -1595,8 +1601,8 @@ finding_id() {
   fi
 }
 emit_state() {
-  jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" \
-    '{v: 1, round: $round, truncated: ($trunc == 1), findings: .}' \
+  jq -c --argjson round "$ROUND" --argjson trunc "$TRUNCATED" --arg scope "$REVIEW_SCOPE" \
+    '{v: 1, round: $round, scope: $scope, truncated: ($trunc == 1), findings: .}' \
     "$WORK/state-findings.json" > "$WORK/state.json"
 }
 state_bytes() { wc -c < "$WORK/state.json" | tr -d ' '; }
