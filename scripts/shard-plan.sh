@@ -12,7 +12,7 @@
 # In  (env): SHARD_FILES_TSV ("path<TAB>additions<TAB>deletions" per file) or,
 #            when unset, the `files` of PR_JSON (default /tmp/pr.json).
 #            SHARD_MIN_LINES (1200) / SHARD_MIN_FILES (30): below BOTH, one shard.
-#            SHARD_TARGET (900): weight one shard should carry. SHARD_MAX (4).
+#            SHARD_TARGET (1400): weight one shard should carry — 300-line shards took as many turns as 600-line ones, so fewer, bigger shards cost less per line. SHARD_MAX (4).
 #            GATE_GENERATED_GLOBS: the consumer's extra build-output globs, as guard.sh.
 #            PRIOR_FINDINGS_JSON (OUT_DIR/prior-findings.json): on a delta round
 #            the file list holds only what this push touched, but every carried
@@ -36,7 +36,7 @@ set -uo pipefail # No `set -e` (repo rule, bugbot.md).
 OUT_DIR="${OUT_DIR:-/tmp}"
 MIN_LINES="${SHARD_MIN_LINES:-1200}"
 MIN_FILES="${SHARD_MIN_FILES:-30}"
-TARGET="${SHARD_TARGET:-900}"
+TARGET="${SHARD_TARGET:-1400}"
 MAX="${SHARD_MAX:-4}"
 
 # Mirrors guard.sh is_generated — tests/pipeline_contract_test.sh asserts the
