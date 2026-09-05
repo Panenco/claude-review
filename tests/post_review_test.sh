@@ -1526,8 +1526,8 @@ printf '%s' "$VALID_REVIEW" > "$W/review.json"
 UNREVIEWED="$W/unreviewed.txt" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(payload_of "$W" | jq -r '.body')
 N_STAMPED=$(state_block "$BODY" | jq '.unreviewed | length')
-[ "$N_STAMPED" -lt 250 ] && [ "$N_STAMPED" -gt 0 ] && ok "the stamped list is capped by bytes ($N_STAMPED of 250)" || bad "stamped list not capped: $N_STAMPED"
-[ "$(state_block "$BODY" | jq -c '.unreviewed' | wc -c)" -le 2000 ] && ok "…to at most half the state budget" || bad "unreviewed list exceeds half the state budget"
+assert_eq "the stamped list is capped by bytes, not the raw 250" "capped" "$( [ "$N_STAMPED" -gt 0 ] && [ "$N_STAMPED" -lt 250 ] && echo capped || echo "not capped: $N_STAMPED" )"
+assert_eq "…to at most half the state budget" "fits" "$( [ "$(state_block "$BODY" | jq -cj '.unreviewed' | wc -c | tr -d ' ')" -le 2000 ] && echo fits || echo over )"
 assert_contains "…and the notice counts what was stamped, not the raw file" "$N_STAMPED of 250 are carried" "$(visible_body "$BODY")"
 assert_eq "…and the carried findings were not shed to make room" "2" "$(state_block "$BODY" | jq '.findings | length')"
 rm -rf "$W"
