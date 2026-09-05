@@ -3644,6 +3644,110 @@ assert_not_contains "…and the section it would have deleted is not charged for
 rm -rf "$W"
 
 
+echo ""
+echo "── why this is not an approve ──"
+# A COMMENT with no findings left the reader guessing at which gate held it.
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nRound-2 delta fixes the carried bug; nothing new survives.",
+  "comments": [],
+  "meta": {"findings": [], "human_review": [],
+           "approve_blocked_by": ["sensitive_path", "effort"]}
+}
+EOF
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_eq "exit 0" "0" "$RC"
+assert_contains "the reader is told it was not approved" "Not approved because" "$BODY"
+assert_contains "…and BOTH gates are named, not one" "sensitive path" "$BODY"
+assert_contains "…including the second" "more judgement than an unread approval allows" "$BODY"
+assert_contains "…and that nothing was actually wrong" "No defect was found" "$BODY"
+rm -rf "$W"
+
+W=$(mktemp -d)
+printf '%s\n' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "a review with findings does not explain itself twice" "Not approved because" "$BODY"
+rm -rf "$W"
+
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{"verdict": "APPROVE", "body": "## Claude review — APPROVE\n\nClean.", "comments": [],
+ "meta": {"findings": [], "human_review": [], "approve_blocked_by": []}}
+EOF
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "an approve explains nothing" "Not approved" "$BODY"
+rm -rf "$W"
+
+# A review that recorded no gate is not editorialised over.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nfine.", comments: [], meta: {}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "a review with no gate field is not editorialised over" "Not approved" "$BODY"
+rm -rf "$W"
+
+# THE REGRESSION THIS PINS. The field shipped as a STRING; `map` over one is a
+# jq error the stage swallows, so the disclosure was dead on its own contract.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
+        meta: {findings: [], human_review: [], approve_blocked_by: "sensitive_path"}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_contains "a single string still renders the gate" "sensitive path" "$BODY"
+rm -rf "$W"
+
+# `none`, `findings` and anything unrecognised name no gate the author can act
+# on, so none of them reach the body as raw jargon.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
+        meta: {findings: [], human_review: [], approve_blocked_by: ["none", "vibes", "effort"]}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+NOTICE=$(printf '%s\n' "$BODY" | grep -o 'Not approved because [^<]*')
+assert_eq "only the gate we know is named" \
+  "Not approved because the diff needed more judgement than an unread approval allows. No defect was found." \
+  "$NOTICE"
+rm -rf "$W"
+
+# `meta` is model-written and can be empty while criticals post inline. "No
+# defect was found" printed under those criticals is the review contradicting
+# itself, so a REQUEST_CHANGES never reaches the notice and a severity-marked
+# comment suppresses it even when meta.findings is empty.
+W=$(mktemp -d)
+jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nBroken.",
+        comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
+                    body: "**critical** the lock is dropped\n\nTwo writers reach it."}],
+        meta: {findings: [], human_review: [], approve_blocked_by: ["sensitive_path"]}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "a REQUEST_CHANGES never says no defect was found" "No defect was found" "$BODY"
+rm -rf "$W"
+
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne minor.",
+        comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
+                    body: "**minor** the log line carries the token\n\nIt reaches the log."}],
+        meta: {findings: [], human_review: [], approve_blocked_by: ["effort"]}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_not_contains "…nor does a COMMENT whose finding lives only in a comment" "No defect was found" "$BODY"
+rm -rf "$W"
+
+# The skill says the field is an array. If that schema line ever goes back to a
+# bare string the poster still works, but the instruction must stay honest.
+if grep -q '"approve_blocked_by": \[' skills/review-verify.md; then
+  echo "OK:   review-verify.md asks for approve_blocked_by as an array"
+else
+  echo "FAIL: review-verify.md no longer asks for an array — the poster reads one"
+  fail=$((fail + 1))
+fi
+
+
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 
 echo ""

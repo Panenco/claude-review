@@ -355,6 +355,40 @@ case "$(cat "$SPEC_STATUS" 2>/dev/null)" in
     SPEC_NOTICE=$'\n<sub>No spec resolved — reviewed on the diff alone. Link an issue, or commit the intent doc, to have the next review check against what was asked.</sub>\n' ;;
 esac
 
+# ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────
+# APPROVE is a conjunction of four gates (review-verify.md); the model names
+# every one that failed and the poster renders them, so a verdict that finds
+# nothing and still withholds the approval says why. Silent when there are
+# findings: they are already the answer.
+# A STRING IS ACCEPTED TOO. `map` over one is a jq ERROR, which this stage
+# swallows into an empty notice — a type mismatch here does not misrender, it
+# disappears. The field shipped as a string once, and silence is expensive.
+#
+# COMMENT ONLY, AND NOT ON meta.findings ALONE. `meta` is model-written and can
+# be empty while three criticals post inline (section 4 says the same, and says
+# why). "No defect was found" printed under those criticals is the review
+# contradicting itself, so the severity-marked comments are counted too, and a
+# REQUEST_CHANGES never reaches here whatever meta says.
+APPROVE_NOTICE=""
+if [ "$VERDICT" = "COMMENT" ] \
+   && [ "$(jq '((.meta.findings // []) | length)
+               + ([(.comments // [])[] | select(((.body // "")
+                   | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i")))] | length)' \
+          "$REVIEW_JSON" 2>/dev/null)" = "0" ]; then
+  GATES=$(jq -r '
+    def say:
+      if   . == "no_argument"    then "the scan produced no approve argument"
+      elif . == "sensitive_path" then "it touches a sensitive path (auth, payments, migrations, CI or infra), always read by a human"
+      elif . == "effort"         then "the diff needed more judgement than an unread approval allows"
+      elif . == "docs_only_note" then "a docs-only diff carrying a note sets direction someone should confirm"
+      else empty end;
+    (.meta.approve_blocked_by // [])
+    | (if type == "string" then [.] elif type == "array" then . else [] end)
+    | map(select(type == "string") | say)
+    | unique | join("; ")' "$REVIEW_JSON" 2>/dev/null)
+  [ -n "$GATES" ] && APPROVE_NOTICE=$'\n<sub>Not approved because '"$GATES"$'. No defect was found.</sub>\n'
+fi
+
 # ── 2a2. DID THE TESTER ACTUALLY RUN? ───────────────────────────────────────
 # THE rc FILE IS NOT THE ANSWER, AND TREATING IT AS ONE THREW REAL EVIDENCE AWAY.
 # `/tmp/dev-env/rc` is written only when `setup-dev-env.sh` RETURNS, while the
@@ -1643,6 +1677,7 @@ fi
 # appended AFTER it, which left a warning trailing the line that should end the
 # body.
 printf '%s' "$SHOT_GALLERY" >> "$WORK/body.md"
+printf '%s' "$APPROVE_NOTICE" >> "$WORK/body.md"
 printf '%s' "$SPEC_NOTICE" >> "$WORK/body.md"
 printf '%s' "$DEV_ENV_NOTICE" >> "$WORK/body.md"
 printf '%s' "$FOOTER" >> "$WORK/body.md"
