@@ -121,7 +121,7 @@ if [ -z "$PRIOR_SHA" ] || ! git cat-file -e "${PRIOR_SHA}^{commit}" 2>/dev/null;
 fi
 
 # ── 4) The last FULL pass. Round 2+ reviews only the since-last delta, so the
-#       whole PR is read exactly once unless something says otherwise — qiv#1498
+#       whole PR is read exactly once unless something says otherwise — one client PR
 #       was read in full on day one and never again across four delta rounds,
 #       while a human reviewer later found twenty defects in it. post-review.sh
 #       stamps `"scope":"full"` on a round that read everything; the newest such

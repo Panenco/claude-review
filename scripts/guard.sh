@@ -152,7 +152,7 @@ depth_scale=$(( 3 + weight / 250 ))
 printf 'depth_scale=%s\ncomment_limit=%s\n' "$depth_scale" "$(( depth_scale * 2 ))"
 
 # 6) Scope. Round 2+ reads only the since-last delta (ADR 0003), so the whole
-#    PR was read exactly once however much it grew: qiv#1498 got one full read
+#    PR was read exactly once however much it grew: one client PR got one full read
 #    on day one, four delta rounds, and then twenty human findings. When the
 #    non-generated lines changed since the last FULL pass reach
 #    GATE_RESCAN_PERCENT of the PR, read it all again. Unknown → full (fail open).

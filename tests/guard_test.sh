@@ -448,7 +448,7 @@ echo "OK:   depth_scale never decreases as the diff grows (ends at $prev)"
 
 # ── scope: the whole PR again once the delta rounds have outgrown the last full pass ──
 # Round 2+ reads only the since-last delta, so the whole PR was read exactly once
-# however much it grew. qiv#1498: one full read on day one, four delta rounds,
+# however much it grew. one client PR: one full read on day one, four delta rounds,
 # twenty human findings. Section 6 answers full-or-delta from the numstat since
 # the last FULL pass, in GATE_FILES_TSV's shape.
 echo ""
