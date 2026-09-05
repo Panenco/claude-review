@@ -153,7 +153,7 @@ run_poster() {
     DEV_ENV_STARTED_FILE="${DEVENV_STARTED:-$work/healthy-dev-env-started}" \
     DEV_ENV_TIMEOUT_SECONDS="${DEVENV_WAIT:-}" \
     REVIEW_JSON="$work/review.json" ORCH_LOG="$work/orchestrator-output.txt" \
-    REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
+    REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" REVIEW_SCOPE="${SCOPE:-}" \
     ROUND="${ROUND_N:-}" \
     PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS:-$work/no-such-priors.json}" \
     PRIOR_CHECKS_JSON="${PRIOR_CHECKS:-$work/no-such-prior-checks.json}" \
@@ -3795,6 +3795,28 @@ else
   fail=$((fail + 1))
 fi
 
+
+# ── (s) the state block records what this round read ────────────────────────
+# prior-review-state.sh finds the last FULL pass by this stamp, and guard.sh
+# decides from it when the delta rounds have outgrown that read. Unset is full:
+# that is what every round was before the stamp existed.
+echo ""
+echo "── (s) review state carries the scope ──"
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "unset scope is stamped full" "full" "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq -r '.scope')"
+rm -rf "$W"
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+SCOPE=delta FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a delta round is stamped delta" "delta" "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq -r '.scope')"
+rm -rf "$W"
+W=$(mktemp -d)
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+SCOPE=bogus FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "an unknown scope falls back to full, never to a guess" "full" "$(state_block "$(payload_of "$W" | jq -r '.body')" | jq -r '.scope')"
+rm -rf "$W"
 
 rm -rf "$MOCK_BIN" "$FILES_FIXTURE"
 

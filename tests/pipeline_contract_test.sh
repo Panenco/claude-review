@@ -1894,6 +1894,23 @@ want "…and named as the one exception to never adding your own" "$VERIFY" \
   'the single exception is the demoted replied-to finding'
 
 echo ""
+echo "── the whole PR is read again once the delta rounds outgrow the last full pass ──"
+# Three stages, one variable. The guard decides, the orchestrator hands it to
+# scan, the poster stamps it so the next round can find this one.
+want "prior_state exports the last full-pass head" "$WORKFLOW" 'full_head_sha'
+want "the guard is handed it" "$WORKFLOW" 'GATE_FULL_HEAD_SHA: \$\{\{ steps.prior_state.outputs.full_head_sha'
+want "…and the numstat since it, in GATE_FILES_TSV shape" "$WORKFLOW" 'GATE_SINCE_FULL_TSV=\$\(git diff --numstat'
+want "the orchestrator receives the guard's scope" "$WORKFLOW" 'REVIEW_SCOPE: \$\{\{ steps.guard.outputs.scope'
+c=$(grep -c 'REVIEW_SCOPE: \${{ steps.guard.outputs.scope' "$WORKFLOW")
+if [ "$c" -eq 2 ]; then ok "…and so does the poster (two readers, orchestrator and post-review)"; else bad "REVIEW_SCOPE must reach both the orchestrator and the poster; found $c"; fi
+want "the orchestrator prints it in turn 1" "$ORCH" 'printenv .*REVIEW_SCOPE'
+want "…and hands it to review-scan" "$ORCH" 'REVIEW_SCOPE=\$\{REVIEW_SCOPE\}'
+want "review-scan reads the whole diff on REVIEW_SCOPE=full, carry-over included" "$SCAN" \
+  'Unless `REVIEW_SCOPE=full`'
+want "guard.sh emits scope on the proceed path" "$GUARD" "printf 'scope=%s"
+want "post-review.sh stamps it into the state block" "$POSTER" 'scope: \$scope'
+
+echo ""
 if [ "$fail" -eq 0 ]; then
   echo "All pipeline contract tests passed."
   exit 0

@@ -9,6 +9,9 @@
 #   round=<int>              1 on a first (or unreconstructable) round, else N+1
 #   prior_head_sha=<sha>     head SHA of the last JUDGED review ("" on round 1)
 #   prior_verdict=<verdict>  APPROVE|COMMENT|REQUEST_CHANGES ("" on round 1)
+#   full_head_sha=<sha>      head SHA of the last review that read the WHOLE PR
+#                            ("" on round 1). guard.sh diffs against it to decide
+#                            when the delta rounds have outgrown that pass.
 #
 # THE TWO LISTS ARE NOT THE SAME LIST — this is the whole point of the script:
 #
@@ -117,10 +120,35 @@ if [ -z "$PRIOR_SHA" ] || ! git cat-file -e "${PRIOR_SHA}^{commit}" 2>/dev/null;
   ROUND=1; PRIOR_SHA=""; PRIOR_VERDICT=""
 fi
 
+# ── 4) The last FULL pass. Round 2+ reviews only the since-last delta, so the
+#       whole PR is read exactly once unless something says otherwise — one client PR
+#       was read in full on day one and never again across four delta rounds,
+#       while a human reviewer later found twenty defects in it. post-review.sh
+#       stamps `"scope":"full"` on a round that read everything; the newest such
+#       review is the anchor. A review with no scope key predates the stamp, and
+#       every round then read the whole PR only on round 1, so the OLDEST judged
+#       review is the fallback. Unresolvable → "", which guard.sh reads as
+#       "cannot tell, read everything" — the same bias as the filters above. ──
+FULL_SHA=""
+if [ "$ROUND" -ge 2 ]; then
+  # The stamp is read from the text after the LAST state marker only: that is
+  # the block post-review.sh appended, and a review that merely QUOTES a state
+  # block in a finding (live on this repo, which reviews itself) must not become
+  # the anchor — the same hazard the skip markers guard against above.
+  FULL_SHA=$(jq -r 'def stamped_full: ((.body // "") | split("<!-- claude-review-state")) | (length > 1) and (last | test("\"scope\":\"full\""));
+                    sort_by(.submitted_at)
+                    | ([.[] | select(stamped_full)] | last | .commit_id)
+                      // (.[0].commit_id)
+                      // empty' "$PRIOR_REVIEWS" 2>/dev/null)
+  if [ -n "$FULL_SHA" ] && ! git cat-file -e "${FULL_SHA}^{commit}" 2>/dev/null; then
+    FULL_SHA=""
+  fi
+fi
+
 # The oversized re-run dedup is gone with the push trigger that made it necessary:
 # a review now happens because someone asked, and answering that with silence is
 # worse than answering it with the same block twice. An empty since-last DELTA is
 # a different case and IS silent — guard.sh handles it, not this script.
 
-printf 'round=%s\nprior_head_sha=%s\nprior_verdict=%s\n' \
-  "$ROUND" "$PRIOR_SHA" "$PRIOR_VERDICT"
+printf 'round=%s\nprior_head_sha=%s\nprior_verdict=%s\nfull_head_sha=%s\n' \
+  "$ROUND" "$PRIOR_SHA" "$PRIOR_VERDICT" "$FULL_SHA"

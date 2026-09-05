@@ -456,7 +456,7 @@ jobs:
             echo "::error::prior-review-state.sh produced no usable state — refusing to run with an unknown round (would silently review as round 1)."
             exit 1
           fi
-          grep -E '^(round|prior_head_sha|prior_verdict)=' <<< "$STATE" >> "$GITHUB_OUTPUT"
+          grep -E '^(round|prior_head_sha|prior_verdict|full_head_sha)=' <<< "$STATE" >> "$GITHUB_OUTPUT"
 
           # The findings themselves, not just the round number. prior-review-state.sh
           # gives review-scan the last review BODY — and the inline-XOR rule deleted
@@ -488,6 +488,10 @@ jobs:
           GATE_FILE_CEILING: ${{ inputs.gate_file_ceiling }}
           GATE_GENERATED_GLOBS: ${{ inputs.gate_generated_globs }}
           GATE_PRIOR_HEAD_SHA: ${{ steps.prior_state.outputs.prior_head_sha }}
+          # The last round that read the WHOLE PR. guard.sh diffs against it
+          # (section 6) and answers full-or-delta; empty means "cannot tell",
+          # which reads as full.
+          GATE_FULL_HEAD_SHA: ${{ steps.prior_state.outputs.full_head_sha }}
           # A person typed this. The `unchanged` gate suppresses automatic
           # re-runs of identical code; it must never answer an explicit request
           # with silence (guard.sh, gate 2).
@@ -515,7 +519,19 @@ jobs:
             fi
           fi
           echo "prior_head_sha=$GATE_PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
-          export GATE_FILES_TSV GATE_LABELS GATE_DELTA_FILES GATE_PRIOR_HEAD_SHA
+          # What changed since the last FULL pass, in GATE_FILES_TSV's shape, so
+          # guard.sh can tell when the delta rounds have outgrown it. A failed
+          # diff clears the SHA for the same reason as above: guard.sh then
+          # reads the whole PR rather than guessing.
+          GATE_SINCE_FULL_TSV=""
+          if [ -n "${GATE_FULL_HEAD_SHA:-}" ]; then
+            if ! GATE_SINCE_FULL_TSV=$(git diff --numstat "${GATE_FULL_HEAD_SHA}..HEAD" 2>/dev/null \
+                                        | awk -F'\t' '{print $3 "\t" $1 "\t" $2}'); then
+              echo "::warning::Could not diff ${GATE_FULL_HEAD_SHA}..HEAD — reading the whole PR rather than deciding from a delta."
+              GATE_FULL_HEAD_SHA=""
+            fi
+          fi
+          export GATE_FILES_TSV GATE_LABELS GATE_DELTA_FILES GATE_PRIOR_HEAD_SHA GATE_FULL_HEAD_SHA GATE_SINCE_FULL_TSV
           DECISION=$("$CLAUDE_REVIEW_SCRIPTS"/guard.sh)
           echo "Guard:"; echo "$DECISION" | sed 's/^/  /'
           # No `-e` (repo rule): a failed guard would leave `proceed` empty, skip
@@ -1112,6 +1128,10 @@ jobs:
           PRIOR_HEAD_SHA: ${{ steps.guard.outputs.prior_head_sha }}
           PRIOR_VERDICT: ${{ steps.prior_state.outputs.prior_verdict }}
           ROUND: ${{ steps.prior_state.outputs.round }}
+          # full | delta — whether review-scan reads the whole PR again this
+          # round (guard.sh section 6). Empty on round 1 short-circuits, where
+          # the skill's default is the whole diff anyway.
+          REVIEW_SCOPE: ${{ steps.guard.outputs.scope }}
           PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}
@@ -1261,6 +1281,9 @@ jobs:
           # var with one default; empty on a short-circuited run, where the
           # poster's own `:-10` applies and nothing is capped away.
           REVIEW_COMMENT_LIMIT: ${{ steps.guard.outputs.comment_limit }}
+          # Stamped into the review state block so the next round can find the
+          # last full pass. Empty reads as full, which is what round 1 is.
+          REVIEW_SCOPE: ${{ steps.guard.outputs.scope }}
         run: |
           set -uo pipefail
           if [ -n "${ORCHESTRATOR_EXEC:-}" ] && [ -f "$ORCHESTRATOR_EXEC" ]; then

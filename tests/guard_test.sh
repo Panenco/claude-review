@@ -318,8 +318,11 @@ fi
 # → 153 for the generated-file list: three case arms, a loop for the repo-declared
 # globs, and the `set -f` that keeps those globs literal. Still one flat predicate
 # with no branching on size, which is the property this ceiling protects.
+# → 172 for the full-or-delta scope: one loop over the since-full numstat (the
+# same shape as the size loop above), one flat predicate, one printf. Not a
+# tier: it answers "read it all again?" from one ratio, never "how deep".
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 153 ]; then
+if [ "$LINES" -le 172 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"
@@ -442,6 +445,43 @@ for n in 10 100 300 600 900 1500 3000; do
   fi
 done
 echo "OK:   depth_scale never decreases as the diff grows (ends at $prev)"
+
+# ── scope: the whole PR again once the delta rounds have outgrown the last full pass ──
+# Round 2+ reads only the since-last delta, so the whole PR was read exactly once
+# however much it grew. one client PR: one full read on day one, four delta rounds,
+# twenty human findings. Section 6 answers full-or-delta from the numstat since
+# the last FULL pass, in GATE_FILES_TSV's shape.
+echo ""
+echo "── scope ──"
+scope_of() { env "$@" bash "$SCRIPT" | sed -n 's/^scope=//p' | head -1; }
+assert_scope() {
+  local label="$1" want="$2"; shift 2
+  local got; got=$(scope_of "$@"); got="${got:--}"
+  if [ "$got" = "$want" ]; then echo "OK:   $label → scope=$got"
+  else echo "FAIL: $label — want scope='$want' got '$got'"; fail=$((fail + 1)); fi
+}
+PR_TSV=$'src/a.ts\t300\t100\nsrc/b.ts\t500\t100'   # 1000 non-generated lines
+assert_scope "round 1 reads everything" "full" GATE_FILES_TSV="$PR_TSV"
+assert_scope "round 2 with a small delta since the full pass stays delta" "delta" \
+  GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA=cafe000 \
+  GATE_DELTA_FILES=$'src/a.ts' GATE_SINCE_FULL_TSV=$'src/a.ts\t120\t30' GATE_FILES_TSV="$PR_TSV"
+assert_scope "half the PR rewritten since the full pass → full again" "full" \
+  GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA=cafe000 \
+  GATE_DELTA_FILES=$'src/a.ts' GATE_SINCE_FULL_TSV=$'src/a.ts\t400\t100' GATE_FILES_TSV="$PR_TSV"
+assert_scope "generated churn since the full pass does not count" "delta" \
+  GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA=cafe000 \
+  GATE_DELTA_FILES=$'src/a.ts' GATE_SINCE_FULL_TSV=$'pnpm-lock.yaml\t900\t900\nsrc/a.ts\t10\t0' GATE_FILES_TSV="$PR_TSV"
+assert_scope "no resolvable full-pass head → cannot tell, read everything" "full" \
+  GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA='' \
+  GATE_DELTA_FILES=$'src/a.ts' GATE_FILES_TSV="$PR_TSV"
+assert_scope "GATE_FORCE_FULL reads everything whatever the delta" "full" \
+  GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA=cafe000 GATE_FORCE_FULL=true \
+  GATE_DELTA_FILES=$'src/a.ts' GATE_SINCE_FULL_TSV=$'src/a.ts\t1\t0' GATE_FILES_TSV="$PR_TSV"
+assert_scope "the threshold is a knob" "full" \
+  GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA=cafe000 GATE_RESCAN_PERCENT=10 \
+  GATE_DELTA_FILES=$'src/a.ts' GATE_SINCE_FULL_TSV=$'src/a.ts\t120\t30' GATE_FILES_TSV="$PR_TSV"
+assert_scope "a short-circuited run emits no scope" "-" \
+  GATE_LABELS=$'skip-review' GATE_FILES_TSV="$PR_TSV"
 
 if [ "$fail" -eq 0 ]; then
   echo "All guard tests passed."
