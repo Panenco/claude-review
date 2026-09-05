@@ -420,7 +420,7 @@ TESTER_RAN=false
 #
 # THE QUESTION IS "DID THE TESTER RUN?", NOT "DID THE BRING-UP FAIL?" — AND
 # GATING ON THE rc ALONE MADE THE WORST CASE SILENT. Those two are not the same
-# fact, and the gap between them is not hypothetical: on spendfuse#351 the
+# fact, and the gap between them is not hypothetical: on one measured run the
 # bring-up SUCCEEDED — rc 0, API and web both probed up — but only AFTER the
 # orchestrator's 360s turn-1b wait had already expired. `WEB_READY=false` meant
 # no tester was ever dispatched, yet by the time this script ran the rc file said
@@ -553,7 +553,7 @@ if [ "$TESTER_RAN" = "true" ]; then
   NAMED=$(jq '[(.screenshots // [])[] | select((.file // "") | test("\\.png$"; "i"))] | length' \
             "$FUNCTIONAL_JSON" 2>/dev/null || echo 0)
   # WHY `untested` IS PART OF THIS BLOCK AND NOT AN AFTERTHOUGHT. On a live
-  # qiv run the tester verified 3 of 7 acceptance criteria, listed the other
+  # measured run the tester verified 3 of 7 acceptance criteria, listed the other
   # 4 in `untested` with real reasons, and reported PASS — which is correct
   # per its own contract, PASS means "everything you exercised held". The
   # review body then said `Functional pass: PASS — 2 screenshots` and nothing
@@ -813,7 +813,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   | map(if kind == "check" then . else .start_line = 0 end)
   | map(if kind == "check" then .body = ((.body // "") | unfence) else . end)
   # 50 LINES, NOT 120. A range is a grey band down the side of the diff, and past
-  # roughly fifty lines nobody reads the band — spendfuse#351 shipped a 119-line
+  # roughly fifty lines nobody reads the band — one review shipped a 119-line
   # one over `compute-issue-log-findings.ts` and it read as noise, which is the
   # complaint that produced this cap. 120 was chosen to cover 96% of contiguous
   # changed runs; coverage was the wrong thing to optimise, because a span nobody
@@ -839,7 +839,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   | unique_by([.path, .line, .body])
   | sort_by(._r, ._i)
   # DEGRADE THE RANGE, NEVER THE PLACEMENT. A block a check wants to wrap is
-  # usually only partly in the diff — seaters#2134 asked for 226-253 across a
+  # usually only partly in the diff — one note asked for 226-253 across a
   # sparse diff. Rejecting the comment for that put the question in the body,
   # which is exactly where a check must never go: it is inline or it is unread.
   # So an unusable range is dropped and the comment anchors at `line`, and only
@@ -1682,7 +1682,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   # THE BANNER GOES DIRECTLY UNDER THE VERDICT HEADING, not in the footer's
   # small print. A requested pass that never ran is the first thing the reader
   # needs, not a `<sub>` line they scroll past — that placement is exactly how
-  # spendfuse#351 read as a clean review of a screen nobody had looked at. Line
+  # one run read as a clean review of a screen nobody had looked at. Line
   # 1 of body.raw is `## Claude review — <verdict>`; the banner follows it, and
   # it is written AFTER truncation so no finding can evict it and it can never
   # be the thing that gets cut.

@@ -219,7 +219,7 @@ rm -rf "$W"
 echo ""
 echo "── (c) invalid review.json ──"
 W=$(mktemp -d)
-# Unescaped quote inside a string — the exact qiv#679 corruption.
+# Unescaped quote inside a string — the exact corruption seen in production.
 printf '%s\n' '{"verdict":"COMMENT","body":"shows a "bad" quote"}' > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 PAYLOAD=$(payload_of "$W")
@@ -1194,7 +1194,7 @@ assert_contains "with the finding's own words" "eta corrupts the ledger" "$STATE
 rm -rf "$W"
 
 # p4b: ONE finding worded two ways is ONE finding in the state.
-# Observed live on qiv #1442: the model emitted 2 findings, and the state block
+# Observed live: the model emitted 2 findings, and the state block
 # recorded 3. Its meta.findings title ("Failed save fetch leaves the button on
 # X") differed from the title it wrote at the top of the inline comment ("A
 # failed save fetch leaves the button reading X"), and the id is path +
@@ -1657,7 +1657,7 @@ assert_not_contains "…never as an exit status" "exited " "$BODY"
 rm -rf "$W"
 
 # (n3) THE SILENT CASE, AND THE WHOLE POINT OF THE BLOCK. A healthy rc is NOT
-# evidence a tester ran: on spendfuse#351 the bring-up returned 0 with API and
+# evidence a tester ran: on one measured run the bring-up returned 0 with API and
 # web both up, but only after the orchestrator's wait had expired, so no tester
 # was ever dispatched — and because this block gated on `rc != 0`, the review
 # said nothing at all. Requested + no functional.json = a notice is owed,
@@ -1669,7 +1669,7 @@ assert_contains "…saying no browser test ran" "No browser test ran" "$BODY"
 assert_not_contains "…and never blaming a bring-up that worked" "did not finish starting" "$BODY"
 rm -rf "$W"
 
-# (n3b) rc 0 but written AFTER the wait expired — the exact spendfuse#351 shape.
+# (n3b) rc 0 but written AFTER the wait expired — the exact production shape.
 # "Came up 40s late" is a knob to turn; "never came up" is a broken bring-up.
 # Reporting them identically is what made the real run unreadable.
 W=$(mktemp -d); mkdir -p "$W/dev-env"
@@ -1747,7 +1747,7 @@ assert_eq "…anchored at the end line" "13" "$(echo "$C" | jq -r '.line')"
 rm -rf "$W"
 
 # (r2) a range only PARTLY in the diff degrades to a single-line comment. It must
-# not take the comment down with it: seaters#2134 asked for 226-253 across a
+# not take the comment down with it: one note asked for 226-253 across a
 # sparse diff, the whole check was rejected, and the question landed in the body
 # — the one place a check must never be, because there nobody reads it.
 W=$(mktemp -d); check_review 4 13 > "$W/review.json"
@@ -1785,7 +1785,7 @@ done
 # it would never reach the size rule at all.
 #
 # THE CAP IS 50, NOT 120. A range renders as a grey band down the diff, and past
-# roughly fifty lines nobody reads the band — spendfuse#351 shipped a 119-line one
+# roughly fifty lines nobody reads the band — one review shipped a 119-line one
 # and it read as noise. 120 was chosen to cover 96% of contiguous changed runs;
 # coverage was the wrong thing to optimise. The cap still has to
 # exist, because a run whose hunks could not be derived skips the in-hunk range
@@ -1811,7 +1811,7 @@ FIXTURE_REVIEWS="" FIXTURE_FILES="$WIDE_FIXTURE" run_poster "$W3"
 assert_eq "51 lines is not" "null" \
   "$(payload_of "$W3" | jq -r '.comments[0].start_line // "null"')"
 # THE COLLAPSE LANDS ON THE START, NOT THE END — the regression that produced
-# this cap. spendfuse#351 anchored a 120→239 note at 239, so the orientation
+# this cap. A measured run anchored a 120→239 note at 239, so the orientation
 # arrived under the code it was meant to introduce. A rejected range must move
 # the anchor up to the block opening, never leave it at the foot.
 assert_eq "…and it collapses onto the block opening, not its last line" "20" \
@@ -1945,7 +1945,7 @@ assert_contains "the URL is still intact" "(https://github.com/o/r/raw/review-as
 rm -rf "$W"
 
 # (q2b) a long caption is cut on a word boundary, not mid-word. Observed on
-# seaters #2134: the tester's own descriptions ran past 120 chars and the body
+# Measured: the tester's own descriptions ran past 120 chars and the body
 # rendered "…the app has already la" and "…access code has e".
 W=$(mktemp -d)
 echo "$CLEAN_REVIEW" > "$W/review.json"
@@ -1963,7 +1963,7 @@ assert_not_contains "…and the tail is dropped" "already landed" "$BODY"
 assert_contains "it ends on a whole word" "refusal notification…" "$BODY"
 rm -rf "$W"
 
-# (q2c) untested criteria are surfaced. A live qiv run verified 3 of 7 criteria,
+# (q2c) untested criteria are surfaced. A live run verified 3 of 7 criteria,
 # listed the other 4 in `untested` with real reasons, and correctly reported
 # PASS — "everything you exercised held". The body then said only
 # "Functional pass: PASS — 2 screenshots", so a reader saw a green functional
