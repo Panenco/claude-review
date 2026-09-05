@@ -1528,7 +1528,8 @@ BODY=$(payload_of "$W" | jq -r '.body')
 N_STAMPED=$(state_block "$BODY" | jq '.unreviewed | length')
 assert_eq "the stamped list is capped by bytes, not the raw 250" "capped" "$( [ "$N_STAMPED" -gt 0 ] && [ "$N_STAMPED" -lt 250 ] && echo capped || echo "not capped: $N_STAMPED" )"
 assert_eq "…to at most half the state budget" "fits" "$( [ "$(state_block "$BODY" | jq -cj '.unreviewed' | wc -c | tr -d ' ')" -le 2000 ] && echo fits || echo over )"
-assert_contains "…and the notice counts what was stamped, not the raw file" "$N_STAMPED of 250 are carried" "$(visible_body "$BODY")"
+assert_contains "…the notice opens with how many nobody read" "250 file(s) were not reviewed" "$(visible_body "$BODY")"
+assert_contains "…and closes with how many are carried" "$N_STAMPED of them are carried" "$(visible_body "$BODY")"
 assert_eq "…and the carried findings were not shed to make room" "2" "$(state_block "$BODY" | jq '.findings | length')"
 rm -rf "$W"
 W=$(mktemp -d)

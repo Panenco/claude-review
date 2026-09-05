@@ -51,7 +51,9 @@ awk '/^(##|###) /{p=/^### (Auth|Known dev-env quirks)/} p' .github/review-config
 # shard-plan.sh cuts a large diff into up to 4 path-sorted chunks, one scan each.
 # On a delta round the plan covers only the since-last files, as scan does.
 if [ -n "${PRIOR_HEAD_SHA:-}" ] && [ "${REVIEW_SCOPE:-delta}" != "full" ]; then
-  SHARD_FILES_TSV=$(git diff --numstat "$PRIOR_HEAD_SHA"..HEAD 2>/dev/null | awk -F'\t' '{print $3 "\t" $1 "\t" $2}')
+  # --no-renames: a rename+edit would otherwise arrive as one `dir/{old => new}`
+  # pseudo-path, which no shard could open, and the renamed file went unreviewed.
+  SHARD_FILES_TSV=$(git diff --numstat --no-renames "$PRIOR_HEAD_SHA"..HEAD 2>/dev/null | awk -F'\t' '{print $3 "\t" $1 "\t" $2}')
   export SHARD_FILES_TSV
 fi
 "$CLAUDE_REVIEW_SCRIPTS"/shard-plan.sh

@@ -386,11 +386,14 @@ if [ -s "$UNREVIEWED_FILE" ]; then
   done
   UNREVIEWED_N=$(jq 'length' <<<"$UNREVIEWED_JSON")
   UNREVIEWED_RAW=$(grep . "$UNREVIEWED_FILE" | sort -u | wc -l | tr -d ' ')
+  # The sentence opens with how many files nobody read (the raw count) and
+  # closes with how many are carried (the stamped count); the two differ only
+  # past the cap, and then the sentence says so instead of contradicting itself.
   UNREVIEWED_LIST=$(jq -r '.[:5][]' <<<"$UNREVIEWED_JSON" | sed 's/^/`/;s/$/`/' | paste -sd, - | sed 's/,/, /g')
-  [ "$UNREVIEWED_N" -gt 5 ] && UNREVIEWED_LIST="$UNREVIEWED_LIST (+$(( UNREVIEWED_N - 5 )) more)"
+  [ "$UNREVIEWED_RAW" -gt 5 ] && UNREVIEWED_LIST="$UNREVIEWED_LIST (+$(( UNREVIEWED_RAW - 5 )) more)"
   UNREVIEWED_TAIL="They are carried into the next round."
-  [ "$UNREVIEWED_RAW" -gt "$UNREVIEWED_N" ] && UNREVIEWED_TAIL="$UNREVIEWED_N of $UNREVIEWED_RAW are carried into the next round; the rest need a human."
-  UNREVIEWED_NOTICE=$'\n<sub>⚠ '"$UNREVIEWED_N file(s) were not reviewed this round — a scan shard produced no output: $UNREVIEWED_LIST. $UNREVIEWED_TAIL"$'</sub>\n'
+  [ "$UNREVIEWED_RAW" -gt "$UNREVIEWED_N" ] && UNREVIEWED_TAIL="$UNREVIEWED_N of them are carried into the next round; the rest need a human."
+  UNREVIEWED_NOTICE=$'\n<sub>⚠ '"$UNREVIEWED_RAW file(s) were not reviewed this round — a scan shard produced no output: $UNREVIEWED_LIST. $UNREVIEWED_TAIL"$'</sub>\n'
 fi
 
 # ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────
