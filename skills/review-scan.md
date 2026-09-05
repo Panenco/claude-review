@@ -88,7 +88,7 @@ Then, **only if `.claude/rules/` exists**: one `ls` of it, and `Read` **at most 
 
 **Suppression comes first and is unconditional.** If any of those files calls something intentional, an accepted trade-off, or says not to flag it — do not emit that finding at all. Not downgraded, not a `human_review` note. The team already made that call; re-raising it is the noise this pipeline exists to avoid.
 
-**Convention findings are a narrow second class** — exempt from `failure_scenario` (the comment-noise class below is the only other exemption), because a documented-convention violation usually has no runtime failure. Emit one with `"convention": true`, `severity: "minor"`, and `evidence` set to the rule **quoted verbatim from the file you read** — that quote is what stands in for `failure_scenario`, and it must name which file it came from. **Max 2 per review**, and never a convention you cannot quote: if it is not written down in one of the files above, it does not exist. The ordinary finding bar is unchanged — everything below applies in full to every other finding.
+**Convention findings are a narrow second class** — exempt from `failure_scenario` (the comment-noise and inert-code classes below are the only other exemptions), because a documented-convention violation usually has no runtime failure. Emit one with `"convention": true`, `severity: "minor"`, and `evidence` set to the rule **quoted verbatim from the file you read** — that quote is what stands in for `failure_scenario`, and it must name which file it came from. **Max 2 per review**, and never a convention you cannot quote: if it is not written down in one of the files above, it does not exist. The ordinary finding bar is unchanged — everything below applies in full to every other finding.
 
 ## The finding bar
 
@@ -120,6 +120,7 @@ Every finding carries all of:
 | `convention` | `true` only for a quoted documented-convention violation (then `failure_scenario` may be `""`); `false` for every normal finding |
 | `prose` | `true` only for a `DOCS_ONLY` prose defect that completes the reader-harm sentence; `false` for every normal finding |
 | `comment_noise` | `true` only for a comment-noise finding (then `failure_scenario` may be `""`); `false` for every normal finding |
+| `inert` | `true` only for an inert-code finding (then `failure_scenario` may be `""`); `false` for every normal finding |
 
 **Inaccurate prose is `minor`.** A comment, README, changelog or doc that has drifted from the code is not a user-reachable logic bug, so it never reaches `major` on its own. The exception is text this repo *executes* — skill prompts, the setup recipe, workflow and action files — where a consumer runs the stale wording as an instruction: rate that by the failure it causes, exactly like code.
 
@@ -162,6 +163,18 @@ A comment in the diff is noise when it:
 Where the repo ships a rule for this, quote it and file an ordinary `"convention": true` finding instead — that is stronger. This class is the fallback for a repo that wrote none.
 
 **Max 2 per review**, `"comment_noise": true`, always `severity: "minor"`, always advisory — it can NEVER produce REQUEST_CHANGES. Like a convention finding it is exempt from `failure_scenario`, which may be `""`; the quoted comments in `evidence` stand in for it. It is **not** the `DOCS_ONLY` prose channel — never set `"prose": true` on one. One finding covers a file: name the file, the worst offender's line, and how many there are; never one comment per finding. **Never a ```suggestion``` fence on this class** — a committable patch that deletes comments is dangerous and nothing downstream checks it, so write the removal as one prose sentence in `fix`. Zero is the normal output on a diff that does not do this.
+
+## Inert code — shipped, and nothing can reach it
+
+A block in the diff is inert when the diff itself makes it unreachable or unread. Three shapes, and only these:
+
+1. **A branch no caller can reach.** The `RUNNING` arm of a handler every caller enters as `QUEUED`; a retry path below a `return` that fires on every input; an `else` on a condition the guard above already settled.
+2. **A value nothing reads.** A column, field or variable the diff writes or projects that no code in the repo consumes: `Grep` the name across the checkout and the only hits are the write and the type.
+3. **Config a code path makes dead.** A retry policy on a subscription whose handler returns 2xx on every path, a flag no consumer checks, a timeout on a job that acks before the work starts.
+
+**Evidence must quote the reason, not the claim.** For a branch: the earlier `return`, the guard, or the caller that never sets the state. For a value: the `Grep` you ran, and that it returned only the writer. For config: the code path that swallows every outcome. "Looks unused" is not evidence, and a reader you did not grep for is a reader. A test that reads it does not make it live.
+
+This is the class a human reviewer files as a question — "is anything reading `stalled`?", "this line is never reached, right?" — and this pipeline does not ask questions, so it is a finding or nothing. **Max 2 per review**, `"inert": true`, always `severity: "minor"`, always advisory: it can NEVER produce REQUEST_CHANGES. Like a convention finding it is exempt from `failure_scenario`, which may be `""`; the quoted reason stands in for it. **Never a ```suggestion``` fence on this class** — a fence that deletes code you wrongly called dead deletes live code, so write the removal, or the wiring that would make it live, as one prose sentence in `fix`. A branch that is dead because a *future* PR will set the state is still inert *now*: say so, and name the PR if the body does. Zero is the normal output.
 
 ## human_review — the reader's path across the diff
 
@@ -312,7 +325,8 @@ Description only: no judgement, no praise, nothing that belongs in a finding. It
       "severity": "critical|major|minor",
       "convention": false,
       "prose": false,
-      "comment_noise": false
+      "comment_noise": false,
+      "inert": false
     }
   ],
   "prior_findings": [
