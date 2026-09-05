@@ -1531,6 +1531,25 @@ assert_contains "the drop is announced" "1 check comment(s) not re-posted" "$OUT
 assert_not_contains "…and never falls back to the body heading" "What a human should review" "$(echo "$PAYLOAD" | jq -r '.body')"
 rm -rf "$W"
 
+# (k4b) a range check is remembered by the line it was POSTED on. A range over
+# 50 lines collapses onto start_line before posting, so prior-checks.json holds
+# the start; the next round's same check must match on that line too.
+W=$(mktemp -d)
+echo '[{"p": "src/foo.ts", "l": 10}]' > "$W/prior-checks.json"
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nRound three.",
+  "comments": [
+    {"path": "src/foo.ts", "start_line": 10, "line": 13, "side": "RIGHT", "body": "**check** `collectPage` stops at the page ceiling, ranged"}
+  ],
+  "meta": {"findings": [], "human_review": []}
+}
+EOF
+PRIOR_CHECKS="$W/prior-checks.json" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a ranged check whose start a prior round posted is dropped" "0" "$(payload_of "$W" | jq '.comments | length')"
+rm -rf "$W"
+
 # ── (m) a functional finding carries a screenshot through the poster ─────────
 # upload-screenshots.sh is covered in isolation, and the tester is covered by
 # nothing that runs here — but the SEAM between them is this poster. A

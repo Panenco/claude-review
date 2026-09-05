@@ -677,12 +677,18 @@ awk '
 # 2 and 4. The reader already has that orientation; a second copy teaches them
 # to skip both. NOT SILENT: it is dropped entirely, not moved to the body, so it
 # is announced. A finding on that line is untouched — this is checks only.
+# MATCH ON THE ANCHOR OR THE RANGE START. The collapse below moves a check whose
+# range exceeds 50 lines onto its start_line, and that is the line the API then
+# reports — so a key on the raw .line alone misses exactly those (self-review of
+# #160). Either line matching a remembered check is the same block again.
 if jq -e 'type == "array" and length > 0' "$PRIOR_CHECKS_JSON" >/dev/null 2>&1; then
   jq --slurpfile pc "$PRIOR_CHECKS_JSON" '
     ($pc[0] | map({key: (.p + ":" + (.l | tostring)), value: true}) | from_entries) as $seen
     | map(select(
         (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
-         and ($seen[((.path // "") + ":" + ((.line // 0) | tostring))] // false)) | not))' \
+         and (($seen[((.path // "") + ":" + ((.line // 0) | tostring))] // false)
+              or ((((.start_line // 0) | tostring | tonumber?) // 0) > 0
+                  and ($seen[((.path // "") + ":" + ((.start_line // 0) | tostring))] // false)))) | not))' \
     "$WORK/comments.json" > "$WORK/comments.dedup" 2>/dev/null \
     && { REPEAT_CHECKS=$(( $(jq 'length' "$WORK/comments.json") - $(jq 'length' "$WORK/comments.dedup") ))
          mv "$WORK/comments.dedup" "$WORK/comments.json"
