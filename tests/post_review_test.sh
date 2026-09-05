@@ -156,6 +156,7 @@ run_poster() {
     REVIEW_BODY_MAX="${BODY_MAX:-}" REVIEW_STATE_MAX="${STATE_MAX:-}" \
     ROUND="${ROUND_N:-}" \
     PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS:-$work/no-such-priors.json}" \
+    PRIOR_CHECKS_JSON="${PRIOR_CHECKS:-$work/no-such-prior-checks.json}" \
     bash "$POSTER" 2>&1)
   RC=$?
 }
@@ -1500,6 +1501,53 @@ PAYLOAD=$(payload_of "$W"); BODY=$(echo "$PAYLOAD" | jq -r '.body')
 assert_eq "both comments post inline" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
 assert_contains "the finding under the check keeps its bullet" "off-by-one" "$BODY"
 assert_not_contains "the inline finding's own bullet is still stripped" "— other" "$BODY"
+rm -rf "$W"
+
+# (k4) a check an earlier round posted on the same path:line is not posted again
+# Checks have no cross-round carry-over, so round 4 posted the same check round 2
+# had on the same line. A finding on that line is untouched, and the drop is
+# announced rather than silent.
+W=$(mktemp -d)
+echo '[{"p": "src/foo.ts", "l": 11}]' > "$W/prior-checks.json"
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nRound two.",
+  "comments": [
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**check** `collectPage` stops at the page ceiling, said again"},
+    {"path": "src/foo.ts", "line": 12, "side": "RIGHT", "body": "**check** `flushBatch` writes the tenant id before the row"},
+    {"path": "src/foo.ts", "line": 11, "side": "RIGHT", "body": "**major** off-by-one"}
+  ],
+  "meta": {"findings": [{"title": "off-by-one", "severity": "major", "path": "src/foo.ts", "line": 11}], "human_review": []}
+}
+EOF
+PRIOR_CHECKS="$W/prior-checks.json" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+PAYLOAD=$(payload_of "$W")
+assert_eq "the repeated check is dropped, the new check and the finding post" "2" "$(echo "$PAYLOAD" | jq '.comments | length')"
+assert_not_contains "the repeated check is gone" "said again" "$PAYLOAD"
+assert_contains "the new check on another line posts" "flushBatch" "$PAYLOAD"
+assert_contains "the finding on the same line is untouched" "off-by-one" "$PAYLOAD"
+assert_contains "the drop is announced" "1 check comment(s) not re-posted" "$OUT"
+assert_not_contains "…and never falls back to the body heading" "What a human should review" "$(echo "$PAYLOAD" | jq -r '.body')"
+rm -rf "$W"
+
+# (k4b) a range check is remembered by the line it was POSTED on. A range over
+# 50 lines collapses onto start_line before posting, so prior-checks.json holds
+# the start; the next round's same check must match on that line too.
+W=$(mktemp -d)
+echo '[{"p": "src/foo.ts", "l": 10}]' > "$W/prior-checks.json"
+cat > "$W/review.json" <<'EOF'
+{
+  "verdict": "COMMENT",
+  "body": "## Claude review — COMMENT\n\nRound three.",
+  "comments": [
+    {"path": "src/foo.ts", "start_line": 10, "line": 13, "side": "RIGHT", "body": "**check** `collectPage` stops at the page ceiling, ranged"}
+  ],
+  "meta": {"findings": [], "human_review": []}
+}
+EOF
+PRIOR_CHECKS="$W/prior-checks.json" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a ranged check whose start a prior round posted is dropped" "0" "$(payload_of "$W" | jq '.comments | length')"
 rm -rf "$W"
 
 # ── (m) a functional finding carries a screenshot through the poster ─────────
