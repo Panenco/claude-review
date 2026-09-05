@@ -60,6 +60,9 @@ assert_eq "…without duplicating a file the push did touch" "1" "$(cat "$W"/sha
 printf 'src/lost.ts\n' > "$W/unreviewed.txt"
 run SHARD_FILES_TSV="$big" UNREVIEWED_FILE="$W/unreviewed.txt"
 assert_eq "a file no shard reviewed last round is placed in exactly one shard" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/lost.ts')"
+run SHARD_FILES_TSV=$'src/a.ts\t30\t10' UNREVIEWED_FILE="$W/unreviewed.txt"
+assert_eq "a small round that carries a file is still sharded, so the file reaches a scan" "2" "$N"
+assert_eq "…and the carried file is in a shard list" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/lost.ts')"
 
 run SHARD_FILES_TSV=$'locale/big.pot\t5000\t5000\nsrc/a.ts\t10\t0' GATE_GENERATED_GLOBS='*.pot'
 assert_eq "the consumer's declared build-output globs are excluded like the guard's" "1" "$N"

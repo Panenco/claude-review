@@ -65,10 +65,11 @@ fi
 # so do the files a shard of the last round never reported on.
 PF="${PRIOR_FINDINGS_JSON:-$OUT_DIR/prior-findings.json}"
 UF="${UNREVIEWED_FILE:-$OUT_DIR/unreviewed-files.txt}"
+carried=0
 if [ -n "$TSV" ]; then
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    grep -qxF -- "$p" <(cut -f1 <<< "$TSV") || TSV+=$'\n'"$p"$'\t0\t0'
+    grep -qxF -- "$p" <(cut -f1 <<< "$TSV") || { TSV+=$'\n'"$p"$'\t0\t0'; carried=$(( carried + 1 )); }
   done < <( { jq -e 'type == "array"' "$PF" >/dev/null 2>&1 && jq -r '.[] | .p // empty' "$PF" 2>/dev/null
               [ -s "$UF" ] && grep . "$UF"; } | sort -u)
 fi
@@ -92,6 +93,10 @@ if [ "$lines" -ge "$MIN_LINES" ] || [ "$files" -ge "$MIN_FILES" ]; then
   [ "$n" -gt "$MAX" ] && n=$MAX
   [ "$n" -lt 1 ] && n=1
 fi
+# A carried file only reaches a scan through a shard list: the one-shard round
+# names no files and reviews the since-last delta, which does not contain it.
+# So a round that carries anything is sharded, however small its own diff.
+[ "$carried" -gt 0 ] && [ "$n" -lt 2 ] && n=2
 if [ "$n" -eq 1 ]; then echo 1 > "$OUT_DIR/shard-count"; echo "shards=1"; exit 0; fi
 
 # Greedy contiguous fill: a shard closes once it reaches total/n, except the last,

@@ -74,6 +74,14 @@ assert_eq "an unparseable shard contributes nothing and is warned about" "merged
 case "$OUT" in *"::warning::"*"scan-1.json"*) ok "…the warning names the shard" ;; *) bad "no warning for the bad shard: $OUT" ;; esac
 assert_eq "…and the good shard's finding is kept" "1" "$(q '.findings|length')"
 
+# Every planned shard lost: the round records the MOST, not nothing.
+rm -f "$W"/scan*.json "$W"/shard-*.txt
+echo 2 > "$W/shard-count"; printf 'a.ts\n' > "$W/shard-1.txt"; printf 'b.ts\n' > "$W/shard-2.txt"
+run
+assert_eq "all shards lost → merged=0" "merged=0" "$(grep -o 'merged=0' <<<"$OUT")"
+assert_eq "…and every planned file is recorded as unreviewed" "a.ts b.ts" "$(paste -sd' ' "$W/unreviewed-files.txt")"
+rm -f "$W/shard-count" "$W"/shard-*.txt
+
 rm -f "$W"/scan*.json
 run
 assert_eq "no shards → merged=0 and no scan.json" "merged=0" "$OUT"

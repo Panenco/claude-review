@@ -364,12 +364,20 @@ esac
 # scope for good, because the next round reviews only the since-last delta.
 UNREVIEWED_NOTICE=""
 UNREVIEWED_JSON='[]'
+# The stamped list IS the carried list, so the count and the promise are taken
+# from it, never from the raw file: a cap that silently dropped paths while the
+# notice said "all carried" is exactly the lie this notice exists to prevent.
+# 200 paths is above any real shard (the guard refuses PRs over 60 files), and
+# the raw count is still reported when it is ever exceeded.
 if [ -s "$UNREVIEWED_FILE" ]; then
-  UNREVIEWED_JSON=$(grep . "$UNREVIEWED_FILE" | head -40 | jq -R . | jq -sc .) || UNREVIEWED_JSON='[]'
-  UNREVIEWED_N=$(grep -c . "$UNREVIEWED_FILE")
-  UNREVIEWED_LIST=$(grep . "$UNREVIEWED_FILE" | head -5 | sed 's/^/`/;s/$/`/' | paste -sd, - | sed 's/,/, /g')
+  UNREVIEWED_JSON=$(grep . "$UNREVIEWED_FILE" | sort -u | head -200 | jq -R . | jq -sc .) || UNREVIEWED_JSON='[]'
+  UNREVIEWED_N=$(jq 'length' <<<"$UNREVIEWED_JSON")
+  UNREVIEWED_RAW=$(grep . "$UNREVIEWED_FILE" | sort -u | wc -l | tr -d ' ')
+  UNREVIEWED_LIST=$(jq -r '.[:5][]' <<<"$UNREVIEWED_JSON" | sed 's/^/`/;s/$/`/' | paste -sd, - | sed 's/,/, /g')
   [ "$UNREVIEWED_N" -gt 5 ] && UNREVIEWED_LIST="$UNREVIEWED_LIST (+$(( UNREVIEWED_N - 5 )) more)"
-  UNREVIEWED_NOTICE=$'\n<sub>⚠ '"$UNREVIEWED_N file(s) were not reviewed this round — a scan shard produced no output: $UNREVIEWED_LIST. They are carried into the next round."$'</sub>\n'
+  UNREVIEWED_TAIL="They are carried into the next round."
+  [ "$UNREVIEWED_RAW" -gt "$UNREVIEWED_N" ] && UNREVIEWED_TAIL="$UNREVIEWED_N of $UNREVIEWED_RAW are carried into the next round; the rest need a human."
+  UNREVIEWED_NOTICE=$'\n<sub>⚠ '"$UNREVIEWED_N file(s) were not reviewed this round — a scan shard produced no output: $UNREVIEWED_LIST. $UNREVIEWED_TAIL"$'</sub>\n'
 fi
 
 # ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────

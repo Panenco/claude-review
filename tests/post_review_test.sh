@@ -1517,6 +1517,16 @@ assert_contains "the reader is told which files no shard reviewed" "2 file(s) we
 assert_contains "…by name" '`src/lost-a.ts`' "$(visible_body "$BODY")"
 assert_eq "…and the state block carries them for the next round" "src/lost-a.ts src/lost-b.ts" "$(state_block "$BODY" | jq -r '.unreviewed | join(" ")')"
 rm -rf "$W"
+# The count the reader sees is the count that was stamped; a list past the cap
+# says so instead of promising a carry that does not happen.
+W=$(mktemp -d)
+seq 1 250 | sed 's|^|src/f|;s|$|.ts|' > "$W/unreviewed.txt"
+printf '%s' "$VALID_REVIEW" > "$W/review.json"
+UNREVIEWED="$W/unreviewed.txt" FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+assert_eq "the stamped list is capped" "200" "$(state_block "$BODY" | jq '.unreviewed | length')"
+assert_contains "…and the notice counts what was stamped, not the raw file" "200 of 250 are carried" "$(visible_body "$BODY")"
+rm -rf "$W"
 W=$(mktemp -d)
 printf '%s' "$VALID_REVIEW" > "$W/review.json"
 FIXTURE_REVIEWS="" FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
