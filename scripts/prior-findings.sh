@@ -28,6 +28,9 @@
 # Outputs:
 #   $OUT_DIR/prior-findings.json   the consolidated array
 #   $OUT_DIR/prior-findings.md     what review-scan Reads
+#   $OUT_DIR/prior-checks.json     [{p, l}] of every check comment an earlier
+#                                  round posted — post-review.sh will not post a
+#                                  second check on a path:line already carrying one
 #   stdout: prior_finding_count=<n>
 #
 # Failure bias: this script NEVER fails the run. A carrier that cannot be read
@@ -167,6 +170,25 @@ if [ "$C2_OK" = "1" ]; then
 fi
 [ "$C2_OK" = "1" ] \
   || echo "::warning::Could not read prior inline comments — carrying findings from the review bodies alone."
+
+# ── the checks a prior round already posted ──
+# Checks are excluded from the carry-over above on purpose (a note is not a
+# finding to account for), which left them with no memory at all: every round
+# re-derived its notes fresh and could post one on a line that already had one.
+# Measured: one file got the same check in round 2 and round 4 of one
+# client PR. This is the memory — path:line only, because that is the key a reader sees.
+echo '[]' > "$OUT_DIR/prior-checks.json"
+if [ "$C2_OK" = "1" ]; then
+  jq -s --arg bot "$BOT" '
+    (add // [])
+    | [ .[] | select(((.user.login? // "") == $bot)
+                     and ((.in_reply_to_id // null) == null)
+                     and ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")))
+        | {p: (.path // ""), l: (((.line // .original_line // 0) | tostring | tonumber?) // 0)} ]
+    | map(select(.p != "" and .l > 0)) | unique' \
+    "$WORK/comments.raw" > "$OUT_DIR/prior-checks.json" 2>/dev/null \
+    || echo '[]' > "$OUT_DIR/prior-checks.json"
+fi
 
 # ── the replies under a finding ──
 # Carrier 2 keeps only top-level bot comments, so a re-run re-posted findings a
