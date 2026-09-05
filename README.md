@@ -679,9 +679,9 @@ artifact — every subagent message carries a `parent_tool_use_id` pointing back
 `Agent` call that dispatched it:
 
 ```bash
-bash scripts/run-breakdown.sh 33300467953 Panenco/seaters   # downloads the artifacts
+bash scripts/run-breakdown.sh 33300467953 my-org/my-repo   # downloads the artifacts
 bash scripts/run-breakdown.sh --transcript orchestrator-output.txt --jobs jobs.json
-bash scripts/run-breakdown.sh 33300467953 Panenco/seaters --json
+bash scripts/run-breakdown.sh 33300467953 my-org/my-repo --json
 ```
 
 It prints per-stage tokens (input / cache-read / cache-write / output), dollars and

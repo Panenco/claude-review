@@ -22,7 +22,7 @@ not about ordering.
 kill throws away that call's stdout from the point of the kill. While the wait
 sat in the same block as everything else, one kill took `DEV_ENV_RC` **and**
 `DEADLINE_EPOCH` with it — and `DEADLINE_EPOCH` is the functional tester's hard
-wall-clock stop, which you must never invent. Measured on Panenco/qiv run
+wall-clock stop, which you must never invent. Measured on a consumer run
 33305382018: `Exit code 143` / `Command timed out after 2m 0s`, with the
 `printenv` output present and none of the values that came after the wait. Split
 this way, a kill can only ever cost the wait.
@@ -74,7 +74,7 @@ echo "DEADLINE_EPOCH=$(( $(date +%s) + ${FUNCTIONAL_BUDGET_SECONDS:-480} ))"
 #
 # The clamp below is only a courtesy; this block being its own tool call is the
 # guarantee (see the section head). Never clamp BELOW a real bring-up either:
-# measured bring-up on seaters is 291-305s, so anything under ~360 would
+# measured bring-up on a large consumer app is 291-305s, so under ~360 would
 # re-create the original bug while pretending to be a safety margin.
 w=${DEV_ENV_TIMEOUT_SECONDS:-360}
 case "$w" in ''|*[!0-9]*) w=360 ;; esac

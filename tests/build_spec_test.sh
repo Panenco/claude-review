@@ -321,7 +321,7 @@ echo ""
 echo "── a PR touching two epics is governed by the one it is actually about ──"
 # The governing slot is the FIRST ranked document, and two PRDs both written by
 # the PR tie on kind and on self — so the tiebreak was file size, and the
-# SHORTER unrelated epic governed. Measured on qiv #1453 ("docs(notifications):
+# SHORTER unrelated epic governed. Measured on a real PR ("docs(notifications):
 # PRD and architecture for the in-app notifications epic"): 7 changed documents
 # under docs/planned/notifications, 2 under docs/planned/surgery-fulfillment,
 # and the 151-line surgery-fulfillment PRD governed over the 209-line
