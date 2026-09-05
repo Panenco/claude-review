@@ -18,6 +18,14 @@ gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences
 
 The orchestrator's Task prompt may name a shard: `SHARD i of N`, a file list at `/tmp/shard-i.txt`, and an output file `/tmp/scan-i.json`. A large diff is split so that each scan reads a fraction of it at full depth — one scan over sixty files did the investigative work and ran out of room to file what it read. When you are a shard:
 
+- **Your diff is already cut: `/tmp/shard-i.diff`, your files against the base.** Never run `gh pr diff` or rebuild it — on the first sharded runs every shard spent eight or nine turns doing exactly that, one of them four turns hunting for the base SHA, before reading a line of code. Orient in ONE Bash call and no more:
+  ```bash
+  cat /tmp/shard-${i}.txt /tmp/shard-${i}.diff; gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences
+  cat /tmp/prior-findings.md 2>/dev/null
+  ```
+  If `/tmp/shard-i.diff` is missing (HEAD already merged into the base leaves that diff empty), cut it yourself in that same call: `gh pr diff ${PR_NUMBER}`, kept to your files.
+  The spec (`/tmp/spec.md`) and the repo conventions come next, one call each, exactly as below. Then hunt.
+- **Batch your reads.** Every turn re-reads everything you have read so far, so twenty one-file turns cost several times what seven three-file turns do. When you know the next three files you need, fetch them in one call.
 - **Hunt findings and notes only in the files listed.** Every pass in this skill runs unchanged, over those files. Read anything else you need — callers, siblings, the file a copy came from, the spec — and cite it in `evidence`, but a finding or note is *anchored* in your shard's files only.
 - **Account for the prior findings whose `path` is in your shard, and no others.** Another shard owns the rest; `merge-scans.sh` unions the two lists.
 - **A file in your list that is outside the since-last delta is there because no round has covered it yet** — a prior finding's file this push did not touch, or a file whose shard produced nothing last round. Review its whole diff against `origin/<base>`, not the empty delta.
