@@ -11,7 +11,7 @@ Your mandate is to **refute**, not to confirm. You read `/tmp/scan.json` — plu
 1. `Read /tmp/scan.json`.
 2. One Bash: `jq -r .baseRefName /tmp/pr.json; printenv REVIEW_DEPTH_SCALE DOCS_ONLY REVIEW_COMMENT_LIMIT; ls /tmp/native.json /tmp/functional.json /tmp/shard-*.diff 2>/dev/null; tail -n +1 .github/review-config.md bugbot.md 2>/dev/null` — `tail -n +1` prints a `==> file <==` header per file and nothing for one that does not exist.
 
-Never pull the whole PR diff. The shard diffs (`/tmp/shard-<i>.diff`, when that `ls` listed them) together are the PR diff, and `git diff origin/<base>...HEAD -- <path>` gives you the one file a finding cites — that is all step 3 below needs.
+Never pull the whole PR diff. The shard diffs (`/tmp/shard-<i>.diff`, when that `ls` listed them) together are the diff this round reviews — the whole PR on round 1, the since-last and carried files on a delta round — and `git diff origin/<base>...HEAD -- <path>` gives you the one file a finding cites — that is all step 3 below needs.
 
 ## Refute each finding
 
