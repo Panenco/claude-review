@@ -38,6 +38,10 @@ A finding carrying `"convention": true` is judged on a different bar: keep it on
 
 **This class never carries a ```suggestion``` fence.** A committable patch that deletes comments is dangerous and nothing downstream checks it, so strip the fence and state the removal in one prose sentence. That is a verdict on the patch only; the comment-noise item itself stands or falls on the bar above.
 
+**An inert-code finding** (`"inert": true`) says the diff ships a branch nothing reaches, a value nothing reads, or config a code path makes dead. Keep it only if you reproduce the unreachability yourself: for a branch, `Read` the guard or the caller the evidence names and confirm no input gets past it; for a value, run the `Grep` again and confirm the only hits are the writer and the type; for config, read the code path that swallows every outcome. One reader outside the tests, or one caller that reaches the branch, refutes it. Its `failure_scenario` may be `""` — the quoted reason stands in for it. Force `severity` to `minor`, keep at most **2**, advisory.
+
+**This class never carries a ```suggestion``` fence either.** A patch that deletes code on a wrong "dead" call deletes live code, so strip the fence and state the removal in one prose sentence. That is a verdict on the patch only; the inert-code item stands or falls on the bar above.
+
 A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2**.
 
 ## The native second opinion — `/tmp/native.json`
@@ -103,7 +107,7 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 ## Verdict
 
-- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding, not a prose finding and not a comment-noise finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES, and neither can a `"prose": true` nor a `"comment_noise": true` finding — all three are always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test or a gate, and never for a `human_review` note — a note carries no severity and can NEVER produce REQUEST_CHANGES.
+- **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding, not a prose finding, not a comment-noise finding and not an inert-code finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES, and neither can a `"prose": true`, a `"comment_noise": true` nor an `"inert": true` finding — all four are always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test or a gate, and never for a `human_review` note — a note carries no severity and can NEVER produce REQUEST_CHANGES.
 - **APPROVE** — requires ALL of: zero surviving findings; a real, non-empty `approve_argument` from scan; `sensitive_paths_touched` false; `review_effort` ≤ 3. **On a `DOCS_ONLY` run — `DOCS_ONLY` is in your env — add one more: zero surviving notes.**
   - **Surviving notes never block APPROVE on a code diff, and zero notes is a reason to give it.** A note is a reading aid, not a risk signal. "No notes" used to mean "nobody needs to read this diff"; it now means no block needed orienting, which on a CRUD endpoint, a form or a straightforward business rule is the normal and correct result. **A clean simple PR should APPROVE**, and reaching for a COMMENT because the review looks thin is padding by another route. There is no target rate in either direction: the gates above decide, and a run that approves nothing and a run that approves everything are both wrong only if the gates say so.
   - **When you do not approve, record why in `approve_blocked_by`** — an array naming EVERY gate above that failed, not the first one you noticed: `findings`, `no_argument`, `sensitive_path`, `effort`, `docs_only_note`. Empty array when you approve. The poster shows this to the author, so a review that finds nothing and still withholds the approval has to say which gate held it; leaving it empty is how that turned into a shrug the author had to guess at.
@@ -237,7 +241,7 @@ The `**check**` prefix is load-bearing — the poster reads it to route a note i
       {"id": "7f3a1c2b", "carried_from": "", "path": "src/foo.ts", "line": 42,
        "title": "...", "severity": "critical|major|minor",
        "failure_scenario": "...", "fix": "...", "placement": "inline|body", "convention": false, "prose": false,
-       "comment_noise": false}
+       "comment_noise": false, "inert": false}
     ],
     "resolved_prior": [{"id": "1a2b3c4d", "evidence": "what at HEAD now prevents it"}],
     "human_review": [
