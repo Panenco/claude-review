@@ -1849,7 +1849,7 @@ want "…and named as the one exception to never adding your own" "$VERIFY" \
 
 echo ""
 echo "── a large diff is scanned in shards, merged before verify ──"
-# One scan over sixty files did the work and ran out of room to file it (qiv#1498
+# One scan over sixty files did the work and ran out of room to file it (one client PR
 # replayed twice: 3 then 1 of 19). shard-plan.sh cuts the diff, the orchestrator
 # dispatches one scan per shard in ONE response, merge-scans.sh assembles the one
 # scan.json verify reads. Verify itself is untouched.

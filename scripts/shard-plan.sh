@@ -2,7 +2,7 @@
 # shard-plan.sh — split a large diff into shards, one review-scan each.
 #
 # One agent reading a 61-file / 2.7k-line diff in ~15 turns does the
-# investigative work and runs out of room to file: replayed twice on qiv#1498
+# investigative work and runs out of room to file: replayed twice on one audited client PR
 # it found 3 and then 1 of the 19 defects a human found, while its transcript
 # shows it had read the evidence for most of the rest. Each shard reads a
 # fraction of the diff at the same depth; review-verify still runs once.
