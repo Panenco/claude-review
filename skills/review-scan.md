@@ -18,13 +18,11 @@ gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences
 
 The orchestrator's Task prompt may name a shard: `SHARD i of N`, a file list at `/tmp/shard-i.txt`, and an output file `/tmp/scan-i.json`. A large diff is split so that each scan reads a fraction of it at full depth — one scan over sixty files did the investigative work and ran out of room to file what it read. When you are a shard:
 
-- **Your diff is already cut: `/tmp/shard-i.diff`, your files against the base.** Never run `gh pr diff` or rebuild it — on the first sharded runs every shard spent eight or nine turns doing exactly that, one of them four turns hunting for the base SHA, before reading a line of code. Orient in ONE Bash call and no more:
-  ```bash
-  cat /tmp/shard-${i}.txt /tmp/shard-${i}.diff; gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences
-  cat /tmp/prior-findings.md 2>/dev/null
-  ```
+- **Your diff is already cut: `/tmp/shard-i.diff`, your files against the base.** Trust it — never `wc` it, `--stat` it, rebuild it or check it against the base, and never run `gh pr diff`: on the first sharded runs every shard spent five to nine turns doing exactly that before reading a line of code. Orient in TWO calls, no more:
+  1. `Read /tmp/shard-${i}.diff` — the Read tool, never `cat`. A `cat` of a 700-line diff overflows the Bash result, and the shard then re-reads the overflow file in pieces, paying for the diff twice.
+  2. One Bash: `cat /tmp/shard-${i}.txt /tmp/prior-findings.md 2>/dev/null; printenv REVIEW_DEPTH_SCALE DOCS_ONLY REVIEW_SCOPE; gh pr view ${PR_NUMBER} --json title,body,closingIssuesReferences`
   If `/tmp/shard-i.diff` is missing (HEAD already merged into the base leaves that diff empty), cut it yourself in that same call: `gh pr diff ${PR_NUMBER}`, kept to your files.
-  The spec (`/tmp/spec.md`) and the repo conventions come next, one call each, exactly as below. Then hunt.
+  Then `Read /tmp/spec.md` — one call, whatever its length — and the repo conventions in the two calls that section allows. Five calls in, you are hunting.
 - **Batch your reads.** Every turn re-reads everything you have read so far, so twenty one-file turns cost several times what seven three-file turns do. When you know the next three files you need, fetch them in one call.
 - **Hunt findings and notes only in the files listed.** Every pass in this skill runs unchanged, over those files. Read anything else you need — callers, siblings, the file a copy came from, the spec — and cite it in `evidence`, but a finding or note is *anchored* in your shard's files only.
 - **Account for the prior findings whose `path` is in your shard, and no others.** Another shard owns the rest; `merge-scans.sh` unions the two lists.
@@ -103,9 +101,9 @@ When the diff delivers substantive, *separable* work no criterion asks for — a
 
 ## Repo conventions — the two config files, plus the rules the team wrote
 
-`Read` `.github/review-config.md` and `bugbot.md` **only if they exist**, once each.
+One Bash call covers this section's first pass: `ls .claude/rules 2>/dev/null; cat .github/review-config.md bugbot.md .claude/rules/general.md .claude/rules/comments.md 2>/dev/null` — the two config files **only if they exist**, once each, and the two rules files that apply everywhere. A file that does not exist prints nothing. Never `wc` them first, never one file per turn: on the first sharded runs this section alone cost each shard three to six turns.
 
-Then, **only if `.claude/rules/` exists**: one `ls` of it, and `Read` **at most 4** of the `.md` files there — the ones whose topic governs what this diff touches (`api.md` for endpoints, `i18n.md` for locale files, `web.md` for frontend, and so on), plus `comments.md` and `general.md` whenever they exist, because those apply everywhere. A file carrying a `paths:` glob in its frontmatter governs only matching files; obey it. Nothing else — do not glob, do not read the whole directory, do not recurse into its subdirectories, do not hunt for config anywhere else.
+Then, **only if `.claude/rules/` exists**, that was your one `ls` of it, and `Read` **at most 4** of the `.md` files there — `comments.md` and `general.md` already came in the call above, because those apply everywhere; the other two at most, in ONE further `cat`, are the ones whose topic governs what this diff touches (`api.md` for endpoints, `i18n.md` for locale files, `web.md` for frontend, and so on). A file carrying a `paths:` glob in its frontmatter governs only matching files; obey it. Nothing else — do not glob, do not read the whole directory, do not recurse into its subdirectories, do not hunt for config anywhere else.
 
 **Suppression comes first and is unconditional.** If any of those files calls something intentional, an accepted trade-off, or says not to flag it — do not emit that finding at all. Not downgraded, not a `human_review` note. The team already made that call; re-raising it is the noise this pipeline exists to avoid.
 
