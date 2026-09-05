@@ -188,7 +188,10 @@ for n in $(jq -r '.closingIssuesReferences[]?.number' "$RUNDIR/pr.json"); do
 done > "$RUNDIR/issue.json"
 
 # ── round state ──────────────────────────────────────────────────────────────
-STATE=$("$SCRIPTS"/prior-review-state.sh) || STATE=""
+# From INSIDE the clone: the script resolves each prior head with `git cat-file`
+# and, run from this repo, resolved none — so every local run of a multi-round
+# PR was measured as round 1, full scope, with no carry-over and no prior checks.
+STATE=$(cd "$WT" && "$SCRIPTS"/prior-review-state.sh) || STATE=""
 if ! grep -qE '^round=[0-9]+$' <<<"$STATE"; then
   echo "prior-review-state.sh produced no usable state — refusing to review as an unknown round" >&2
   exit 1

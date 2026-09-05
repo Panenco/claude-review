@@ -292,6 +292,8 @@ assert_file_has "…and passes the inline cap to the poster" \
 # Full-or-delta is the guard's call from the numstat since the last full pass,
 # locally exactly as in CI, and the stamp reaches the poster so the NEXT run
 # can find this one.
+assert_file_has "prior review state is derived from inside the clone, where the SHAs resolve" \
+  'STATE=$(cd "$WT" && "$SCRIPTS"/prior-review-state.sh)' "$LOCAL"
 assert_file_has "review-local.sh hands the guard the last full-pass head" \
   'GATE_FULL_HEAD_SHA="$FULL_HEAD_SHA"' "$LOCAL"
 assert_file_has "…and the numstat since it" 'GATE_SINCE_FULL_TSV=$(git -C "$WT" diff --numstat' "$LOCAL"
