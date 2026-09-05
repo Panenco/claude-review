@@ -563,7 +563,7 @@ want "review-verify carries no target rate either" "$VERIFY" \
 
 # The poster can only tell "never came up" from "came up 40s after we stopped
 # waiting" if it is handed the same number the orchestrator waits on. On
-# spendfuse#351 it was not, so the one case that mattered — rc 0, arriving late —
+# in production it was not, so the one case that mattered — rc 0, arriving late —
 # fell through the rc check and the review said nothing.
 want "the workflow hands the poster the same wait the orchestrator uses" "$WORKFLOW" \
   'DEV_ENV_TIMEOUT_SECONDS: \$\{\{ inputs\.dev_env_timeout_seconds \}\}'
@@ -606,7 +606,7 @@ want "…and does not go fetch it either" "$VERIFY" \
   'you must not go fetch it'
 
 # ── the cardinality pass ────────────────────────────────────────────────────
-# WHY THIS IS PINNED. spendfuse#351 (5572 non-generated lines, depth `full`,
+# WHY THIS IS PINNED. A measured PR (5572 non-generated lines, depth `full`,
 # effort 4) produced ONE minor finding, and Anthropic's own plugin over the same
 # 100 files produced none. Both were defensible on every value-shaped question —
 # and both walked straight past `usePerOrgAlertRulePerformance`, an unbounded
@@ -1459,7 +1459,7 @@ want "build-spec still excludes .claude/** from spec assembly" "$BUILDSPEC" \
 # `/^#{2,3} /` matched NOTHING and /tmp/auth-recipe.md came out 0 bytes — the
 # functional tester never received the auth recipe on that fleet, and reported
 # "AUTH_READY=false and /tmp/auth-recipe.md is empty" instead. Measured on
-# seaters run 33257534059 against a config that really did have `### Auth`:
+# A run against a config that really did have `### Auth`:
 # 2901 bytes extracted with interval support, 0 without.
 echo ""
 echo "── the auth-recipe extractor is portable ──"
@@ -1508,13 +1508,13 @@ rm -f "$CFG"
 #   * The wait was UNCONDITIONAL, but the workflow step that creates
 #     /tmp/dev-env/rc is not. On a code-only review that step is skipped, so the
 #     loop spun to its full timeout waiting for a file nothing would write —
-#     Panenco/qiv run 33298278779: ~600s of a 1185s job, 49% of the wall clock.
-#   * The timeout came straight from the caller, and qiv passes 900. The tool
+#     A measured run: ~600s of a 1185s job, 49% of the wall clock.
+#   * The timeout came straight from the caller, and one caller passes 900. The tool
 #     killed the call (exit 143) and the WHOLE block's stdout was lost: no
 #     DEV_ENV_RC, no DEADLINE_EPOCH.
 #   * The clamp that answered that assumed a fixed 600s ceiling. It is not
 #     fixed: the Bash tool's timeout is a PER-CALL argument, 120000ms by
-#     default and 600000ms at most, and Panenco/qiv run 33305382018 was killed
+#     default and 600000ms at most, and a measured run was killed
 #     at "2m 0s" with exactly the same loss. No clamp can promise survival, so
 #     the wait is now its own tool call and DEADLINE_EPOCH is emitted by the
 #     block that never blocks — see "turn 1 survives a killed wait" below.
@@ -1617,7 +1617,7 @@ else
 fi
 
 # ── turn 1 survives a killed wait ──────────────────────────────────────────
-# THE BUG THIS PINS. Panenco/qiv run 33305382018 ended the turn-1 tool result
+# THE BUG THIS PINS. A measured run ended the turn-1 tool result
 # with "Exit code 143 / Command timed out after 2m 0s". The kill threw away the
 # block's stdout from the point of the kill, so WEB_READY, DEV_ENV_RC and
 # DEADLINE_EPOCH never reached the orchestrator — and DEADLINE_EPOCH is the
