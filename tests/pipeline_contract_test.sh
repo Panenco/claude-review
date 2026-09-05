@@ -416,6 +416,34 @@ want "review-verify keys the class on comment_noise, not prose" "$VERIFY" \
   '\*\*A comment-noise finding\*\* \(`"comment_noise": true`'
 want "…and exposes the flag in meta.findings" "$VERIFY" '"comment_noise": false'
 
+# Inert code — a branch nothing reaches, a value nothing reads, config a code
+# path makes dead. A human files these as questions; this pipeline asks none,
+# so it is a finding class at the same bar shape as comment noise: its own
+# flag, exempt from failure_scenario, capped, minor, advisory, no fence.
+IN_SCAN=$(mktemp)
+awk '/^## Inert code/{f=1;next} f&&/^## /{f=0} f' "$SCAN" > "$IN_SCAN"
+if [ -s "$IN_SCAN" ]; then
+  want "review-scan can flag inert code on its own flag" "$IN_SCAN" '"inert": true'
+  want "…and demands the reason, not the claim" "$IN_SCAN" 'quote the reason, not the claim'
+  want "…exempt from failure_scenario like a convention finding" "$IN_SCAN" \
+    'exempt from `failure_scenario`'
+  want "…capped at 2 per review" "$IN_SCAN" '(max|most) \*{0,2}2\*{0,2} per review'
+  want "…always minor" "$IN_SCAN" 'severity.{0,4}minor'
+  want "…and never able to reach REQUEST_CHANGES" "$IN_SCAN" 'NEVER produce REQUEST_CHANGES'
+  want "…and never ships a committable deletion" "$IN_SCAN" \
+    'Never a ```suggestion``` fence on this class'
+else
+  bad "review-scan has no '## Inert code' section"
+fi
+rm -f "$IN_SCAN"
+want "review-scan exposes the inert flag in its findings table" "$SCAN" '^\| `inert` \|'
+want "…and in its output schema" "$SCAN" '"inert": false'
+want "review-verify judges the class by reproducing the unreachability" "$VERIFY" \
+  '\*\*An inert-code finding\*\* \(`"inert": true`'
+want "…refutes it on one reader or one reaching caller" "$VERIFY" \
+  'One reader outside the tests, or one caller that reaches the branch, refutes it'
+want "…and exposes the flag in meta.findings" "$VERIFY" '"inert": false'
+
 # The verdict rule is the one that must name the exclusion, not just imply it.
 RC_LINE=$(grep -n 'REQUEST_CHANGES\*\*' "$VERIFY" | head -1 | cut -d: -f1)
 if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE 'not a convention finding|convention.*NEVER produce'; then
@@ -430,6 +458,11 @@ if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE '(nor|not) a 
   ok "review-verify's REQUEST_CHANGES rule excludes comment-noise findings on the rule line itself"
 else
   bad "review-verify's REQUEST_CHANGES rule must exclude comment-noise findings on line ${RC_LINE:-?}"
+fi
+if [ -n "$RC_LINE" ] && sed -n "${RC_LINE}p" "$VERIFY" | grep -qiE 'not an inert-code finding|"inert": true'; then
+  ok "review-verify's REQUEST_CHANGES rule excludes inert-code findings on the rule line itself"
+else
+  bad "review-verify's REQUEST_CHANGES rule must exclude inert-code findings on line ${RC_LINE:-?}"
 fi
 # A note that names who-hits-what is a finding mislabelled. replay of one client PR at the head a human reviewed:
 # scan wrote "an API on a machine with an older poppler now refuses to boot"
