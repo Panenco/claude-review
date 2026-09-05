@@ -13,7 +13,13 @@
 #            when unset, the `files` of PR_JSON (default /tmp/pr.json).
 #            SHARD_MIN_LINES (1200) / SHARD_MIN_FILES (30): below BOTH, one shard.
 #            SHARD_TARGET (900): weight one shard should carry. SHARD_MAX (4).
-#            OUT_DIR (/tmp): where shard-<i>.txt land (one path per line).
+#            GATE_GENERATED_GLOBS: the consumer's extra build-output globs, as guard.sh.
+#            PRIOR_FINDINGS_JSON (OUT_DIR/prior-findings.json): on a delta round
+#            the file list holds only what this push touched, but every carried
+#            finding must still be owned by SOME shard — its path is added at
+#            zero weight so the shard that gets it accounts for it.
+#            OUT_DIR (/tmp): where shard-<i>.txt land (one path per line), plus
+#            shard-count, which merge-scans.sh reads to notice a missing shard.
 # Out (stdout): shards=<n>, then shard_<i>=<files>/<lines> per shard.
 #
 # Sorted by path, cut into contiguous chunks of about equal weight: siblings are
@@ -28,7 +34,9 @@ TARGET="${SHARD_TARGET:-900}"
 MAX="${SHARD_MAX:-4}"
 
 # Mirrors guard.sh is_generated — tests/pipeline_contract_test.sh asserts the
-# two case lists are byte-identical, so edit both or neither.
+# two case lists are byte-identical, so edit both or neither. The repo-declared
+# globs are walked with `read`, which never pathname-expands, so no `set -f`.
+GENERATED_GLOBS="${GATE_GENERATED_GLOBS:-}"
 is_generated() {
   case "$1" in
     *.lock|package-lock.json|pnpm-lock.yaml|*.snap) return 0 ;;
@@ -37,6 +45,11 @@ is_generated() {
     swagger*.json|swagger*.yaml|swagger*.yml|*/swagger*.json|*/swagger*.yaml|*/swagger*.yml) return 0 ;;
     schema.graphql|*/schema.graphql|*.gen.*|__generated__/*|*/__generated__/*) return 0 ;;
   esac
+  local glob
+  while read -r glob; do
+    [ -n "$glob" ] || continue
+    case "$1" in $glob) return 0 ;; esac
+  done <<< "${GENERATED_GLOBS// /$'\n'}"
   return 1
 }
 
@@ -45,7 +58,16 @@ if [ -z "$TSV" ]; then
   TSV=$(jq -r '.files[]? | "\(.path)\t\(.additions // 0)\t\(.deletions // 0)"' "${PR_JSON:-/tmp/pr.json}" 2>/dev/null)
 fi
 
-rm -f "$OUT_DIR"/shard-[0-9]*.txt 2>/dev/null
+# Carried findings whose file this push did not touch still need an owner.
+PF="${PRIOR_FINDINGS_JSON:-$OUT_DIR/prior-findings.json}"
+if [ -n "$TSV" ] && jq -e 'type == "array" and length > 0' "$PF" >/dev/null 2>&1; then
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    grep -qxF -- "$p" <(cut -f1 <<< "$TSV") || TSV+=$'\n'"$p"$'\t0\t0'
+  done < <(jq -r '.[] | .p // empty' "$PF" 2>/dev/null | sort -u)
+fi
+
+rm -f "$OUT_DIR"/shard-[0-9]*.txt "$OUT_DIR/shard-count" 2>/dev/null
 total=0; files=0; rows=""
 while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
@@ -64,7 +86,7 @@ if [ "$lines" -ge "$MIN_LINES" ] || [ "$files" -ge "$MIN_FILES" ]; then
   [ "$n" -gt "$MAX" ] && n=$MAX
   [ "$n" -lt 1 ] && n=1
 fi
-if [ "$n" -eq 1 ]; then echo "shards=1"; exit 0; fi
+if [ "$n" -eq 1 ]; then echo 1 > "$OUT_DIR/shard-count"; echo "shards=1"; exit 0; fi
 
 # Greedy contiguous fill: a shard closes once it reaches total/n, except the last,
 # which takes everything left. Sorted first so the cuts fall between directories.
@@ -76,5 +98,8 @@ printf '%s' "$rows" | LC_ALL=C sort | awk -F'\t' -v n="$n" -v total="$total" -v 
     acc += $2; f++; l += $2 - 25
     if (i < n && acc >= per) { printf "shard_%d=%d/%d\n", i, f, l; close(file); i++; acc = 0; f = 0; l = 0 }
   }
-  END { if (f > 0) printf "shard_%d=%d/%d\n", i, f, l; print "shards=" i }
-' | { out=$(cat); echo "$out" | grep '^shards='; echo "$out" | grep '^shard_'; }
+  # The last row may itself have closed a shard, leaving i one past the files
+  # written — report the shards that exist, never one the orchestrator would
+  # dispatch a scan at and find missing.
+  END { if (f > 0) { printf "shard_%d=%d/%d\n", i, f, l; print "shards=" i } else print "shards=" (i - 1) }
+' | { out=$(cat); n=$(sed -n 's/^shards=//p' <<<"$out"); echo "$n" > "$OUT_DIR/shard-count"; echo "shards=$n"; echo "$out" | grep '^shard_'; }

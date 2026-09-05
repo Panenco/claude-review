@@ -1865,6 +1865,8 @@ want "…and so does the local harness" "$ROOT/scripts/review-local.sh" 'scan-<i
 for f in "$ROOT/action.yml" "$WORKFLOW"; do
   want "${f##*/} verifies shard-plan.sh and merge-scans.sh are installed" "$f" 'shard-plan\.sh merge-scans\.sh'
 done
+c=$(grep -c 'GATE_GENERATED_GLOBS: \${{ inputs.gate_generated_globs }}' "$WORKFLOW")
+if [ "$c" -ge 2 ]; then ok "the consumer's generated globs reach the orchestrator step, not only the guard"; else bad "GATE_GENERATED_GLOBS must reach the orchestrator step too (found $c)"; fi
 # The generated-file list is shared with guard.sh by copy; the two must not drift.
 G=$(awk '/^is_generated\(\)/,/^}/' "$GUARD" | grep -E '^\s+\*|^\s+dist|^\s+openapi|^\s+swagger|^\s+schema')
 S=$(awk '/^is_generated\(\)/,/^}/' "$ROOT/scripts/shard-plan.sh" | grep -E '^\s+\*|^\s+dist|^\s+openapi|^\s+swagger|^\s+schema')

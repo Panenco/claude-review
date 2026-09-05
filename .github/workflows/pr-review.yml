@@ -1112,6 +1112,10 @@ jobs:
           PRIOR_HEAD_SHA: ${{ steps.guard.outputs.prior_head_sha }}
           PRIOR_VERDICT: ${{ steps.prior_state.outputs.prior_verdict }}
           ROUND: ${{ steps.prior_state.outputs.round }}
+          # shard-plan.sh excludes the consumer's declared build output exactly
+          # as the guard does; without this a 5000-line locale file the guard
+          # ignored would have earned itself a scan shard.
+          GATE_GENERATED_GLOBS: ${{ inputs.gate_generated_globs }}
           PR_AUTHOR_IS_BOT: ${{ steps.pr_sha.outputs.author_is_bot }}
           DEV_ENV_TIMEOUT_SECONDS: ${{ inputs.dev_env_timeout_seconds }}
           DEV_ENV_SECRETS: ${{ secrets.DEV_ENV_SECRETS }}

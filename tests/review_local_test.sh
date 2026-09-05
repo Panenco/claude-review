@@ -289,6 +289,7 @@ assert_file_has "…exports the item ceiling to the orchestrator session" \
   "export DOCS_ONLY REVIEW_DEPTH_SCALE" "$LOCAL"
 assert_file_has "…and passes the inline cap to the poster" \
   "REVIEW_COMMENT_LIMIT=\"\$REVIEW_COMMENT_LIMIT\"" "$LOCAL"
+assert_file_has "per-shard scans are copied out of the run dir by a glob on that dir" '"$RUNDIR"/scan-[0-9]*.json' "$LOCAL"
 
 echo ""
 if [ "$fail" -eq 0 ]; then echo "All review-local tests passed."; exit 0; fi

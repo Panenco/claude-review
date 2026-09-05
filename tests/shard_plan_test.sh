@@ -43,6 +43,25 @@ assert_eq "generated churn does not make a diff large" "1" "$N"
 run SHARD_FILES_TSV="$big" SHARD_MAX=2
 assert_eq "SHARD_MAX caps the count" "2" "$N"
 
+# The last row closing a shard left i one past the files written: shards=4 with
+# three files on disk, and a scan dispatched at a list that did not exist.
+edge=$(printf 'a/big.ts\t1500\t500\n'; for i in $(seq -w 1 20); do printf 'b/f%s.ts\t60\t20\n' "$i"; done)
+run SHARD_FILES_TSV="$edge"
+assert_eq "the reported count equals the files written" "$N" "$(ls "$W"/shard-[0-9]*.txt | wc -l | tr -d ' ')"
+assert_eq "…and shard-count carries the same number" "$N" "$(cat "$W/shard-count")"
+
+# A carried finding in a file this push did not touch still gets an owner.
+printf '[{"id":"aaaa1111","p":"src/untouched.ts","l":4,"sev":"critical","t":"still open"}]' > "$W/pf.json"
+run SHARD_FILES_TSV="$big" PRIOR_FINDINGS_JSON="$W/pf.json"
+assert_eq "a prior finding's untouched file is placed in exactly one shard" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/untouched.ts')"
+run SHARD_FILES_TSV=$'src/a.ts\t900\t300\nsrc/b.ts\t200\t50' PRIOR_FINDINGS_JSON="$W/pf.json"
+assert_eq "…without duplicating a file the push did touch" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/a.ts')"
+
+run SHARD_FILES_TSV=$'locale/big.pot\t5000\t5000\nsrc/a.ts\t10\t0' GATE_GENERATED_GLOBS='*.pot'
+assert_eq "the consumer's declared build-output globs are excluded like the guard's" "1" "$N"
+run SHARD_FILES_TSV=$'src/a.ts\t300\t100' 
+assert_eq "one shard still writes shard-count" "1" "$(cat "$W/shard-count")"
+
 printf '{"files":[{"path":"src/a.ts","additions":900,"deletions":300},{"path":"src/b.ts","additions":200,"deletions":50}]}' > "$W/pr.json"
 run PR_JSON="$W/pr.json"
 assert_eq "falls back to pr.json's files when no TSV is given" "2" "$N"

@@ -52,6 +52,17 @@ run
 assert_eq "unanimous approval keeps shard 1's argument" "a" "$(q .approve_argument)"
 assert_eq "missing keys default rather than crash" "[]" "$(q -c .prior_findings 2>/dev/null || jq -c .prior_findings "$W/scan.json")"
 
+# A planned shard that never reported: merged, warned, and never approved.
+rm -f "$W"/scan*.json
+echo 3 > "$W/shard-count"
+shard 1 '{"findings":[],"human_review":[],"approve_argument":"a","review_effort":2}'
+shard 2 '{"findings":[],"human_review":[],"approve_argument":"b","review_effort":2}'
+run
+assert_eq "the surviving shards still merge" "merged=2" "$(grep -o 'merged=2' <<<"$OUT")"
+case "$OUT" in *"::warning::"*"3 shard(s) were planned and 2 reported"*) ok "a missing shard is warned about, by count" ;; *) bad "no missing-shard warning: $OUT" ;; esac
+assert_eq "…and the files nobody read withhold the approval" "" "$(q .approve_argument)"
+rm -f "$W/shard-count"
+
 rm -f "$W"/scan*.json
 shard 1 'not json'
 shard 2 '{"findings":[{"path":"a","line":1,"title":"t","severity":"minor"}]}'

@@ -304,8 +304,13 @@ echo "Running the orchestrator ($ORCH_MODEL; subagents $MODEL) — this takes mi
 SESSION_RC=$?
 echo "Orchestrator exited $SESSION_RC after $(( $(date +%s) - $(cat "$RUNDIR/job-start") ))s"
 
-for f in scan.json scan-[0-9]*.json verify.json review.json spec.md prior-findings.json; do
+for f in scan.json verify.json review.json spec.md prior-findings.json; do
   [ -f "$RUNDIR/$f" ] && cp "$RUNDIR/$f" "$OUT/$f"
+done
+# Globbed against $RUNDIR itself: a pattern in the bare list expanded against
+# the invocation directory, matched nothing, and the per-shard evidence stayed behind.
+for f in "$RUNDIR"/scan-[0-9]*.json "$RUNDIR"/shard-[0-9]*.txt; do
+  [ -f "$f" ] && cp "$f" "$OUT/"
 done
 
 # ── the poster, with the seam set: artifacts, not GitHub writes ──────────────

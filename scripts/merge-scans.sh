@@ -10,6 +10,11 @@
 # path, the orchestrator dispatches in order); flags OR; `review_effort` max;
 # `approve_argument` only when EVERY shard argued for approval.
 #
+# A MISSING SHARD IS NEVER SILENT. shard-plan.sh writes shard-count; when fewer
+# shards merged than were planned, the files nobody read cannot vouch for an
+# approval, so `approve_argument` is blanked and the gap is warned about. The
+# merge still happens — the shards that did report are real findings.
+#
 # Never fails the run: nothing parseable → nothing written, and the
 # orchestrator's degraded path handles a missing scan.json as it does today.
 set -uo pipefail
@@ -24,10 +29,17 @@ for f in "$OUT_DIR"/scan-[0-9]*.json; do
   else echo "::warning::merge-scans: $f is not a JSON object — that shard contributes nothing."; fi
 done
 if [ "${#parts[@]}" -eq 0 ]; then echo "merged=0"; exit 0; fi
+PLANNED=$(cat "$OUT_DIR/shard-count" 2>/dev/null || echo "${#parts[@]}")
+case "$PLANNED" in ''|*[!0-9]*) PLANNED=${#parts[@]} ;; esac
+COMPLETE=true
+if [ "${#parts[@]}" -lt "$PLANNED" ]; then
+  COMPLETE=false
+  echo "::warning::merge-scans: $PLANNED shard(s) were planned and ${#parts[@]} reported — the files of the missing shard(s) were not reviewed, so this round cannot approve."
+fi
 
 JQ_NORM='def norm: gsub("[\r\n]+"; " ") | sub("^[ \t]*\\*\\*(critical|major|minor)\\*\\*[ \t]*"; ""; "i") | gsub("[`*]"; "") | gsub("[ \t]+"; " ") | sub("^ "; "") | sub(" $"; "") | ascii_downcase | sub("[.!?]+$"; "");'
 
-jq -s --argjson n "$N" "$JQ_NORM"'
+jq -s --argjson n "$N" --argjson complete "$COMPLETE" "$JQ_NORM"'
   def rr(k): [ . as $lists | range(0; ($lists | map(length) | max) // 0) as $i
                | $lists[] | select(length > $i) | .[$i] ] | .[:k];
   . as $s
@@ -48,7 +60,7 @@ jq -s --argjson n "$N" "$JQ_NORM"'
       prior_findings: $carried,
       resolved_prior: ($s | map(.resolved_prior // []) | add | unique_by(.id) | map(select((.id | IN($cids[])) | not))),
       human_review: ($s | map(.human_review // []) | rr($n)),
-      approve_argument: (if all($s[]; (.approve_argument // "") != "") then ($s[0].approve_argument) else "" end),
+      approve_argument: (if $complete and all($s[]; (.approve_argument // "") != "") then ($s[0].approve_argument) else "" end),
       sensitive_paths_touched: any($s[]; .sensitive_paths_touched == true),
       prompt_injection_detected: any($s[]; .prompt_injection_detected == true)
     }' "${parts[@]}" > "$OUT_DIR/scan.json.merged" 2>/dev/null \
