@@ -110,6 +110,7 @@ COMMENT_MAX="${REVIEW_COMMENT_MAX:-700}"
 COMMENT_LIMIT="${REVIEW_COMMENT_LIMIT:-10}"
 ROUND="${ROUND:-1}"
 PRIOR_FINDINGS_JSON="${PRIOR_FINDINGS_JSON:-/tmp/prior-findings.json}"
+PRIOR_CHECKS_JSON="${PRIOR_CHECKS_JSON:-/tmp/prior-checks.json}"
 STATE_MAX="${REVIEW_STATE_MAX:-4000}"
 FUNCTIONAL_JSON="${FUNCTIONAL_JSON:-/tmp/functional.json}"
 # Sibling of this script, because both are installed together into
@@ -669,6 +670,25 @@ awk '
 # fenced block on any run of three or more, so ````suggestion is as committable
 # as ```suggestion — and a regex pinned to exactly three let that shape through
 # with its range intact AND no warning anywhere.
+# A CHECK A PRIOR ROUND ALREADY POSTED ON THIS path:line IS NOT POSTED AGAIN.
+# Checks carry no cross-round memory (prior-findings.sh excludes them from the
+# carry-over on purpose), so every round re-derived its notes and could land a
+# second one on a line that already had one — qiv#1498, preflight.ts:11, rounds
+# 2 and 4. The reader already has that orientation; a second copy teaches them
+# to skip both. NOT SILENT: it is dropped entirely, not moved to the body, so it
+# is announced. A finding on that line is untouched — this is checks only.
+if jq -e 'type == "array" and length > 0' "$PRIOR_CHECKS_JSON" >/dev/null 2>&1; then
+  jq --slurpfile pc "$PRIOR_CHECKS_JSON" '
+    ($pc[0] | map({key: (.p + ":" + (.l | tostring)), value: true}) | from_entries) as $seen
+    | map(select(
+        (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+         and ($seen[((.path // "") + ":" + ((.line // 0) | tostring))] // false)) | not))' \
+    "$WORK/comments.json" > "$WORK/comments.dedup" 2>/dev/null \
+    && { REPEAT_CHECKS=$(( $(jq 'length' "$WORK/comments.json") - $(jq 'length' "$WORK/comments.dedup") ))
+         mv "$WORK/comments.dedup" "$WORK/comments.json"
+         [ "$REPEAT_CHECKS" -gt 0 ] \
+           && echo "::notice::$REPEAT_CHECKS check comment(s) not re-posted — an earlier round already posted a check on that line."; }
+fi
 FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
                                   and ((.body // "") | test("(^|\n)[ \t]*`{3,}[ \t]*suggestion"; "i")))] | length' \
                   "$WORK/comments.json" 2>/dev/null || echo 0)
