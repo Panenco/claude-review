@@ -1935,7 +1935,31 @@ echo "── the whole PR is read again once the delta rounds outgrow the last f
 # scan, the poster stamps it so the next round can find this one.
 want "prior_state exports the last full-pass head" "$WORKFLOW" 'full_head_sha'
 want "the guard is handed it" "$WORKFLOW" 'GATE_FULL_HEAD_SHA: \$\{\{ steps.prior_state.outputs.full_head_sha'
-want "…and the numstat since it, in GATE_FILES_TSV shape" "$WORKFLOW" 'GATE_SINCE_FULL_TSV=\$\(git diff --numstat'
+want "…and the numstat since it, in GATE_FILES_TSV shape" "$WORKFLOW" \
+  'git diff --numstat "\$\{GATE_FULL_HEAD_SHA\}\.\.HEAD"'
+
+echo "── the guard's list inputs travel as FILES (MAX_ARG_STRLEN) ──"
+# Linux caps one argv/env entry at 131072 bytes. Passing these as env strings
+# killed the `exec` of guard.sh with E2BIG — "Argument list too long", exit 126
+# — on every PR whose since-full delta crossed it, and the job died before its
+# own error handling ran. The delta spans everything that landed on the BASE
+# since the last full pass, so it grows with other people's merges: six PRs on
+# one consumer became permanently unreviewable. Both ends have to agree, which
+# is exactly what a contract test is for.
+for v in GATE_FILES_TSV GATE_DELTA_FILES GATE_SINCE_FULL_TSV; do
+  want "the workflow hands guard.sh ${v}_PATH" "$WORKFLOW" "${v}_PATH"
+  want "guard.sh resolves ${v} from that path" "$GUARD" "${v}"
+  # The value itself must never be exported again: that is the regression.
+  if grep -E "^\s*export .*\b${v}\b" "$WORKFLOW" | grep -qv "${v}_PATH"; then
+    bad "the workflow still exports ${v} as an env STRING — that is the E2BIG bug"
+  else
+    ok "…and never exports ${v} as an env string"
+  fi
+done
+want "guard.sh reads a handed-over path instead of the env string" "$GUARD" 'gate_input'
+want "…and refuses to treat an unreadable path as an empty list" "$GUARD" \
+  'set but unreadable'
+want "the guard's temp files land outside the workspace" "$WORKFLOW" 'RUNNER_TEMP'
 want "the orchestrator receives the guard's scope" "$WORKFLOW" 'REVIEW_SCOPE: \$\{\{ steps.guard.outputs.scope'
 c=$(grep -c 'REVIEW_SCOPE: \${{ steps.guard.outputs.scope' "$WORKFLOW")
 if [ "$c" -eq 2 ]; then ok "…and so does the poster (two readers, orchestrator and post-review)"; else bad "REVIEW_SCOPE must reach both the orchestrator and the poster; found $c"; fi

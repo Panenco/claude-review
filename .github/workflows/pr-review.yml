@@ -499,11 +499,26 @@ jobs:
         run: |
           set -uo pipefail
           PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files,labels)
-          GATE_FILES_TSV=$(jq -r '.files[] | "\(.path)\t\(.additions)\t\(.deletions)"' <<< "$PR_JSON")
+          # Every list-shaped input goes to a FILE and is handed to guard.sh as a
+          # PATH. Linux caps a single argv/env entry at MAX_ARG_STRLEN = 131072
+          # bytes, and passing these as env strings killed the `exec` of guard.sh
+          # with E2BIG ("Argument list too long", exit 126) on any PR whose diff
+          # crossed it — before a line of the error handling below could run, so
+          # the job just died. GATE_SINCE_FULL_TSV hit it first because it spans
+          # every commit that landed on the base since the last full pass: its
+          # size tracks the BASE's drift, so a branch that sits gets killed by
+          # other people's merges. Files have no such cap. Only GATE_LABELS stays
+          # in the env — it is bounded by the label list.
+          GATE_DIR="${RUNNER_TEMP:-/tmp}/claude-review-gate"
+          mkdir -p "$GATE_DIR"
+          GATE_FILES_TSV_PATH="$GATE_DIR/files.tsv"
+          GATE_DELTA_FILES_PATH="$GATE_DIR/delta-files.txt"
+          GATE_SINCE_FULL_TSV_PATH="$GATE_DIR/since-full.tsv"
+          jq -r '.files[] | "\(.path)\t\(.additions)\t\(.deletions)"' <<< "$PR_JSON" > "$GATE_FILES_TSV_PATH"
           GATE_LABELS=$(jq -r '.labels[].name' <<< "$PR_JSON")
           # The since-last delta is computed HERE so guard.sh stays a pure function
-          # of its env (no git, no network — tests/guard_test.sh asserts both). The
-          # checkout is a full clone precisely so this always resolves.
+          # of its inputs (no git, no network — tests/guard_test.sh asserts both).
+          # The checkout is a full clone precisely so this always resolves.
           #
           # A FAILED diff clears the prior SHA rather than yielding an empty delta:
           # those two look identical to guard.sh and mean opposite things ("nothing
@@ -511,11 +526,12 @@ jobs:
           # is what makes the failure mode a full review instead of silence, and it
           # is re-exported as this step's `prior_head_sha` so review-scan scopes
           # itself off the SAME value the guard actually resolved.
-          GATE_DELTA_FILES=""
+          : > "$GATE_DELTA_FILES_PATH"
           if [ -n "${GATE_PRIOR_HEAD_SHA:-}" ]; then
-            if ! GATE_DELTA_FILES=$(git diff --name-only "${GATE_PRIOR_HEAD_SHA}..HEAD" 2>/dev/null); then
+            if ! git diff --name-only "${GATE_PRIOR_HEAD_SHA}..HEAD" > "$GATE_DELTA_FILES_PATH" 2>/dev/null; then
               echo "::warning::Could not diff ${GATE_PRIOR_HEAD_SHA}..HEAD — reviewing the whole PR instead of the delta."
               GATE_PRIOR_HEAD_SHA=""
+              : > "$GATE_DELTA_FILES_PATH"
             fi
           fi
           echo "prior_head_sha=$GATE_PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
@@ -523,15 +539,16 @@ jobs:
           # guard.sh can tell when the delta rounds have outgrown it. A failed
           # diff clears the SHA for the same reason as above: guard.sh then
           # reads the whole PR rather than guessing.
-          GATE_SINCE_FULL_TSV=""
+          : > "$GATE_SINCE_FULL_TSV_PATH"
           if [ -n "${GATE_FULL_HEAD_SHA:-}" ]; then
-            if ! GATE_SINCE_FULL_TSV=$(git diff --numstat "${GATE_FULL_HEAD_SHA}..HEAD" 2>/dev/null \
-                                        | awk -F'\t' '{print $3 "\t" $1 "\t" $2}'); then
+            if ! git diff --numstat "${GATE_FULL_HEAD_SHA}..HEAD" 2>/dev/null \
+                   | awk -F'\t' '{print $3 "\t" $1 "\t" $2}' > "$GATE_SINCE_FULL_TSV_PATH"; then
               echo "::warning::Could not diff ${GATE_FULL_HEAD_SHA}..HEAD — reading the whole PR rather than deciding from a delta."
               GATE_FULL_HEAD_SHA=""
+              : > "$GATE_SINCE_FULL_TSV_PATH"
             fi
           fi
-          export GATE_FILES_TSV GATE_LABELS GATE_DELTA_FILES GATE_PRIOR_HEAD_SHA GATE_FULL_HEAD_SHA GATE_SINCE_FULL_TSV
+          export GATE_FILES_TSV_PATH GATE_LABELS GATE_DELTA_FILES_PATH GATE_PRIOR_HEAD_SHA GATE_FULL_HEAD_SHA GATE_SINCE_FULL_TSV_PATH
           DECISION=$("$CLAUDE_REVIEW_SCRIPTS"/guard.sh)
           echo "Guard:"; echo "$DECISION" | sed 's/^/  /'
           # No `-e` (repo rule): a failed guard would leave `proceed` empty, skip

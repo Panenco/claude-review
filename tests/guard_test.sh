@@ -294,6 +294,80 @@ assert_docs_only "not emitted when nothing is reviewable" "-" \
   GATE_FILES_TSV=$'pnpm-lock.yaml\t900\t900'
 
 echo
+echo "── oversized inputs arrive by file, not by env (MAX_ARG_STRLEN) ──"
+# The regression: the caller exported the whole since-last-full numstat as ONE
+# env string. Linux caps a single argv/env entry at 131072 bytes, so past that
+# the `exec` of guard.sh failed with E2BIG — "Argument list too long", exit 126
+# — and the review died before any error handling ran. Measured on one consumer:
+# 130,536 bytes reviewed, 131,446 bytes did not. The size tracks the BASE
+# branch's drift, not the PR's, so it bites any branch that has sat for a while.
+GATE_TMP=$(mktemp -d)
+trap 'rm -rf "$GATE_TMP"' EXIT
+
+printf 'src/app.ts\t10\t2\n' > "$GATE_TMP/files.tsv"
+assert_gate "GATE_FILES_TSV_PATH is read like the env form" "true ok -" \
+  GATE_FILES_TSV_PATH="$GATE_TMP/files.tsv"
+assert_scale "…and produces the same numbers" "$(scale_of GATE_FILES_TSV=$'src/app.ts\t10\t2')" \
+  GATE_FILES_TSV_PATH="$GATE_TMP/files.tsv"
+
+# A delta file list by path still drives the `unchanged` gate both ways.
+: > "$GATE_TMP/delta-empty.txt"
+assert_gate "an empty delta FILE still skips" "false unchanged -" \
+  GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES_PATH="$GATE_TMP/delta-empty.txt" \
+  GATE_FILES_TSV_PATH="$GATE_TMP/files.tsv"
+printf 'src/app.ts\n' > "$GATE_TMP/delta.txt"
+assert_gate "a non-empty delta FILE proceeds" "true ok -" \
+  GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES_PATH="$GATE_TMP/delta.txt" \
+  GATE_FILES_TSV_PATH="$GATE_TMP/files.tsv"
+
+# The actual regression, at size. >128 KiB of since-full numstat: as an env
+# string this cannot even be exec'd, as a file it is just a file.
+BIG_TSV="$GATE_TMP/since-full.tsv"
+: > "$BIG_TSV"
+for i in $(seq 1 3000); do
+  printf 'src/some/reasonably/long/path/to/module-%04d/index.ts\t7\t3\n' "$i" >> "$BIG_TSV"
+done
+BIG_BYTES=$(wc -c < "$BIG_TSV" | tr -d ' ')
+if [ "$BIG_BYTES" -gt 131072 ]; then
+  echo "OK:   the regression fixture is $BIG_BYTES bytes (past MAX_ARG_STRLEN)"
+else
+  echo "FAIL: the regression fixture is only $BIG_BYTES bytes — it no longer reproduces the E2BIG case"
+  fail=$((fail + 1))
+fi
+# Round 2+ on a PR whose since-full delta dwarfs it: proceeds, and rescans in full.
+assert_gate "a >128 KiB since-full delta reviews instead of dying" "true ok -" \
+  GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA=cafebab GATE_HUMAN_REQUESTED=true \
+  GATE_FILES_TSV_PATH="$GATE_TMP/files.tsv" GATE_SINCE_FULL_TSV_PATH="$BIG_TSV"
+SCOPE=$(env GATE_PRIOR_HEAD_SHA=deadbee GATE_FULL_HEAD_SHA=cafebab GATE_HUMAN_REQUESTED=true \
+  GATE_FILES_TSV_PATH="$GATE_TMP/files.tsv" GATE_SINCE_FULL_TSV_PATH="$BIG_TSV" \
+  bash "$SCRIPT" | sed -n 's/^scope=//p' | head -1)
+if [ "$SCOPE" = "full" ]; then
+  echo "OK:   …and it rescans in full (scope=$SCOPE)"
+else
+  echo "FAIL: want scope=full for a delta that dwarfs the PR, got '${SCOPE:--}'"
+  fail=$((fail + 1))
+fi
+# Belt and braces: prove the env form really is the thing that cannot work, so
+# nobody "simplifies" the path plumbing back out.
+if env GATE_SINCE_FULL_TSV="$(cat "$BIG_TSV")" bash "$SCRIPT" >/dev/null 2>&1; then
+  echo "NOTE: this kernel exec'd a ${BIG_BYTES}-byte env entry (no MAX_ARG_STRLEN cap here)"
+else
+  echo "OK:   the same value passed by ENV is refused by exec — which is the bug"
+fi
+
+# A path that cannot be read must never read as an empty list: empty means
+# "nothing changed, skip", so a lost file would turn into silent non-review.
+OUT=$(env GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES_PATH="$GATE_TMP/does-not-exist" \
+  GATE_FILES_TSV_PATH="$GATE_TMP/files.tsv" bash "$SCRIPT" 2>/dev/null)
+RC=$?
+if [ "$RC" -ne 0 ] && ! grep -q '^proceed=' <<< "$OUT"; then
+  echo "OK:   an unreadable GATE_*_PATH fails loudly and emits no decision"
+else
+  echo "FAIL: an unreadable GATE_*_PATH must not produce a decision (rc=$RC, out='$OUT')"
+  fail=$((fail + 1))
+fi
+
+echo
 echo "── house rules ──"
 if grep -qE '^set -e|^set -[a-z]*e[a-z]*o' "$SCRIPT"; then
   echo "FAIL: guard.sh uses set -e (banned, bugbot.md)"
@@ -321,8 +395,13 @@ fi
 # → 172 for the full-or-delta scope: one loop over the since-full numstat (the
 # same shape as the size loop above), one flat predicate, one printf. Not a
 # tier: it answers "read it all again?" from one ratio, never "how deep".
+# → 206 for reading the list inputs from a file (gate_input): six lines of
+# resolver, a nine-line loop, and the comments that record why — Linux's
+# MAX_ARG_STRLEN killed the exec of this script on any PR whose since-full delta
+# passed 128 KiB. Not a tier either: it changes where the same inputs come from,
+# and adds no branch on diff size.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 172 ]; then
+if [ "$LINES" -le 206 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"
