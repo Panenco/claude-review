@@ -27,12 +27,34 @@
 # GATE_GENERATED_GLOBS (extra committed-build-output globs, on top of the
 # built-in list in is_generated below),
 # GATE_HUMAN_REQUESTED (true when a person typed the command — `unchanged` gate).
+# GATE_FILES_TSV / GATE_DELTA_FILES / GATE_SINCE_FULL_TSV are also accepted as
+# GATE_*_PATH, a file holding the same bytes — see gate_input.
 
 set -uo pipefail # No `set -e` (repo rule, bugbot.md).
 # `-f` off globbing script-wide: this guard only compares strings, and the one
 # unquoted split it does — the caller's glob list — was pathname-expanded, so
 # `proto/**` arrived as the real directory `proto/gen` and matched nothing.
 set -f
+
+# The list inputs come by FILE: Linux caps one env entry at MAX_ARG_STRLEN
+# (131072 bytes) and past that the caller's `exec` of this script died with
+# E2BIG. Still pure — no git, no network. Env form honoured for older callers.
+gate_input() { # <VAR> → the file at <VAR>_PATH when that is set, else $<VAR>.
+  local var="$1" pathvar="${1}_PATH" path
+  path="${!pathvar:-}"
+  [ -n "$path" ] || { printf '%s' "${!var:-}"; return 0; }
+  [ -r "$path" ] || return 1
+  cat -- "$path"
+}
+for _v in GATE_FILES_TSV GATE_DELTA_FILES GATE_SINCE_FULL_TSV; do
+  # Fatal, never "": an empty delta means "nothing changed, skip", so a lost
+  # file would become silent non-review. No decision → the caller errors.
+  if ! _val=$(gate_input "$_v"); then
+    echo "guard.sh: ${_v}_PATH is set but unreadable — refusing to guess." >&2
+    exit 1
+  fi
+  printf -v "$_v" '%s' "$_val"
+done
 
 SKIP_LABEL="${GATE_SKIP_LABEL:-skip-review}"
 FORCE_LABEL="${GATE_FORCE_LABEL:-deep-review}"
