@@ -1939,17 +1939,13 @@ want "…and the numstat since it, in GATE_FILES_TSV shape" "$WORKFLOW" \
   'git diff --numstat "\$\{GATE_FULL_HEAD_SHA\}\.\.HEAD"'
 
 echo "── the guard's list inputs travel as FILES (MAX_ARG_STRLEN) ──"
-# Linux caps one argv/env entry at 131072 bytes. Passing these as env strings
-# killed the `exec` of guard.sh with E2BIG — "Argument list too long", exit 126
-# — on every PR whose since-full delta crossed it, and the job died before its
-# own error handling ran. The delta spans everything that landed on the BASE
-# since the last full pass, so it grows with other people's merges: six PRs on
-# one consumer became permanently unreviewable. Both ends have to agree, which
-# is exactly what a contract test is for.
+# As env strings these blew MAX_ARG_STRLEN (131072 bytes) and killed the `exec`
+# of guard.sh with E2BIG, taking six PRs on one consumer out of review entirely.
+# Both ends have to agree on the path form — see PR #169.
 for v in GATE_FILES_TSV GATE_DELTA_FILES GATE_SINCE_FULL_TSV; do
   want "the workflow hands guard.sh ${v}_PATH" "$WORKFLOW" "${v}_PATH"
   want "guard.sh resolves ${v} from that path" "$GUARD" "${v}"
-  # The value itself must never be exported again: that is the regression.
+  # Re-exporting the value itself IS the regression.
   if grep -E "^\s*export .*\b${v}\b" "$WORKFLOW" | grep -qv "${v}_PATH"; then
     bad "the workflow still exports ${v} as an env STRING — that is the E2BIG bug"
   else

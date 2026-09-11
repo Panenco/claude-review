@@ -27,10 +27,8 @@
 # GATE_GENERATED_GLOBS (extra committed-build-output globs, on top of the
 # built-in list in is_generated below),
 # GATE_HUMAN_REQUESTED (true when a person typed the command — `unchanged` gate).
-#
-# The three list-shaped inputs — GATE_FILES_TSV, GATE_DELTA_FILES,
-# GATE_SINCE_FULL_TSV — are also accepted as GATE_*_PATH pointing at a file
-# holding the same bytes, which is how the workflow passes them. See gate_input.
+# GATE_FILES_TSV / GATE_DELTA_FILES / GATE_SINCE_FULL_TSV are also accepted as
+# GATE_*_PATH, a file holding the same bytes — see gate_input.
 
 set -uo pipefail # No `set -e` (repo rule, bugbot.md).
 # `-f` off globbing script-wide: this guard only compares strings, and the one
@@ -38,18 +36,9 @@ set -uo pipefail # No `set -e` (repo rule, bugbot.md).
 # `proto/**` arrived as the real directory `proto/gen` and matched nothing.
 set -f
 
-# The unbounded inputs arrive by FILE, not by env. Linux caps a SINGLE argv/env
-# entry at MAX_ARG_STRLEN = 131072 bytes; once GATE_SINCE_FULL_TSV crossed it the
-# caller's `exec` of this script died with E2BIG — reported as "guard.sh:
-# Argument list too long", exit 126 — before a line of the caller's own error
-# handling could run, so the review just vanished. It bit any branch that had sat
-# for a while: that delta spans every commit that landed on the base since the
-# last full pass, so its size tracks the BASE's drift, not the PR's. Measured on
-# one consumer, 130,536 bytes reviewed and 131,446 bytes did not.
-#
-# Reading a file the caller handed over keeps the property the tests assert (pure
-# function of its inputs, no git, no network). The env form is still honoured so
-# an older caller, or a consumer pinned to one, keeps working unchanged.
+# The list inputs come by FILE: Linux caps one env entry at MAX_ARG_STRLEN
+# (131072 bytes) and past that the caller's `exec` of this script died with
+# E2BIG. Still pure — no git, no network. Env form honoured for older callers.
 gate_input() { # <VAR> → the file at <VAR>_PATH when that is set, else $<VAR>.
   local var="$1" pathvar="${1}_PATH" path
   path="${!pathvar:-}"
@@ -58,9 +47,8 @@ gate_input() { # <VAR> → the file at <VAR>_PATH when that is set, else $<VAR>.
   cat -- "$path"
 }
 for _v in GATE_FILES_TSV GATE_DELTA_FILES GATE_SINCE_FULL_TSV; do
-  # Never fall back to "" on an unreadable path: an empty delta means "nothing
-  # changed, skip" and would turn a lost file into silence. Emitting no decision
-  # trips the caller's own "no usable decision" error instead.
+  # Fatal, never "": an empty delta means "nothing changed, skip", so a lost
+  # file would become silent non-review. No decision → the caller errors.
   if ! _val=$(gate_input "$_v"); then
     echo "guard.sh: ${_v}_PATH is set but unreadable — refusing to guess." >&2
     exit 1

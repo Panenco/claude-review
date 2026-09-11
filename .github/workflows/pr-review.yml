@@ -499,16 +499,9 @@ jobs:
         run: |
           set -uo pipefail
           PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files,labels)
-          # Every list-shaped input goes to a FILE and is handed to guard.sh as a
-          # PATH. Linux caps a single argv/env entry at MAX_ARG_STRLEN = 131072
-          # bytes, and passing these as env strings killed the `exec` of guard.sh
-          # with E2BIG ("Argument list too long", exit 126) on any PR whose diff
-          # crossed it — before a line of the error handling below could run, so
-          # the job just died. GATE_SINCE_FULL_TSV hit it first because it spans
-          # every commit that landed on the base since the last full pass: its
-          # size tracks the BASE's drift, so a branch that sits gets killed by
-          # other people's merges. Files have no such cap. Only GATE_LABELS stays
-          # in the env — it is bounded by the label list.
+          # Each list input goes to a FILE, handed over as a PATH: as env strings
+          # they blew MAX_ARG_STRLEN (131072 bytes) and killed the `exec` of
+          # guard.sh with E2BIG. GATE_LABELS stays in the env — it is bounded.
           GATE_DIR="${RUNNER_TEMP:-/tmp}/claude-review-gate"
           mkdir -p "$GATE_DIR"
           GATE_FILES_TSV_PATH="$GATE_DIR/files.tsv"
@@ -516,16 +509,9 @@ jobs:
           GATE_SINCE_FULL_TSV_PATH="$GATE_DIR/since-full.tsv"
           jq -r '.files[] | "\(.path)\t\(.additions)\t\(.deletions)"' <<< "$PR_JSON" > "$GATE_FILES_TSV_PATH"
           GATE_LABELS=$(jq -r '.labels[].name' <<< "$PR_JSON")
-          # The since-last delta is computed HERE so guard.sh stays a pure function
-          # of its inputs (no git, no network — tests/guard_test.sh asserts both).
-          # The checkout is a full clone precisely so this always resolves.
-          #
-          # A FAILED diff clears the prior SHA rather than yielding an empty delta:
-          # those two look identical to guard.sh and mean opposite things ("nothing
-          # changed, skip" vs "I could not tell, so review everything"). Clearing it
-          # is what makes the failure mode a full review instead of silence, and it
-          # is re-exported as this step's `prior_head_sha` so review-scan scopes
-          # itself off the SAME value the guard actually resolved.
+          # Computed HERE so guard.sh stays a pure function of its inputs. A FAILED
+          # diff clears the prior SHA rather than yielding an empty delta, which
+          # would read as "nothing changed, skip" instead of "review everything".
           : > "$GATE_DELTA_FILES_PATH"
           if [ -n "${GATE_PRIOR_HEAD_SHA:-}" ]; then
             if ! git diff --name-only "${GATE_PRIOR_HEAD_SHA}..HEAD" > "$GATE_DELTA_FILES_PATH" 2>/dev/null; then
@@ -535,10 +521,8 @@ jobs:
             fi
           fi
           echo "prior_head_sha=$GATE_PRIOR_HEAD_SHA" >> "$GITHUB_OUTPUT"
-          # What changed since the last FULL pass, in GATE_FILES_TSV's shape, so
-          # guard.sh can tell when the delta rounds have outgrown it. A failed
-          # diff clears the SHA for the same reason as above: guard.sh then
-          # reads the whole PR rather than guessing.
+          # Since the last FULL pass, in GATE_FILES_TSV's shape, so guard.sh can tell
+          # when the delta rounds outgrew it. A failed diff clears the SHA as above.
           : > "$GATE_SINCE_FULL_TSV_PATH"
           if [ -n "${GATE_FULL_HEAD_SHA:-}" ]; then
             if ! git diff --numstat "${GATE_FULL_HEAD_SHA}..HEAD" 2>/dev/null \
