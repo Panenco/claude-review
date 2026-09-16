@@ -55,7 +55,15 @@ Use the auth recipe from your prompt as given — the orchestrator lifts it from
 
 `DEADLINE_EPOCH` is absolute wall-clock. Check `[ "$(date +%s)" -lt "$DEADLINE_EPOCH" ]` before every scenario; at ~70% write a draft output file; at the deadline write the final file and exit. A bounded partial run beats a cancelled run that posts nothing.
 
-First app navigation within ~60s of start. Verify criteria in order, most important first. Per scenario, target ≤4 turns: one batched navigate+snapshot+screenshot+console, verify against the criterion, interact only if the criterion requires it, one batched post-state capture.
+First app navigation within ~60s of start. Verify criteria in order, most important first. Per scenario, target ≤4 turns: one batched navigate+wait+snapshot+screenshot+console, verify against the criterion, interact only if the criterion requires it, one batched post-state capture.
+
+**Wait for the page's own content, never for the route.** In a single-page app the shell — nav, header — paints immediately while the content waits on its first requests, so `open` returns and a screenshot in the same batch captures a spinner. Put a `wait` on something only that page renders between the two:
+
+```bash
+printf '%s' '[["open","http://localhost:3000/orders"],["wait","[data-testid=order-row]"],["snapshot","-c"],["screenshot","/tmp/screenshots/01-orders.png"],["console"]]' | agent-browser batch --json
+```
+
+Prefer a selector the criterion is about over a fixed delay; `review-config.md` may name one. If the wait times out, the criterion is `untested` — say the page never finished loading. Never capture anyway and describe what should have been there.
 
 **Never `Read` anything under `/tmp/screenshots/`.** A truncated capture returns `400 Could not process image`, which ends your turn before you write any output and loses the whole run. If a tool result says that, stop that scenario and go write the file. The ban stays absolute *for you* even though `review-verify` may now look at validated shots: it writes its review before it opens anything, and you have no such fallback — you are racing a wall clock, and a turn lost here is the whole functional pass.
 
@@ -71,7 +79,7 @@ Not observations: pre-existing failures on surfaces the diff never touched, know
 
 **Your captions are checked against the images.** `review-verify` looks at the validated shots and discards an observation whose own screenshot contradicts it, so a caption that oversells what is on screen costs you the observation it was meant to support.
 
-A screenshot is a capture of the live app you actually drove, or a rendered HTTP exchange you actually made. Never render prose or logs as an image. Check each caption against the latest snapshot — if the page is a login wall, a 404, or an error boundary, the caption must say so, or drop the shot. If you could not drive the app, report `CRASH` with no screenshots; never PASS from reading source.
+A screenshot is a capture of the live app you actually drove, or a rendered HTTP exchange you actually made. Never render prose or logs as an image. Check each caption against the latest snapshot — if the page is a login wall, a 404, an error boundary, or still showing a loading state, the caption must say so, or drop the shot. A spinner or skeleton where the feature should be is the easiest one to file by accident, because the surrounding shell looks right. If you could not drive the app, report `CRASH` with no screenshots; never PASS from reading source.
 
 **`description` is a LABEL, ≤80 chars — not a sentence.** It is rendered verbatim above the image in the review, so a paragraph there is a wall of text the reader has to wade through to reach the next shot. Lead with the criterion, then the state the image proves: `AC5 — catalogue row reads 'Your version'`. What you *concluded* from the shot belongs in `summary` or an `observations` entry, never in the caption. The poster trims anything longer at a word boundary, so an over-long caption loses its own ending.
 
