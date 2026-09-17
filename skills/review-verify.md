@@ -104,7 +104,7 @@ If a `Read` still returns `400 Could not process image`, stop looking at images 
 **What the images may change — three things, and nothing else:**
 
 - **Refute an observation the shot contradicts.** The image outranks the tester's prose: an observation whose own screenshot shows the expected state is discarded, and any finding promoted from it falls with it.
-- **Catch a mis-captioned shot.** A caption naming a state the image does not show — a login wall captioned as the catalogue, an error boundary captioned as a success — supports nothing. Record it in `meta.refuted` with `"kind": "screenshot"`, the file as `path` and the caption as `title`.
+- **Catch a mis-captioned shot.** A caption naming a state the image does not show — a login wall captioned as the catalogue, an error boundary captioned as a success, a page still loading captioned as the feature — supports nothing. The loading one is the easiest to miss: the shell around it looks exactly like the real page. Record it in `meta.refuted` with `"kind": "screenshot"`, the file as `path` and the caption as `title`.
 - **Strengthen a surviving finding's `failure_scenario`** with what is visibly on screen: the rendered text, the actual state, the actual empty list.
 
 **Seeing something in a picture is never licence to file a finding.** The gate above is untouched — a finding must still tie to a changed line, still come from the acceptance criteria, and you must still restate its failure from the code. A screenshot is evidence about an observation the tester already made; it is not an observation of its own, and it never moves the verdict by itself.
