@@ -3737,15 +3737,17 @@ cat > "$W/review.json" <<'EOF'
   "body": "## Claude review — COMMENT\n\nRound-2 delta fixes the carried bug; nothing new survives.",
   "comments": [],
   "meta": {"findings": [], "human_review": [],
-           "approve_blocked_by": ["sensitive_path", "effort"]}
+           "approve_blocked_by": ["reviewer_config", "unsure"],
+           "unsure_because": "the PR body does not say what the new job is for"}
 }
 EOF
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_eq "exit 0" "0" "$RC"
 assert_contains "the reader is told it was not approved" "Not approved because" "$BODY"
-assert_contains "…and BOTH gates are named, not one" "sensitive path" "$BODY"
-assert_contains "…including the second" "more judgement than an unread approval allows" "$BODY"
+assert_contains "…and BOTH gates are named, not one" "steer this review" "$BODY"
+assert_contains "…including the second" "not sure about the quality or the purpose" "$BODY"
+assert_contains "…with the reason scan gave" "(the PR body does not say what the new job is for)" "$BODY"
 assert_contains "…and that nothing was actually wrong" "No defect was found" "$BODY"
 rm -rf "$W"
 
@@ -3778,22 +3780,22 @@ rm -rf "$W"
 # jq error the stage swallows, so the disclosure was dead on its own contract.
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
-        meta: {findings: [], human_review: [], approve_blocked_by: "sensitive_path"}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: "reviewer_config"}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
-assert_contains "a single string still renders the gate" "sensitive path" "$BODY"
+assert_contains "a single string still renders the gate" "steer this review" "$BODY"
 rm -rf "$W"
 
 # `none`, `findings` and anything unrecognised name no gate the author can act
 # on, so none of them reach the body as raw jargon.
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
-        meta: {findings: [], human_review: [], approve_blocked_by: ["none", "vibes", "effort"]}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: ["none", "vibes", "effort", "sensitive_path", "unsure"]}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 NOTICE=$(printf '%s\n' "$BODY" | grep -o 'Not approved because [^<]*')
 assert_eq "only the gate we know is named" \
-  "Not approved because the diff needed more judgement than an unread approval allows. No defect was found." \
+  "Not approved because the reviewer is not sure about the quality or the purpose of this change. No defect was found." \
   "$NOTICE"
 rm -rf "$W"
 
@@ -3805,7 +3807,7 @@ W=$(mktemp -d)
 jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nBroken.",
         comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
                     body: "**critical** the lock is dropped\n\nTwo writers reach it."}],
-        meta: {findings: [], human_review: [], approve_blocked_by: ["sensitive_path"]}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: ["reviewer_config"]}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_not_contains "a REQUEST_CHANGES never says no defect was found" "No defect was found" "$BODY"
@@ -3815,10 +3817,11 @@ W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne minor.",
         comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
                     body: "**minor** the log line carries the token\n\nIt reaches the log."}],
-        meta: {findings: [], human_review: [], approve_blocked_by: ["effort"]}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: ["unsure"]}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_not_contains "…nor does a COMMENT whose finding lives only in a comment" "No defect was found" "$BODY"
+assert_contains "…but it still says why it was not approved" "Not approved because the reviewer is not sure" "$BODY"
 rm -rf "$W"
 
 # The skill says the field is an array. If that schema line ever goes back to a

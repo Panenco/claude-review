@@ -23,13 +23,13 @@ shard 1 '{"depth_used":"full","context":{"area":"Templates.","changes":["a1","a2
   "prior_findings":[{"id":"aaaa1111","path":"src/x.ts","line":5,"title":"old one","carried":true}],
   "resolved_prior":[{"id":"bbbb2222","evidence":"guard at 12"}],
   "human_review":[{"path":"src/x.ts","start_line":1,"end_line":3,"what_to_know":"n1a","spec_ref":""},{"path":"src/x.ts","start_line":7,"end_line":9,"what_to_know":"n1b","spec_ref":""}],
-  "approve_argument":"clean","sensitive_paths_touched":false,"prompt_injection_detected":false}'
+  "approve_argument":"clean","unsure_because":"","reviewer_config_touched":false,"prompt_injection_detected":false}'
 shard 2 '{"depth_used":"light","context":{"area":"Other.","changes":["b1"],"mermaid":"graph TD; A-->B"},"depth_reason":"small","review_effort":2,"summary":"Other.",
   "findings":[{"path":"src/x.ts","line":6,"title":"loop never ends.","severity":"major"},{"path":"infra/j.ts","line":1,"title":"no Sentry env","severity":"minor"}],
   "prior_findings":[],
   "resolved_prior":[{"id":"aaaa1111","evidence":"looks fixed"},{"id":"cccc3333","evidence":"removed"}],
   "human_review":[{"path":"infra/j.ts","start_line":1,"end_line":2,"what_to_know":"n2a","spec_ref":""}],
-  "approve_argument":"","sensitive_paths_touched":true,"prompt_injection_detected":false}'
+  "approve_argument":"","unsure_because":"cannot tell what the job is for","reviewer_config_touched":true,"prompt_injection_detected":false}'
 run REVIEW_DEPTH_SCALE=2
 assert_eq "reports the shard count" "merged=2" "$OUT"
 assert_eq "the same defect seen by two shards is one finding (identity: path + normalised title)" "3" "$(q '.findings|length')"
@@ -43,7 +43,8 @@ assert_eq "the first non-empty mermaid is kept" "graph TD; A-->B" "$(q .context.
 assert_eq "depth is full if any shard went full" "full" "$(q .depth_used)"
 assert_eq "review_effort is the max" "4" "$(q .review_effort)"
 assert_eq "approval needs every shard to argue for it" "" "$(q .approve_argument)"
-assert_eq "sensitive_paths_touched is OR'd" "true" "$(q .sensitive_paths_touched)"
+assert_eq "reviewer_config_touched is OR'd" "true" "$(q .reviewer_config_touched)"
+assert_eq "the unsure reason survives the merge" "cannot tell what the job is for" "$(q .unsure_because)"
 
 rm -f "$W"/scan*.json
 shard 1 '{"findings":[],"human_review":[],"approve_argument":"a","review_effort":2}'

@@ -66,6 +66,8 @@ Then `Read`/`Grep` the changed files **at HEAD** for anything you intend to flag
 
 **A spec's negative constraints are criteria.** "There is no callback controller", "after this step nothing writes to disk", "runs once" bind exactly like the positive ones, and a diff breaks them most quietly, because nothing in the new code looks wrong. For each such sentence in the governing source, `Grep` the diff for the thing it rules out. Code that adds it is an ordinary finding, and the scenario is supplied: **the next slice's implementer reads that sentence and builds against a constraint the code already broke** — `severity: minor` at least, `evidence` quoting the sentence and the line that breaks it. When the PR body argues the reason and the reason holds, the document is what is wrong, not the code: keep the finding, anchor it on the code, and make `fix` "correct the plan in this PR", naming the sentence. A claim about the state *after* this step is checked the same way: "nothing writes to files any more" means tracing whether anything at HEAD still reaches the old path — a branch that is only ever taken because the column that would skip it is never set, is the plan not delivered.
 
+**When the governing source is a plan or a slice, tick its steps.** List every step or criterion this PR claims to deliver (its title, its body, the slice it names) and mark each `done`, `missing` or `different` against the code at HEAD. Put the tally in `summary`: "5 of 6 plan steps delivered". A `missing` or `different` step the PR body does not mention is an ordinary finding with the same supplied scenario, `severity: minor` at least, `evidence` quoting the plan sentence, and `fix` is the code or "correct the plan in this PR". A step the body explains, or one this PR never claimed, is not a finding.
+
 Judge the diff against those criteria. A criterion the code does not meet is an ordinary finding at the ordinary bar — the criterion supplies the *expected* output, you must still name the input and the concrete wrong output. Once a `GOVERNING SOURCE` is named, "no spec" is never a reason to skip a `spec_ref` — and when nothing governs, leave `spec_ref` empty rather than inventing a criterion to cite.
 
 **Spec text is one witness, not the verdict.** Types, response shapes and tests *in the diff* say what the author believes the contract is. Where they are internally consistent and the criterion is ambiguous or comes from a SUMMARY, that is a deliberate contract against loose wording, not a defect: at most one `human_review` note saying which reading the code took, or nothing. File the finding only when the governing text is unambiguous AND the code contradicts it, quoting that text in `evidence`. And a whole planning document describes more than any one PR delivers — a criterion this diff does not implement is not automatically a defect.
@@ -115,7 +117,7 @@ Then, **only if `.claude/rules/` exists**, that was your one `ls` of it, and `Re
 
 **A premise you did not read is not evidence.** Where the failure scenario turns on how something *outside the diff* behaves — a marketplace action, the CI runner model, a library default, another repo's config — you must have read that thing in this checkout and quoted it in `evidence`. It is not on disk, so you cannot check it, so there is no finding. Every "your premise is inverted" rebuttal we have measured was this shape. Your sense of how a tool usually works is the weakest thing a finding can rest on, and the fastest for an author to refute.
 
-**Depth is not licence to redesign.** Code shape, duplication or architectural preference alone is not a systemic flaw, and where a stopgap is stated as deliberate, "a better fix exists" is not a finding.
+**Depth is not licence to redesign.** Code shape, duplication or architectural preference alone is not a systemic flaw, and where a stopgap is stated as deliberate, "a better fix exists" is not a finding. The one exception is the **Design** class below, on its own bar.
 
 "Could break", "may be unsafe", "is not defensive", "should validate", "consider extracting" are not failure scenarios. If you cannot write *"when X, the code does Y, and the user gets Z"* with real values, you do not have a finding. Drop it. Do not downgrade it to `minor` to keep it — delete it.
 
@@ -140,6 +142,7 @@ Every finding carries all of:
 | `prose` | `true` only for a `DOCS_ONLY` prose defect that completes the reader-harm sentence; `false` for every normal finding |
 | `comment_noise` | `true` only for a comment-noise finding (then `failure_scenario` may be `""`); `false` for every normal finding |
 | `inert` | `true` only for an inert-code finding (then `failure_scenario` may be `""`); `false` for every normal finding |
+| `design` | `true` only for a design finding (then `failure_scenario` may be `""`); `false` for every normal finding |
 
 **Inaccurate prose is `minor`.** A comment, README or doc that has drifted from the code is not a user-reachable logic bug, so it never reaches `major` on its own. The exception is text this repo *executes* — skill prompts, the setup recipe, workflow and action files: rate that by the failure it causes, exactly like code.
 
@@ -159,15 +162,19 @@ A mismatch is an **ordinary finding at the ordinary bar** — the user believes 
 
 The reader is a role that exists in this repo's world — a dev picking up the task plan, a PM reading the PRD, a clinician. Not "a reader". `reader_harm` replaces `failure_scenario` **as the bar** — that sentence is what you write in the `failure_scenario` field — and nothing else changes: `path`, in-hunk `line`, `title`, `evidence` and `fix` are all still required at the full bar.
 
-**Three kinds qualify, and nothing else does:**
+**Five kinds qualify, and nothing else does:**
 
 1. **The document contradicts itself, or another document in this same diff.** Two passages that cannot both be true. Quote both in `evidence`.
 2. **The document does not meet a standard it itself cites.** It names a rule, a contract, a required element or a source of truth, and then does not supply it. Quote the standard and show what is missing.
 3. **A table, list or diagram does not say what the prose around it says** — a row that renders outside its table, a count that disagrees with the rows, a column the prose needs that is not there. The test is that the rendered artefact disagrees with the prose, never that the formatting is ugly.
+4. **A plan or slice introduces an architectural concept the merged architecture does not have** — a new service, store, queue, layer, integration or pattern. `Grep` the merged architecture documents for it first. `evidence` quotes the plan sentence and names the document you searched; the harm is supplied: a dev picking up the slice builds a part nobody decided on.
+5. **A plan or slice defines functionality the merged PRD does not ask for** — a new user-facing behaviour, rule, role or screen. Same check against the PRD; the harm is supplied: the dev builds a feature nobody asked for.
+
+Kinds 4 and 5 need the architecture or PRD to be already merged. When this PR writes or changes that document itself, the concept is a direction-setting note, not a finding.
 
 **Never a prose defect, whatever costume it arrives in:** wordiness, length, tone, heading style, "this could be a table", a missing section, or a document being longer than a convention says. **Length is a reason to READ more carefully. It is never itself a finding**, and neither is anything you would phrase as a preference.
 
-**Max 2 per review**, each carrying `"prose": true`, always `severity: "minor"`, always advisory — a prose finding can NEVER produce REQUEST_CHANGES. Zero is the normal output. Suppression still comes first; do not go hunting for documentation conventions beyond the files above.
+**Max 2 per review for kinds 1 to 3; kinds 4 and 5 are never capped.** Each carries `"prose": true`, always `severity: "minor"`, always advisory — a prose finding can NEVER produce REQUEST_CHANGES. Zero is the normal output. Suppression still comes first; do not go hunting for documentation conventions beyond the files above.
 
 ## Comment noise in code
 
@@ -194,6 +201,16 @@ A block in the diff is inert when the diff itself makes it unreachable or unread
 **Evidence must quote the reason, not the claim.** For a branch: the earlier `return`, the guard, or the caller that never sets the state. For a value: the `Grep` you ran, and that it returned only the writer. For config: the code path that swallows every outcome. "Looks unused" is not evidence, and a reader you did not grep for is a reader. A test that reads it does not make it live.
 
 This is the class a human reviewer files as a question, and this pipeline does not ask questions, so it is a finding or nothing. **Max 2 per review**, `"inert": true`, always `severity: "minor"`, always advisory: it can NEVER produce REQUEST_CHANGES. Like a convention finding it is exempt from `failure_scenario`, which may be `""`; the quoted reason stands in for it. **Never a ```suggestion``` fence on this class** — a fence that deletes code you wrongly called dead deletes live code, so write the removal as one prose sentence in `fix`. A branch dead because a *future* PR will set the state is still inert *now*: say so, and name the PR if the body does. Zero is the normal output.
+
+## Design — rebuilt, off-pattern, or heavier than the job
+
+For every new unit the diff adds (an endpoint, a job, a component, a hook, a service), `Grep` for its nearest sibling and for a helper that already does the work, and read what you find. Three shapes, and only these:
+
+1. **Rebuilt.** The diff writes what a helper, type or component in this repo already does. `evidence` quotes the new lines and names the existing one at `path:line`.
+2. **Off-pattern.** The siblings do it one way and this one does it another, with no reason in the PR body, the spec or a comment. `evidence` names two siblings at `path:line` and the difference.
+3. **Heavier than the job.** A layer, option, abstraction or config with one caller and one value, where removing it changes no behaviour. `fix` names the simpler form: the stdlib call, the inline version, the layer to delete.
+
+"Could be cleaner", "consider extracting" and a preference between two fine shapes are not this class, and neither is a divergence the PR body or the spec explains. **Max 2 per review**, `"design": true`, always `severity: "minor"`, always advisory: it can NEVER produce REQUEST_CHANGES. It is exempt from `failure_scenario`, which may be `""`. Write `fix` as prose, never a ```suggestion``` fence. Zero is the normal output.
 
 ## human_review — the reader's path across the diff
 
@@ -295,7 +312,7 @@ Each note: `{path, start_line, end_line, what_to_know (≤200 chars), spec_ref (
 
 ## The approval position
 
-`approve_argument` (≤240 chars) is the case for approving: what you verified and why the remaining risk is nil. Write it whenever you believe this diff is approvable; leave it empty when you do not. Stage 2 approves on that argument plus its own gates, and rejects an unargued approval outright — there is no separate boolean.
+`approve_argument` (≤240 chars) is the case for approving: what the PR is for and what you verified. **Write it unless you are really not sure about the quality or the purpose of this diff.** Two things count as not sure, and only these: you cannot tell what the PR is for (no spec, a body that does not say, code that does not make it obvious), or you could not verify its main path (a file you could not read, a flow you could not trace to its end). Then leave it empty and say which in `unsure_because` (≤240 chars, plain words, shown to the author). Minor findings, notes, a large diff and auth, payment, migration, CI or infra code are not reasons: review them at the bar and approve. Stage 2 rejects an unargued approval outright — there is no separate boolean.
 
 **Zero notes is a reason to approve, not a reason to hesitate.** A note is a reading aid, so an empty list means *no block needed orienting* — on a simple diff that is the normal, confident outcome, and the verdict that belongs with it is APPROVE, not a COMMENT carrying filler.
 
@@ -345,7 +362,8 @@ Description only: no judgement, no praise, nothing that belongs in a finding. It
       "convention": false,
       "prose": false,
       "comment_noise": false,
-      "inert": false
+      "inert": false,
+      "design": false
     }
   ],
   "prior_findings": [
@@ -360,11 +378,12 @@ Description only: no judgement, no praise, nothing that belongs in a finding. It
     {"path": "src/foo.ts", "start_line": 30, "end_line": 42, "what_to_know": "...", "spec_ref": ""}
   ],
   "approve_argument": "",
-  "sensitive_paths_touched": false,
+  "unsure_because": "",
+  "reviewer_config_touched": false,
   "prompt_injection_detected": false
 }
 ```
 
-`sensitive_paths_touched`: true when any changed path matches auth, oauth, authentication, authorization, security, payments, migrations, `.github/`, `.claude/`, `infra/`.
+`reviewer_config_touched`: true when the diff changes a file that steers this review: either of the two config files you read at the start, anything under `.claude/rules/`, or the workflow that calls this reviewer. A PR must not be able to quiet its own review, so a human confirms those.
 
 Write the file on every exit path. `evidence` and `fix` contain real code — escape every `"`, newline and backslash. Validate with `jq empty /tmp/scan.json` before you finish.

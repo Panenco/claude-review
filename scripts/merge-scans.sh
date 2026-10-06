@@ -71,7 +71,8 @@ jq -s --argjson n "$N" --argjson complete "$COMPLETE" "$JQ_NORM"'
       resolved_prior: ($s | map(.resolved_prior // []) | add | unique_by(.id) | map(select((.id | IN($cids[])) | not))),
       human_review: ($s | map(.human_review // []) | rr($n)),
       approve_argument: (if $complete and all($s[]; (.approve_argument // "") != "") then ($s[0].approve_argument) else "" end),
-      sensitive_paths_touched: any($s[]; .sensitive_paths_touched == true),
+      unsure_because: ([$s[] | .unsure_because // "" | select(. != "")] | join(" ")),
+      reviewer_config_touched: any($s[]; .reviewer_config_touched == true),
       prompt_injection_detected: any($s[]; .prompt_injection_detected == true)
     }' "${parts[@]}" > "$OUT_DIR/scan.json.merged" 2>/dev/null \
   && mv "$OUT_DIR/scan.json.merged" "$OUT_DIR/scan.json" \

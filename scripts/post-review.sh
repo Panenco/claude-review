@@ -397,37 +397,35 @@ if [ -s "$UNREVIEWED_FILE" ]; then
 fi
 
 # ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────
-# APPROVE is a conjunction of four gates (review-verify.md); the model names
-# every one that failed and the poster renders them, so a verdict that finds
-# nothing and still withholds the approval says why. Silent when there are
-# findings: they are already the answer.
+# APPROVE is withheld by a short list of gates (review-verify.md); the model
+# names every one that held and the poster renders them, so a verdict that
+# withholds the approval says why.
 # A STRING IS ACCEPTED TOO. `map` over one is a jq ERROR, which this stage
 # swallows into an empty notice — a type mismatch here does not misrender, it
 # disappears. The field shipped as a string once, and silence is expensive.
 #
-# COMMENT ONLY, AND NOT ON meta.findings ALONE. `meta` is model-written and can
-# be empty while three criticals post inline (section 4 says the same, and says
-# why). "No defect was found" printed under those criticals is the review
-# contradicting itself, so the severity-marked comments are counted too, and a
-# REQUEST_CHANGES never reaches here whatever meta says.
+# COMMENT ONLY. "No defect was found" is added only when nothing severity-marked
+# posts, and NOT ON meta.findings ALONE: `meta` is model-written and can be
+# empty while three criticals post inline, so the comments are counted too.
 APPROVE_NOTICE=""
-if [ "$VERDICT" = "COMMENT" ] \
-   && [ "$(jq '((.meta.findings // []) | length)
-               + ([(.comments // [])[] | select(((.body // "")
-                   | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i")))] | length)' \
-          "$REVIEW_JSON" 2>/dev/null)" = "0" ]; then
+if [ "$VERDICT" = "COMMENT" ]; then
   GATES=$(jq -r '
-    def say:
-      if   . == "no_argument"    then "the scan produced no approve argument"
-      elif . == "sensitive_path" then "it touches a sensitive path (auth, payments, migrations, CI or infra), always read by a human"
-      elif . == "effort"         then "the diff needed more judgement than an unread approval allows"
+    (.meta.unsure_because // "" | if type == "string" then gsub("[\\n\\r<>]"; " ") | .[0:240] else "" end) as $why
+    | def say:
+      if   . == "unsure" or . == "no_argument" then "the reviewer is not sure about the quality or the purpose of this change" + (if $why != "" then " (" + $why + ")" else "" end)
+      elif . == "reviewer_config" then "it changes the rules or workflow that steer this review, which a human confirms"
       elif . == "docs_only_note" then "a docs-only diff carrying a note sets direction someone should confirm"
       else empty end;
     (.meta.approve_blocked_by // [])
     | (if type == "string" then [.] elif type == "array" then . else [] end)
     | map(select(type == "string") | say)
     | unique | join("; ")' "$REVIEW_JSON" 2>/dev/null)
-  [ -n "$GATES" ] && APPROVE_NOTICE=$'\n<sub>Not approved because '"$GATES"$'. No defect was found.</sub>\n'
+  MARKED=$(jq '((.meta.findings // []) | length)
+               + ([(.comments // [])[] | select(((.body // "")
+                   | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i")))] | length)' \
+          "$REVIEW_JSON" 2>/dev/null)
+  CLEAN=""; [ "$MARKED" = "0" ] && CLEAN=" No defect was found."
+  [ -n "$GATES" ] && APPROVE_NOTICE=$'\n<sub>Not approved because '"$GATES.$CLEAN"$'</sub>\n'
 fi
 
 # ── 2a2. DID THE TESTER ACTUALLY RUN? ───────────────────────────────────────

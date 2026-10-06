@@ -709,10 +709,24 @@ want "review-verify approves on the argued case alone" "$VERIFY" \
   'a real, non-empty `approve_argument` from scan'
 never "…and the any-doubt veto is gone" "$VERIFY" \
   'Any doubt → not APPROVE'
+want "…and minor findings do not block it" "$VERIFY" \
+  'Surviving `minor` findings do not block it'
+never "…and the sensitive-path and effort gates are gone" "$VERIFY" \
+  'sensitive_paths_touched|`review_effort` ≤ 3'
+want "review-scan names its doubt when it withholds the argument" "$SCAN" \
+  '"unsure_because": ""'
+want "…and flags a PR that edits its own review rules" "$SCAN" \
+  '"reviewer_config_touched": false'
+want "review-scan has the design class" "$SCAN" '^## Design '
+want "…which verify can never turn into REQUEST_CHANGES" "$VERIFY" \
+  'not an inert-code finding and not a design finding'
+want "review-scan ticks the plan steps" "$SCAN" 'tick its steps'
+want "…and files new architecture or functionality in a plan" "$SCAN" \
+  'architectural concept the merged architecture does not have'
 want "…so notes never block APPROVE on a code diff" "$VERIFY" \
   'Surviving notes never block APPROVE on a code diff'
 want "…but a note on a DOCS_ONLY run does" "$VERIFY" \
-  'DOCS_ONLY.{0,60}add one more: zero surviving notes'
+  'DOCS_ONLY.{0,60}add one more: zero surviving findings and zero surviving notes'
 # A check still cannot move the verdict in the blocking direction.
 want "a check can never reach REQUEST_CHANGES" "$VERIFY" \
   'note carries no severity and can NEVER produce REQUEST_CHANGES'
