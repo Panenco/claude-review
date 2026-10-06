@@ -1,0 +1,38 @@
+skills/review-scan.md
+  s_0d1f555da3edf7::t_2b8ae7df73246d 69-70,120,145,165,170-173,177,205-214,315,365-366,381-382
+  s_0d1f555da3edf7::t_2cb021af01cb61 387
+scripts/post-review.sh
+  s_0d1f555da3edf7::t_24c44a462e040a 400-402,407-409,411,413-416,423-428
+tests/post_review_test.sh
+  s_0d1f555da3edf7::t_4596bf91db45a5 3740-3741,3748-3750,3783,3786,3793,3798,3810,3820,3824
+tests/pipeline_contract_test.sh
+  s_0d1f555da3edf7::t_4596bf91db45a5 712-725,729
+prompts/setup-review.md
+  ai_agent 7,656,674
+skills/review-verify.md
+  s_0d1f555da3edf7::t_32a3a29a7c2259 125
+  s_0d1f555da3edf7::t_2cb021af01cb61 53-55
+  s_0d1f555da3edf7::t_75e952b5cffa1d 122-123,260,271-272
+tests/merge_scans_test.sh
+  s_0d1f555da3edf7::t_4596bf91db45a5 26,32,46-47
+scripts/merge-scans.sh
+  s_0d1f555da3edf7::t_75e952b5cffa1d 74-75
+README.md
+  ai_agent 800
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3644f6c183713205749519a7d0bdb83d9cc9ab09",
+  "prompts": {},
+  "sessions": {
+    "s_0d1f555da3edf7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78b0a689-8005-425d-b818-a34a3abf573c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Leslie Jobse <dejobse@gmail.com>"
+    }
+  }
+}
