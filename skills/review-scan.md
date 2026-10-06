@@ -384,6 +384,6 @@ Description only: no judgement, no praise, nothing that belongs in a finding. It
 }
 ```
 
-`reviewer_config_touched`: true when the diff changes a file that steers this review: either of the two config files you read at the start, anything under `.claude/rules/`, or the workflow that calls this reviewer. A PR must not be able to quiet its own review, so a human confirms those.
+`reviewer_config_touched`: true when the diff changes a file that steers this review: either of the two config files you read at the start, anything under `.claude/rules/`, or the workflow that calls this reviewer. Nothing else counts: other files under `.github/` or `.claude/`, the functional tester's cookbook included, are ordinary files. A PR must not be able to quiet its own review, so a human confirms those.
 
 Write the file on every exit path. `evidence` and `fix` contain real code — escape every `"`, newline and backslash. Validate with `jq empty /tmp/scan.json` before you finish.
