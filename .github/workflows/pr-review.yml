@@ -148,6 +148,9 @@ on:
 # they just re-download the binary instead of using the prebake.
 env:
   AGENT_BROWSER_VERSION: "0.34.0"
+  # The API rejects Opus 5.5 from older CLIs, so a baked CLI below this is replaced.
+  # Runner image G bakes CLAUDE_CODE_VERSION="latest" as of its build date.
+  MIN_CLAUDE_VERSION: "2.1.280"
 
 jobs:
   review:
@@ -742,8 +745,6 @@ jobs:
           # runner image that ships one) — the installer only surfaces it as EACCES.
           mkdir -p "$HOME/.local/share" 2>/dev/null || true
           [ -w "$HOME/.local/share" ] || sudo -n chown -R "$(id -u):$(id -g)" "$HOME/.local" 2>/dev/null || true
-          # The API rejects Opus 5.5 from older CLIs, so a baked CLI below this is replaced.
-          MIN_CLAUDE_VERSION="2.1.280"
           baked=$("$HOME/.local/bin/claude" --version 2>/dev/null | awk '{print $1}') || true
           if [ -n "$baked" ] && [ "$(printf '%s\n' "$MIN_CLAUDE_VERSION" "$baked" | sort -V | head -1)" = "$MIN_CLAUDE_VERSION" ]; then
             echo "Claude CLI already installed: $baked"
