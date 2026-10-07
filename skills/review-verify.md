@@ -9,7 +9,7 @@ Your mandate is to **refute**, not to confirm. You read `/tmp/scan.json` — plu
 
 **Orient in TWO calls, then refute.** Measured on the first v3.12 runs: verify spent up to six turns listing files, probing env, `--stat`-ing the diff and pulling the whole PR diff with `gh pr diff` before checking a single finding, and every turn after re-reads all of it.
 1. `Read /tmp/scan.json`.
-2. One Bash: `jq -r .baseRefName /tmp/pr.json; printenv REVIEW_DEPTH_SCALE DOCS_ONLY DOCS_BASELINE REVIEW_COMMENT_LIMIT; ls /tmp/native.json /tmp/functional.json /tmp/shard-*.diff 2>/dev/null; tail -n +1 .github/review-config.md bugbot.md 2>/dev/null` — `tail -n +1` prints a `==> file <==` header per file and nothing for one that does not exist.
+2. One Bash: `jq -r .baseRefName /tmp/pr.json; printenv REVIEW_DEPTH_SCALE DOCS_ONLY DOCS_BASELINE REVIEW_COMMENT_LIMIT PRIOR_HEAD_SHA PRIOR_VERDICT REVIEW_SCOPE; git rev-parse HEAD; ls /tmp/native.json /tmp/functional.json /tmp/shard-*.diff 2>/dev/null; tail -n +1 .github/review-config.md bugbot.md 2>/dev/null` — `tail -n +1` prints a `==> file <==` header per file and nothing for one that does not exist.
 
 Never pull the whole PR diff. The shard diffs (`/tmp/shard-<i>.diff`, when that `ls` listed them) together are the diff this round reviews — the whole PR on round 1, the since-last and carried files on a delta round — and `git diff origin/<base>...HEAD -- <path>` gives you the one file a finding cites — that is all step 3 below needs.
 
@@ -60,7 +60,7 @@ A finding carrying `"convention": true` is judged on a different bar: keep it on
 
 **Three nits a review, in total.** Convention, comment-noise, inert-code and design findings share one budget: keep the 3 the author gains most from and record the rest in `meta.refuted` with reason `over the nit budget`. An ordinary `minor` with a real `failure_scenario` is not a nit and is never cut by this.
 
-A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2**.
+A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and for kinds 1 to 3 keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2** of those. **Kinds 4 and 5 quote one plan sentence and are judged differently**: `Grep` the merged architecture or PRD the evidence names, keep the finding when the concept or functionality really is absent there, refute it when it is described, and never cap them.
 
 ## The native second opinion — `/tmp/native.json`
 
@@ -91,7 +91,7 @@ Then emit it as a normal finding meeting the full bar (`path`, in-hunk `line`, `
 
 **But it is never dropped silently.** A failure the tester reproduced against the running app is the highest-evidence signal this pipeline produces, and a silent drop makes "the tester saw nothing" and "the tester reproduced a failure and verify could not place it" indistinguishable afterwards. Record it in `meta.refuted` with `"kind": "functional"`, the observed behaviour as `title`, whatever `path` the tester named (or `""`), and the reason it could not be placed — no changed line causes it, or you could not restate the failure from the code. It stays out of `body` and out of every comment, and it moves the verdict in neither direction, exactly like the discarded remainder of that file.
 
-Everything else in that file is discarded silently. A failed, crashed or skipped functional run **never** lowers the verdict on its own (contract: the tester can neither raise nor lower a verdict), never derives severity from the PR title, and never gets its own body section — it appears as a finding or a human-review item or not at all.
+Everything else in that file is discarded silently. A failed, crashed or skipped functional run **never** lowers the verdict on its own (contract: the tester can neither raise nor lower a verdict), never derives severity from the PR title, and never gets its own body section — it appears as a finding or not at all.
 
 ### Seeing the screenshots
 
@@ -126,19 +126,21 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 ## Verdict
 
 - **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding, not a prose finding, not a comment-noise finding, not an inert-code finding and not a design finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES, and neither can a `"prose": true`, a `"comment_noise": true` nor an `"inert": true` nor a `"design": true` finding — all five are always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test or a gate, and never for a `human_review` question — a question carries no severity and can NEVER produce REQUEST_CHANGES.
-- **APPROVE** — requires ALL of: zero surviving `critical` or `major` findings; a real, non-empty `approve_argument` from scan; `reviewer_config_touched` false. **Surviving `minor` findings do not block it**: approve, and post them as the inline comments they already are. Auth, payment, migration, CI and infra code and a high `review_effort` do not block it either. **On a `DOCS_ONLY` run — `DOCS_ONLY` is in your env — add one more: zero surviving findings and no surviving question.**
+- **APPROVE** — requires ALL of: zero surviving `critical` or `major` findings; a real, non-empty `approve_argument` from scan; `reviewer_config_touched` false; `DOCS_BASELINE` not `true`. **On a diff that touches auth, payments, tenancy or a migration, an `approve_argument` that does not say what the security pass checked is not a real one**: the gate is `unsure`. **Surviving `minor` findings do not block it**: approve, and post them as the inline comments they already are. Auth, payment, migration, CI and infra code and a high `review_effort` do not block it either. **On a `DOCS_ONLY` run — `DOCS_ONLY` is in your env — add one more: zero surviving findings and no surviving question.**
   - **Settle `DOCS_ONLY` first, before anything else on this list.** When it is `true`, a surviving question is a COMMENT with `docs_only_note` and one surviving finding of any severity is a COMMENT with `findings`. The minor-findings allowance above is for code diffs only. **And when `DOCS_BASELINE` is `true` the verdict is never APPROVE**: the diff adds or changes an ADR, an architecture document or a PRD, a human confirms direction there, and the gate is `docs_baseline`. The guard set that flag from the paths, so it is not yours to argue with.
   - **A question never blocks APPROVE on a code diff, and no question is the normal result.** Approve and post the question as its inline comment. **A clean simple PR should APPROVE**, and reaching for a COMMENT because the review looks thin is padding by another route. There is no target rate in either direction: the gates above decide.
   - **When you do not approve, record why in `approve_blocked_by`** — an array naming EVERY gate above that failed, not the first one you noticed: `findings` (a docs-only run with a surviving finding), `unsure` (scan left `approve_argument` empty — copy its `unsure_because` into `meta.unsure_because`), `reviewer_config`, `docs_only_note`, `docs_baseline`. Empty array when you approve. The poster shows this to the author, so a review that finds nothing and still withholds the approval has to say which gate held it; leaving it empty is how that turned into a shrug the author had to guess at.
   - **A doubt you cannot name is not a reason to withhold APPROVE.** Restate it as a finding at the finding bar or let it go; "any doubt" is not a gate, an unrefuted finding is.
   - **`DOCS_ONLY` inverts that, on purpose.** A document is the baseline the next PRs build on, so a decision there that the merged architecture and PRD do not settle should get its answer before the approval: a surviving question on a docs-only run is a COMMENT.
-- **COMMENT** — everything else: the scan was not sure, the PR changes the files that steer the review, or a docs-only run carries a finding or a question. It is never the home for a diff with nothing to say — that outcome is APPROVE.
+- **COMMENT** — everything else: the scan was not sure, the PR changes the files that steer the review, a docs-only run carries a finding or a question, or it is a docs baseline. It is never the home for a diff with nothing to say — that outcome is APPROVE.
 
-**Re-rate a survivor whose severity overshoots scan's ladder** before it decides the verdict: `major` means a user-reachable logic bug, so prose that merely drifted from the code is `minor` — unless it is text a consumer executes, which is judged by the failure it causes — and unless it is user-facing copy stating a fact the user acts on, which is runtime behaviour, judged by where the wrong belief leads.
+**Re-rate a survivor whose severity overshoots scan's ladder** before it decides the verdict (an unplanned-work finding is exempt, it keeps scan's severity): `major` means a user-reachable logic bug, so prose that merely drifted from the code is `minor` — unless it is text a consumer executes, which is judged by the failure it causes — and unless it is user-facing copy stating a fact the user acts on, which is runtime behaviour, judged by where the wrong belief leads.
 
-**The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
+**The verdict is computed fresh every round, from surviving findings alone.** `PRIOR_VERDICT` is not an input, with the one exception below for an unchanged commit: a prior REQUEST_CHANGES does not force one now, and a prior APPROVE does not protect this round. There is no ladder, no ratchet and no pinning — pinning a round to its predecessor is what produced twelve rounds of verdict flip-flop, and it is not coming back.
 
 **A reply scan never answered is not a surviving finding.** A carried finding with a reply, arriving with no `reply_rebuttal`, was not re-checked against that reply — so it has not earned a blocking severity this round. Drop it to `minor`, naming the reply in its comment, and let the verdict follow. **It is demoted, never deleted**: the reader still gets it, and a human still decides. Scan writing a rebuttal you then refute is the ordinary path and settles under the refutation test above; this line is only for the finding scan walked past.
+
+**A second run on an unchanged commit keeps the first run's verdict.** When `PRIOR_HEAD_SHA` is HEAD and `REVIEW_SCOPE` is not `full`, nothing new was read, so only a carried finding you resolve or step down this round may move the verdict. With the carried findings unchanged, the verdict is `PRIOR_VERDICT`, and a question the earlier round posted still counts as open on a docs-only run.
 
 **Carrying a finding is not pinning a verdict.** A carried finding is *visible* to this round and *hard to dismiss*; it is not a floor under the verdict. If every carried finding is genuinely resolved and nothing new survives, this round APPROVEs — a prior REQUEST_CHANGES has no vote.
 
@@ -154,7 +156,7 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 - **A config file or a rule in `.claude/rules/` calls it intentional.**
 - **Nothing outside the checkout is reachable**, so a question you could only ground by fetching something stands refuted.
 
-**A question that names who now hits what is a finding wearing the wrong label, and you relabel it.** The sentence carries a person and a failure, so it is a `failure_scenario` already: relabel it into `meta.findings` with `severity: "minor"` (never higher: scan did not put it through the finding bar), scan's text as the scenario and a one-sentence remedy in prose, and record the move in `meta.refuted` with reason `relabelled as a finding`.
+**A question that names who now hits what is a finding wearing the wrong label, and you relabel it.** The sentence carries a person and a failure, so it is a `failure_scenario` already. This is not inventing a finding, the text is scan's: relabel it into `meta.findings` with `severity: "minor"` (never higher: scan did not put it through the finding bar), scan's text as the scenario and a one-sentence remedy in prose, and record the move in `meta.refuted` with reason `relabelled as a finding`.
 
 A relabelled finding never carries a ```suggestion``` fence: its `fix` is the one prose sentence you wrote.
 
@@ -266,7 +268,7 @@ The `**question**` prefix is load-bearing — the poster reads it to tell a ques
     ],
     "refuted": [{"kind": "finding|human_review|screenshot|functional", "id": "<carried id, when refuting a carried finding>",
                  "path": "...", "line": 12, "title": "<title, or the what_to_know that was written>",
-                 "reason": "suppressed by <file> | already mitigated at the cited line | narrates the block | asks a question | <one line>"}],
+                 "reason": "suppressed by <file> | already mitigated at the cited line | no concrete alternative | already answered | <one line>"}],
     "depth_used": "light|full",
     "review_effort": 3,
     "approve_blocked_by": ["findings|unsure|reviewer_config|docs_only_note|docs_baseline"],

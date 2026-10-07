@@ -530,8 +530,9 @@ want "review-verify demotes a rebuttal that lives in another file" "$VERIFY" \
   'A rebuttal that lives in another file demotes, it does not delete'
 want "review-scan runs a security pass on trust boundaries" "$SCAN" \
   'run the security pass on every trust boundary'
-want "…covering caller, tenant, input and leaks" "$SCAN" \
-  'Who can call it.*|Whose data it touches|Where its input goes|What it leaks'
+for q in 'Who can call it' 'Whose data it touches' 'Where its input goes' 'What it leaks'; do
+  want "…covering: $q" "$SCAN" "$q"
+done
 # The new item shape. why_unresolved existed only to justify a question, so it
 # must not survive in any form, in either file.
 want "review-scan emits the orientation shape" "$SCAN" \

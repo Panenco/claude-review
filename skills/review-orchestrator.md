@@ -143,7 +143,7 @@ Each `${VAR}` below means that literal value.
    ```
    When N is 2 or more, dispatch N of these, for i = 1..N, each with its own file list and its own output file — never `/tmp/scan.json`, which `merge-scans.sh` writes in turn 3:
    ```
-   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}. SHARD ${i} of ${N}: the files you hunt findings and notes in are listed one per line in /tmp/shard-${i}.txt and their diff against the base is already at /tmp/shard-${i}.diff (see "Your shard" in the skill) — no gh pr diff unless that file is missing; read anything else you need for context. Write /tmp/scan-${i}.json.
+   Read $CLAUDE_REVIEW_PIPELINE_DIR/skills/review-scan.md and follow it exactly. PR #${PR_NUMBER} in ${GITHUB_REPOSITORY}. ROUND=${ROUND}, PRIOR_HEAD_SHA=${PRIOR_HEAD_SHA}. SHARD ${i} of ${N}: the files you hunt findings and questions in are listed one per line in /tmp/shard-${i}.txt and their diff against the base is already at /tmp/shard-${i}.diff (see "Your shard" in the skill) — no gh pr diff unless that file is missing; read anything else you need for context. Write /tmp/scan-${i}.json.
    ```
    The shards are independent; issuing them one per turn costs pure wall clock and buys nothing.
 2. `subagent_type: "review-functional-tester"` — only when eligible:
@@ -167,7 +167,7 @@ Serializing these costs pure wall clock — issue all of them in the same respon
 
 ## Turn 3 — verify
 
-When turn 1 printed `shards=N` with N ≥ 2, first run `"$CLAUDE_REVIEW_SCRIPTS"/merge-scans.sh` — it unions `/tmp/scan-<i>.json` into `/tmp/scan.json` (deduped on the finding identity the poster uses, notes capped) and prints `merged=<k>`. A shard that produced nothing contributes nothing; `merged=0` means no shard wrote a usable file, which is the degraded case below.
+When turn 1 printed `shards=N` with N ≥ 2, first run `"$CLAUDE_REVIEW_SCRIPTS"/merge-scans.sh` — it unions `/tmp/scan-<i>.json` into `/tmp/scan.json` (deduped on the finding identity the poster uses, questions capped) and prints `merged=<k>`. A shard that produced nothing contributes nothing; `merged=0` means no shard wrote a usable file, which is the degraded case below.
 
 Read `/tmp/scan.json`. Missing or unparseable → skip to the degraded write below. A missing `/tmp/native.json` or `/tmp/functional.json` is NOT a degraded run — both are advisory, and verify handles their absence.
 

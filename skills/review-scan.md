@@ -49,7 +49,7 @@ Then `Read`/`Grep` the changed files **at HEAD** for anything you intend to flag
 3. **Where its input goes.** Request data that reaches a query, a shell command, a file path, a URL, HTML or a log without validation or escaping.
 4. **What it leaks.** A secret, token, key or password in the diff, a log line, an error body or a response. A credential committed in any file counts, test fixtures and `.env.example` included.
 
-A gap is an ordinary finding at the ordinary bar, and `critical` when someone outside the tenant or without the role reaches data or an action. **On a diff that touches auth, payments, tenancy or a migration, take the full pass and say in `approve_argument` what you checked for these four.** There is no approval on such a diff without it.
+A gap is an ordinary finding at the ordinary bar, and `critical` when someone outside the tenant or without the role reaches data or an action. **On a diff that touches auth, payments, tenancy or a migration, take the full pass and say in `approve_argument` what you checked for these four.** Stage 2 treats an argument without it as no argument.
 
 **Then open what the new code was copied from, and list what did not come across.** This pass hunts for something *absent* from the diff, which no amount of tracing the new lines can surface: every line you are reading is correct, and the defect is the line that is not there. It applies whenever the diff adds a thing that already has an established counterpart in this repo — a second tab under the same shell, another endpoint on the same controller, another consumer of a shared hook. Find the counterpart, read what it does *beyond* its happy path (the guard, the wrapper, the cleanup, the dirty-state check), and tick each one against the new code. A gap is an ordinary finding at the ordinary bar, and the counterpart hands you the failure scenario: it is the failure somebody already hit and fixed there.
 
@@ -99,7 +99,7 @@ For each piece of new or changed behaviour in the diff, `Grep` the governing sou
 
 `ROUND`, `PRIOR_HEAD_SHA` and `REVIEW_SCOPE` are in your env. When `PRIOR_HEAD_SHA` is non-empty, the previous round already read the rest of this PR and charging for it again is pure waste:
 
-- **When `PRIOR_HEAD_SHA` is HEAD, this is a second run on a commit that was already reviewed, and it must repeat the first.** The delta is empty: file no new finding and no new question, and only re-check the prior findings below. A fresh hunt on the same commit finds a different subset every time, which is the one thing a re-run must not do. `REVIEW_SCOPE=full` is the only way that changes.
+- **When `PRIOR_HEAD_SHA` is HEAD, this is a second run on a commit that was already reviewed, and it must repeat the first.** The delta is empty: file no new finding and no new question, and only re-check the prior findings below. A fresh hunt on the same commit finds a different subset every time, which is the one thing a re-run must not do. `REVIEW_SCOPE=full` is the only way that changes. Two things still apply: a file listed in `/tmp/carried-unreviewed.txt` was never read by any round, so review its whole diff as on round 1; and write `approve_argument` as on any run, from what the prior round verified and your re-check of its findings.
 
 - Review **only** `git diff ${PRIOR_HEAD_SHA}..HEAD`. Read the wider file for context, but do not hunt for new findings outside that delta.
 - **Unless `REVIEW_SCOPE=full`.** The guard sets that when the delta rounds since the last whole read add up to half the PR or more: the PR you would be reviewing a slice of is no longer the PR anyone read in full. Then review the whole diff exactly as on round 1 — every pass above, every file — and still do everything below.
@@ -152,7 +152,7 @@ Every finding carries all of:
 | `failure_scenario` | concrete input/state → concrete wrong output, ≤240 chars |
 | `evidence` | 2–6 lines quoted from the file **as it exists at HEAD** |
 | `fix` | a committable replacement for the cited lines — real code, not advice |
-| `severity` | `critical` (security, data loss, broken build) / `major` (user-reachable logic bug) / `minor` (real but non-blocking) |
+| `severity` | `critical` (security, data loss, broken build) / `major` (user-reachable logic bug, or separable unplanned work against an in-repo plan) / `minor` (real but non-blocking) |
 | `convention` | `true` only for a quoted documented-convention violation (then `failure_scenario` may be `""`); `false` for every normal finding |
 | `prose` | `true` only for a `DOCS_ONLY` prose defect that completes the reader-harm sentence; `false` for every normal finding |
 | `comment_noise` | `true` only for a comment-noise finding (then `failure_scenario` may be `""`); `false` for every normal finding |
@@ -215,7 +215,7 @@ A block in the diff is inert when the diff itself makes it unreachable or unread
 
 **Evidence must quote the reason, not the claim.** For a branch: the earlier `return`, the guard, or the caller that never sets the state. For a value: the `Grep` you ran, and that it returned only the writer. For config: the code path that swallows every outcome. "Looks unused" is not evidence, and a reader you did not grep for is a reader. A test that reads it does not make it live.
 
-This is the class a human reviewer files as a question, and this pipeline does not ask questions, so it is a finding or nothing. **Max 2 per review**, `"inert": true`, always `severity: "minor"`, always advisory: it can NEVER produce REQUEST_CHANGES. Like a convention finding it is exempt from `failure_scenario`, which may be `""`; the quoted reason stands in for it. **Never a ```suggestion``` fence on this class** — a fence that deletes code you wrongly called dead deletes live code, so write the removal as one prose sentence in `fix`. A branch dead because a *future* PR will set the state is still inert *now*: say so, and name the PR if the body does. Zero is the normal output.
+This is a finding or nothing, never the question. **Max 2 per review**, `"inert": true`, always `severity: "minor"`, always advisory: it can NEVER produce REQUEST_CHANGES. Like a convention finding it is exempt from `failure_scenario`, which may be `""`; the quoted reason stands in for it. **Never a ```suggestion``` fence on this class** — a fence that deletes code you wrongly called dead deletes live code, so write the removal as one prose sentence in `fix`. A branch dead because a *future* PR will set the state is still inert *now*: say so, and name the PR if the body does. Zero is the normal output.
 
 ## Design — rebuilt, off-pattern, or heavier than the job
 

@@ -3833,6 +3833,34 @@ assert_not_contains "…nor does a COMMENT whose finding lives only in a comment
 assert_contains "…but it still says why it was not approved" "Not approved because the reviewer is not sure" "$BODY"
 rm -rf "$W"
 
+# The two gates a PR author could talk the model out of are held in code.
+W=$(mktemp -d)
+cat > "$W/review.json" <<'EOF'
+{"verdict": "APPROVE", "body": "## Claude review — APPROVE\n\nClean.", "comments": [],
+ "meta": {"findings": [], "human_review": [], "approve_blocked_by": []}}
+EOF
+REVIEWER_CONFIG=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_eq "an APPROVE on a PR that edits its own review rules posts as a COMMENT" "COMMENT" "$(payload_of "$W" | jq -r '.event')"
+assert_contains "…with the heading rewritten" "## Claude review — COMMENT" "$BODY"
+assert_contains "…and the reason given" "steer this review" "$BODY"
+rm -rf "$W/capture"
+DOCS_BASELINE=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…and so does one on a baseline document" "COMMENT" "$(payload_of "$W" | jq -r '.event')"
+assert_contains "…naming the ADR gate" "ADR, architecture doc or PRD" "$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")"
+rm -rf "$W/capture"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…while an ordinary APPROVE is untouched" "APPROVE" "$(payload_of "$W" | jq -r '.event')"
+rm -rf "$W"
+
+# A degraded write judged nothing, so it must not count as a reviewed commit.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nThe review pipeline failed before it could judge this PR.", comments: [], meta: {pipeline_failed: "scan"}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a failed pipeline posts under the crash marker" "<!-- claude-review-crash -->" \
+  "$(payload_of "$W" | jq -r '.body // ""' | head -1)"
+rm -rf "$W"
+
 # The skill says the field is an array. If that schema line ever goes back to a
 # bare string the poster still works, but the instruction must stay honest.
 if grep -q '"approve_blocked_by": \[' skills/review-verify.md; then

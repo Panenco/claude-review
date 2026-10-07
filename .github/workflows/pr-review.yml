@@ -1161,10 +1161,8 @@ jobs:
           RUN_FUNCTIONAL: ${{ steps.guard.outputs.functional }}
           DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
           DOCS_BASELINE: ${{ steps.guard.outputs.docs_baseline }}
-          # How many human-review items this diff is worth (3–8, from diff size).
-          # review-scan caps itself at it; review-verify moves it ±1 on the
-          # review_effort scan reported. Empty on any short-circuited path, where
-          # both skills fall back to 5 — the old flat constant.
+          # A size-derived read on how deep to go (3–8). It no longer sets a count
+          # of comments: questions are capped at 1, or 2 when this is 6 or more.
           REVIEW_DEPTH_SCALE: ${{ steps.guard.outputs.depth_scale }}
           # The orchestrator's gate for the second opinion. TRUE only when the
           # comment asked for it AND the pinned marketplace resolved, so the
@@ -1290,6 +1288,9 @@ jobs:
           # var with one default; empty on a short-circuited run, where the
           # poster's own `:-10` applies and nothing is capped away.
           REVIEW_COMMENT_LIMIT: ${{ steps.guard.outputs.comment_limit }}
+          # Held in code by post-review.sh: an APPROVE becomes a COMMENT when either is true.
+          DOCS_BASELINE: ${{ steps.guard.outputs.docs_baseline }}
+          REVIEWER_CONFIG: ${{ steps.guard.outputs.reviewer_config }}
           # Stamped into the review state block so the next round can find the
           # last full pass. Empty reads as full, which is what round 1 is.
           REVIEW_SCOPE: ${{ steps.guard.outputs.scope }}

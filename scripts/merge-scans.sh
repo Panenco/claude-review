@@ -4,8 +4,8 @@
 #
 # Findings dedupe on the SAME identity prior-findings.sh and post-review.sh use
 # (path + normalised title), so a defect two shards both saw is one finding.
-# Notes are taken round-robin across shards and capped at REVIEW_DEPTH_SCALE, so
-# every area keeps its top note under the cap. Scalars: `context.area`,
+# Questions are taken round-robin across shards and capped at REVIEW_DEPTH_SCALE
+# (verify trims to the real cap of 1 or 2). Scalars: `context.area`,
 # `summary`, `depth_reason` from shard 1 (the heaviest — shard-plan.sh sorts by
 # path, the orchestrator dispatches in order); flags OR; `review_effort` max;
 # `approve_argument` only when EVERY shard argued for approval.
@@ -71,7 +71,7 @@ jq -s --argjson n "$N" --argjson complete "$COMPLETE" "$JQ_NORM"'
       resolved_prior: ($s | map(.resolved_prior // []) | add | unique_by(.id) | map(select((.id | IN($cids[])) | not))),
       human_review: ($s | map(.human_review // []) | rr($n)),
       approve_argument: (if $complete and all($s[]; (.approve_argument // "") != "") then ($s[0].approve_argument) else "" end),
-      unsure_because: ([$s[] | .unsure_because // "" | select(. != "")] | join(" ")),
+      unsure_because: (if $complete then ([$s[] | .unsure_because // "" | select(. != "")] | join(" ")) else "part of the diff was not read, a scan shard produced no output" end),
       reviewer_config_touched: any($s[]; .reviewer_config_touched == true),
       prompt_injection_detected: any($s[]; .prompt_injection_detected == true)
     }' "${parts[@]}" > "$OUT_DIR/scan.json.merged" 2>/dev/null \
