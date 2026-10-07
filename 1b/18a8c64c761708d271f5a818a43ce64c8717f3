@@ -1,0 +1,37 @@
+skills/review-verify.md
+  s_0d1f555da3edf7::t_d6e452a1370539 12,126,128,147,268
+tests/guard_test.sh
+  s_0d1f555da3edf7::t_d6e452a1370539 286-297
+  s_0d1f555da3edf7::t_6da48913f911cb 336,338
+scripts/guard.sh
+  s_0d1f555da3edf7::t_446c2fcc6a62fb 11,97,174
+  s_0d1f555da3edf7::t_d6e452a1370539 91
+scripts/review-local.sh
+  s_0d1f555da3edf7::t_d6e452a1370539 277,282
+tests/review_local_test.sh
+  s_0d1f555da3edf7::t_446c2fcc6a62fb 289
+.github/workflows/pr-review.yml
+  s_0d1f555da3edf7::t_d6e452a1370539 1160
+skills/review-scan.md
+  s_0d1f555da3edf7::t_d6e452a1370539 45-53
+scripts/post-review.sh
+  s_0d1f555da3edf7::t_d6e452a1370539 417-418
+tests/pipeline_contract_test.sh
+  s_0d1f555da3edf7::t_d6e452a1370539 523-530
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1b18a8c64c761708d271f5a818a43ce64c8717f3",
+  "prompts": {},
+  "sessions": {
+    "s_0d1f555da3edf7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78b0a689-8005-425d-b818-a34a3abf573c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Leslie Jobse <dejobse@gmail.com>"
+    }
+  }
+}
