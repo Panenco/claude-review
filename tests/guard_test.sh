@@ -283,6 +283,18 @@ assert_docs_only "a lockfile beside the docs does not" "true" \
   GATE_FILES_TSV=$'docs/plan.md\t40\t2\npnpm-lock.yaml\t900\t900'
 assert_docs_only "LICENSE counts as a document" "true" \
   GATE_FILES_TSV=$'LICENSE\t1\t1'
+baseline_of() { env "$@" bash "$SCRIPT" | sed -n 's/^docs_baseline=//p' | head -1; }
+assert_eq_b() { if [ "$2" = "$3" ]; then echo "OK:   $1"; else echo "FAIL: $1 — want '$2' got '$3'"; fail=$((fail + 1)); fi; }
+assert_eq_b "a slice plan alone is not a baseline document" "false" \
+  "$(baseline_of GATE_FILES_TSV=$'docs/planned/15/tasks/06-page.md\t40\t0')"
+assert_eq_b "an ADR is" "true" \
+  "$(baseline_of GATE_FILES_TSV=$'docs/adr/0012-ffmpeg.md\t40\t0')"
+assert_eq_b "an architecture doc is" "true" \
+  "$(baseline_of GATE_FILES_TSV=$'docs/planned/recording-formats-architecture.md\t40\t0')"
+assert_eq_b "a PRD is" "true" \
+  "$(baseline_of GATE_FILES_TSV=$'docs/planned/15/PRD.md\t40\t0')"
+assert_eq_b "an ADR beside code is a code diff, not a baseline run" "false" \
+  "$(baseline_of GATE_FILES_TSV=$'docs/adr/0012-ffmpeg.md\t40\t0\nsrc/a.ts\t3\t1')"
 # Proceed-path output only: a short-circuited run has no review to configure.
 assert_docs_only "not emitted on the oversized gate" "-" \
   GATE_FILES_TSV="$BIG_FILES"
@@ -321,8 +333,9 @@ fi
 # → 172 for the full-or-delta scope: one loop over the since-full numstat (the
 # same shape as the size loop above), one flat predicate, one printf. Not a
 # tier: it answers "read it all again?" from one ratio, never "how deep".
+# → 175 for docs_baseline: one path match inside the existing loop and one printf.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 172 ]; then
+if [ "$LINES" -le 175 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"

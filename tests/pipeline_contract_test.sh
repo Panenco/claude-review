@@ -520,6 +520,14 @@ want "review-verify carries at most that many" "$VERIFY" \
 want "…never asks one twice" "$VERIFY" 'never asked again'
 want "…and writes it under the question label" "$VERIFY" '^\*\*question\*\* '
 want "review-verify caps nits at three in total" "$VERIFY" 'Three nits a review, in total'
+want "…and keeps a question it can only guess the answer to" "$VERIFY" \
+  'never drop one because you can imagine the answer'
+want "review-verify never approves a baseline document" "$VERIFY" \
+  'when `DOCS_BASELINE` is `true` the verdict is never APPROVE'
+want "review-scan runs a security pass on trust boundaries" "$SCAN" \
+  'run the security pass on every trust boundary'
+want "…covering caller, tenant, input and leaks" "$SCAN" \
+  'Who can call it.*|Whose data it touches|Where its input goes|What it leaks'
 # The new item shape. why_unresolved existed only to justify a question, so it
 # must not survive in any form, in either file.
 want "review-scan emits the orientation shape" "$SCAN" \

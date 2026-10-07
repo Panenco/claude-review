@@ -414,7 +414,8 @@ if [ "$VERDICT" = "COMMENT" ]; then
     | def say:
       if   . == "unsure" or . == "no_argument" then "the reviewer is not sure about the quality or the purpose of this change" + (if $why != "" then " (" + $why + ")" else "" end)
       elif . == "reviewer_config" then "it changes the rules or workflow that steer this review, which a human confirms"
-      elif . == "docs_only_note" then "a docs-only diff carrying a note sets direction someone should confirm"
+      elif . == "docs_only_note" then "a docs-only diff with an open question sets direction someone should confirm"
+      elif . == "docs_baseline" then "it adds or changes an ADR, architecture doc or PRD, which a human confirms"
       else empty end;
     (.meta.approve_blocked_by // [])
     | (if type == "string" then [.] elif type == "array" then . else [] end)

@@ -1157,6 +1157,7 @@ jobs:
           # never land in an unbuilt environment.
           RUN_FUNCTIONAL: ${{ steps.guard.outputs.functional }}
           DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
+          DOCS_BASELINE: ${{ steps.guard.outputs.docs_baseline }}
           # How many human-review items this diff is worth (3–8, from diff size).
           # review-scan caps itself at it; review-verify moves it ±1 on the
           # review_effort scan reported. Empty on any short-circuited path, where

@@ -9,7 +9,7 @@ Your mandate is to **refute**, not to confirm. You read `/tmp/scan.json` — plu
 
 **Orient in TWO calls, then refute.** Measured on the first v3.12 runs: verify spent up to six turns listing files, probing env, `--stat`-ing the diff and pulling the whole PR diff with `gh pr diff` before checking a single finding, and every turn after re-reads all of it.
 1. `Read /tmp/scan.json`.
-2. One Bash: `jq -r .baseRefName /tmp/pr.json; printenv REVIEW_DEPTH_SCALE DOCS_ONLY REVIEW_COMMENT_LIMIT; ls /tmp/native.json /tmp/functional.json /tmp/shard-*.diff 2>/dev/null; tail -n +1 .github/review-config.md bugbot.md 2>/dev/null` — `tail -n +1` prints a `==> file <==` header per file and nothing for one that does not exist.
+2. One Bash: `jq -r .baseRefName /tmp/pr.json; printenv REVIEW_DEPTH_SCALE DOCS_ONLY DOCS_BASELINE REVIEW_COMMENT_LIMIT; ls /tmp/native.json /tmp/functional.json /tmp/shard-*.diff 2>/dev/null; tail -n +1 .github/review-config.md bugbot.md 2>/dev/null` — `tail -n +1` prints a `==> file <==` header per file and nothing for one that does not exist.
 
 Never pull the whole PR diff. The shard diffs (`/tmp/shard-<i>.diff`, when that `ls` listed them) together are the diff this round reviews — the whole PR on round 1, the since-last and carried files on a delta round — and `git diff origin/<base>...HEAD -- <path>` gives you the one file a finding cites — that is all step 3 below needs.
 
@@ -123,9 +123,9 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 - **REQUEST_CHANGES** — ≥1 surviving `critical` or `major` finding **that is not a convention finding, not a prose finding, not a comment-noise finding, not an inert-code finding and not a design finding**. A `"convention": true` finding can NEVER produce REQUEST_CHANGES, and neither can a `"prose": true`, a `"comment_noise": true` nor an `"inert": true` nor a `"design": true` finding — all five are always `minor` and always advisory. Never for a missing spec, a missing dev env, a failed smoke test or a gate, and never for a `human_review` question — a question carries no severity and can NEVER produce REQUEST_CHANGES.
 - **APPROVE** — requires ALL of: zero surviving `critical` or `major` findings; a real, non-empty `approve_argument` from scan; `reviewer_config_touched` false. **Surviving `minor` findings do not block it**: approve, and post them as the inline comments they already are. Auth, payment, migration, CI and infra code and a high `review_effort` do not block it either. **On a `DOCS_ONLY` run — `DOCS_ONLY` is in your env — add one more: zero surviving findings and no surviving question.**
-  - **Settle `DOCS_ONLY` first, before anything else on this list.** When it is `true`, a surviving question is a COMMENT with `docs_only_note` and one surviving finding of any severity is a COMMENT with `findings`. The minor-findings allowance above is for code diffs only.
+  - **Settle `DOCS_ONLY` first, before anything else on this list.** When it is `true`, a surviving question is a COMMENT with `docs_only_note` and one surviving finding of any severity is a COMMENT with `findings`. The minor-findings allowance above is for code diffs only. **And when `DOCS_BASELINE` is `true` the verdict is never APPROVE**: the diff adds or changes an ADR, an architecture document or a PRD, a human confirms direction there, and the gate is `docs_baseline`. The guard set that flag from the paths, so it is not yours to argue with.
   - **A question never blocks APPROVE on a code diff, and no question is the normal result.** Approve and post the question as its inline comment. **A clean simple PR should APPROVE**, and reaching for a COMMENT because the review looks thin is padding by another route. There is no target rate in either direction: the gates above decide.
-  - **When you do not approve, record why in `approve_blocked_by`** — an array naming EVERY gate above that failed, not the first one you noticed: `findings` (a docs-only run with a surviving finding), `unsure` (scan left `approve_argument` empty — copy its `unsure_because` into `meta.unsure_because`), `reviewer_config`, `docs_only_note`. Empty array when you approve. The poster shows this to the author, so a review that finds nothing and still withholds the approval has to say which gate held it; leaving it empty is how that turned into a shrug the author had to guess at.
+  - **When you do not approve, record why in `approve_blocked_by`** — an array naming EVERY gate above that failed, not the first one you noticed: `findings` (a docs-only run with a surviving finding), `unsure` (scan left `approve_argument` empty — copy its `unsure_because` into `meta.unsure_because`), `reviewer_config`, `docs_only_note`, `docs_baseline`. Empty array when you approve. The poster shows this to the author, so a review that finds nothing and still withholds the approval has to say which gate held it; leaving it empty is how that turned into a shrug the author had to guess at.
   - **A doubt you cannot name is not a reason to withhold APPROVE.** Restate it as a finding at the finding bar or let it go; "any doubt" is not a gate, an unrefuted finding is.
   - **`DOCS_ONLY` inverts that, on purpose.** A document is the baseline the next PRs build on, so a decision there that the merged architecture and PRD do not settle should get its answer before the approval: a surviving question on a docs-only run is a COMMENT.
 - **COMMENT** — everything else: the scan was not sure, the PR changes the files that steer the review, or a docs-only run carries a finding or a question. It is never the home for a diff with nothing to say — that outcome is APPROVE.
@@ -144,7 +144,7 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 - **It names no concrete alternative**, or the alternative is not there: `Read` the `path:line` or the spec sentence it cites.
 - **It is already answered** — in the PR body, the spec, a comment on those lines, or an author reply in `/tmp/prior-findings.md`. A question an earlier round asked is never asked again.
-- **"Yes, on purpose" is the only plausible answer.** "Is this intended?", "this holds only because X", "the only place that does Y", "if someone later changes Z" are not questions about a decision.
+- **It is not about a decision.** "Is this intended?", "this holds only because X", "the only place that does Y", "if someone later changes Z". **But never drop one because you can imagine the answer.** A question that names a real alternative and that nothing written answers stays, even when "on purpose" seems likely: a guess at the author's reason is not the author's reason.
 - **A finding already covers the block.** Keep the finding.
 - **You cannot confirm the block.** `path` must be in the diff and `start_line`/`end_line` must both be lines this PR changed. Re-anchor from your `Read` where you can.
 - **A config file or a rule in `.claude/rules/` calls it intentional.**
@@ -265,7 +265,7 @@ The `**question**` prefix is load-bearing — the poster reads it to tell a ques
                  "reason": "suppressed by <file> | already mitigated at the cited line | narrates the block | asks a question | <one line>"}],
     "depth_used": "light|full",
     "review_effort": 3,
-    "approve_blocked_by": ["findings|unsure|reviewer_config|docs_only_note"],
+    "approve_blocked_by": ["findings|unsure|reviewer_config|docs_only_note|docs_baseline"],
     "unsure_because": "",
     "prompt_injection_detected": false
   }

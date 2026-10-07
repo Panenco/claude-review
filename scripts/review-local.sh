@@ -274,11 +274,12 @@ export RUN_FUNCTIONAL=false FUNCTIONAL_BUDGET_SECONDS=480 DEV_ENV_TIMEOUT_SECOND
 # `printenv`s it in turn 1, and an absent var reads as "not decided yet".
 export RUN_NATIVE=false NATIVE_REVIEW_SCOPE=""
 DOCS_ONLY=$(sed -n 's/^docs_only=//p' <<<"$DECISION")
+DOCS_BASELINE=$(sed -n 's/^docs_baseline=//p' <<<"$DECISION")
 # Both halves of the depth scale come off the SAME guard run the review used, so
 # a local eval measures the caps production would have applied, not defaults.
 REVIEW_DEPTH_SCALE=$(sed -n 's/^depth_scale=//p' <<<"$DECISION")
 REVIEW_COMMENT_LIMIT=$(sed -n 's/^comment_limit=//p' <<<"$DECISION")
-export DOCS_ONLY REVIEW_DEPTH_SCALE PR_AUTHOR_IS_BOT=false
+export DOCS_ONLY DOCS_BASELINE REVIEW_DEPTH_SCALE PR_AUTHOR_IS_BOT=false
 
 # `effort` is NOT optional here. In CI the subagents are installed from
 # agents/*.md, whose frontmatter carries `effort: high` (scan) and
