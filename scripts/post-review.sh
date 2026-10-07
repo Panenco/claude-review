@@ -723,7 +723,7 @@ if jq -e 'type == "array" and length > 0' "$PRIOR_CHECKS_JSON" >/dev/null 2>&1; 
   jq --slurpfile pc "$PRIOR_CHECKS_JSON" '
     ($pc[0] | map({key: (.p + ":" + (.l | tostring)), value: true}) | from_entries) as $seen
     | map(select(
-        (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+        (((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i"))
          and (($seen[((.path // "") + ":" + ((.line // 0) | tostring))] // false)
               or ((((.start_line // 0) | tostring | tonumber?) // 0) > 0
                   and ($seen[((.path // "") + ":" + ((.start_line // 0) | tostring))] // false)))) | not))' \
@@ -733,7 +733,7 @@ if jq -e 'type == "array" and length > 0' "$PRIOR_CHECKS_JSON" >/dev/null 2>&1; 
          [ "$REPEAT_CHECKS" -gt 0 ] \
            && echo "::notice::$REPEAT_CHECKS check comment(s) not re-posted — an earlier round already posted a check on that line."; }
 fi
-FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i"))
                                   and ((.body // "") | test("(^|\n)[ \t]*`{3,}[ \t]*suggestion"; "i")))] | length' \
                   "$WORK/comments.json" 2>/dev/null || echo 0)
 if [ "${FENCED_CHECKS:-0}" -gt 0 ]; then
@@ -753,7 +753,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # severity, so it already sorts behind every finding — under pressure the slots
   # go to defects and the notes fall back, which is the right way round. A
   # dropped one returns under the human-review heading, never under "Also flagged".
-  def kind: if ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) then "check" else "finding" end;
+  def kind: if ((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")) then "check" else "finding" end;
   # A CHECK NEVER CARRIES A COMMITTABLE FENCE — STRUCTURALLY, not by prompt rule.
   # The range below is granted to checks alone on the strength of a line in
   # review-verify.md; nothing enforced it, so a `**check**` with start_line:10
@@ -918,7 +918,7 @@ jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
 # finding, and verify writes no body bullet for a check — so a check in this index
 # could only ever strip a `### Findings` bullet belonging to a finding that is not
 # posted inline, deleting it from the review entirely.
-jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)
+jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")) | not)
              | .path + ":" + (.line | tostring) + "\t"
              + ((.body // "") | split("\n") | (.[0] // ""))' \
   "$WORK/comments.json" > "$WORK/kept-keys.txt"
@@ -1832,7 +1832,7 @@ else
        # body text, and a `**check**` has none, so a question was persisted as a
        # finding with `sev: ""`, warned about as `(, src/foo.ts)`, and — since
        # round 2 can never "resolve" a question — carried forever.
-       | map(select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not))
+       | map(select(((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")) | not))
        | map({p: (.path // ""), l: (.line | num), sev: csev,
               t: ((.body // "") | split("\n") | (.[0] // "")
                   | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "")),

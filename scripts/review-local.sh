@@ -55,8 +55,8 @@ set -uo pipefail
 # (see .eval.env.example):
 #   EVAL_REPO    owner/repo to review against          (required)
 #   EVAL_ROOT    working root for clones and results   (default $TMPDIR/claude-review-eval)
-#   EVAL_MODEL   the REVIEWING model, i.e. the subagents  (default claude-opus-5)
-#   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-sonnet-5)
+#   EVAL_MODEL   the REVIEWING model, i.e. the subagents  (default claude-opus-5-5)
+#   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-sonnet-5-5)
 #   EVAL_SCOPE       "full" reads the whole PR on a round-2+ run (GATE_FORCE_FULL),
 #                    otherwise the guard decides full-or-delta exactly as CI does
 #   EVAL_HEAD_SHA    review the PR as it stood at this commit instead of its
@@ -103,11 +103,11 @@ if [ -z "$REPO" ]; then
   exit 2
 fi
 EVAL_ROOT="${EVAL_ROOT:-${TMPDIR:-/tmp}/claude-review-eval}"
-MODEL="${EVAL_MODEL:-claude-opus-5}"
+MODEL="${EVAL_MODEL:-claude-opus-5-5}"
 # The orchestrator reviews nothing — it dispatches and copies one file — so it
 # runs the cheap model in CI (`model_orchestrator`). Mirrored here, else a local
 # sweep measures a cost this pipeline no longer pays.
-ORCH_MODEL="${EVAL_ORCH_MODEL:-claude-sonnet-5}"
+ORCH_MODEL="${EVAL_ORCH_MODEL:-claude-sonnet-5-5}"
 
 for bin in gh jq git claude; do
   command -v "$bin" >/dev/null 2>&1 || { echo "$bin not on PATH" >&2; exit 1; }
@@ -263,7 +263,7 @@ fi
 
 # ── the orchestrator session ─────────────────────────────────────────────────
 export ROUND PRIOR_HEAD_SHA PRIOR_VERDICT REVIEW_SCOPE
-export MODEL_HIGH="$MODEL" MODEL_FUNCTIONAL=claude-sonnet-5
+export MODEL_HIGH="$MODEL" MODEL_FUNCTIONAL=claude-sonnet-5-5
 export RUN_FUNCTIONAL=false FUNCTIONAL_BUDGET_SECONDS=480 DEV_ENV_TIMEOUT_SECONDS=360
 # The second opinion needs the plugin marketplace the WORKFLOW vendors at a
 # pinned SHA (ADR 0005); a local sweep installs no plugin, so the pass cannot

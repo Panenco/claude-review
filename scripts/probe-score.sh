@@ -303,8 +303,8 @@ read_outcome() {
     if [ "${findings:--1}" -lt 0 ] && [ -f "$d/posted/comments.json" ]; then
       IFS=$'\t' read -r findings checks < <(jq -r '
         (if type == "array" then . else (.comments // []) end) as $c
-        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) | not) ] | length),
-            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) ] | length)
+        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*(check|question)\\*\\*"; "i")) | not) ] | length),
+            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*(check|question)\\*\\*"; "i")) ] | length)
           ] | @tsv' "$d/posted/comments.json" 2>/dev/null) || { findings=-1; checks=-1; }
       approx="+approx"
     fi
@@ -318,8 +318,8 @@ read_outcome() {
     if [ "${findings:--1}" -lt 0 ]; then
       IFS=$'\t' read -r findings checks < <(jq -r '
         (.comments // []) as $c
-        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) | not) ] | length),
-            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*check\\*\\*"; "i")) ] | length)
+        | [ ([ $c[] | select(((.body // "") | test("^[[:space:]]*\\*\\*(check|question)\\*\\*"; "i")) | not) ] | length),
+            ([ $c[] | select( (.body // "") | test("^[[:space:]]*\\*\\*(check|question)\\*\\*"; "i")) ] | length)
           ] | @tsv' "$json" 2>/dev/null) || { findings=-1; checks=-1; }
       approx="+approx"
     fi

@@ -160,7 +160,7 @@ if [ "$C2_OK" = "1" ]; then
     # one single-quoted shell string and an apostrophe ends it.
     | [ .[] | select(((.user.login? // "") == $bot)
                      and ((.in_reply_to_id // null) == null)
-                     and (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)) ]
+                     and (((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")) | not)) ]
     | map(((.body // "") | split("\n")) as $lines
           | ($lines[0] // "") as $first
           | (($first | ascii_downcase)
@@ -194,7 +194,7 @@ if [ "$C2_OK" = "1" ]; then
     (add // [])
     | [ .[] | select(((.user.login? // "") == $bot)
                      and ((.in_reply_to_id // null) == null)
-                     and ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")))
+                     and ((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")))
         | {p: (.path // ""), l: (((.line // .original_line // 0) | tostring | tonumber?) // 0)} ]
     | map(select(.p != "" and .l > 0)) | unique' \
     "$WORK/comments.raw" > "$OUT_DIR/prior-checks.json" 2>/dev/null \

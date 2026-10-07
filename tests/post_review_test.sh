@@ -2374,6 +2374,15 @@ assert_eq "the 10 real findings are still carried" "10" "$(echo "$STATE" | jq '.
 # …and the question still reaches a human, under its own heading, not as a finding.
 assert_contains "the check reaches the reader as a question" \
   "### What a human should review" "$(visible_body "$BODY")"
+# The label is **question** now. It must be routed exactly like the old check.
+sed -i.bak 's/\*\*check\*\* Is the fan refund/**question** Is the fan refund/' "$W/review.json"
+rm -rf "$W/capture"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$W_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "a **question** is not carried as a finding either" "0" \
+  "$(echo "$STATE" | jq '[.findings[] | select((.t | test("fan refund")) or .sev == "")] | length')"
+assert_contains "…and it still reaches the reader" "fan refund" "$(visible_body "$BODY")"
 rm -rf "$W" "$W_WIDE"
 
 # ── (x) the body cannot contradict itself about the functional pass ─────────

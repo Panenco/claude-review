@@ -124,8 +124,10 @@ fi
 # A model missing here is a hard error, not a zero: a silently unpriced stage
 # would read as "free" and send the optimisation at the wrong target.
 PRICES='{
+  "claude-opus-5-5":   {"in":4,"out":20,"cr":0.2,"cw5":5,"cw1":8},
+  "claude-sonnet-5-5": {"in":2,"out":10,"cr":0.2,"cw5":2.5,"cw1":4},
   "claude-opus-5":    {"in":5,"out":25,"cr":0.5,"cw5":6.25,"cw1":10},
-  "claude-sonnet-5":  {"in":3,"out":15,"cr":0.3,"cw5":3.75,"cw1":6},
+  "claude-sonnet-5":  {"in":2,"out":10,"cr":0.2,"cw5":2.5,"cw1":4},
   "claude-haiku-4-5": {"in":1,"out":5, "cr":0.1,"cw5":1.25,"cw1":2}
 }'
 

@@ -14,7 +14,7 @@
 #   "blocked"          — over the cap; subsequent calls fail
 #   anything else      — abnormal (network error, expired token, etc.)
 # Both "allowed" and "allowed_warning" mean the token can serve a review.
-# We issue a tiny Haiku probe per candidate, parse the event, and pick a
+# We issue a tiny probe per candidate, parse the event, and pick a
 # token that's actually usable. Pool of one skips the probe entirely.
 #
 # Inputs (env):
@@ -69,14 +69,13 @@ probe_token() {
   if [ -n "${CLAUDE_PROBE_CMD:-}" ]; then
     out=$(CLAUDE_CODE_OAUTH_TOKEN="$token" bash -c "$CLAUDE_PROBE_CMD" 2>&1) || true
   else
-    # Haiku is the cheapest model; the rate limit is account-wide so a
-    # Haiku probe correctly reflects whether subsequent Opus/Sonnet calls
-    # would also be allowed. timeout 30 prevents a hung TLS handshake from
+    # One tiny Sonnet turn; the rate limit is account-wide so this probe
+    # reflects whether the Opus/Sonnet calls that follow would be allowed. timeout 30 prevents a hung TLS handshake from
     # stalling the whole job. --max-turns 1 + "ok" guarantees a single
     # tool-free assistant turn.
     out=$(CLAUDE_CODE_OAUTH_TOKEN="$token" timeout 30 \
       "${CLAUDE_BIN:-$HOME/.local/bin/claude}" -p "ok" \
-        --model claude-haiku-4-5 \
+        --model claude-sonnet-5-5 \
         --max-turns 1 \
         --output-format stream-json \
         --verbose \
@@ -100,7 +99,7 @@ probe_token() {
 # newline on a single-token secret (a common foot-gun when pasting into
 # the GitHub UI) doesn't get split into a valid candidate plus an empty
 # one, AND a token pasted twice into the pool doesn't probe twice
-# (wasted Haiku call + inflated pool_size in the operator log).
+# (wasted probe call + inflated pool_size in the operator log).
 trim_lines() {
   printf '%s\n' "$1" | awk '
     {

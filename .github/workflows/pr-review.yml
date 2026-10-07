@@ -21,23 +21,23 @@ on:
       model_high:
         description: "The reviewing model. Runs both review subagents: review-scan at `effort: medium`, review-verify at `effort: low`. It no longer runs the top-level session — see `model_orchestrator`."
         type: string
-        default: "claude-opus-5"
+        default: "claude-opus-5-5"
       model_orchestrator:
         description: "Model for the top-level orchestrator session. Deliberately NOT `model_high`: this session reviews nothing and writes no review prose — it makes ~7-12 API calls (one Read, one Bash, the Task dispatches, one jq) to fan out subagents and copy one file through. Measured at 7-19% of a run's spend for pure plumbing. Every subagent pins its own model in its installed frontmatter (`model_high` / `model_functional` / `model_standard`), so this value never reaches a reviewing pass."
         type: string
-        default: "claude-sonnet-5"
+        default: "claude-sonnet-5-5"
       model_standard:
         description: "Model for the `/review native` second-opinion pass (Anthropic's official `code-review` plugin, run in-session). LIVE AGAIN as of ADR 0005 — it was a deprecated no-op while that pass was deleted. Deliberately not `model_high`: the plugin's own prompt fans out to ~10 short-lived subagents and picks their models itself."
         type: string
-        default: "claude-sonnet-5"
+        default: "claude-sonnet-5-5"
       model_fast:
         description: "DEPRECATED and ignored — the Haiku judge it named no longer exists. Kept so callers passing it do not break."
         type: string
-        default: "claude-haiku-4-5"
+        default: "claude-sonnet-5-5"
       model_functional:
         description: "Model for the functional tester (drives a real browser via the agent-browser CLI over Bash)."
         type: string
-        default: "claude-sonnet-5"
+        default: "claude-sonnet-5-5"
       pipeline_ref:
         description: "Ref of panenco/claude-review to install skills/scripts from. Pin to a SHA or branch when testing pipeline changes."
         type: string
