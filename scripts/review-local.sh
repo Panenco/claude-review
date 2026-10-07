@@ -57,6 +57,9 @@ set -uo pipefail
 #   EVAL_ROOT    working root for clones and results   (default $TMPDIR/claude-review-eval)
 #   EVAL_MODEL   the REVIEWING model, i.e. the subagents  (default claude-opus-5-5)
 #   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-sonnet-5-5)
+#   EVAL_SCAN_MODEL / EVAL_VERIFY_MODEL / EVAL_SCAN_EFFORT / EVAL_VERIFY_EFFORT
+#                    per-stage overrides for a sweep (default: EVAL_MODEL and the
+#                    efforts in the agent frontmatter)
 #   EVAL_SCOPE       "full" reads the whole PR on a round-2+ run (GATE_FORCE_FULL),
 #                    otherwise the guard decides full-or-delta exactly as CI does
 #   EVAL_HEAD_SHA    review the PR as it stood at this commit instead of its
@@ -295,17 +298,20 @@ agent_effort() { # agent_effort <agent name> → the effort in its frontmatter
 }
 SCAN_EFFORT=$(agent_effort review-scan) || exit 1
 VERIFY_EFFORT=$(agent_effort review-verify) || exit 1
+# Per-stage overrides, for model and effort sweeps only.
+SCAN_EFFORT="${EVAL_SCAN_EFFORT:-$SCAN_EFFORT}"; VERIFY_EFFORT="${EVAL_VERIFY_EFFORT:-$VERIFY_EFFORT}"
+SCAN_MODEL="${EVAL_SCAN_MODEL:-$MODEL}"; VERIFY_MODEL="${EVAL_VERIFY_MODEL:-$MODEL}"
 
-AGENTS=$(jq -n --arg pd "$PIPE" --arg m "$MODEL" \
+AGENTS=$(jq -n --arg pd "$PIPE" --arg sm "$SCAN_MODEL" --arg vm "$VERIFY_MODEL" \
   --arg se "$SCAN_EFFORT" --arg ve "$VERIFY_EFFORT" '{
   "review-scan": {
     description: "Stage 1 of the review. Reads the PR diff itself, self-scales its depth, and writes /tmp/scan.json with candidate findings, model-chosen human-review items, and an argued approve position. Never posts anything.",
     prompt: "Read \($pd)/skills/review-scan.md and follow it exactly. The orchestrator'"'"'s Task prompt carries the PR number and repository. Your single deliverable is the ONE file the orchestrator'"'"'s Task prompt names — `/tmp/scan.json`, or `/tmp/scan-<i>.json` when it hands you a shard — write it on every exit path, including a diff you decide needs no findings at all (an empty `findings` array is the expected output for a clean PR).",
-    model: $m, effort: $se, tools: ["Bash","Read","Write","Glob","Grep"]},
+    model: $sm, effort: $se, tools: ["Bash","Read","Write","Glob","Grep"]},
   "review-verify": {
     description: "Stage 2 and final stage. Refutes every candidate finding in /tmp/scan.json against the source at HEAD, then decides the verdict and renders the posted body and inline comments into /tmp/verify.json.",
     prompt: "Read \($pd)/skills/review-verify.md and follow it exactly. Input: `/tmp/scan.json`. Your single deliverable is `/tmp/verify.json`, and its `body` is the review that gets posted verbatim — nothing downstream rewrites it. Your mandate is to refute: default to refuted whenever you are uncertain.",
-    model: $m, effort: $ve, tools: ["Bash","Read","Write","Glob","Grep"]}}' \
+    model: $vm, effort: $ve, tools: ["Bash","Read","Write","Glob","Grep"]}}' \
   | sed "s|/tmp/|$RUNDIR/|g")
 
 PROMPT="Read $PIPE/skills/review-orchestrator.md and follow it exactly. PR number: $PR. You are the single top-level agent for this review and you do NOT review the diff yourself. Dispatch \`review-scan\` (Task tool, pre-installed subagent type) and then \`review-verify\`; both are pre-installed and carry their own model and effort. The functional tester is pre-installed as \`review-functional-tester\` and is ADVISORY ONLY — dispatch it in the same response as review-scan, and only when RUN_FUNCTIONAL=true, the dev-env is up, and a linked issue supplies real acceptance criteria. Copy review-verify's verdict, body and comments into $RUNDIR/review.json VERBATIM — its \`{{LINK:path:line}}\` placeholders and its wording are deliberate and post-review.sh finishes them; do not rewrite, re-summarise or add sections. Your final artifact is $RUNDIR/review.json — ALWAYS write it before exiting, even degraded. Never end a turn with prose only (no tool calls): that terminates the session and crashes the pipeline — every message must contain a tool call until review.json is written."
@@ -316,7 +322,7 @@ PROMPT="Read $PIPE/skills/review-orchestrator.md and follow it exactly. PR numbe
 DENY='Edit,WebFetch,WebSearch,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr merge:*),Bash(gh pr ready:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue close:*),Bash(gh release:*),Bash(git push:*)'
 
 date +%s > "$RUNDIR/job-start"
-echo "Running the orchestrator ($ORCH_MODEL; subagents $MODEL) — this takes minutes and posts nothing"
+echo "Running the orchestrator ($ORCH_MODEL; scan $SCAN_MODEL/$SCAN_EFFORT, verify $VERIFY_MODEL/$VERIFY_EFFORT) — this takes minutes and posts nothing"
 ( cd "$WT" && claude -p "$PROMPT" \
     --model "$ORCH_MODEL" \
     --effort low \
