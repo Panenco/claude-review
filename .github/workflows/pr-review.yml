@@ -19,7 +19,7 @@ on:
         type: string
         default: "panenco-claude-review"
       model_high:
-        description: "The reviewing model. Runs both review subagents: review-scan at `effort: medium`, review-verify at `effort: low`. It no longer runs the top-level session — see `model_orchestrator`."
+        description: "The reviewing model. Runs both review subagents: review-scan at `effort: high`, review-verify at `effort: medium`. It no longer runs the top-level session — see `model_orchestrator`."
         type: string
         default: "claude-opus-5-5"
       model_orchestrator:
@@ -1025,8 +1025,9 @@ jobs:
         run: |
           mkdir -p "$HOME/.claude/agents"
           # The two stages of the review itself. Their depth is frontmatter, not a
-          # workflow input: review-scan runs `effort: medium`, review-verify
-          # `effort: low` (its mandate is to refute, not to explore).
+          # workflow input: review-scan runs `effort: high`, review-verify
+          # `effort: medium`. Opus 5.5 does less per effort level than Opus 5 did,
+          # so both sit one step higher than they used to.
           for a in review-scan review-verify; do
             envsubst '$MODEL_HIGH $CLAUDE_REVIEW_PIPELINE_DIR' \
               < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/${a}.md" \

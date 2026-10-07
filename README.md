@@ -247,7 +247,7 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
     never rewrites a subagent's prose, so it does not need the
     reviewing model — and it never lends its own to a subagent: each
     one pins its model in its installed frontmatter. Two Task calls:
-      review-scan   (opus-5-5, effort: medium) — reads the diff itself,
+      review-scan   (opus-5-5, effort: high) — reads the diff itself,
                     picks light vs full and says why, emits candidate
                     findings that MUST each name a concrete failure
                     scenario. On round 2+ it reads only
@@ -256,7 +256,7 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
                     → /tmp/scan.json
       (functional tester, sonnet-5-5 — same response, ADVISORY ONLY, and
        only when a linked issue supplies real acceptance criteria)
-      review-verify (opus-5-5, effort: low) — ONE pass over all
+      review-verify (opus-5-5, effort: medium) — ONE pass over all
                     candidates whose mandate is to REFUTE them against
                     the source at HEAD. Uncertain → refuted. Reads
                     /tmp/functional.json if the tester wrote one (it
@@ -831,8 +831,8 @@ The pipeline consists of:
 - **Deterministic guard** (`scripts/guard.sh`) — ~90 lines of pure bash, no network, unit-tested. The only thing that decides whether a model runs at all: skip-review label, empty since-last delta, oversized PR (blocked with a split request it renders itself), no non-generated files. There are no depth tiers
 - **4 skill files** (`skills/`) — prompt templates defining review methodology:
   - `review-orchestrator` — the single top-level Claude Code agent (sonnet-5-5 via `model_orchestrator`, `--effort low` — it is plumbing, not judgment, and its model never reaches a subagent); dispatches `review-scan` and the optional functional tester in one response, then `review-verify`, then copies verify's output into `/tmp/review.json` **verbatim**. It never reviews the diff and never rewrites a subagent's prose
-  - `review-scan` — Task subagent (opus-5-5, `effort: medium`); reads the diff itself with `gh`/`Read`/`Grep`, self-scales light vs full and records why, and emits candidate findings that must each name a concrete failure scenario. On round 2+ it scopes to `git diff <prior_head_sha>..HEAD` and carries the prior review's still-unresolved findings → `/tmp/scan.json`
-  - `review-verify` — Task subagent (opus-5-5, `effort: low`); ONE pass over all candidates whose mandate is to **refute** them against the source at HEAD, defaulting to refuted when uncertain. Decides the verdict and renders the posted body and inline comments → `/tmp/verify.json`. Its prose is final. It is also the **only** consumer of `/tmp/functional.json`, which is the one narrow exception to its never-invent-a-finding rule: the tester is dispatched in the same response as `review-scan` and finishes long after it, so scan can never read it
+  - `review-scan` — Task subagent (opus-5-5, `effort: high`); reads the diff itself with `gh`/`Read`/`Grep`, self-scales light vs full and records why, and emits candidate findings that must each name a concrete failure scenario. On round 2+ it scopes to `git diff <prior_head_sha>..HEAD` and carries the prior review's still-unresolved findings → `/tmp/scan.json`
+  - `review-verify` — Task subagent (opus-5-5, `effort: medium`); ONE pass over all candidates whose mandate is to **refute** them against the source at HEAD, defaulting to refuted when uncertain. Decides the verdict and renders the posted body and inline comments → `/tmp/verify.json`. Its prose is final. It is also the **only** consumer of `/tmp/functional.json`, which is the one narrow exception to its never-invent-a-finding rule: the tester is dispatched in the same response as `review-scan` and finishes long after it, so scan can never read it
   - `review-functional-tester` — drives the live app with the `agent-browser` CLI under a wall-clock budget; first turn is a browser smoke check that hard-fails the run as `overall: CRASH` if Chrome can't launch — silent fallback to curl is forbidden. **Advisory only:** it can never raise or lower the verdict, and its test plan comes only from a linked issue's acceptance criteria (no issue, no test)
 - **Static subagent definitions** (`agents/review-scan.md`, `agents/review-verify.md`, `agents/review-functional-tester.md`) — installed to `~/.claude/agents/` at job start; each pins its model and effort and points at its skill. The tester has no MCP server: the browser is a CLI the subagent drives through Bash, which the workflow installs and preflights before the agent starts
 - **Privileged-API helper** (`scripts/upload-screenshots.sh`) — every raw GitHub REST/GraphQL call the review session makes, which is now only the screenshot upload to the `review-assets` branch. It exists so the session can deny the raw `gh` API subcommand outright

@@ -281,8 +281,8 @@ REVIEW_COMMENT_LIMIT=$(sed -n 's/^comment_limit=//p' <<<"$DECISION")
 export DOCS_ONLY REVIEW_DEPTH_SCALE PR_AUTHOR_IS_BOT=false
 
 # `effort` is NOT optional here. In CI the subagents are installed from
-# agents/*.md, whose frontmatter carries `effort: medium` (scan) and
-# `effort: low` (verify); an --agents JSON that omits the key runs them at the
+# agents/*.md, whose frontmatter carries `effort: high` (scan) and
+# `effort: medium` (verify); an --agents JSON that omits the key runs them at the
 # session's own --effort instead. review-scan is the finding-producing stage, so
 # omitting it measured recall against a SHALLOWER scan than production runs —
 # silently biasing the one number this harness exists to produce. Read from the

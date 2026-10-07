@@ -6,7 +6,7 @@
 name: review-scan
 description: Stage 1 of the review. Reads the PR diff itself, self-scales its depth, and writes /tmp/scan.json with candidate findings, orientation notes for the human reviewer, and an argued approve position. Never posts anything.
 model: ${MODEL_HIGH}
-effort: medium
+effort: high
 tools: Bash, Read, Write, Glob, Grep
 ---
 
