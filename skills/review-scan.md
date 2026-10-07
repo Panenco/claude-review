@@ -97,7 +97,9 @@ For each piece of new or changed behaviour in the diff, `Grep` the governing sou
 
 ## Round 2+ — review only what changed since last time
 
-`ROUND`, `PRIOR_HEAD_SHA` and `REVIEW_SCOPE` are in your env. When `PRIOR_HEAD_SHA` is non-empty and is not HEAD, the previous round already read the rest of this PR and charging for it again is pure waste:
+`ROUND`, `PRIOR_HEAD_SHA` and `REVIEW_SCOPE` are in your env. When `PRIOR_HEAD_SHA` is non-empty, the previous round already read the rest of this PR and charging for it again is pure waste:
+
+- **When `PRIOR_HEAD_SHA` is HEAD, this is a second run on a commit that was already reviewed, and it must repeat the first.** The delta is empty: file no new finding and no new question, and only re-check the prior findings below. A fresh hunt on the same commit finds a different subset every time, which is the one thing a re-run must not do. `REVIEW_SCOPE=full` is the only way that changes.
 
 - Review **only** `git diff ${PRIOR_HEAD_SHA}..HEAD`. Read the wider file for context, but do not hunt for new findings outside that delta.
 - **Unless `REVIEW_SCOPE=full`.** The guard sets that when the delta rounds since the last whole read add up to half the PR or more: the PR you would be reviewing a slice of is no longer the PR anyone read in full. Then review the whole diff exactly as on round 1 — every pass above, every file — and still do everything below.

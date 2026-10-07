@@ -481,6 +481,9 @@ jobs:
           # label (GATE_FORCE_LABEL, read off the PR below) does it persistently.
           # Either one is enough — guard.sh gate 3.
           GATE_FORCE_DEEP: ${{ steps.cmd.outputs.force_deep }}
+          # `deep` is also the one way to ask for a fresh whole-PR hunt on a commit
+          # that was already reviewed; a plain re-run repeats the last result.
+          GATE_FORCE_FULL: ${{ steps.cmd.outputs.force_deep }}
           GATE_TRIGGER: ${{ inputs.command_trigger }}
           GATE_FORCE_LABEL: ${{ inputs.gate_deep_label }}
           GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}

@@ -63,6 +63,14 @@ assert_eq "a prior finding's untouched file is placed in exactly one shard" "1" 
 run SHARD_FILES_TSV=$'src/a.ts\t900\t300\nsrc/b.ts\t200\t50' PRIOR_FINDINGS_JSON="$W/pf.json"
 assert_eq "…without duplicating a file the push did touch" "1" "$(cat "$W"/shard-[0-9]*.txt | grep -cx 'src/a.ts')"
 
+# A re-run on an unchanged commit: the delta is set but empty, so the plan holds
+# only the carried finding's file, never the whole PR again.
+printf '{"files":[{"path":"src/a.ts","additions":900,"deletions":300},{"path":"src/b.ts","additions":200,"deletions":50}]}' > "$W/pr.json"
+run SHARD_FILES_TSV="" PRIOR_FINDINGS_JSON="$W/pf.json" PR_JSON="$W/pr.json"
+assert_eq "an unchanged commit is not re-hunted" "src/untouched.ts" "$(cat "$W"/shard-[0-9]*.txt 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//')"
+run PRIOR_FINDINGS_JSON="$W/pf.json" PR_JSON="$W/pr.json"
+assert_eq "…while a first round still reads the whole PR" "2" "$(cat "$W"/shard-[0-9]*.txt 2>/dev/null | sort -u | wc -l | tr -d ' ')"
+
 printf 'src/lost.ts\n' > "$W/unreviewed.txt"
 printf 'stale.ts\n' > "$W/unreviewed-files.txt"
 run SHARD_FILES_TSV="$big" CARRIED_UNREVIEWED="$W/unreviewed.txt"

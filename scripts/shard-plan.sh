@@ -63,7 +63,9 @@ is_generated() {
 }
 
 TSV="${SHARD_FILES_TSV:-}"
-if [ -z "$TSV" ]; then
+# Unset means "the whole PR". Set but empty is a re-run on an unchanged commit:
+# nothing new to hunt in, only the carried findings below to re-check.
+if [ -z "${SHARD_FILES_TSV+x}" ]; then
   TSV=$(jq -r '.files[]? | "\(.path)\t\(.additions // 0)\t\(.deletions // 0)"' "${PR_JSON:-/tmp/pr.json}" 2>/dev/null)
 fi
 
@@ -73,7 +75,7 @@ PF="${PRIOR_FINDINGS_JSON:-$OUT_DIR/prior-findings.json}"
 UF="${CARRIED_UNREVIEWED:-$OUT_DIR/carried-unreviewed.txt}"
 : > "$OUT_DIR/unreviewed-files.txt"
 carried=0
-if [ -n "$TSV" ]; then
+if [ -n "${SHARD_FILES_TSV+x}" ]; then
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     grep -qxF -- "$p" <(cut -f1 <<< "$TSV") || { TSV+=$'\n'"$p"$'\t0\t0'; carried=$(( carried + 1 )); }

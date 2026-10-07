@@ -524,6 +524,10 @@ want "…and keeps a question it can only guess the answer to" "$VERIFY" \
   'never drop one because you can imagine the answer'
 want "review-verify never approves a baseline document" "$VERIFY" \
   'when `DOCS_BASELINE` is `true` the verdict is never APPROVE'
+want "a second run on the same commit repeats the first" "$SCAN" \
+  'When `PRIOR_HEAD_SHA` is HEAD.*must repeat the first'
+want "review-verify demotes a rebuttal that lives in another file" "$VERIFY" \
+  'A rebuttal that lives in another file demotes, it does not delete'
 want "review-scan runs a security pass on trust boundaries" "$SCAN" \
   'run the security pass on every trust boundary'
 want "…covering caller, tenant, input and leaks" "$SCAN" \

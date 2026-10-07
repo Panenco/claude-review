@@ -54,8 +54,12 @@ if [ -n "${PRIOR_HEAD_SHA:-}" ] && [ "${REVIEW_SCOPE:-delta}" != "full" ]; then
   # --no-renames: a rename+edit would otherwise arrive as one `dir/{old => new}`
   # pseudo-path, which no shard could open, and the renamed file went unreviewed.
   # --diff-filter=d: the rename's deleted old path is not a file a shard can read.
-  SHARD_FILES_TSV=$(git diff --numstat --no-renames --diff-filter=d "$PRIOR_HEAD_SHA"..HEAD 2>/dev/null | awk -F'\t' '{print $3 "\t" $1 "\t" $2}')
-  export SHARD_FILES_TSV
+  # Exported only when the diff itself worked: an empty list now means "this
+  # commit was already reviewed", so a failed diff must not look like one.
+  if DELTA=$(git diff --numstat --no-renames --diff-filter=d "$PRIOR_HEAD_SHA"..HEAD 2>/dev/null); then
+    SHARD_FILES_TSV=$(awk -F'\t' 'NF {print $3 "\t" $1 "\t" $2}' <<< "$DELTA")
+    export SHARD_FILES_TSV
+  fi
 fi
 "$CLAUDE_REVIEW_SCRIPTS"/shard-plan.sh
 # Each shard gets its diff ready-made: on the first consumer runs every shard
