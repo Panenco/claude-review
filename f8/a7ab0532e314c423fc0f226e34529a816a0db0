@@ -1,0 +1,25 @@
+tests/post_review_test.sh
+  s_0d1f555da3edf7::t_31c8113edcc659 3836-3858
+scripts/review-local.sh
+  s_0d1f555da3edf7::t_31c8113edcc659 360
+.github/workflows/pr-review.yml
+  s_0d1f555da3edf7::t_31c8113edcc659 1290-1291
+scripts/post-review.sh
+  s_0d1f555da3edf7::t_31c8113edcc659 312-329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f8a7ab0532e314c423fc0f226e34529a816a0db0",
+  "prompts": {},
+  "sessions": {
+    "s_0d1f555da3edf7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78b0a689-8005-425d-b818-a34a3abf573c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Leslie Jobse <dejobse@gmail.com>"
+    }
+  }
+}
