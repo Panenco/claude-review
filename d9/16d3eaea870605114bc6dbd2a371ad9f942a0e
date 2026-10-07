@@ -1,0 +1,24 @@
+tests/pipeline_contract_test.sh
+  s_0d1f555da3edf7::t_7cce87295b4389 1008-1013
+skills/review-scan.md
+  ai_agent 93,96
+  s_0d1f555da3edf7::t_7cce87295b4389 84-86,90,92,94
+skills/review-verify.md
+  s_0d1f555da3edf7::t_7cce87295b4389 27-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d916d3eaea870605114bc6dbd2a371ad9f942a0e",
+  "prompts": {},
+  "sessions": {
+    "s_0d1f555da3edf7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78b0a689-8005-425d-b818-a34a3abf573c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Leslie Jobse <dejobse@gmail.com>"
+    }
+  }
+}
