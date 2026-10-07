@@ -522,8 +522,14 @@ want "…and writes it under the question label" "$VERIFY" '^\*\*question\*\* '
 want "review-verify caps nits at three in total" "$VERIFY" 'Three nits a review, in total'
 want "…and keeps a question it can only guess the answer to" "$VERIFY" \
   'never drop one because you can imagine the answer'
-want "review-verify never approves a baseline document" "$VERIFY" \
-  'when `DOCS_BASELINE` is `true` the verdict is never APPROVE'
+# Every place a script tells a question from a finding must accept the old
+# **check** label too: comments already on open PRs still carry it.
+BARE=$(grep -c 'test("\^[^"]*\\\\\*\\\\\*check\\\\\*\\\\\*"' "$ROOT"/scripts/post-review.sh "$ROOT"/scripts/prior-findings.sh "$ROOT"/scripts/probe-score.sh | awk -F: '{s+=$2} END{print s+0}')
+BOTH=$(grep -c '(check|question)' "$ROOT"/scripts/post-review.sh "$ROOT"/scripts/prior-findings.sh "$ROOT"/scripts/probe-score.sh | awk -F: '{s+=$2} END{print s+0}')
+if [ "$BARE" = "0" ] && [ "$BOTH" -ge 11 ]; then ok "all $BOTH label matches accept check and question"; else bad "label matches: $BARE still match only check, $BOTH accept both (want 0 and 11+)"; fi
+never "no path is excluded from approval any more" "$VERIFY" \
+  'DOCS_BASELINE|reviewer_config|sensitive_path'
+never "…in scan either" "$SCAN" 'reviewer_config_touched|sensitive_paths_touched'
 want "a second run on the same commit repeats the first" "$SCAN" \
   'When `PRIOR_HEAD_SHA` is HEAD.*must repeat the first'
 want "review-verify demotes a rebuttal that lives in another file" "$VERIFY" \
@@ -650,8 +656,6 @@ never "…and the sensitive-path and effort gates are gone" "$VERIFY" \
   'sensitive_paths_touched|`review_effort` ≤ 3'
 want "review-scan names its doubt when it withholds the argument" "$SCAN" \
   '"unsure_because": ""'
-want "…and flags a PR that edits its own review rules" "$SCAN" \
-  '"reviewer_config_touched": false'
 want "review-scan has the design class" "$SCAN" '^## Design '
 want "…which verify can never turn into REQUEST_CHANGES" "$VERIFY" \
   'not an inert-code finding and not a design finding'

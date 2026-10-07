@@ -286,7 +286,7 @@ assert_file_has "review-local.sh reads depth_scale off the guard decision" \
 assert_file_has "…and comment_limit off the same decision" \
   "REVIEW_COMMENT_LIMIT=\$(sed -n 's/^comment_limit=//p' <<<\"\$DECISION\")" "$LOCAL"
 assert_file_has "…exports the item ceiling to the orchestrator session" \
-  "export DOCS_ONLY DOCS_BASELINE REVIEW_DEPTH_SCALE" "$LOCAL"
+  "export DOCS_ONLY REVIEW_DEPTH_SCALE" "$LOCAL"
 assert_file_has "…and passes the inline cap to the poster" \
   "REVIEW_COMMENT_LIMIT=\"\$REVIEW_COMMENT_LIMIT\"" "$LOCAL"
 assert_file_has "per-shard scans are copied out of the run dir by a glob on that dir" '"$RUNDIR"/scan-[0-9]*.json' "$LOCAL"

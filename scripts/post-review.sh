@@ -309,22 +309,6 @@ case "$VERDICT" in
   APPROVE|COMMENT|REQUEST_CHANGES) ;;
   *) crash_exit "$REVIEW_JSON has unknown verdict '${VERDICT:-<missing>}'." ;;
 esac
-# TWO APPROVAL GATES ARE HELD HERE IN CODE, not only asked of the model. The guard
-# set both flags from the whole PR's paths; a PR author can talk to the model
-# (the PR body, a rule file on the branch) but not to this.
-FORCED_GATE=""
-[ "${DOCS_BASELINE:-}" = "true" ] && FORCED_GATE="docs_baseline"
-[ "${REVIEWER_CONFIG:-}" = "true" ] && FORCED_GATE="reviewer_config"
-if [ "$VERDICT" = "APPROVE" ] && [ -n "$FORCED_GATE" ]; then
-  if jq --arg g "$FORCED_GATE" '.verdict = "COMMENT"
-        | .body = ((.body // "") | sub("^(?<h>\\s*## Claude review[^\n]*)APPROVE"; "\(.h)COMMENT"))
-        | .meta = ((.meta // {}) + {approve_blocked_by: [$g]})' "$REVIEW_JSON" > "$WORK/review.forced.json"; then
-    REVIEW_JSON="$WORK/review.forced.json"; VERDICT="COMMENT"
-    echo "::notice::APPROVE held back in code: $FORCED_GATE."
-  else
-    crash_exit "could not hold back an APPROVE that $FORCED_GATE forbids."
-  fi
-fi
 jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.raw" || crash_exit "could not extract review body from $REVIEW_JSON."
 RAW_COMMENT_COUNT=$(jq '(.comments // []) | length' "$REVIEW_JSON" 2>/dev/null || echo 0)
 jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json" || crash_exit "could not extract comments from $REVIEW_JSON."
@@ -429,10 +413,8 @@ if [ "$VERDICT" = "COMMENT" ]; then
     (.meta.unsure_because // "" | if type == "string" then gsub("[\\n\\r<>]"; " ") | .[0:240] else "" end) as $why
     | def say:
       if   . == "unsure" or . == "no_argument" then "the reviewer is not sure about the quality or the purpose of this change" + (if $why != "" then " (" + $why + ")" else "" end)
-      elif . == "reviewer_config" then "it changes the rules or workflow that steer this review, which a human confirms"
       elif . == "findings" then "a docs-only change with an open finding is fixed before it is approved"
       elif . == "docs_only_note" then "a docs-only diff with an open question sets direction someone should confirm"
-      elif . == "docs_baseline" then "it adds or changes an ADR, architecture doc or PRD, which a human confirms"
       else empty end;
     (.meta.approve_blocked_by // [])
     | (if type == "string" then [.] elif type == "array" then . else [] end)

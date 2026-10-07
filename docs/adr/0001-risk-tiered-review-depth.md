@@ -6,6 +6,8 @@ date: 2026-06-04
 
 # 0001 — Risk-tiered review depth
 
+> **Amended 2026-10-07 (PR #181).** The approve rule changed: APPROVE is the default when no critical or major finding survives and the scan is sure what the PR is for. Minor findings post on an approval, no path is excluded from approval, check comments became at most one question, and unplanned work against an in-repo plan is a finding. Where the text below says otherwise, `skills/review-verify.md` governs.
+
 > **SUPERSEDED by [ADR 0003](0004-two-call-review.md) (2026-08-27).** There are
 > no depth tiers any more. `scripts/review-plan.sh` and `docs/review-plan.md`
 > are deleted; `skills/review-scan.md` reads the diff and

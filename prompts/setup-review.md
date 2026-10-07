@@ -4,7 +4,7 @@ You are setting up the Panenco Claude PR review pipeline in this repository. Fol
 
 ## Principles (read once, apply throughout)
 
-Your output must pass the pipeline's own review on the first commit — **no findings**. Aim for that, not for a green `APPROVE`: the reviewer never approves a PR that changes the files steering its own review (the review config, `bugbot.md`, `.claude/rules/`, the caller workflow), so a setup PR can't get there. A `COMMENT` with zero findings is the good outcome. To achieve it:
+Your output must pass the pipeline's own review on the first commit — **no findings**. A clean setup PR gets an `APPROVE`. To achieve it:
 
 1. **Verify every path you write.** Before referencing any file in `cp`, `source`, or `cat`, actually `ls` it. A broken path fails the bring-up hard or feeds the reviewer wrong context; don't ship one.
 2. **Prefer fail-fast patterns over silent timeouts.** Every readiness wait loop must explicitly log and warn (or exit) when it times out, not just `break` out. "Silently succeeds on timeout" is the #1 bug the reviewer catches in review-configs.
@@ -653,7 +653,7 @@ Single multiline secret with newline-separated `KEY=VALUE` pairs exposed as env 
 - **`oversized`** (blocks) — > 3000 non-generated lines or > 60 files: no model reads anything, the bot posts a canned "split this PR" `REQUEST_CHANGES`. Two equivalent overrides force a real review: commenting `/review deep` (composes with any pass — `/review code deep`, `/review all deep`) covers the run it starts, and the `deep-review` label covers every push, so a PR that genuinely cannot be split needs no re-typing. Either alone is enough. `skip-review` bypasses it entirely.
 - **`empty`** (skips, posts nothing) — nothing reviewable left once generated files (lockfiles, snapshots, `dist/`, `*.min.*`, `*.generated.*`) are excluded.
 
-Anything else runs. `APPROVE` is the normal verdict when no `critical` or `major` finding survives; minor findings post on it. It is withheld when the scan is not sure about the quality or the purpose, when the PR changes the files that steer the review, or on a docs-only PR with a finding, a question or a changed ADR, architecture doc or PRD. That is a `COMMENT` — and a `COMMENT` listing what a human should look at is a good review, not a failure.
+Anything else runs. `APPROVE` is the normal verdict when no `critical` or `major` finding survives; minor findings post on it. It is withheld only when the scan is not sure about the quality or the purpose, or on a docs-only PR with a finding or a question. That is a `COMMENT` — and a `COMMENT` listing what a human should look at is a good review, not a failure.
 
 All of this resolves fresh each round — fix the cause and the next run re-evaluates.
 
@@ -671,7 +671,7 @@ Push the changes on a branch, open a PR, and verify the workflow triggers. Expec
 - A heavy `dev-start.sh` (Docker images + JDK/Gradle + a large monorepo's `node_modules`) can exhaust the hosted runner's ~14 GB free disk and fail the job with `No space left on device` after the review already ran. The workflow reclaims disk before the bring-up via the `free_disk_space` input: `safe` (default) clears tooling no Linux app needs (CodeQL/Haskell/Swift, ~12 GB) and is safe for every repo; set it to `aggressive` (also drops Android SDK + .NET, ~25 GB) **only if your `dev-start.sh` doesn't build Android or .NET**; `off` disables it.
 - PRs opened by bots (renovate, dependabot) need no configuration: nothing reviews them until a human comments `/review`, and there is no `allowed_bots` input any more. A bot's own *comment* never triggers a review — it cannot clear the `author_association` gate.
 - For PRs with UI surface, the functional tester's Turn 1 is a browser smoke check (`agent-browser open about:blank`). If Chrome can't launch, the tester writes `overall: CRASH` and stops. That never lowers the verdict on its own — `review-verify` discards everything in a crashed run. Silent fallback to curl/psql is forbidden: a curl-only PASS on a UI fix is the bug we're guarding against.
-- **Verdict: `COMMENT`, with no findings** — that is the expected good outcome. A setup PR changes the files that steer the review, so `APPROVE` is off the table by construction; don't chase it. Findings are worth chasing: read them and tighten the config, they're almost always real and point at something fixable.
+- **Verdict: `APPROVE`, with no findings** — that is the expected good outcome. Findings are worth chasing: read them and tighten the config, they're almost always real and point at something fixable.
 - The workflow check is **green whenever a review posted**, even on `REQUEST_CHANGES` — the verdict lives in the PR review (use branch protection's required reviews to make it block merges). A red check means the pipeline itself failed.
 
 ## Round 2 — no ladder

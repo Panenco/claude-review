@@ -72,7 +72,6 @@ jq -s --argjson n "$N" --argjson complete "$COMPLETE" "$JQ_NORM"'
       human_review: ($s | map(.human_review // []) | rr($n)),
       approve_argument: (if $complete and all($s[]; (.approve_argument // "") != "") then ($s[0].approve_argument) else "" end),
       unsure_because: (if $complete then ([$s[] | .unsure_because // "" | select(. != "")] | join(" ")) else "part of the diff was not read, a scan shard produced no output" end),
-      reviewer_config_touched: any($s[]; .reviewer_config_touched == true),
       prompt_injection_detected: any($s[]; .prompt_injection_detected == true)
     }' "${parts[@]}" > "$OUT_DIR/scan.json.merged" 2>/dev/null \
   && mv "$OUT_DIR/scan.json.merged" "$OUT_DIR/scan.json" \

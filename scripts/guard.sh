@@ -8,8 +8,6 @@
 # Output — GITHUB_OUTPUT-shaped lines on stdout, appendable verbatim:
 #   proceed=true|false · gate=ok|label|unchanged|oversized|empty · reason=<one line>
 #   docs_only=true|false — proceed path only; nothing but documents changed.
-#   docs_baseline=true|false — docs-only AND touches an ADR, architecture doc or PRD: never approved.
-#   reviewer_config=true|false — the PR changes a file that steers its own review: never approved.
 #   depth_scale=3..8 + comment_limit=6..16 — proceed path only; how deep the
 #   review is allowed to go, derived from diff size. See section 5.
 #   scope=full|delta — proceed path only; whether review-scan reads the whole
@@ -89,14 +87,12 @@ if [ -n "${GATE_PRIOR_HEAD_SHA:-}" ] && [ "${GATE_HUMAN_REQUESTED:-false}" != "t
   fi
 fi
 
-ng_lines=0; ng_files=0; docs_only=true; docs_baseline=false; reviewer_config=false
+ng_lines=0; ng_files=0; docs_only=true
 while IFS=$'\t' read -r path adds dels; do
   [ -z "$path" ] && continue
   is_generated "$path" && continue
   ng_files=$(( ng_files + 1 ))
   case "$path" in *.md|LICENSE) ;; *) docs_only=false ;; esac
-  printf '%s' "$path" | grep -qiE '(^|/)(adrs?|decisions|prds?)/|(^|[/._-])adr[-_.0-9]|(^|[/._-])(architecture|prds?)([/._-]|$)|product-requirements' && docs_baseline=true
-  printf '%s' "$path" | grep -qE '^\.github/review-config\.md$|(^|/)bugbot\.md$|^\.claude/rules/|^\.github/workflows/[^/]*review[^/]*\.ya?ml$' && reviewer_config=true
   [[ "${adds:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + adds ))
   [[ "${dels:-}" =~ ^[0-9]+$ ]] && ng_lines=$(( ng_lines + dels ))
 done <<< "${GATE_FILES_TSV:-}"
@@ -172,5 +168,4 @@ printf 'scope=%s\n' "$scope"
 
 # No code to break, so review-scan's failure_scenario bar alone would silence it.
 printf 'docs_only=%s\n' "$docs_only"
-[ "$docs_only" = true ] || docs_baseline=false; printf 'docs_baseline=%s\nreviewer_config=%s\n' "$docs_baseline" "$reviewer_config"
 emit true ok "" "Reviewing ${ng_files} files / ${ng_lines} non-generated lines (depth ${depth_scale})."

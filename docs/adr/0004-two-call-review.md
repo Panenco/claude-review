@@ -7,6 +7,8 @@ amended-by: 0005
 
 # 0003 — A two-call review: guard, scan, verify
 
+> **Amended 2026-10-07 (PR #181).** The approve rule changed: APPROVE is the default when no critical or major finding survives and the scan is sure what the PR is for. Minor findings post on an approval, no path is excluded from approval, check comments became at most one question, and unplanned work against an in-repo plan is a finding. Where the text below says otherwise, `skills/review-verify.md` governs.
+
 ## Context
 
 The v3 pipeline made **seven model calls** per review: a context builder, two

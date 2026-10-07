@@ -283,34 +283,6 @@ assert_docs_only "a lockfile beside the docs does not" "true" \
   GATE_FILES_TSV=$'docs/plan.md\t40\t2\npnpm-lock.yaml\t900\t900'
 assert_docs_only "LICENSE counts as a document" "true" \
   GATE_FILES_TSV=$'LICENSE\t1\t1'
-baseline_of() { env "$@" bash "$SCRIPT" | sed -n 's/^docs_baseline=//p' | head -1; }
-assert_eq_b() { if [ "$2" = "$3" ]; then echo "OK:   $1"; else echo "FAIL: $1 — want '$2' got '$3'"; fail=$((fail + 1)); fi; }
-assert_eq_b "a slice plan alone is not a baseline document" "false" \
-  "$(baseline_of GATE_FILES_TSV=$'docs/planned/15/tasks/06-page.md\t40\t0')"
-assert_eq_b "an ADR is" "true" \
-  "$(baseline_of GATE_FILES_TSV=$'docs/adr/0012-ffmpeg.md\t40\t0')"
-assert_eq_b "an architecture doc is" "true" \
-  "$(baseline_of GATE_FILES_TSV=$'docs/planned/recording-formats-architecture.md\t40\t0')"
-assert_eq_b "a PRD is" "true" \
-  "$(baseline_of GATE_FILES_TSV=$'docs/planned/15/PRD.md\t40\t0')"
-cfg_of() { env "$@" bash "$SCRIPT" | sed -n 's/^reviewer_config=//p' | head -1; }
-assert_eq_b "a decisions folder counts as an ADR" "true" \
-  "$(baseline_of GATE_FILES_TSV=$'docs/decisions/0003-queue.md\t40\t0')"
-for f in docs/ADR-0012-ffmpeg.md docs/adr-0012.md docs/prds/checkout.md docs/product-requirements.md; do
-  assert_eq_b "$f is a baseline document" "true" "$(baseline_of GATE_FILES_TSV="$f"$'\t40\t0')"
-done
-assert_eq_b "a slice named rearchitecture-cleanup is not" "false" \
-  "$(baseline_of GATE_FILES_TSV=$'docs/planned/15/tasks/06-rearchitecture-cleanup.md\t40\t0')"
-assert_eq_b "a PR editing a review rule file is flagged" "true" \
-  "$(cfg_of GATE_FILES_TSV=$'src/a.ts\t3\t1\n.claude/rules/api.md\t2\t0')"
-assert_eq_b "…and one editing bugbot.md" "true" \
-  "$(cfg_of GATE_FILES_TSV=$'bugbot.md\t2\t0')"
-assert_eq_b "…and one editing the review workflow" "true" \
-  "$(cfg_of GATE_FILES_TSV=$'.github/workflows/claude-review.yml\t2\t0')"
-assert_eq_b "another workflow or a tester cookbook is not" "false" \
-  "$(cfg_of GATE_FILES_TSV=$'.github/workflows/deploy.yml\t2\t0\n.github/claude-review/functional/cookbook.md\t2\t0')"
-assert_eq_b "an ADR beside code is a code diff, not a baseline run" "false" \
-  "$(baseline_of GATE_FILES_TSV=$'docs/adr/0012-ffmpeg.md\t40\t0\nsrc/a.ts\t3\t1')"
 # Proceed-path output only: a short-circuited run has no review to configure.
 assert_docs_only "not emitted on the oversized gate" "-" \
   GATE_FILES_TSV="$BIG_FILES"
@@ -349,10 +321,8 @@ fi
 # → 172 for the full-or-delta scope: one loop over the since-full numstat (the
 # same shape as the size loop above), one flat predicate, one printf. Not a
 # tier: it answers "read it all again?" from one ratio, never "how deep".
-# → 176 for docs_baseline and reviewer_config: two path matches inside the
-# existing loop and one printf. Flags, not tiers.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 176 ]; then
+if [ "$LINES" -le 172 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"
