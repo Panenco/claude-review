@@ -81,15 +81,19 @@ Judge the diff against those criteria. A criterion the code does not meet is an 
 
 **Spec text is one witness, not the verdict.** Types, response shapes and tests *in the diff* say what the author believes the contract is. Where they are internally consistent and the criterion is ambiguous or comes from a SUMMARY, that is a deliberate contract against loose wording, not a defect: at most one `human_review` question asking which reading is meant, or nothing. File the finding only when the governing text is unambiguous AND the code contradicts it, quoting that text in `evidence`. And a whole planning document describes more than any one PR delivers — a criterion this diff does not implement is not automatically a defect.
 
-### Out-of-scope work — a `human_review` question
+### Unplanned work — the plan binds in both directions
+
+The steps above check that what the plan asked for got built. This checks the reverse: **the diff may not add functionality or change behaviour the plan does not describe.** A new endpoint, screen, job, flag, rule or role, a changed response, default or permission, a second feature riding along.
 
 **Only against a real, whole spec.** The `GOVERNING SOURCE` must be an in-repo spec document, a linked GitHub issue or a tracker ticket, and the file must carry no `SPEC IS PARTIAL` marker. Never off a `CONTEXT — NOT A SPECIFICATION` section — it asks for nothing, so everything looks out of scope against it — and never off a partial spec, whose missing pages may be what asked for the work. With no spec at all, emit nothing.
 
-When the diff delivers substantive, *separable* work no criterion asks for — a new endpoint, an unrelated refactor, a surprise dependency, a flag flipped, a second feature — it can be the review's `human_review` question, never a finding: out-of-scope work has no failure scenario, so it is not a defect. Say what the diff delivers that no criterion asks for and ask whether it is meant to ship here. The spec's silence is the alternative the question bar asks for.
+For each piece of new or changed behaviour in the diff, `Grep` the governing source for it. What the source does not describe is out-of-scope work, and how it is filed depends on what governs:
 
-**How firmly you may put it depends on what governs.** With a spec document, say it straight — "the spec does not ask for X" is a statement of fact. With only an issue or ticket summary, which omits detail by design, raise it only when the work is plainly a separate concern, and say you are reading a summary. With a document marked `WRITTEN BY THIS PR`, put it as what the document does not yet say rather than as a verdict.
+- **An in-repo plan or spec governs: it is a finding.** `major` when it is a separable feature or changes behaviour a user or a caller sees, `minor` when it is small and local. The scenario is supplied: **it ships with no decision behind it, and the next slice builds on a plan that no longer describes the code.** `evidence` quotes the code and names the document and section you searched. `fix` is one of two things, in prose: "add it to the plan in this PR" or "move it to its own PR".
+- **Only an issue or ticket summary governs:** a summary omits detail by design, so it is at most the review's `human_review` question, and only when the work is plainly a separate concern. Say that you are reading a summary.
+- **A document marked `WRITTEN BY THIS PR`:** the author can fix the plan in the same PR, so it is `minor`, with `fix` "add it to the plan".
 
-**It takes the one question slot** — it is one observation ("this PR does more than it says"), not one per file. Name the specific files or symbols and say which stated criterion they do not serve; "some changes seem unrelated" is not acceptable. Never for tests, types, imports, formatting, or refactors incidental to delivering the stated change. If the PR body says why the extra work is bundled in, say nothing. Every rule on the channel below still applies to it.
+**One finding per piece of unplanned behaviour, never one per file.** Name the specific files or symbols. "Some changes seem unrelated" is not acceptable. Never for tests, types, imports, formatting, or a refactor incidental to delivering the stated change. A reason in the PR body does not make it planned: it drops a `major` to `minor`, and the fix stays "add it to the plan".
 
 ## Round 2+ — review only what changed since last time
 

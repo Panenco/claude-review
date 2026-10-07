@@ -24,6 +24,8 @@ For every candidate, in ONE pass over all of them:
 
 5. **Out-of-checkout premises** — when the scenario turns on how something outside the diff behaves (a marketplace action, the runner model, a library default, another repo's config), the finding needs that source quoted from a file in this checkout. Vendored or pinned on disk → read it and check the quote. Not on disk → refuted, because neither of you can check it and you must not go fetch it. This is where authors answer "your premise is inverted", and they answer it by reading the source the review only assumed.
 
+**An unplanned-work finding is checked against the plan, not the code.** It says the diff adds behaviour the governing plan does not describe. `Grep` that document for the behaviour: described there → refuted. Not described → it stands at scan's severity, and working code is not a rebuttal.
+
 **A dropped test is not refuted by the code it guarded being correct at HEAD.** When the finding says a move or copy left a test behind, "the guard is still there" is the finding's premise, not its rebuttal — the defect is that nothing checks it any more. Refute it only by finding the assertion elsewhere in the checkout (the same input, the same expected outcome, under another name), or by showing the guarded code did not come across either. Measured: a shard found the three path-containment blocks a move dropped and verify killed it because `resolveWithin` still proved the path.
 
 **Keep a finding only if you can restate its failure_scenario yourself from the code you just read. Uncertain → refuted. Cannot reproduce the scenario on paper → refuted.** Dropping a real bug costs one missed comment; keeping a fake one costs the author's trust in every future review.

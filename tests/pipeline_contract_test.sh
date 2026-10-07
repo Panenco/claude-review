@@ -1005,6 +1005,12 @@ echo "── out-of-scope work is ONE human_review item, and only against a real
 # and against a truncated document the pages we cut may be what asked for it.
 want "review-scan raises out-of-scope work at all" "$SCAN" \
   'out-of-scope work|Out-of-scope work'
+want "…as a finding when an in-repo plan governs" "$SCAN" \
+  'An in-repo plan or spec governs: it is a finding'
+want "…because the plan binds in both directions" "$SCAN" \
+  'may not add functionality or change behaviour the plan does not describe'
+want "review-verify checks it against the plan, not the code" "$VERIFY" \
+  'An unplanned-work finding is checked against the plan'
 want "…gated on a governing source that is a document, issue or ticket" "$SCAN" \
   'GOVERNING SOURCE.{0,20}must be an in-repo spec document'
 want "…never off a context section" "$SCAN" \
