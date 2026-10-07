@@ -759,6 +759,51 @@ want "review-verify puts that answer in the verdict sentence" "$VERIFY" \
   'if the PR exists to fix something'
 
 echo ""
+echo "── the v3.13.1 live audit: six gaps, one pinned rule each ──"
+want "a fix is traced through every other reader of what it changed" "$SCAN" \
+  'every other reader and caller of the value or function the fix changed, and put'
+want "…and a prior finding is only resolved end to end" "$SCAN" \
+  'names the change that closed it, end to end'
+want "…never on a test that stubs the changed call" "$SCAN" \
+  'test that stubs the changed call is not evidence'
+want "the sibling check covers the other values of the same input" "$SCAN" \
+  'another value of the same input'
+want "…and every PR's value tracing walks them, not only a fix PR" "$SCAN" \
+  'walk the other values too: `null`, `undefined`, the un-set state'
+want "an unmentioned behaviour change is a valid question" "$SCAN" \
+  'behaviour change the PR text does not mention is one'
+want "…and its alternative may come from the PR body or a linked issue" "$SCAN" \
+  'quoted from the spec, the PR body or a linked issue'
+want "…which verify accepts when it refutes questions" "$VERIFY" \
+  'spec, PR-body or issue sentence it cites'
+want "…the old behaviour is an alternative only for an unmentioned change" "$VERIFY" \
+  'Only for a behaviour change the PR text does not mention'
+for f in "$SCAN" "$VERIFY"; do
+  want "${f##*/}: stating the change does not answer a question" "$f" \
+    'Stating the change is not an answer, a reason for it is'
+done
+want "criteria in the PR body are the spec when nothing else resolved" "$SCAN" \
+  'PR body lists acceptance criteria.*WRITTEN BY THIS PR'
+want "…also when only context documents resolved" "$SCAN" \
+  'Empty, missing or `GOVERNING SOURCE: none` = no spec'
+want "work the body lists as extra is still named" "$SCAN" \
+  'riding along.*never to nothing'
+want "the plan tally names unplanned additions" "$SCAN" \
+  'additions the plan does not describe'
+want "…and verify keeps the tally in the verdict sentence" "$VERIFY" \
+  'plan tally in that `summary` is kept'
+want "a finding caused by answering an earlier one says so" "$SCAN" \
+  'changed to answer a prior finding says so'
+want "review-verify checks a prose fix against the code" "$VERIFY" \
+  'prose `fix` gets the same check'
+want "a doc sentence about existing code is checked against it" "$SCAN" \
+  '^6\. \*\*A sentence in the changed text states how existing code behaves'
+want "…and verify judges that kind by reading the code" "$VERIFY" \
+  'Kind 6 quotes one sentence about existing code'
+want "a wording-only minor counts against the nit budget" "$VERIFY" \
+  'only wording, comment text or naming, with no behaviour change, counts as a nit'
+
+echo ""
 echo "── a committable suggestion must be checked against tests and callers ──"
 # PR98: right diagnosis, and a ```suggestion``` fence whose patch would have
 # broken an existing test asserting the opposite behaviour. A wrong sentence is

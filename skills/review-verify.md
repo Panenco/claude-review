@@ -32,7 +32,7 @@ For every candidate, in ONE pass over all of them:
 
 **Keep a finding only if you can restate its failure_scenario yourself from the code you just read. Uncertain → refuted. Cannot reproduce the scenario on paper → refuted.** Dropping a real bug costs one missed comment; keeping a fake one costs the author's trust in every future review.
 
-**That test is about the defect, and only the defect.** `fix` is not under test here. A patch you judge wrong, unsafe or unconfirmable is settled separately under Inline comments, where its only two outcomes are keep the fence or replace it with prose. **Refuting a finding because its suggested fix is wrong is an error** — a confirmed defect with no safe patch is still a finding, and still gets posted.
+**That test is about the defect, and only the defect.** `fix` is not under test here. A patch you judge wrong, unsafe or unconfirmable is settled separately under Inline comments, where the outcomes are keep the fence, replace it with prose, or leave the remedy general. **Refuting a finding because its suggested fix is wrong is an error** — a confirmed defect with no safe patch is still a finding, and still gets posted.
 
 Never invent a new finding. You only kill, keep, merge or re-anchor — with the single exception of a reproduced functional failure, below.
 
@@ -58,9 +58,9 @@ A finding carrying `"convention": true` is judged on a different bar: keep it on
 
 **Its `fix` is prose.** Strip any ```suggestion``` fence from this class and state the simpler form in one sentence.
 
-**Three nits a review, in total.** Convention, comment-noise, inert-code and design findings share one budget: keep the 3 the author gains most from and record the rest in `meta.refuted` with reason `over the nit budget`. An ordinary `minor` with a real `failure_scenario` is not a nit and is never cut by this.
+**Three nits a review, in total.** Convention, comment-noise, inert-code and design findings share one budget: keep the 3 the author gains most from and record the rest in `meta.refuted` with reason `over the nit budget`. An unflagged `minor` whose failure is only wording, comment text or naming, with no behaviour change, counts as a nit too. User-facing copy stating a wrong fact is not wording. Any other `minor` with a real `failure_scenario` is never cut by this.
 
-A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and for kinds 1 to 3 keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2** of those. **Kinds 4 and 5 quote one plan sentence and are judged differently**: `Grep` the merged architecture or PRD the evidence names, keep the finding when the concept or functionality really is absent there, refute it when it is described, and never cap them.
+A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and for kinds 1 to 3 keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2** of those. **Kinds 4 and 5 quote one plan sentence and are judged differently**: `Grep` the merged architecture or PRD the evidence names, keep the finding when the concept or functionality really is absent there, refute it when it is described, and never cap them. **Kind 6 quotes one sentence about existing code**: `Read` that code, keep it when the code contradicts the sentence, and never cap it either.
 
 ## The native second opinion — `/tmp/native.json`
 
@@ -148,8 +148,8 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 **Refute each question on scan's own bar.** Drop it when any of these holds:
 
-- **It names no concrete alternative**, or the alternative is not there: `Read` the `path:line` or the spec sentence it cites.
-- **It is already answered** — in the PR body, the spec, a comment on those lines, or an author reply in `/tmp/prior-findings.md`. A question an earlier round asked is never asked again.
+- **It names no concrete alternative**, or the alternative is not there: `Read` the `path:line`, or the spec, PR-body or issue sentence it cites. Only for a behaviour change the PR text does not mention, the behaviour before the diff counts as one, and so does leaving a partly delivered issue open.
+- **It is already answered** — in the PR body, the spec, a comment on those lines, or an author reply in `/tmp/prior-findings.md`. Stating the change is not an answer, a reason for it is. A question an earlier round asked is never asked again.
 - **It is not about a decision.** "Is this intended?", "this holds only because X", "the only place that does Y", "if someone later changes Z". **But never drop one because you can imagine the answer.** A question that names a real alternative and that nothing written answers stays, even when "on purpose" seems likely: a guess at the author's reason is not the author's reason.
 - **A finding already covers the block.** Keep the finding.
 - **You cannot confirm the block.** `path` must be in the diff and `start_line`/`end_line` must both be lines this PR changed. Re-anchor from your `Read` where you can.
@@ -186,7 +186,7 @@ Render exactly this, omitting any section that would be empty:
 - `{{LINK:path:line}}` is a literal placeholder — `post-review.sh` expands it into the GitHub file link. **Never build a URL yourself.**
 - **Never render `### What a human should review` yourself.** The poster owns that heading and writes it only for a question it could not anchor.
 - No footer (the poster appends duration/cost/logs and, when nothing specified this PR, a one-line note saying so), no banners, no "Spec sources", no setup-health bullets, no functional section, no "consolidated from N judges", no explanation of where comments were posted.
-- Verdict sentence: what the PR does and why this verdict. No praise, no restating the sections below it. If the PR exists to fix something, it says whether the fix holds at HEAD — confirm scan's `summary` against the code yourself before repeating it.
+- Verdict sentence: what the PR does and why this verdict. No praise, no restating the sections below it. If the PR exists to fix something, it says whether the fix holds at HEAD — confirm scan's `summary` against the code yourself before repeating it. A plan tally in that `summary` is kept, unplanned additions included.
 
 ## Inline comments
 
@@ -223,7 +223,7 @@ A **question** comment is the other shape — one per surviving `human_review` q
 
 Hard rules:
 
-- **Name the decision and the alternative.** The construct in backticks, then the other way it could go, with its `path:line` or the spec sentence. A question with no alternative in it is the "is this intended?" this channel does not ask.
+- **Name the decision and the alternative.** The construct in backticks, then the other way it could go, with its `path:line` or the quoted sentence. A question with no alternative in it is the "is this intended?" this channel does not ask.
 - **Ask once, and end on the question mark.** One or two short sentences. No verdict, no "should", no advice dressed as a question.
 - **Simple words, short sentences.** No em dashes, and no semicolons.
 - **Cite the spec as a link, never as a sentence.** One trailing `{{DOC:path:line}}` on its own line when `spec_ref` carries a `path:line`, and nothing when it is empty.
@@ -243,7 +243,7 @@ Findings stay single-line — a ```suggestion``` fence must replace exact lines.
 
 The `**question**` prefix is load-bearing — the poster reads it to tell a question from a finding.
 
-**A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead.
+**A wrong patch is worse than a wrong sentence.** Before keeping a ```suggestion``` fence, `Grep` for the tests and callers that exercise those lines and confirm the replacement does not contradict them — a suggestion that flips behaviour an existing test asserts is a committable defect, however right the diagnosis was — but that is a verdict on the patch, never on the finding. If you cannot confirm the replacement, **drop the fence, never the finding**, and state the fix in one prose sentence instead. **A prose `fix` gets the same check**: would following it literally break another caller or contradict the code? If you cannot confirm it, state the problem and leave the remedy general.
 
 ## Output — `/tmp/verify.json`
 
