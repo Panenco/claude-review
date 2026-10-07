@@ -767,15 +767,25 @@ want "…and a prior finding is only resolved end to end" "$SCAN" \
 want "…never on a test that stubs the changed call" "$SCAN" \
   'test that stubs the changed call is not evidence'
 want "the sibling check covers the other values of the same input" "$SCAN" \
-  'another value of the same input \(`null`, `undefined`, the un-set state'
+  'another value of the same input'
+want "…and every PR's value tracing walks them, not only a fix PR" "$SCAN" \
+  'walk the other values too: `null`, `undefined`, the un-set state'
 want "an unmentioned behaviour change is a valid question" "$SCAN" \
   'behaviour change the PR text does not mention is one'
 want "…and its alternative may come from the PR body or a linked issue" "$SCAN" \
   'quoted from the spec, the PR body or a linked issue'
 want "…which verify accepts when it refutes questions" "$VERIFY" \
   'spec, PR-body or issue sentence it cites'
+want "…the old behaviour is an alternative only for an unmentioned change" "$VERIFY" \
+  'Only for a behaviour change the PR text does not mention'
+for f in "$SCAN" "$VERIFY"; do
+  want "${f##*/}: stating the change does not answer a question" "$f" \
+    'Stating the change is not an answer, a reason for it is'
+done
 want "criteria in the PR body are the spec when nothing else resolved" "$SCAN" \
-  'PR body lists acceptance criteria or a checklist.*WRITTEN BY THIS PR'
+  'PR body lists acceptance criteria.*WRITTEN BY THIS PR'
+want "…also when only context documents resolved" "$SCAN" \
+  'Empty, missing or `GOVERNING SOURCE: none` = no spec'
 want "work the body lists as extra is still named" "$SCAN" \
   'riding along.*never to nothing'
 want "the plan tally names unplanned additions" "$SCAN" \

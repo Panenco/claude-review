@@ -32,7 +32,7 @@ For every candidate, in ONE pass over all of them:
 
 **Keep a finding only if you can restate its failure_scenario yourself from the code you just read. Uncertain → refuted. Cannot reproduce the scenario on paper → refuted.** Dropping a real bug costs one missed comment; keeping a fake one costs the author's trust in every future review.
 
-**That test is about the defect, and only the defect.** `fix` is not under test here. A patch you judge wrong, unsafe or unconfirmable is settled separately under Inline comments, where its only two outcomes are keep the fence or replace it with prose. **Refuting a finding because its suggested fix is wrong is an error** — a confirmed defect with no safe patch is still a finding, and still gets posted.
+**That test is about the defect, and only the defect.** `fix` is not under test here. A patch you judge wrong, unsafe or unconfirmable is settled separately under Inline comments, where the outcomes are keep the fence, replace it with prose, or leave the remedy general. **Refuting a finding because its suggested fix is wrong is an error** — a confirmed defect with no safe patch is still a finding, and still gets posted.
 
 Never invent a new finding. You only kill, keep, merge or re-anchor — with the single exception of a reproduced functional failure, below.
 
@@ -58,7 +58,7 @@ A finding carrying `"convention": true` is judged on a different bar: keep it on
 
 **Its `fix` is prose.** Strip any ```suggestion``` fence from this class and state the simpler form in one sentence.
 
-**Three nits a review, in total.** Convention, comment-noise, inert-code and design findings share one budget: keep the 3 the author gains most from and record the rest in `meta.refuted` with reason `over the nit budget`. An unflagged `minor` whose failure is only wording, comment text or naming, with no behaviour change, counts as a nit too. Any other `minor` with a real `failure_scenario` is never cut by this.
+**Three nits a review, in total.** Convention, comment-noise, inert-code and design findings share one budget: keep the 3 the author gains most from and record the rest in `meta.refuted` with reason `over the nit budget`. An unflagged `minor` whose failure is only wording, comment text or naming, with no behaviour change, counts as a nit too. User-facing copy stating a wrong fact is not wording. Any other `minor` with a real `failure_scenario` is never cut by this.
 
 A finding carrying `"prose": true` is the docs-only channel review-scan describes, and it is judged the same way: re-read the document at HEAD and for kinds 1 to 3 keep it only if both quoted passages are really there and really incompatible — uncertain → refuted, and a wordiness, length, tone or layout complaint is refuted whatever it is labelled, because length is never itself a finding. Force `severity` to `minor` and keep at most **2** of those. **Kinds 4 and 5 quote one plan sentence and are judged differently**: `Grep` the merged architecture or PRD the evidence names, keep the finding when the concept or functionality really is absent there, refute it when it is described, and never cap them. **Kind 6 quotes one sentence about existing code**: `Read` that code, keep it when the code contradicts the sentence, and never cap it either.
 
@@ -148,8 +148,8 @@ Then rewrite `/tmp/verify.json` with the revisions and `jq empty` it again.
 
 **Refute each question on scan's own bar.** Drop it when any of these holds:
 
-- **It names no concrete alternative**, or the alternative is not there: `Read` the `path:line`, or the spec, PR-body or issue sentence it cites. The behaviour before the diff, or leaving a partly delivered issue open, counts as one.
-- **It is already answered** — in the PR body, the spec, a comment on those lines, or an author reply in `/tmp/prior-findings.md`. A question an earlier round asked is never asked again.
+- **It names no concrete alternative**, or the alternative is not there: `Read` the `path:line`, or the spec, PR-body or issue sentence it cites. Only for a behaviour change the PR text does not mention, the behaviour before the diff counts as one, and so does leaving a partly delivered issue open.
+- **It is already answered** — in the PR body, the spec, a comment on those lines, or an author reply in `/tmp/prior-findings.md`. Stating the change is not an answer, a reason for it is. A question an earlier round asked is never asked again.
 - **It is not about a decision.** "Is this intended?", "this holds only because X", "the only place that does Y", "if someone later changes Z". **But never drop one because you can imagine the answer.** A question that names a real alternative and that nothing written answers stays, even when "on purpose" seems likely: a guess at the author's reason is not the author's reason.
 - **A finding already covers the block.** Keep the finding.
 - **You cannot confirm the block.** `path` must be in the diff and `start_line`/`end_line` must both be lines this PR changed. Re-anchor from your `Read` where you can.
