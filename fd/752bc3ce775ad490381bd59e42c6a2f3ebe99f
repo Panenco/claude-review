@@ -1,0 +1,43 @@
+scripts/guard.sh
+  s_0d1f555da3edf7::t_21215c94ad6e4b 90
+tests/guard_test.sh
+  s_0d1f555da3edf7::t_21215c94ad6e4b 325
+tests/review_local_test.sh
+  s_0d1f555da3edf7::t_21215c94ad6e4b 289
+prompts/setup-review.md
+  s_0d1f555da3edf7::t_db93d313527eac 7,674
+  s_0d1f555da3edf7::t_21215c94ad6e4b 656
+skills/review-verify.md
+  s_0d1f555da3edf7::t_21215c94ad6e4b 12,129-130,132,135,274
+tests/post_review_test.sh
+  s_0d1f555da3edf7::t_db93d313527eac 3749,3757,3792,3795,3802,3819
+docs/adr/0001-risk-tiered-review-depth.md
+  ai_agent 9-10
+docs/adr/0004-two-call-review.md
+  ai_agent 10-11
+tests/pipeline_contract_test.sh
+  s_0d1f555da3edf7::t_db93d313527eac 530-532
+  s_0d1f555da3edf7::t_6e41b83fffae58 525-529
+README.md
+  s_0d1f555da3edf7::t_21215c94ad6e4b 800
+scripts/review-local.sh
+  s_0d1f555da3edf7::t_21215c94ad6e4b 281
+tests/merge_scans_test.sh
+  s_0d1f555da3edf7::t_21215c94ad6e4b 26,32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fd752bc3ce775ad490381bd59e42c6a2f3ebe99f",
+  "prompts": {},
+  "sessions": {
+    "s_0d1f555da3edf7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78b0a689-8005-425d-b818-a34a3abf573c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Leslie Jobse <dejobse@gmail.com>"
+    }
+  }
+}
