@@ -1287,6 +1287,8 @@ jobs:
           # var with one default; empty on a short-circuited run, where the
           # poster's own `:-10` applies and nothing is capped away.
           REVIEW_COMMENT_LIMIT: ${{ steps.guard.outputs.comment_limit }}
+          # post-review.sh holds the docs-only rule in code: open finding or question, no approve.
+          DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
           # Stamped into the review state block so the next round can find the
           # last full pass. Empty reads as full, which is what round 1 is.
           REVIEW_SCOPE: ${{ steps.guard.outputs.scope }}

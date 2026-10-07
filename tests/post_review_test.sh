@@ -3833,6 +3833,29 @@ assert_not_contains "…nor does a COMMENT whose finding lives only in a comment
 assert_contains "…but it still says why it was not approved" "Not approved because the reviewer is not sure" "$BODY"
 rm -rf "$W"
 
+# Docs-only: an approval with anything still open posts as a COMMENT, in code.
+W=$(mktemp -d)
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nPlans only.",
+        comments: [{path: "src/a.ts", line: 5, side: "RIGHT", body: "**minor** step 4 contradicts D5\n\nA dev picking up the slice cannot tell which holds."}],
+        meta: {findings: [], human_review: [], approve_blocked_by: []}}' > "$W/review.json"
+DOCS_ONLY=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_eq "a docs-only APPROVE with an open finding posts as a COMMENT" "COMMENT" "$(payload_of "$W" | jq -r '.event')"
+assert_contains "…under a COMMENT heading" "## Claude review — COMMENT" "$BODY"
+assert_contains "…saying why" "docs-only change with an open finding" "$BODY"
+rm -rf "$W/capture"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…while the same review on a code diff still approves" "APPROVE" "$(payload_of "$W" | jq -r '.event')"
+rm -rf "$W/capture"
+jq '.comments[0].body = "**question** D3 lists two call sites. Why not one helper, like deleteByPath?"' "$W/review.json" > "$W/r2.json" && mv "$W/r2.json" "$W/review.json"
+DOCS_ONLY=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…and so does an open question on a docs-only run" "COMMENT" "$(payload_of "$W" | jq -r '.event')"
+rm -rf "$W/capture"
+jq '.comments = []' "$W/review.json" > "$W/r2.json" && mv "$W/r2.json" "$W/review.json"
+DOCS_ONLY=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…but a clean docs-only review approves" "APPROVE" "$(payload_of "$W" | jq -r '.event')"
+rm -rf "$W"
+
 # A degraded write judged nothing, so it must not count as a reviewed commit.
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nThe review pipeline failed before it could judge this PR.", comments: [], meta: {pipeline_failed: "scan"}}' > "$W/review.json"

@@ -357,7 +357,7 @@ SPEC_STATUS="$RUNDIR/spec-status" \
 PRIOR_FINDINGS_JSON="$RUNDIR/prior-findings.json" \
 UNREVIEWED_FILE="$RUNDIR/unreviewed-files.txt" \
 HEAD_SHA="$SHA" ROUND="$ROUND" REVIEW_SCOPE="$REVIEW_SCOPE" \
-REVIEW_COMMENT_LIMIT="$REVIEW_COMMENT_LIMIT" \
+REVIEW_COMMENT_LIMIT="$REVIEW_COMMENT_LIMIT" DOCS_ONLY="$DOCS_ONLY" \
   "$SCRIPTS"/post-review.sh > "$OUT/post-review.out" 2>&1
 RC=$?
 cat "$OUT/post-review.out"

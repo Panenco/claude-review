@@ -309,6 +309,24 @@ case "$VERDICT" in
   APPROVE|COMMENT|REQUEST_CHANGES) ;;
   *) crash_exit "$REVIEW_JSON has unknown verdict '${VERDICT:-<missing>}'." ;;
 esac
+# A DOCS-ONLY REVIEW WITH ANYTHING STILL OPEN IS A COMMENT. review-verify is told
+# so and approved such a run anyway in two replays, so the rule is held here:
+# a document is the baseline the next PRs build on, and its open finding or
+# question gets settled before the approval, not after.
+if [ "$VERDICT" = "APPROVE" ] && [ "${DOCS_ONLY:-}" = "true" ]; then
+  OPEN_F=$(jq '((.meta.findings // []) | length)
+               + ([(.comments // [])[] | select((.body // "") | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i"))] | length)' "$REVIEW_JSON" 2>/dev/null)
+  OPEN_Q=$(jq '[(.comments // [])[] | select((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i"))] | length' "$REVIEW_JSON" 2>/dev/null)
+  DOCS_GATE=""
+  [ "${OPEN_Q:-0}" != "0" ] && DOCS_GATE="docs_only_note"
+  [ "${OPEN_F:-0}" != "0" ] && DOCS_GATE="findings"
+  if [ -n "$DOCS_GATE" ] && jq --arg g "$DOCS_GATE" '.verdict = "COMMENT"
+        | .body = ((.body // "") | sub("^(?<h>\\s*## Claude review[^\n]*)APPROVE"; "\(.h)COMMENT"))
+        | .meta = ((.meta // {}) + {approve_blocked_by: [$g]})' "$REVIEW_JSON" > "$WORK/review.docs.json"; then
+    REVIEW_JSON="$WORK/review.docs.json"; VERDICT="COMMENT"
+    echo "::notice::docs-only APPROVE posted as COMMENT: $DOCS_GATE still open."
+  fi
+fi
 jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.raw" || crash_exit "could not extract review body from $REVIEW_JSON."
 RAW_COMMENT_COUNT=$(jq '(.comments // []) | length' "$REVIEW_JSON" 2>/dev/null || echo 0)
 jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json" || crash_exit "could not extract comments from $REVIEW_JSON."
