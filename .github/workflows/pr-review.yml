@@ -19,25 +19,25 @@ on:
         type: string
         default: "panenco-claude-review"
       model_high:
-        description: "The reviewing model. Runs both review subagents: review-scan at `effort: medium`, review-verify at `effort: low`. It no longer runs the top-level session — see `model_orchestrator`."
+        description: "The reviewing model. Runs both review subagents: review-scan at `effort: high`, review-verify at `effort: medium`. It no longer runs the top-level session — see `model_orchestrator`."
         type: string
-        default: "claude-opus-5"
+        default: "claude-opus-5-5"
       model_orchestrator:
         description: "Model for the top-level orchestrator session. Deliberately NOT `model_high`: this session reviews nothing and writes no review prose — it makes ~7-12 API calls (one Read, one Bash, the Task dispatches, one jq) to fan out subagents and copy one file through. Measured at 7-19% of a run's spend for pure plumbing. Every subagent pins its own model in its installed frontmatter (`model_high` / `model_functional` / `model_standard`), so this value never reaches a reviewing pass."
         type: string
-        default: "claude-sonnet-5"
+        default: "claude-sonnet-5-5"
       model_standard:
         description: "Model for the `/review native` second-opinion pass (Anthropic's official `code-review` plugin, run in-session). LIVE AGAIN as of ADR 0005 — it was a deprecated no-op while that pass was deleted. Deliberately not `model_high`: the plugin's own prompt fans out to ~10 short-lived subagents and picks their models itself."
         type: string
-        default: "claude-sonnet-5"
+        default: "claude-sonnet-5-5"
       model_fast:
         description: "DEPRECATED and ignored — the Haiku judge it named no longer exists. Kept so callers passing it do not break."
         type: string
-        default: "claude-haiku-4-5"
+        default: "claude-sonnet-5-5"
       model_functional:
         description: "Model for the functional tester (drives a real browser via the agent-browser CLI over Bash)."
         type: string
-        default: "claude-sonnet-5"
+        default: "claude-sonnet-5-5"
       pipeline_ref:
         description: "Ref of panenco/claude-review to install skills/scripts from. Pin to a SHA or branch when testing pipeline changes."
         type: string
@@ -481,6 +481,9 @@ jobs:
           # label (GATE_FORCE_LABEL, read off the PR below) does it persistently.
           # Either one is enough — guard.sh gate 3.
           GATE_FORCE_DEEP: ${{ steps.cmd.outputs.force_deep }}
+          # `deep` is also the one way to ask for a fresh whole-PR hunt on a commit
+          # that was already reviewed; a plain re-run repeats the last result.
+          GATE_FORCE_FULL: ${{ steps.cmd.outputs.force_deep }}
           GATE_TRIGGER: ${{ inputs.command_trigger }}
           GATE_FORCE_LABEL: ${{ inputs.gate_deep_label }}
           GATE_SKIP_LABEL: ${{ inputs.gate_skip_label }}
@@ -1026,8 +1029,9 @@ jobs:
         run: |
           mkdir -p "$HOME/.claude/agents"
           # The two stages of the review itself. Their depth is frontmatter, not a
-          # workflow input: review-scan runs `effort: medium`, review-verify
-          # `effort: low` (its mandate is to refute, not to explore).
+          # workflow input: review-scan runs `effort: high`, review-verify
+          # `effort: medium`. Opus 5.5 does less per effort level than Opus 5 did,
+          # so both sit one step higher than they used to.
           for a in review-scan review-verify; do
             envsubst '$MODEL_HIGH $CLAUDE_REVIEW_PIPELINE_DIR' \
               < "$CLAUDE_REVIEW_PIPELINE_DIR/agents/${a}.md" \
@@ -1157,10 +1161,8 @@ jobs:
           # never land in an unbuilt environment.
           RUN_FUNCTIONAL: ${{ steps.guard.outputs.functional }}
           DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
-          # How many human-review items this diff is worth (3–8, from diff size).
-          # review-scan caps itself at it; review-verify moves it ±1 on the
-          # review_effort scan reported. Empty on any short-circuited path, where
-          # both skills fall back to 5 — the old flat constant.
+          # A size-derived read on how deep to go (3–8). It no longer sets a count
+          # of comments: questions are capped at 1, or 2 when this is 6 or more.
           REVIEW_DEPTH_SCALE: ${{ steps.guard.outputs.depth_scale }}
           # The orchestrator's gate for the second opinion. TRUE only when the
           # comment asked for it AND the pinned marketplace resolved, so the
@@ -1286,6 +1288,8 @@ jobs:
           # var with one default; empty on a short-circuited run, where the
           # poster's own `:-10` applies and nothing is capped away.
           REVIEW_COMMENT_LIMIT: ${{ steps.guard.outputs.comment_limit }}
+          # post-review.sh holds the docs-only rule in code: open finding or question, no approve.
+          DOCS_ONLY: ${{ steps.guard.outputs.docs_only }}
           # Stamped into the review state block so the next round can find the
           # last full pass. Empty reads as full, which is what round 1 is.
           REVIEW_SCOPE: ${{ steps.guard.outputs.scope }}

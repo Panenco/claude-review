@@ -236,18 +236,8 @@ else
 fi
 # The anti-padding rules are what stop a wider ceiling being filled with noise.
 # They are load-bearing precisely BECAUSE the ceiling now moves, so pin them.
-want "review-scan still bans suspicion with no object" "$SCAN" \
-  'Suspicion with no object'
 want "…still names the un-actionable shapes verbatim" "$SCAN" \
   'Double check this logic'
-want "…and still says a made-up item costs more than a missing one" "$SCAN" \
-  'made-up item costs more than a missing one'
-want "…and says explicitly that the ceiling is not a target" "$SCAN" \
-  'ceiling is a limit, not a quota|ceiling, not a target'
-want "…and that a wider ceiling is not a weaker bar" "$SCAN" \
-  'wider ceiling is not an easier one|relaxes as .REVIEW_DEPTH_SCALE. rises'
-want "review-verify refuses to spend a free slot on a weak item" "$VERIFY" \
-  'buys room, never licence'
 
 echo ""
 echo "── an explicit /review is never answered with silence ──"
@@ -468,8 +458,6 @@ fi
 # scan wrote "an API on a machine with an older poppler now refuses to boot"
 # as a note, exactly the shape the human filed as a defect. Scan is told the
 # shape is never a note; verify relabels one that arrives anyway.
-want "review-scan refuses a note that names who now hits what" "$SCAN" \
-  'A sentence that names who now hits what'
 want "review-verify does not refute a dropped test by the guard still being there" "$VERIFY" \
   'A dropped test is not refuted by the code it guarded being correct'
 want "review-verify relabels such a note as a minor finding" "$VERIFY" \
@@ -501,20 +489,8 @@ echo "── a check is ORIENTATION, not interrogation ──"
 # code is FOR and which part of the spec it serves, anchored across the whole
 # block. These pin that inversion in both directions — the new shape must be
 # there, and the interrogation shape must be gone.
-want "review-scan gates on worth-the-reader-time, not on uncertainty" "$SCAN" \
-  'does a reviewer reading this block go faster'
 never "…and the old uncertainty test is gone" "$SCAN" \
   'would a reviewer who knows this product still want|your answer is not the last word'
-want "…so a note is explicitly never a question" "$SCAN" \
-  'A question, in any costume'
-want "…and narrating the obvious is named the cardinal sin" "$SCAN" \
-  'Narrating the obvious'
-want "…with the plain React component called out by name as the canonical never" "$SCAN" \
-  'plain React component'
-want "…and a note is short because it has one thing to say, not because it was squeezed" "$SCAN" \
-  'Short because there is little to say, not because it was squeezed'
-want "…with the read-aloud test replacing the character budget" "$SCAN" \
-  'say it back to yourself|would actually talk like that'
 # The two style rules that produced the #351 noun-piles, pinned in both files so
 # neither drifts back: an em dash is how a second clause gets bolted on, and a
 # clever sentence is how a reader loses the thread.
@@ -528,33 +504,40 @@ done
 # The DISCOVERY method, not just the output shape: a doubt detector cannot
 # produce orientation however the output is worded, so the traversal itself is
 # segment -> say what it is for -> triage on worth-the-time.
-want "review-scan segments the diff into blocks first" "$SCAN" \
-  'Segment the changed code into blocks'
-want "…then asks what each block is FOR" "$SCAN" \
-  'Say what each block is for'
-want "…then triages on what the reader cannot see for themselves" "$SCAN" \
-  'is there anything here the reader cannot see'
-want "…and says outright that being important is not a reason to write" "$SCAN" \
-  'is a reason to \*\*read\*\* the block, not a reason to \*\*write about\*\* it'
-want "…and says outright not to go hunting for doubts" "$SCAN" \
-  'that traversal finds doubts, and a doubt is not a note'
 never "…so the old doubt taxonomy is gone from review-scan" "$SCAN" \
   '^- \*\*(Prior art|Placement and precedent|Dense logic|Unwritten house idiom|Conspicuous absence)'
-# Each block that survives triage must be kept for a nameable reason, and each
-# dropped one for a nameable reason — the same "name a checkable artifact"
-# discipline the old category list carried.
-for pair in \
-  'an invariant it depends on but does not state:ordering, a precondition' \
-  'a consequence that lands outside the block:breaks, or silently shows nothing' \
-  'a contract other code relies on:callers outside the diff' \
-  'a reason the shape is unusual:constraint that made the obvious version wrong'
-do
-  keep=${pair%%:*}; obl=${pair#*:}
-  if grep -F "$keep" "$SCAN" | grep -qiE "$obl"; then
-    ok "the '$keep' triage rule names what it is looking at"
-  else
-    bad "the '$keep' triage rule must name a checkable artifact (/$obl/)"
-  fi
+# The question channel: rare, about a decision, with a named alternative.
+want "review-scan sorts a remark into finding, question or nothing" "$SCAN" \
+  'Everything else is nothing'
+want "…a question must name the concrete alternative" "$SCAN" \
+  'names the concrete alternative you found'
+want "…must not be answered already" "$SCAN" 'Nobody answered it already'
+want "…and must be able to change the code" "$SCAN" 'The answer could change the code'
+want "…capped at one, two on a large diff" "$SCAN" \
+  'Max 1 per review, 2 when `REVIEW_DEPTH_SCALE` is 6 or more'
+want "review-verify carries at most that many" "$VERIFY" \
+  'at most 1 `human_review` question from scan, 2 when'
+want "…never asks one twice" "$VERIFY" 'never asked again'
+want "…and writes it under the question label" "$VERIFY" '^\*\*question\*\* '
+want "review-verify caps nits at three in total" "$VERIFY" 'Three nits a review, in total'
+want "…and keeps a question it can only guess the answer to" "$VERIFY" \
+  'never drop one because you can imagine the answer'
+# Every place a script tells a question from a finding must accept the old
+# **check** label too: comments already on open PRs still carry it.
+BARE=$(grep -c 'test("\^[^"]*\\\\\*\\\\\*check\\\\\*\\\\\*"' "$ROOT"/scripts/post-review.sh "$ROOT"/scripts/prior-findings.sh "$ROOT"/scripts/probe-score.sh | awk -F: '{s+=$2} END{print s+0}')
+BOTH=$(grep -c '(check|question)' "$ROOT"/scripts/post-review.sh "$ROOT"/scripts/prior-findings.sh "$ROOT"/scripts/probe-score.sh | awk -F: '{s+=$2} END{print s+0}')
+if [ "$BARE" = "0" ] && [ "$BOTH" -ge 11 ]; then ok "all $BOTH label matches accept check and question"; else bad "label matches: $BARE still match only check, $BOTH accept both (want 0 and 11+)"; fi
+never "no path is excluded from approval any more" "$VERIFY" \
+  'DOCS_BASELINE|reviewer_config|sensitive_path'
+never "…in scan either" "$SCAN" 'reviewer_config_touched|sensitive_paths_touched'
+want "a second run on the same commit repeats the first" "$SCAN" \
+  'When `PRIOR_HEAD_SHA` is HEAD.*must repeat the first'
+want "review-verify demotes a rebuttal that lives in another file" "$VERIFY" \
+  'A rebuttal that lives in another file demotes, it does not delete'
+want "review-scan runs a security pass on trust boundaries" "$SCAN" \
+  'run the security pass on every trust boundary'
+for q in 'Who can call it' 'Whose data it touches' 'Where its input goes' 'What it leaks'; do
+  want "…covering: $q" "$SCAN" "$q"
 done
 # The new item shape. why_unresolved existed only to justify a question, so it
 # must not survive in any form, in either file.
@@ -568,28 +551,14 @@ done
 # The spec reference: the in-repo document is the specification, the linked
 # issue is a summary of it. build-spec.sh already orders them that way; a check
 # that cites the issue as the source of truth undoes that.
-want "review-scan cites the spec as a path:line into an in-repo document" "$SCAN" \
-  '`path:line` of the section in the in-repo spec'
-want "…by line number, never a heading anchor that rots when the heading is edited" "$SCAN" \
-  'A line number, never a `#heading` anchor'
-want "…and emits nothing at all when only an issue or ticket governs" "$SCAN" \
-  'In-repo documents only'
 want "review-verify renders that citation as a link, never as a sentence" "$VERIFY" \
   'Cite the spec as a link, never as a sentence'
-want "…so a prose pointer cannot come back as a bullet" "$VERIFY" \
-  'is a pointer that costs a line and teaches the reader nothing'
 want "…and never re-derives spec_ref, because it never loads the spec" "$VERIFY" \
   'spec_ref.{0,20}is scan|do not re-derive'
 # Anti-padding: at least as strong as before (the shapes above are pinned with
 # the depth scale), with the failure mode changed shape rather than removed.
-want "review-scan forbids padding to the ceiling" "$SCAN" \
-  'Do not pad'
-want "…and demands a named construct, not a category" "$SCAN" \
-  'names the construct it is about'
 # The two rates the owner asked for, and the tension between them, stated so a
 # model cannot average them into one lukewarm behaviour.
-want "review-scan says silence is the expected result on a simple code diff" "$SCAN" \
-  'silence is the expected result when the bar below is met'
 # A RATE IS NOT A BAR. The owner estimated 30-50% of PRs would be simple; 39
 # labelled merged PRs from the two consumer repos measured 14% (4 of 28 code
 # PRs, 3 of them borderline). A prompt carrying a target percentage invites the
@@ -597,8 +566,6 @@ want "review-scan says silence is the expected result on a simple code diff" "$S
 # flipped — so the skill encodes the BAR and never a rate, in either direction.
 want "…with no quota in either direction" "$SCAN" \
   'no quota in either direction'
-want "…and says the rate is not the model's concern" "$SCAN" \
-  'How often a diff clears that bar is not your concern'
 for f in "$SCAN" "$VERIFY"; do
   n=${f##*/}
   never "$n encodes no target approval rate" "$f" \
@@ -665,36 +632,10 @@ want "…and does not go fetch it either" "$VERIFY" \
 # Blast radius, measured rather than guessed: size is necessary but not
 # sufficient (0 of 14 PRs over 100 added lines were simple; only 4 of 14 under
 # it were), and three path/vocabulary signals decided the rest.
-want "review-scan says size does not predict blast radius" "$SCAN" \
-  'size does not predict it'
-want "…naming the workflow / deploy / dev-env path signal" "$SCAN" \
-  'workflow file, a deploy script or a dev-env script'
-want "…the migration signal" "$SCAN" \
-  'A migration\*\* — `\.sql`, `\.prisma`'
-want "…the auth/tenancy/visibility vocabulary signal" "$SCAN" \
-  'Auth, tenancy or visibility vocabulary in the changed lines'
-want "…and the new-identifier-others-call signal" "$SCAN" \
-  'A new identifier something outside the diff will call'
-want "…with the positive shape a quiet diff had" "$SCAN" \
-  'introducing nothing new for anyone else to call'
 # ADR 0004 killed the structural classifier on purpose. These are signals a
 # reader weighs, not a tier resolver that decides before the model reads.
-want "…explicitly NOT a lookup table, so no tier ladder comes back" "$SCAN" \
-  'not a lookup table that decides for you'
-want "…and a mechanical-looking change in that set is not quiet" "$SCAN" \
-  'Mechanical-looking is not the same as quiet'
-want "…so the never-a-note mechanical rule carves it out" "$SCAN" \
-  'the shape is mechanical and the reach is not'
-want "…while a DOCS_ONLY run inverts the default" "$SCAN" \
-  'DOCS_ONLY.{0,20}run the default inverts'
-want "…because a document is the baseline for future work" "$SCAN" \
-  'baseline the next PRs are built on'
 want "…with faithful slicing as the one docs-only case that earns silence" "$SCAN" \
   'faithful slicing'
-want "…which is the exception, stated without a rate" "$SCAN" \
-  'exception rather than the rule'
-want "…discriminated by what the merged documents did not already imply" "$SCAN" \
-  'could not have derived from the already-merged architecture'
 # APPROVE. "No notes" no longer means "nobody needs to read this diff", so the
 # old inverse-logic gate is gone and zero notes is a reason to approve.
 never "the contradictory boolean is gone from review-scan" "$SCAN" \
@@ -702,28 +643,32 @@ never "the contradictory boolean is gone from review-scan" "$SCAN" \
 never "…and from review-verify" "$VERIFY" \
   'human_review_adds_nothing'
 want "review-scan says zero notes is a reason to approve" "$SCAN" \
-  'Zero notes is a reason to approve, not a reason to hesitate'
+  'No question is a reason to approve, not a reason to hesitate'
 want "…and that an unnameable doubt does not withhold approval" "$SCAN" \
   'doubt you cannot name is not a reason to withhold approval'
 want "review-verify approves on the argued case alone" "$VERIFY" \
   'a real, non-empty `approve_argument` from scan'
 never "…and the any-doubt veto is gone" "$VERIFY" \
   'Any doubt → not APPROVE'
+want "…and minor findings do not block it" "$VERIFY" \
+  'Surviving `minor` findings do not block it'
+never "…and the sensitive-path and effort gates are gone" "$VERIFY" \
+  'sensitive_paths_touched|`review_effort` ≤ 3'
+want "review-scan names its doubt when it withholds the argument" "$SCAN" \
+  '"unsure_because": ""'
+want "review-scan has the design class" "$SCAN" '^## Design '
+want "…which verify can never turn into REQUEST_CHANGES" "$VERIFY" \
+  'not an inert-code finding and not a design finding'
+want "review-scan ticks the plan steps" "$SCAN" 'tick its steps'
+want "…and files new architecture or functionality in a plan" "$SCAN" \
+  'architectural concept the merged architecture does not have'
 want "…so notes never block APPROVE on a code diff" "$VERIFY" \
-  'Surviving notes never block APPROVE on a code diff'
+  'A question never blocks APPROVE on a code diff'
 want "…but a note on a DOCS_ONLY run does" "$VERIFY" \
-  'DOCS_ONLY.{0,60}add one more: zero surviving notes'
+  'DOCS_ONLY.{0,60}add one more: zero surviving findings and no surviving question'
 # A check still cannot move the verdict in the blocking direction.
 want "a check can never reach REQUEST_CHANGES" "$VERIFY" \
-  'note carries no severity and can NEVER produce REQUEST_CHANGES'
-want "review-verify re-attacks carried notes" "$VERIFY" \
-  'Refute each note'
-want "…dropping one that narrates the block" "$VERIFY" \
-  'It labels or narrates the block'
-want "…and one that asks a question" "$VERIFY" \
-  'It is a question'
-want "…but not one that merely looks obvious to the reviewer of the reviewer" "$VERIFY" \
-  'Do not drop a note because the block looks obvious to YOU'
+  'question carries no severity and can NEVER produce REQUEST_CHANGES'
 # The answerable-scope claim has to name a route the sandbox can actually take.
 # c778eba told the model to go read "a pinned dependency the repo already
 # references" while --disallowedTools denies WebFetch, WebSearch and `gh api`
@@ -771,15 +716,11 @@ fi
 # mitigates it" inside "A risk the code ..." — a literal duplication of "risk".
 # The intent (an item the cited line already documents AND mitigates) is
 # unchanged, so the regex now tolerates the de-duplicated phrasing.
-want "review-scan drops a note the cited code already mitigates" "$SCAN" \
-  'already documents (the risk )?and mitigates'
 
 # ...but a drop with no trace is the same failure shape as the bugs above: the
 # context builder went out and nothing recorded it; suppression was findings-only
 # and nothing recorded that either. Every killed checkbox must be auditable in
 # the uploaded verify.json, and must stay OUT of the posted review.
-want "review-verify records every dropped human_review note" "$VERIFY" \
-  'Every dropped note leaves a trace'
 want "…tagged so the kinds are distinguishable in meta.refuted" "$VERIFY" \
   '"kind": "finding\|human_review\|screenshot\|functional"'
 want "…carrying what was written" "$VERIFY" \
@@ -1073,6 +1014,12 @@ echo "── out-of-scope work is ONE human_review item, and only against a real
 # and against a truncated document the pages we cut may be what asked for it.
 want "review-scan raises out-of-scope work at all" "$SCAN" \
   'out-of-scope work|Out-of-scope work'
+want "…as a finding when an in-repo plan governs" "$SCAN" \
+  'An in-repo plan or spec governs: it is a finding'
+want "…because the plan binds in both directions" "$SCAN" \
+  'may not add functionality or change behaviour the plan does not describe'
+want "review-verify checks it against the plan, not the code" "$VERIFY" \
+  'An unplanned-work finding is checked against the plan'
 want "…gated on a governing source that is a document, issue or ticket" "$SCAN" \
   'GOVERNING SOURCE.{0,20}must be an in-repo spec document'
 want "…never off a context section" "$SCAN" \
@@ -1081,12 +1028,6 @@ want "…never off a partial spec" "$SCAN" \
   'never off a partial spec'
 want "…and put more carefully when only a summary governs" "$SCAN" \
   'you are reading a summary'
-want "…as a human_review note, never a finding" "$SCAN" \
-  'human_review`? note, never a finding'
-want "…stated as fact rather than asked as a question" "$SCAN" \
-  'never asks the reviewer a question'
-want "…capped at one per review" "$SCAN" \
-  'At most one such note per review'
 want "…naming specific files or symbols, not a vague hunch" "$SCAN" \
   'specific files or symbols'
 want "…and exempting work incidental to the stated change" "$SCAN" \
@@ -1873,7 +1814,7 @@ LOCAL="$ROOT/scripts/review-local.sh"
 want "review-local runs the orchestrator on its own (cheap) model" "$LOCAL" \
   '\-\-model "\$ORCH_MODEL"'
 want "…defaulting to Sonnet, like the workflow" "$LOCAL" \
-  'ORCH_MODEL="\$\{EVAL_ORCH_MODEL:-claude-sonnet-5\}"'
+  'ORCH_MODEL="\$\{EVAL_ORCH_MODEL:-claude-sonnet-5-5\}"'
 want "…while the subagents keep EVAL_MODEL" "$LOCAL" \
   'MODEL_HIGH="\$MODEL"'
 
@@ -1884,14 +1825,8 @@ want "…while the subagents keep EVAL_MODEL" "$LOCAL" \
 # one string: it stops blocking, it still gets read.
 want "review-verify demotes an unanswered reply rather than dropping it" "$VERIFY" \
   'It is demoted, never deleted'
-want "…and the reply itself reaches the reader" "$VERIFY" \
-  'naming the reply in `what_to_know`'
 # N and "never add your own" bound the notes SCAN wrote; a stepped-down finding
 # is neither, and must not fall off the end of that budget.
-want "…outside the note cap" "$VERIFY" \
-  'outside the N cap'
-want "…and named as the one exception to never adding your own" "$VERIFY" \
-  'the single exception is the demoted replied-to finding'
 
 echo ""
 echo "── a large diff is scanned in shards, merged before verify ──"

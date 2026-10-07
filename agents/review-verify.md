@@ -6,7 +6,7 @@
 name: review-verify
 description: Stage 2 and final stage. Refutes every candidate finding in /tmp/scan.json against the source at HEAD, then decides the verdict and renders the posted body and inline comments into /tmp/verify.json.
 model: ${MODEL_HIGH}
-effort: low
+effort: medium
 tools: Bash, Read, Write, Glob, Grep
 ---
 

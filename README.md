@@ -242,21 +242,21 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
         Functional-only work is skipped unless a comment asked for it.
     |
 [One agent: Review: orchestrate]  (anthropics/claude-code-action)
-    A single sonnet-5 session at --effort low (`model_orchestrator`).
+    A single sonnet-5-5 session at --effort low (`model_orchestrator`).
     It orchestrates and writes files; it never reviews the diff and
     never rewrites a subagent's prose, so it does not need the
     reviewing model — and it never lends its own to a subagent: each
     one pins its model in its installed frontmatter. Two Task calls:
-      review-scan   (opus-5, effort: medium) — reads the diff itself,
+      review-scan   (opus-5-5, effort: high) — reads the diff itself,
                     picks light vs full and says why, emits candidate
                     findings that MUST each name a concrete failure
                     scenario. On round 2+ it reads only
                     git diff <prior_head_sha>..HEAD and carries the
                     prior review's still-unresolved findings.
                     → /tmp/scan.json
-      (functional tester, sonnet-5 — same response, ADVISORY ONLY, and
+      (functional tester, sonnet-5-5 — same response, ADVISORY ONLY, and
        only when a linked issue supplies real acceptance criteria)
-      review-verify (opus-5, effort: low) — ONE pass over all
+      review-verify (opus-5-5, effort: medium) — ONE pass over all
                     candidates whose mandate is to REFUTE them against
                     the source at HEAD. Uncertain → refuted. Reads
                     /tmp/functional.json if the tester wrote one (it
@@ -636,7 +636,7 @@ Note: a _present but broken_ `dev-start.sh` is not a verdict input either — th
 
 ## Spec-presence gate
 
-> **Superseded by the APPROVE bar in [ADR 0003](docs/adr/0004-two-call-review.md).** There is no separate spec gate and no `manual_spec_present` flag. `APPROVE` now requires `review-verify` to accept an argued case that a human pass over the diff changes nothing — an unargued approval is rejected, so an unspecified PR fails that bar without a gate of its own. The description below is kept for the record.
+> **Superseded by the APPROVE bar in [ADR 0003](docs/adr/0004-two-call-review.md).** There is no separate spec gate and no `manual_spec_present` flag. `APPROVE` is the default when no `critical` or `major` finding survives and `review-scan` is sure what the PR is for. A missing spec alone does not withhold it. The description below is kept for the record.
 
 The pipeline withheld `APPROVE` whenever the PR had no human-authored spec. The judges decided this from the spec sources gathered in `context.md` — a linked GitHub issue with a non-trivial body, a PRD, an external-tracker spec, or a substantive manually-written PR-body section all qualify. Auto-generated PR descriptions (Cursor, Cursor Bugbot, CodeRabbit, Gemini Code Assist, Claude Code) describe what the diff _does_, not what it _should do_, and don't qualify on their own — they're a code summary, not a contract. When the judges set `manual_spec_present: false`, the verdict is downgraded from `APPROVE` to `COMMENT` and the review body explains how to fix it (link an issue, paste acceptance criteria, or wire up an external tracker). Findings still post normally; only the green-check approval is gated. Bot-authored PRs (renovate, dependabot) are exempt — a machine PR can never carry a human spec, so the gate would be permanent noise there.
 
@@ -797,7 +797,7 @@ permissions:
 - **Oversized PRs** — PRs over the size ceiling (default 3000 non-generated lines or 60 files) are blocked with a `REQUEST_CHANGES` asking to split, with **no model call at all** — `guard.sh` renders that body itself. Ask again after splitting and the block re-evaluates against the new size. If the PR genuinely cannot be split, comment `/review deep` (or `/review code deep`, `/review all deep` — it composes with any pass) to review it anyway; the `deep-review` label is the persistent equivalent, applying to every push instead of one run. Either input alone lifts the ceiling. `skip-review` parks a PR the bot must not touch and wins over both — it stays label-only, because "never review this PR" is state, not a one-shot request.
 
   **Committed build output does not count towards that ceiling.** Lockfiles, `dist/`, `build/`, minified bundles, `openapi*`/`swagger*` specs, `schema.graphql` and `*.gen.*` are excluded from the size, so a regenerated artifact cannot get a small PR refused — one committed `openapi.combined.json` put a 143-line diff over 45000 lines and it was blocked unread. If your repo commits build output the built-in list does not name, declare it with `gate_generated_globs: "*.pot proto/**"` in the caller. Exclusion only changes the size arithmetic; the reviewer still gets the whole diff.
-- **Manual-spec gate** — **deleted by [ADR 0003](docs/adr/0004-two-call-review.md).** A missing spec no longer downgrades the verdict on its own. `APPROVE` now requires `review-scan` to argue why a human pass would change nothing, plus no sensitive path touched and a low review-effort score — so an unspecified PR usually lands on `COMMENT` anyway, but because nothing could be vouched for, not because a gate fired.
+- **Manual-spec gate** — **deleted by [ADR 0003](docs/adr/0004-two-call-review.md).** A missing spec no longer downgrades the verdict on its own. `APPROVE` is now the default when no `critical` or `major` finding survives: it is withheld only when `review-scan` says it is not sure about the quality or the purpose (and names why), or on a docs-only PR that carries a finding or a question. No path is excluded from approval. Minor findings post on an approved review.
 Only two things now decide a verdict: surviving findings, and the oversized guard. `REQUEST_CHANGES` means a confirmed critical or major finding, or a diff too large to read. Everything else — no spec, no dev env, a crashed tester — is reported, never blocked on.
 
 ### 3. New optional knobs (defaults preserve v1 behaviour)
@@ -830,9 +830,9 @@ The pipeline consists of:
 - **Reusable workflow** (`.github/workflows/pr-review.yml`) — prior-state derivation from the PR's review history, the deterministic guard, dev-env setup, pinned agent-browser + Chrome install and launch preflight (cached, decoupled from the consumer repo), subagent installation, the single `claude-code-action` invocation, the deterministic poster
 - **Deterministic guard** (`scripts/guard.sh`) — ~90 lines of pure bash, no network, unit-tested. The only thing that decides whether a model runs at all: skip-review label, empty since-last delta, oversized PR (blocked with a split request it renders itself), no non-generated files. There are no depth tiers
 - **4 skill files** (`skills/`) — prompt templates defining review methodology:
-  - `review-orchestrator` — the single top-level Claude Code agent (sonnet-5 via `model_orchestrator`, `--effort low` — it is plumbing, not judgment, and its model never reaches a subagent); dispatches `review-scan` and the optional functional tester in one response, then `review-verify`, then copies verify's output into `/tmp/review.json` **verbatim**. It never reviews the diff and never rewrites a subagent's prose
-  - `review-scan` — Task subagent (opus-5, `effort: medium`); reads the diff itself with `gh`/`Read`/`Grep`, self-scales light vs full and records why, and emits candidate findings that must each name a concrete failure scenario. On round 2+ it scopes to `git diff <prior_head_sha>..HEAD` and carries the prior review's still-unresolved findings → `/tmp/scan.json`
-  - `review-verify` — Task subagent (opus-5, `effort: low`); ONE pass over all candidates whose mandate is to **refute** them against the source at HEAD, defaulting to refuted when uncertain. Decides the verdict and renders the posted body and inline comments → `/tmp/verify.json`. Its prose is final. It is also the **only** consumer of `/tmp/functional.json`, which is the one narrow exception to its never-invent-a-finding rule: the tester is dispatched in the same response as `review-scan` and finishes long after it, so scan can never read it
+  - `review-orchestrator` — the single top-level Claude Code agent (sonnet-5-5 via `model_orchestrator`, `--effort low` — it is plumbing, not judgment, and its model never reaches a subagent); dispatches `review-scan` and the optional functional tester in one response, then `review-verify`, then copies verify's output into `/tmp/review.json` **verbatim**. It never reviews the diff and never rewrites a subagent's prose
+  - `review-scan` — Task subagent (opus-5-5, `effort: high`); reads the diff itself with `gh`/`Read`/`Grep`, self-scales light vs full and records why, and emits candidate findings that must each name a concrete failure scenario. On round 2+ it scopes to `git diff <prior_head_sha>..HEAD` and carries the prior review's still-unresolved findings → `/tmp/scan.json`
+  - `review-verify` — Task subagent (opus-5-5, `effort: medium`); ONE pass over all candidates whose mandate is to **refute** them against the source at HEAD, defaulting to refuted when uncertain. Decides the verdict and renders the posted body and inline comments → `/tmp/verify.json`. Its prose is final. It is also the **only** consumer of `/tmp/functional.json`, which is the one narrow exception to its never-invent-a-finding rule: the tester is dispatched in the same response as `review-scan` and finishes long after it, so scan can never read it
   - `review-functional-tester` — drives the live app with the `agent-browser` CLI under a wall-clock budget; first turn is a browser smoke check that hard-fails the run as `overall: CRASH` if Chrome can't launch — silent fallback to curl is forbidden. **Advisory only:** it can never raise or lower the verdict, and its test plan comes only from a linked issue's acceptance criteria (no issue, no test)
 - **Static subagent definitions** (`agents/review-scan.md`, `agents/review-verify.md`, `agents/review-functional-tester.md`) — installed to `~/.claude/agents/` at job start; each pins its model and effort and points at its skill. The tester has no MCP server: the browser is a CLI the subagent drives through Bash, which the workflow installs and preflights before the agent starts
 - **Privileged-API helper** (`scripts/upload-screenshots.sh`) — every raw GitHub REST/GraphQL call the review session makes, which is now only the screenshot upload to the `review-assets` branch. It exists so the session can deny the raw `gh` API subcommand outright

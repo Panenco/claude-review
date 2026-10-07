@@ -165,8 +165,7 @@ fi
 #    three flat constants (0-5 items, carry 5, cap 10) that gave a typo fix and a
 #    2500-line refactor identical depth. A 400-line PR (the team limit) lands on
 #    5/10 — exactly the old constants — so the common case does not move.
-#    review_effort is unknown until scan has run; review-verify moves this by one
-#    on it. Emitted on the proceed path only, so a short-circuited run sets no
+#    Emitted on the proceed path only, so a short-circuited run sets no
 #    step output and post-review.sh falls back to its own default.
 weight=$(( ng_lines + 25 * ng_files ))
 depth_scale=$(( 3 + weight / 250 ))

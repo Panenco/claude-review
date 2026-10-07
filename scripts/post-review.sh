@@ -309,6 +309,24 @@ case "$VERDICT" in
   APPROVE|COMMENT|REQUEST_CHANGES) ;;
   *) crash_exit "$REVIEW_JSON has unknown verdict '${VERDICT:-<missing>}'." ;;
 esac
+# A DOCS-ONLY REVIEW WITH ANYTHING STILL OPEN IS A COMMENT. review-verify is told
+# so and approved such a run anyway in two replays, so the rule is held here:
+# a document is the baseline the next PRs build on, and its open finding or
+# question gets settled before the approval, not after.
+if [ "$VERDICT" = "APPROVE" ] && [ "${DOCS_ONLY:-}" = "true" ]; then
+  OPEN_F=$(jq '((.meta.findings // []) | length)
+               + ([(.comments // [])[] | select((.body // "") | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i"))] | length)' "$REVIEW_JSON" 2>/dev/null)
+  OPEN_Q=$(jq '[(.comments // [])[] | select((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i"))] | length' "$REVIEW_JSON" 2>/dev/null)
+  DOCS_GATE=""
+  [ "${OPEN_Q:-0}" != "0" ] && DOCS_GATE="docs_only_note"
+  [ "${OPEN_F:-0}" != "0" ] && DOCS_GATE="findings"
+  if [ -n "$DOCS_GATE" ] && jq --arg g "$DOCS_GATE" '.verdict = "COMMENT"
+        | .body = ((.body // "") | sub("^(?<h>\\s*## Claude review[^\n]*)APPROVE"; "\(.h)COMMENT"))
+        | .meta = ((.meta // {}) + {approve_blocked_by: [$g]})' "$REVIEW_JSON" > "$WORK/review.docs.json"; then
+    REVIEW_JSON="$WORK/review.docs.json"; VERDICT="COMMENT"
+    echo "::notice::docs-only APPROVE posted as COMMENT: $DOCS_GATE still open."
+  fi
+fi
 jq -r '.body // ""' "$REVIEW_JSON" > "$WORK/body.raw" || crash_exit "could not extract review body from $REVIEW_JSON."
 RAW_COMMENT_COUNT=$(jq '(.comments // []) | length' "$REVIEW_JSON" 2>/dev/null || echo 0)
 jq '(.comments // []) | map(select(type == "object"))' "$REVIEW_JSON" > "$WORK/comments.json" || crash_exit "could not extract comments from $REVIEW_JSON."
@@ -397,37 +415,35 @@ if [ -s "$UNREVIEWED_FILE" ]; then
 fi
 
 # ── 2a1. WHY THIS IS NOT AN APPROVE ─────────────────────────────────────────
-# APPROVE is a conjunction of four gates (review-verify.md); the model names
-# every one that failed and the poster renders them, so a verdict that finds
-# nothing and still withholds the approval says why. Silent when there are
-# findings: they are already the answer.
+# APPROVE is withheld by a short list of gates (review-verify.md); the model
+# names every one that held and the poster renders them, so a verdict that
+# withholds the approval says why.
 # A STRING IS ACCEPTED TOO. `map` over one is a jq ERROR, which this stage
 # swallows into an empty notice — a type mismatch here does not misrender, it
 # disappears. The field shipped as a string once, and silence is expensive.
 #
-# COMMENT ONLY, AND NOT ON meta.findings ALONE. `meta` is model-written and can
-# be empty while three criticals post inline (section 4 says the same, and says
-# why). "No defect was found" printed under those criticals is the review
-# contradicting itself, so the severity-marked comments are counted too, and a
-# REQUEST_CHANGES never reaches here whatever meta says.
+# COMMENT ONLY. "No defect was found" is added only when nothing severity-marked
+# posts, and NOT ON meta.findings ALONE: `meta` is model-written and can be
+# empty while three criticals post inline, so the comments are counted too.
 APPROVE_NOTICE=""
-if [ "$VERDICT" = "COMMENT" ] \
-   && [ "$(jq '((.meta.findings // []) | length)
-               + ([(.comments // [])[] | select(((.body // "")
-                   | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i")))] | length)' \
-          "$REVIEW_JSON" 2>/dev/null)" = "0" ]; then
+if [ "$VERDICT" = "COMMENT" ]; then
   GATES=$(jq -r '
-    def say:
-      if   . == "no_argument"    then "the scan produced no approve argument"
-      elif . == "sensitive_path" then "it touches a sensitive path (auth, payments, migrations, CI or infra), always read by a human"
-      elif . == "effort"         then "the diff needed more judgement than an unread approval allows"
-      elif . == "docs_only_note" then "a docs-only diff carrying a note sets direction someone should confirm"
+    (.meta.unsure_because // "" | if type == "string" then gsub("[\\n\\r<>]"; " ") | .[0:240] else "" end) as $why
+    | def say:
+      if   . == "unsure" or . == "no_argument" then "the reviewer is not sure about the quality or the purpose of this change" + (if $why != "" then " (" + $why + ")" else "" end)
+      elif . == "findings" then "a docs-only change with an open finding is fixed before it is approved"
+      elif . == "docs_only_note" then "a docs-only diff with an open question sets direction someone should confirm"
       else empty end;
     (.meta.approve_blocked_by // [])
     | (if type == "string" then [.] elif type == "array" then . else [] end)
     | map(select(type == "string") | say)
     | unique | join("; ")' "$REVIEW_JSON" 2>/dev/null)
-  [ -n "$GATES" ] && APPROVE_NOTICE=$'\n<sub>Not approved because '"$GATES"$'. No defect was found.</sub>\n'
+  MARKED=$(jq '((.meta.findings // []) | length)
+               + ([(.comments // [])[] | select(((.body // "")
+                   | test("^\\s*\\*\\*(critical|major|minor)\\*\\*"; "i")))] | length)' \
+          "$REVIEW_JSON" 2>/dev/null)
+  CLEAN=""; [ "$MARKED" = "0" ] && CLEAN=" No defect was found."
+  [ -n "$GATES" ] && APPROVE_NOTICE=$'\n<sub>Not approved because '"$GATES.$CLEAN"$'</sub>\n'
 fi
 
 # ── 2a2. DID THE TESTER ACTUALLY RUN? ───────────────────────────────────────
@@ -725,7 +741,7 @@ if jq -e 'type == "array" and length > 0' "$PRIOR_CHECKS_JSON" >/dev/null 2>&1; 
   jq --slurpfile pc "$PRIOR_CHECKS_JSON" '
     ($pc[0] | map({key: (.p + ":" + (.l | tostring)), value: true}) | from_entries) as $seen
     | map(select(
-        (((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+        (((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i"))
          and (($seen[((.path // "") + ":" + ((.line // 0) | tostring))] // false)
               or ((((.start_line // 0) | tostring | tonumber?) // 0) > 0
                   and ($seen[((.path // "") + ":" + ((.start_line // 0) | tostring))] // false)))) | not))' \
@@ -735,7 +751,7 @@ if jq -e 'type == "array" and length > 0' "$PRIOR_CHECKS_JSON" >/dev/null 2>&1; 
          [ "$REPEAT_CHECKS" -gt 0 ] \
            && echo "::notice::$REPEAT_CHECKS check comment(s) not re-posted — an earlier round already posted a check on that line."; }
 fi
-FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i"))
+FENCED_CHECKS=$(jq '[.[] | select(((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i"))
                                   and ((.body // "") | test("(^|\n)[ \t]*`{3,}[ \t]*suggestion"; "i")))] | length' \
                   "$WORK/comments.json" 2>/dev/null || echo 0)
 if [ "${FENCED_CHECKS:-0}" -gt 0 ]; then
@@ -755,7 +771,7 @@ jq --argjson limit "$COMMENT_LIMIT" --argjson cmax "$COMMENT_MAX" \
   # severity, so it already sorts behind every finding — under pressure the slots
   # go to defects and the notes fall back, which is the right way round. A
   # dropped one returns under the human-review heading, never under "Also flagged".
-  def kind: if ((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) then "check" else "finding" end;
+  def kind: if ((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")) then "check" else "finding" end;
   # A CHECK NEVER CARRIES A COMMITTABLE FENCE — STRUCTURALLY, not by prompt rule.
   # The range below is granted to checks alone on the strength of a line in
   # review-verify.md; nothing enforced it, so a `**check**` with start_line:10
@@ -920,7 +936,7 @@ jq '.kept' "$WORK/split.json" > "$WORK/comments.json"
 # finding, and verify writes no body bullet for a check — so a check in this index
 # could only ever strip a `### Findings` bullet belonging to a finding that is not
 # posted inline, deleting it from the review entirely.
-jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not)
+jq -r '.[] | select(((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")) | not)
              | .path + ":" + (.line | tostring) + "\t"
              + ((.body // "") | split("\n") | (.[0] // ""))' \
   "$WORK/comments.json" > "$WORK/kept-keys.txt"
@@ -1718,7 +1734,14 @@ expand_placeholders() {
   done
   printf '%s%s' "$out" "$line"
 }
-: > "$WORK/body.md"
+# A degraded write judged nothing. It is stamped like a crash so the next run does
+# not take this commit for a reviewed one and repeat "nothing new" over a diff
+# nobody read.
+if [ -n "$(jq -r '.meta.pipeline_failed // empty' "$REVIEW_JSON" 2>/dev/null)" ]; then
+  printf '%s\n\n' '<!-- claude-review-crash -->' > "$WORK/body.md"
+else
+  : > "$WORK/body.md"
+fi
 while IFS= read -r line || [ -n "$line" ]; do
   printf '%s\n' "$(expand_placeholders "$line")" >> "$WORK/body.md"
   # THE BANNER GOES DIRECTLY UNDER THE VERDICT HEADING, not in the footer's
@@ -1834,7 +1857,7 @@ else
        # body text, and a `**check**` has none, so a question was persisted as a
        # finding with `sev: ""`, warned about as `(, src/foo.ts)`, and — since
        # round 2 can never "resolve" a question — carried forever.
-       | map(select(((.body // "") | test("^\\s*\\*\\*check\\*\\*"; "i")) | not))
+       | map(select(((.body // "") | test("^\\s*\\*\\*(check|question)\\*\\*"; "i")) | not))
        | map({p: (.path // ""), l: (.line | num), sev: csev,
               t: ((.body // "") | split("\n") | (.[0] // "")
                   | sub("^\\s*\\*\\*[A-Za-z]+\\*\\*\\s*"; "")),

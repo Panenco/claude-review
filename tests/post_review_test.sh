@@ -2374,6 +2374,15 @@ assert_eq "the 10 real findings are still carried" "10" "$(echo "$STATE" | jq '.
 # …and the question still reaches a human, under its own heading, not as a finding.
 assert_contains "the check reaches the reader as a question" \
   "### What a human should review" "$(visible_body "$BODY")"
+# The label is **question** now. It must be routed exactly like the old check.
+sed -i.bak 's/\*\*check\*\* Is the fan refund/**question** Is the fan refund/' "$W/review.json"
+rm -rf "$W/capture"
+FIXTURE_REVIEWS="" FIXTURE_FILES="$W_WIDE" run_poster "$W"
+BODY=$(payload_of "$W" | jq -r '.body')
+STATE=$(state_block "$BODY")
+assert_eq "a **question** is not carried as a finding either" "0" \
+  "$(echo "$STATE" | jq '[.findings[] | select((.t | test("fan refund")) or .sev == "")] | length')"
+assert_contains "…and it still reaches the reader" "fan refund" "$(visible_body "$BODY")"
 rm -rf "$W" "$W_WIDE"
 
 # ── (x) the body cannot contradict itself about the functional pass ─────────
@@ -3737,15 +3746,17 @@ cat > "$W/review.json" <<'EOF'
   "body": "## Claude review — COMMENT\n\nRound-2 delta fixes the carried bug; nothing new survives.",
   "comments": [],
   "meta": {"findings": [], "human_review": [],
-           "approve_blocked_by": ["sensitive_path", "effort"]}
+           "approve_blocked_by": ["docs_only_note", "unsure"],
+           "unsure_because": "the PR body does not say what the new job is for"}
 }
 EOF
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_eq "exit 0" "0" "$RC"
 assert_contains "the reader is told it was not approved" "Not approved because" "$BODY"
-assert_contains "…and BOTH gates are named, not one" "sensitive path" "$BODY"
-assert_contains "…including the second" "more judgement than an unread approval allows" "$BODY"
+assert_contains "…and BOTH gates are named, not one" "docs-only diff with an open question" "$BODY"
+assert_contains "…including the second" "not sure about the quality or the purpose" "$BODY"
+assert_contains "…with the reason scan gave" "(the PR body does not say what the new job is for)" "$BODY"
 assert_contains "…and that nothing was actually wrong" "No defect was found" "$BODY"
 rm -rf "$W"
 
@@ -3778,22 +3789,22 @@ rm -rf "$W"
 # jq error the stage swallows, so the disclosure was dead on its own contract.
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
-        meta: {findings: [], human_review: [], approve_blocked_by: "sensitive_path"}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: "docs_only_note"}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
-assert_contains "a single string still renders the gate" "sensitive path" "$BODY"
+assert_contains "a single string still renders the gate" "docs-only diff with an open question" "$BODY"
 rm -rf "$W"
 
 # `none`, `findings` and anything unrecognised name no gate the author can act
 # on, so none of them reach the body as raw jargon.
 W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nnothing new.", comments: [],
-        meta: {findings: [], human_review: [], approve_blocked_by: ["none", "vibes", "effort"]}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: ["none", "vibes", "effort", "sensitive_path", "reviewer_config", "docs_baseline", "unsure"]}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 NOTICE=$(printf '%s\n' "$BODY" | grep -o 'Not approved because [^<]*')
 assert_eq "only the gate we know is named" \
-  "Not approved because the diff needed more judgement than an unread approval allows. No defect was found." \
+  "Not approved because the reviewer is not sure about the quality or the purpose of this change. No defect was found." \
   "$NOTICE"
 rm -rf "$W"
 
@@ -3805,7 +3816,7 @@ W=$(mktemp -d)
 jq -n '{verdict: "REQUEST_CHANGES", body: "## Claude review — REQUEST_CHANGES\n\nBroken.",
         comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
                     body: "**critical** the lock is dropped\n\nTwo writers reach it."}],
-        meta: {findings: [], human_review: [], approve_blocked_by: ["sensitive_path"]}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: ["docs_only_note"]}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_not_contains "a REQUEST_CHANGES never says no defect was found" "No defect was found" "$BODY"
@@ -3815,10 +3826,42 @@ W=$(mktemp -d)
 jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nOne minor.",
         comments: [{path: "src/a.ts", line: 5, side: "RIGHT",
                     body: "**minor** the log line carries the token\n\nIt reaches the log."}],
-        meta: {findings: [], human_review: [], approve_blocked_by: ["effort"]}}' > "$W/review.json"
+        meta: {findings: [], human_review: [], approve_blocked_by: ["unsure"]}}' > "$W/review.json"
 FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
 BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
 assert_not_contains "…nor does a COMMENT whose finding lives only in a comment" "No defect was found" "$BODY"
+assert_contains "…but it still says why it was not approved" "Not approved because the reviewer is not sure" "$BODY"
+rm -rf "$W"
+
+# Docs-only: an approval with anything still open posts as a COMMENT, in code.
+W=$(mktemp -d)
+jq -n '{verdict: "APPROVE", body: "## Claude review — APPROVE\n\nPlans only.",
+        comments: [{path: "src/a.ts", line: 5, side: "RIGHT", body: "**minor** step 4 contradicts D5\n\nA dev picking up the slice cannot tell which holds."}],
+        meta: {findings: [], human_review: [], approve_blocked_by: []}}' > "$W/review.json"
+DOCS_ONLY=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+BODY=$(visible_body "$(payload_of "$W" | jq -r '.body // ""')")
+assert_eq "a docs-only APPROVE with an open finding posts as a COMMENT" "COMMENT" "$(payload_of "$W" | jq -r '.event')"
+assert_contains "…under a COMMENT heading" "## Claude review — COMMENT" "$BODY"
+assert_contains "…saying why" "docs-only change with an open finding" "$BODY"
+rm -rf "$W/capture"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…while the same review on a code diff still approves" "APPROVE" "$(payload_of "$W" | jq -r '.event')"
+rm -rf "$W/capture"
+jq '.comments[0].body = "**question** D3 lists two call sites. Why not one helper, like deleteByPath?"' "$W/review.json" > "$W/r2.json" && mv "$W/r2.json" "$W/review.json"
+DOCS_ONLY=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…and so does an open question on a docs-only run" "COMMENT" "$(payload_of "$W" | jq -r '.event')"
+rm -rf "$W/capture"
+jq '.comments = []' "$W/review.json" > "$W/r2.json" && mv "$W/r2.json" "$W/review.json"
+DOCS_ONLY=true FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "…but a clean docs-only review approves" "APPROVE" "$(payload_of "$W" | jq -r '.event')"
+rm -rf "$W"
+
+# A degraded write judged nothing, so it must not count as a reviewed commit.
+W=$(mktemp -d)
+jq -n '{verdict: "COMMENT", body: "## Claude review — COMMENT\n\nThe review pipeline failed before it could judge this PR.", comments: [], meta: {pipeline_failed: "scan"}}' > "$W/review.json"
+FIXTURE_FILES="$FILES_FIXTURE" run_poster "$W"
+assert_eq "a failed pipeline posts under the crash marker" "<!-- claude-review-crash -->" \
+  "$(payload_of "$W" | jq -r '.body // ""' | head -1)"
 rm -rf "$W"
 
 # The skill says the field is an array. If that schema line ever goes back to a
