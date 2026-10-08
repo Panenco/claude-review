@@ -25,7 +25,7 @@ on:
       model_orchestrator:
         description: "Model for the top-level orchestrator session. Deliberately NOT `model_high`: this session reviews nothing and writes no review prose — it makes ~7-12 API calls (one Read, one Bash, the Task dispatches, one jq) to fan out subagents and copy one file through. Measured at 7-19% of a run's spend for pure plumbing. Every subagent pins its own model in its installed frontmatter (`model_high` / `model_functional` / `model_standard`), so this value never reaches a reviewing pass."
         type: string
-        default: "claude-sonnet-5-5"
+        default: "claude-haiku-5-5"
       model_standard:
         description: "Model for the `/review native` second-opinion pass (Anthropic's official `code-review` plugin, run in-session). LIVE AGAIN as of ADR 0005 — it was a deprecated no-op while that pass was deleted. Deliberately not `model_high`: the plugin's own prompt fans out to ~10 short-lived subagents and picks their models itself."
         type: string
@@ -1232,7 +1232,7 @@ jobs:
           # two subagents (which carry their own `effort:` frontmatter) and copies
           # one file. Verified present on the CLI as `--effort <low|medium|high>`.
           #
-          # SAME REASON, THE MODEL. `model_orchestrator` (Sonnet), not
+          # SAME REASON, THE MODEL. `model_orchestrator` (Haiku), not
           # `model_high`: at Opus rates this plumbing measured 7-19% of a run's
           # spend ($0.30-0.67) for a Read, a Bash, some Task calls and a jq. It
           # does NOT cascade — `--model` sets this session only, and every
@@ -1245,7 +1245,7 @@ jobs:
             --permission-mode dontAsk
             --setting-sources user
             --allowedTools Bash,Read,Write,Glob,Grep,Task,ToolSearch
-            --disallowedTools "Edit,WebFetch,WebSearch,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr merge:*),Bash(gh pr ready:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue close:*),Bash(gh release:*),Bash(git push:*)"
+            --disallowedTools "Edit,WebFetch,WebSearch,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr merge:*),Bash(gh pr ready:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue close:*),Bash(gh release:*),Bash(git push:*),ScheduleWakeup"
             --max-turns 100
           show_full_output: "true"
           # Empty on any runner that does not bake Bun, which restores the action's
