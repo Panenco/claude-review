@@ -69,13 +69,13 @@ probe_token() {
   if [ -n "${CLAUDE_PROBE_CMD:-}" ]; then
     out=$(CLAUDE_CODE_OAUTH_TOKEN="$token" bash -c "$CLAUDE_PROBE_CMD" 2>&1) || true
   else
-    # One tiny Sonnet turn; the rate limit is account-wide so this probe
+    # One tiny Haiku turn; the rate limit is account-wide so this probe
     # reflects whether the Opus/Sonnet calls that follow would be allowed. timeout 30 prevents a hung TLS handshake from
     # stalling the whole job. --max-turns 1 + "ok" guarantees a single
     # tool-free assistant turn.
     out=$(CLAUDE_CODE_OAUTH_TOKEN="$token" timeout 30 \
       "${CLAUDE_BIN:-$HOME/.local/bin/claude}" -p "ok" \
-        --model claude-sonnet-5-5 \
+        --model claude-haiku-5-5 \
         --max-turns 1 \
         --output-format stream-json \
         --verbose \

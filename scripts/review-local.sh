@@ -56,7 +56,7 @@ set -uo pipefail
 #   EVAL_REPO    owner/repo to review against          (required)
 #   EVAL_ROOT    working root for clones and results   (default $TMPDIR/claude-review-eval)
 #   EVAL_MODEL   the REVIEWING model, i.e. the subagents  (default claude-opus-5-5)
-#   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-sonnet-5-5)
+#   EVAL_ORCH_MODEL  the orchestrator session's own model (default claude-haiku-5-5)
 #   EVAL_SCAN_MODEL / EVAL_VERIFY_MODEL / EVAL_SCAN_EFFORT / EVAL_VERIFY_EFFORT
 #                    per-stage overrides for a sweep (default: EVAL_MODEL and the
 #                    efforts in the agent frontmatter)
@@ -110,7 +110,7 @@ MODEL="${EVAL_MODEL:-claude-opus-5-5}"
 # The orchestrator reviews nothing — it dispatches and copies one file — so it
 # runs the cheap model in CI (`model_orchestrator`). Mirrored here, else a local
 # sweep measures a cost this pipeline no longer pays.
-ORCH_MODEL="${EVAL_ORCH_MODEL:-claude-sonnet-5-5}"
+ORCH_MODEL="${EVAL_ORCH_MODEL:-claude-haiku-5-5}"
 
 for bin in gh jq git claude; do
   command -v "$bin" >/dev/null 2>&1 || { echo "$bin not on PATH" >&2; exit 1; }
@@ -319,7 +319,7 @@ PROMPT="Read $PIPE/skills/review-orchestrator.md and follow it exactly. PR numbe
 # Byte-for-byte the workflow's deny list. It is the only thing standing between
 # this session and the PR, and a local run holds the operator's own gh token —
 # so it is copied, never relaxed.
-DENY='Edit,WebFetch,WebSearch,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr merge:*),Bash(gh pr ready:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue close:*),Bash(gh release:*),Bash(git push:*)'
+DENY='Edit,WebFetch,WebSearch,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr review:*),Bash(gh pr edit:*),Bash(gh pr close:*),Bash(gh pr merge:*),Bash(gh pr ready:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh issue close:*),Bash(gh release:*),Bash(git push:*),ScheduleWakeup'
 
 date +%s > "$RUNDIR/job-start"
 echo "Running the orchestrator ($ORCH_MODEL; scan $SCAN_MODEL/$SCAN_EFFORT, verify $VERIFY_MODEL/$VERIFY_EFFORT) — this takes minutes and posts nothing"

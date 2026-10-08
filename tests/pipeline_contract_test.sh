@@ -686,6 +686,12 @@ else
       bad "$t is no longer denied — re-check what review-scan/review-verify claim is answerable"
     fi
   done
+  # A Haiku orchestrator set a 20-minute wakeup once; the timer held the finished session open.
+  if printf '%s' "$DENY" | grep -qF "ScheduleWakeup"; then
+    ok "the sandbox denies ScheduleWakeup"
+  else
+    bad "ScheduleWakeup is no longer denied — a pending wakeup keeps a finished review session alive"
+  fi
 fi
 for f in "$SCAN" "$VERIFY"; do
   n=${f##*/}
@@ -1858,8 +1864,8 @@ never "…and no longer names a specific model id as the one to pass" "$ORCH" \
 LOCAL="$ROOT/scripts/review-local.sh"
 want "review-local runs the orchestrator on its own (cheap) model" "$LOCAL" \
   '\-\-model "\$ORCH_MODEL"'
-want "…defaulting to Sonnet, like the workflow" "$LOCAL" \
-  'ORCH_MODEL="\$\{EVAL_ORCH_MODEL:-claude-sonnet-5-5\}"'
+want "…defaulting to Haiku, like the workflow" "$LOCAL" \
+  'ORCH_MODEL="\$\{EVAL_ORCH_MODEL:-claude-haiku-5-5\}"'
 want "…while the subagents keep EVAL_MODEL" "$LOCAL" \
   'MODEL_HIGH="\$MODEL"'
 
