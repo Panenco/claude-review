@@ -1,0 +1,36 @@
+.github/workflows/pr-review.yml
+  s_163dc4007d350a::t_ec099bfc09b651 1248
+  s_163dc4007d350a::t_2cfdc0f43dddff 28,1235
+README.md
+  s_163dc4007d350a::t_2cfdc0f43dddff 245,833
+scripts/run-breakdown.sh
+  s_163dc4007d350a::t_2cfdc0f43dddff 126,129-130
+tests/pipeline_contract_test.sh
+  s_163dc4007d350a::t_2cfdc0f43dddff 1867-1868
+  s_163dc4007d350a::t_1ebe10999d10a0 689-694
+scripts/pick-oauth-token.sh
+  s_163dc4007d350a::t_2cfdc0f43dddff 72,78
+.eval.env.example
+  s_163dc4007d350a::t_2cfdc0f43dddff 15-16
+prompts/setup-review.md
+  s_163dc4007d350a::t_2cfdc0f43dddff 668
+scripts/review-local.sh
+  s_163dc4007d350a::t_2cfdc0f43dddff 59,113
+  s_163dc4007d350a::t_ec099bfc09b651 322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "60a137a3d32b1e380fe65e8a7d77c7ef26519457",
+  "prompts": {},
+  "sessions": {
+    "s_163dc4007d350a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "da78e557-b83d-4301-b70b-5d349da16b73",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Leslie Jobse <dejobse@gmail.com>"
+    }
+  }
+}
