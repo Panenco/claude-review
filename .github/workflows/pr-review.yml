@@ -148,7 +148,7 @@ on:
 # they just re-download the binary instead of using the prebake.
 env:
   AGENT_BROWSER_VERSION: "0.34.0"
-  MIN_CLAUDE_VERSION: "2.1.280"
+  MIN_CLAUDE_VERSION: "2.1.294"
 
 jobs:
   review:
