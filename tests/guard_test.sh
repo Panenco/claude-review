@@ -181,7 +181,7 @@ assert_gate "skip-review still outranks a human request" "false label -" \
 assert_gate "oversized still blocks a human request" "false oversized REQUEST_CHANGES" \
   GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES='' \
   GATE_FILES_TSV="$BIG_FILES"
-assert_gate "nothing reviewable still skips a human request" "false empty -" \
+assert_gate "nothing reviewable still skips a human request" "false empty COMMENT" \
   GATE_HUMAN_REQUESTED=true GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES='' \
   GATE_FILES_TSV=$'pnpm-lock.yaml\t9000\t9000'
 
@@ -248,26 +248,33 @@ else
   echo "FAIL: skip marker is not the body's first line"
   fail=$((fail + 1))
 fi
-# Only the oversized gate posts anything.
-for g in "GATE_LABELS=skip-review" "GATE_FILES_TSV=pnpm-lock.yaml	1	1"; do
-  if [ -z "$(body_of "$g" GATE_FILES_TSV=$'pnpm-lock.yaml\t1\t1')" ]; then
-    echo "OK:   no body emitted for a non-oversized short-circuit ($g)"
-  else
-    echo "FAIL: a non-oversized short-circuit emitted a body ($g)"
-    fail=$((fail + 1))
-  fi
-done
+# The skip-review label posts nothing.
+if [ -z "$(body_of GATE_LABELS=skip-review GATE_FILES_TSV=$'pnpm-lock.yaml\t1\t1')" ]; then
+  echo "OK:   no body emitted for the label short-circuit"
+else
+  echo "FAIL: the label short-circuit emitted a body"
+  fail=$((fail + 1))
+fi
 
 echo
-echo "── 4) nothing reviewable → skip ──"
-assert_gate "lockfile only" "false empty -" \
+echo "── 4) nothing reviewable → skip, with a COMMENT saying so ──"
+# A `/review` on a lockfile-only PR used to go green with nothing posted.
+assert_gate "lockfile only" "false empty COMMENT" \
   GATE_FILES_TSV=$'pnpm-lock.yaml\t9000\t9000'
-assert_gate "generated bundle only" "false empty -" \
+assert_gate "generated bundle only" "false empty COMMENT" \
   GATE_FILES_TSV=$'dist/app.min.js\t50\t10\nbuild/x.generated.ts\t5\t5'
-assert_gate "no files at all" "false empty -" \
+assert_gate "no files at all" "false empty COMMENT" \
   GATE_FILES_TSV=''
-assert_gate "unset GATE_FILES_TSV" "false empty -" \
+assert_gate "unset GATE_FILES_TSV" "false empty COMMENT" \
   GATE_SKIP_LABEL=skip-review
+BODY=$(body_of GATE_FILES_TSV=$'apps/api/composer.lock\t189\t188')
+if [ "$(printf '%s\n' "$BODY" | head -n1)" = "<!-- claude-review-skipped -->" ]; then
+  echo "OK:   empty skip stamps its marker as the body's first line"
+else
+  echo "FAIL: empty skip does not stamp <!-- claude-review-skipped --> first"
+  fail=$((fail + 1))
+fi
+assert_contains "empty skip body says no code was read" "No code was read." "$BODY"
 
 echo
 echo "── 5) docs_only — the proceed path tells the review there is no code to break ──"
@@ -392,8 +399,10 @@ fi
 # → 194 for gate_input: one resolver and one loop that read the same inputs from
 # a file, because MAX_ARG_STRLEN killed the exec of this script. No new branch on
 # diff size, so still not a tier.
+# → 205 for the empty gate's body: a typed `/review` on a lockfile-only PR went
+# green with nothing posted. One branch on who asked, never on diff size.
 LINES=$(grep -c '' "$SCRIPT")
-if [ "$LINES" -le 194 ]; then
+if [ "$LINES" -le 205 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
 else
   echo "FAIL: guard.sh has grown to $LINES lines — the tiers belong in review-scan, not here"

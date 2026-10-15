@@ -191,27 +191,37 @@ posting_gates=$(
     env GATE_LABELS=$'skip-review' GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$GUARD"
     env GATE_FILES_TSV="$BIG_FILES" bash "$GUARD"
     env GATE_FILES_TSV=$'pnpm-lock.yaml\t9\t9' bash "$GUARD"
+    env GATE_HUMAN_REQUESTED=true GATE_LABELS=$'skip-review' GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$GUARD"
+    env GATE_HUMAN_REQUESTED=true GATE_FILES_TSV="$BIG_FILES" bash "$GUARD"
     env GATE_PRIOR_HEAD_SHA=deadbee GATE_DELTA_FILES='' GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$GUARD"
     env GATE_FILES_TSV=$'src/a.ts\t5\t5' bash "$GUARD"
   } | awk -F= '/^gate=/{g=$2} /^verdict=/{if ($2 != "") print g}' | sort -u
 )
 # Pin the sweep's own result first: a sweep that trips nothing would run zero
 # assertions below and still print "All prior-review-state tests passed".
-if [ "$posting_gates" != "oversized" ]; then
-  echo "FAIL: posting-gate sweep found [$(echo "$posting_gates" | tr '\n' ' ')], expected [oversized]."
+if [ "$posting_gates" != $'empty\noversized' ]; then
+  echo "FAIL: posting-gate sweep found [$(echo "$posting_gates" | tr '\n' ' ')], expected [empty oversized]."
   echo "      Either guard.sh gained a gate that posts without a model call — give its body a"
   echo "      marker, add the marker to SKIP_MARKERS in prior-review-state.sh and to marker_for"
-  echo "      below — or the sweep no longer trips the oversized ceilings and guards nothing."
+  echo "      below — or the sweep no longer trips a posting gate and guards nothing."
   fail=$((fail + 1))
 else
-  echo "OK:   posting-gate sweep reached the oversized gate"
+  echo "OK:   posting-gate sweep reached the empty and oversized gates"
 fi
 
 # gate → the marker its review body must carry.
 marker_for() {
   case "$1" in
     oversized) echo '<!-- claude-review-oversized -->' ;;
+    empty)     echo '<!-- claude-review-skipped -->' ;;
     *)         echo "" ;;
+  esac
+}
+# gate → the body the guard renders for the input that reaches it.
+body_for() {
+  case "$1" in
+    oversized) guard_body GATE_FILES_TSV="$BIG_FILES" ;;
+    empty)     guard_body GATE_FILES_TSV=$'pnpm-lock.yaml\t9\t9' ;;
   esac
 }
 while IFS= read -r gate; do
@@ -223,7 +233,7 @@ while IFS= read -r gate; do
     continue
   fi
   # The marker must be the body's FIRST line: every consumer anchors there.
-  if [ "$(guard_body GATE_FILES_TSV="$BIG_FILES" | head -n1)" != "$marker" ]; then
+  if [ "$(body_for "$gate" | head -n1)" != "$marker" ]; then
     echo "FAIL: gate '$gate' does not stamp $marker as the first line of its body"
     fail=$((fail + 1))
   elif ! grep -qF "$marker" "$SCRIPT"; then

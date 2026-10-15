@@ -12,8 +12,8 @@
 #   review is allowed to go, derived from diff size. See section 5.
 #   scope=full|delta — proceed path only; whether review-scan reads the whole
 #   PR again or only the since-last delta. See section 6.
-#   verdict=REQUEST_CHANGES + body<<GUARD_BODY…GUARD_BODY — oversized only; that
-#   split request is posted as-is, with no model call.
+#   verdict + body<<GUARD_BODY…GUARD_BODY — oversized (REQUEST_CHANGES) and
+#   empty (COMMENT); posted as-is, with no model call.
 #
 # Env (all optional): GATE_FILES_TSV ("path<TAB>additions<TAB>deletions" per
 # changed file), GATE_LABELS (newline-separated), GATE_SKIP_LABEL (skip-review),
@@ -146,9 +146,21 @@ GUARD_OUTPUT
   exit 0
 fi
 
-# 4) Nothing reviewable left once generated files are excluded.
+# 4) Nothing reviewable left once generated files are excluded. Said in a
+#    COMMENT: a green check and silence reads as a clean review (gate 2).
 if [ "$ng_files" -eq 0 ]; then
-  emit false empty "" "Skipped — no non-generated files changed."
+  emit false empty COMMENT "Skipped — no non-generated files changed."
+  cat <<GUARD_OUTPUT
+body<<GUARD_BODY
+<!-- claude-review-skipped -->
+
+## Claude review — COMMENT
+
+Skipped: every changed file matched the generated-file list (built-in, plus this repo's \`gate_generated_globs\`). No code was read.
+
+For a dependency bump, CI and the packages' changelogs are the check.
+GUARD_BODY
+GUARD_OUTPUT
   exit 0
 fi
 
