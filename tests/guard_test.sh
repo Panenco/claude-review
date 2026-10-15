@@ -400,7 +400,7 @@ fi
 # a file, because MAX_ARG_STRLEN killed the exec of this script. No new branch on
 # diff size, so still not a tier.
 # → 205 for the empty gate's body: a typed `/review` on a lockfile-only PR went
-# green with nothing posted. One branch on who asked, never on diff size.
+# green with nothing posted. No new branch on diff size, so still not a tier.
 LINES=$(grep -c '' "$SCRIPT")
 if [ "$LINES" -le 205 ]; then
   echo "OK:   guard.sh is $LINES lines (the whole point is that it is small)"
