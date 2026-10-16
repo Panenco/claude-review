@@ -360,8 +360,6 @@ want "…and says it does not read them upfront" "$VERIFY" \
 # Read in scan's first call, so a repo without them prints nothing and reviews as
 # before. The index points and sets no severity, so the convention class stays
 # this prompt's and no pointer is followed to a file the call did not load.
-want "review-scan reads the org review layer in its first call" "$SCAN" \
-  'tail -n \+1 [^`]*\.claude/skills/review-and-fix/references/org-review\.md \.claude/rules/general/\*\.md 2>/dev/null`'
 want "…and keeps severity its own, never one the layer names or points at" "$SCAN" \
   'severity and the convention class below stay this prompt.s'
 want "…and follows no pointer to a file it did not load" "$SCAN" 'follow no pointer in the index'
@@ -376,19 +374,26 @@ want "…and checks a suppression from them is not one this PR added" "$VERIFY" 
 first_pass=$(grep -o '`ls \.claude/rules 2>/dev/null; tail -n +1 [^`]*`' "$SCAN" | tr -d '`')
 tmp=$(mktemp -d)
 printf 'b\n' > "$tmp/bugbot.md"
-out=$(cd "$tmp" && bash -c "$first_pass" 2>&1)
-if [ -n "$first_pass" ] && [ "$out" = "$(printf '==> bugbot.md <==\nb')" ]; then
-  ok "scan's first pass prints nothing for a repo without the org layer"
-else bad "scan's first pass prints nothing for a repo without the org layer — got: $out"; fi
+# zsh too when installed (a local review on macOS): its nomatch aborts a command
+# whose glob matches nothing, which would drop bugbot.md along with it.
+shells="bash"; command -v zsh > /dev/null && shells="bash zsh"
+for sh in $shells; do
+  out=$(cd "$tmp" && "$sh" -c "$first_pass" 2>&1)
+  if [ -n "$first_pass" ] && [ "$out" = "$(printf '==> bugbot.md <==\nb')" ]; then
+    ok "scan's first pass prints nothing for a repo without the org layer ($sh)"
+  else bad "scan's first pass prints nothing for a repo without the org layer ($sh) — got: $out"; fi
+done
 mkdir -p "$tmp/.claude/rules/general" "$tmp/.claude/skills/review-and-fix/references"
 printf 'o\n' > "$tmp/.claude/skills/review-and-fix/references/org-review.md"
 printf 'p\n' > "$tmp/.claude/rules/general/pr-rules.md"
-out=$(cd "$tmp" && bash -c "$first_pass" 2>&1)
-case "$out" in
-  *'==> .claude/skills/review-and-fix/references/org-review.md <=='*'==> .claude/rules/general/pr-rules.md <=='*)
-    ok "scan's first pass names each org-layer file it prints" ;;
-  *) bad "scan's first pass names each org-layer file it prints — got: $out" ;;
-esac
+for sh in $shells; do
+  out=$(cd "$tmp" && "$sh" -c "$first_pass" 2>&1)
+  case "$out" in
+    *'==> .claude/skills/review-and-fix/references/org-review.md <=='*'==> .claude/rules/general/pr-rules.md <=='*)
+      ok "scan's first pass names each org-layer file it prints ($sh)" ;;
+    *) bad "scan's first pass names each org-layer file it prints ($sh) — got: $out" ;;
+  esac
+done
 rm -rf "$tmp"
 
 # Reviewers on three products spend review time deleting machine-written
