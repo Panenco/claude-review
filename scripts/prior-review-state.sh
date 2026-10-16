@@ -19,7 +19,7 @@
 #                       what is currently standing on the PR, blocks included.
 #   prior-reviews.json  the above MINUS the reviews that never judged the diff
 #                       (guard.sh's posting short-circuits: the oversized block
-#                       and the skip-label note). Feeds round/prior_head_sha/
+#                       and the generated-files-only note). Feeds round/prior_head_sha/
 #                       prior_verdict, and review-scan reads its last entry for
 #                       the prior review body.
 #

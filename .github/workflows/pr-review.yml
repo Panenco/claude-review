@@ -548,17 +548,18 @@ jobs:
           printf '%s\n' "$DECISION" >> "$GITHUB_OUTPUT"
           PROCEED=$(grep '^proceed=' <<< "$DECISION" | cut -d= -f2)
           VERDICT=$(grep '^verdict=' <<< "$DECISION" | cut -d= -f2)
+          GATE=$(grep '^gate=' <<< "$DECISION" | cut -d= -f2)
 
-          # The oversized gate posts its own REQUEST_CHANGES with NO model call:
-          # guard.sh already rendered the split request, so write the poster's
-          # artifact here and let the review step skip entirely.
+          # The oversized split request and the empty skip note post
+          # with NO model call: guard.sh already rendered the body, so write the
+          # poster's artifact here and let the review step skip entirely.
           if [ "$PROCEED" != "true" ] && [ -n "$VERDICT" ]; then
             awk '/^body<<GUARD_BODY$/{f=1;next} /^GUARD_BODY$/{f=0} f' <<< "$DECISION" > /tmp/guard-body.md
-            jq -n --arg v "$VERDICT" --rawfile b /tmp/guard-body.md \
-              '{verdict: $v, body: $b, comments: [], meta: {findings: [], human_review: [], gate: "oversized"}}' \
+            jq -n --arg v "$VERDICT" --arg g "$GATE" --rawfile b /tmp/guard-body.md \
+              '{verdict: $v, body: $b, comments: [], meta: {findings: [], human_review: [], gate: $g}}' \
               > /tmp/review.json
             echo "post=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::No model call — posting the guard's split request."
+            echo "::notice::No model call — posting the guard's $GATE notice."
           elif [ "$PROCEED" != "true" ]; then
             echo "post=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Nothing to review; nothing posted."
@@ -1076,7 +1077,7 @@ jobs:
       # MERGED, never overwritten: the image may ship its own user settings, and
       # clobbering them would be an invisible regression in something unrelated.
       # MUST stay gated on the guard: this step deletes /tmp/review.json, and on the
-      # oversized path the guard has already written the split request there.
+      # oversized and empty paths the guard has already written its body there.
       - name: Enforce review.json on session end
         id: stop_hook
         if: steps.cmd.outputs.proceed == 'true' && steps.guard.outputs.proceed == 'true'

@@ -233,7 +233,7 @@ Without these, the pipeline still works — it auto-discovers what it can and ru
           skip-review label            → skip, post nothing
           empty since-last delta       → skip, post nothing
           oversized (>3000 lines/60 f) → REQUEST_CHANGES split request
-          no non-generated files       → skip, post nothing
+          no non-generated files       → skip, COMMENT saying so
         Anything else runs. NO DEPTH TIERS — review-scan self-scales.
     |
 [Setup] Node/pnpm, pinned agent-browser + Chrome (cached), browser
@@ -294,7 +294,7 @@ Two rules do most of the work upstream of it. **Every finding must name a concre
 
 ### Round 1 vs round 2
 
-Review state lives on the PR itself — there are no cross-run artifacts. On every run, `scripts/prior-review-state.sh` lists the pipeline's own prior reviews on the PR: the newest **judged** review's `commit_id` is the previously-reviewed SHA, its state is the prior verdict, and the count of judged reviews sets the round number. *Judged* is the load-bearing word — a guard short-circuit (the oversized split-request, the skip-label note) posts a review without any model reading the diff, so it carries a hidden marker (`<!-- claude-review-oversized -->` / `<!-- claude-review-skipped -->`) and is excluded from the count. Counting one would scope the next review to the since-last diff and approve a PR nobody ever read. Crash banners and their supersede notes are excluded the same way. A skip-marked post also never dismisses a standing review — adding `skip-review` must not clear a REQUEST_CHANGES nobody re-reviewed. The checkout is a full clone, so `git diff <prior>..HEAD` is always computable.
+Review state lives on the PR itself — there are no cross-run artifacts. On every run, `scripts/prior-review-state.sh` lists the pipeline's own prior reviews on the PR: the newest **judged** review's `commit_id` is the previously-reviewed SHA, its state is the prior verdict, and the count of judged reviews sets the round number. *Judged* is the load-bearing word — a guard short-circuit (the oversized split-request, the generated-files-only note) posts a review without any model reading the diff, so it carries a hidden marker (`<!-- claude-review-oversized -->` / `<!-- claude-review-skipped -->`) and is excluded from the count. Counting one would scope the next review to the since-last diff and approve a PR nobody ever read. Crash banners and their supersede notes are excluded the same way. A skip-marked post also never dismisses a standing review — adding `skip-review` must not clear a REQUEST_CHANGES nobody re-reviewed. The checkout is a full clone, so `git diff <prior>..HEAD` is always computable.
 
 **What round 2 actually does.** Two things, and deliberately only two:
 

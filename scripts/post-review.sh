@@ -1824,8 +1824,8 @@ echo "::endgroup::"
 # exercise that). The floor is what the poster ITSELF decided to post — `kept`
 # and `dropped` — unioned with meta for the failure_scenario text.
 #
-# WHY IT IS SUPPRESSED FOR SKIP-MARKED BODIES: the guard's oversized block judged
-# nothing (pr-review.yml writes /tmp/review.json from it). A state block there
+# WHY IT IS SUPPRESSED FOR SKIP-MARKED BODIES: the guard's oversized and empty
+# bodies judged nothing (pr-review.yml writes /tmp/review.json from it). A state block there
 # would tell the next round "round N found nothing".
 echo "::group::Review state"
 echo '[]' > "$WORK/carried.json"
@@ -2002,8 +2002,8 @@ echo "::endgroup::"
 # ONLY A RUN THAT JUDGED THE DIFF MAY CLEAR A CRASH BANNER — the same rule
 # section 7 applies to standing blocking reviews, and for the same reason. A
 # crash banner says "**Action required:** a human should review this PR" about an
-# earlier failure nobody has resolved. guard.sh's oversized split request read no
-# code, so PATCHing that banner into "_Superseded by a newer Claude review run on
+# earlier failure nobody has resolved. A guard-rendered body (oversized split
+# request or empty skip) read no code, so PATCHing that banner into "_Superseded by a newer Claude review run on
 # this PR._" retires a human-action signal on the strength of a run that judged
 # nothing. Section 7 already refused to dismiss for this body; section 5 ran
 # unconditionally.
@@ -2057,7 +2057,7 @@ echo "::endgroup::"
 # returns, so reaching this line is itself the proof that a replacement is up.
 #
 # Only a review that JUDGED the diff may clear a standing one. A skip-marked
-# body (guard.sh's oversized split request) read no code, so dismissing on its
+# body (guard.sh's oversized split request or empty skip) read no code, so dismissing on its
 # way in would (a) un-block a PR nobody re-reviewed and (b) leave the next
 # judged round reading `prior_verdict` off a DISMISSED review, which means "the
 # author opted out" (see prior-review-state.sh). Leave it standing.
@@ -2156,7 +2156,9 @@ case "$VERDICT" in
   APPROVE)
     exit 0 ;;
   COMMENT)
-    if [ "$HUMAN_COUNT" -gt 0 ]; then
+    if is_skip_marked; then
+      echo "::notice::Guard short-circuit — no code was read. See the PR review for why."
+    elif [ "$HUMAN_COUNT" -gt 0 ]; then
       echo "::warning::Claude posted $FINDING_COUNT finding(s) and $HUMAN_COUNT item(s) for a human to review."
     else
       echo "::warning::Claude posted $FINDING_COUNT non-blocking finding(s). See the PR review for details."
