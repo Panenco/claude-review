@@ -235,6 +235,8 @@ Create `bugbot.md` at the repo root with project-specific review rules. Keep it 
 - Specific to this project (not generic good practices)
 - Things that have caused bugs before
 
+A repo subscribed to Panenco's claude-tooling also receives the org review layer (`.claude/skills/review-and-fix/references/org-review.md` and `.claude/rules/general/*.md`) through its sync, and the reviewer reads it next to `bugbot.md`. Do not create or copy it here, and do not restate its rules in `bugbot.md`: `bugbot.md` is the product layer on top of it.
+
 Include a "Verify before flagging" section AND an "Accepted supply-chain trade-offs" section:
 
 ```markdown
