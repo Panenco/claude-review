@@ -214,6 +214,8 @@ For best results, add two optional files:
 - `bugbot.md` — project-specific review rules
 - `.github/review-config.md` — build prep, conventions, dev env, auth
 
+A repo subscribed to Panenco's claude-tooling also receives the org review layer, `.claude/skills/review-and-fix/references/org-review.md` and `.claude/rules/general/*.md`, through that sync; there is nothing to create.
+
 Without these, the pipeline still works — it auto-discovers what it can and runs the judge review on the raw diff.
 
 ---
@@ -627,6 +629,7 @@ Before your script runs, `build-spec.sh` scans the PR title, PR body, and branch
 | `.github/claude-review/fetch-issue.sh` | Expected when only GitHub is used | Absent: skipped silently — the linked GitHub issue and any referenced in-repo spec document remain the spec sources. Present but failing or hanging: killed at 60s, logged as an Actions warning, review continues. |
 | `review-config.md`                     | Reduced                           | No build prep doc, no suppression rules, no declared `Spec documents:` location (the other three discovery routes still run), no Known-service-ports URLs to probe, and no `### Auth` recipe for the functional tester (it treats authenticated surfaces as `untested`). |
 | `bugbot.md`                            | Minor                             | Reviewers use generic methodology only (no project-specific rules, no accepted-trade-offs exemptions). |
+| Org review layer                       | Minor                             | Expected outside repos subscribed to claude-tooling: `.claude/skills/review-and-fix/references/org-review.md` and `.claude/rules/general/*.md` print nothing and the review runs on the repo's own rules. |
 | `CLAUDE.md`                            | Minor                             | No architecture context. Reviewers rely on diff + issue.                                               |
 | All config files                       | Significant                       | Code-only judge review on raw diff + build output. Still catches bugs, spec issues, security.          |
 
